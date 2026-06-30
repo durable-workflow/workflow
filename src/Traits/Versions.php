@@ -21,6 +21,16 @@ trait Versions
         $log = self::$context->storedWorkflow->findLogByIndex(self::$context->index);
 
         if ($log) {
+            // Only treat the recorded log as this change's version marker when its
+            // class matches. A different class means getVersion() was added to a
+            // workflow whose history was recorded before the change existed.
+            // Consuming the slot here would shift every later event, so fall back to
+            // the minimum supported version and leave the index untouched so the
+            // original event still replays in its recorded position.
+            if ($log->class !== 'version:' . $changeId) {
+                return resolve($minSupported);
+            }
+
             $version = Serializer::unserialize($log->result);
 
             if ($version < $minSupported || $version > $maxSupported) {
