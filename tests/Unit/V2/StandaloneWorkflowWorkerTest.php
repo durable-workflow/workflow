@@ -704,6 +704,105 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         ], array_column($requests, 'url'));
     }
 
+    public function testWorkflowPollQueryPendingStatusKeepsDrainingUntilCounterCurrentQueryArrives(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+        $queryPolls = 0;
+
+        $http->fake(function (Request $request) use ($http, &$queryPolls, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'query_task_pending',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                $queryPolls++;
+
+                if ($queryPolls < 6) {
+                    return $http->response([
+                        'task' => null,
+                        'poll_status' => 'empty',
+                    ]);
+                }
+
+                return $http->response([
+                    'task' => $this->queryTask([
+                        'lease_owner' => 'php-worker',
+                        'workflow_type' => 'conformance.counter.php',
+                        'workflow_class' => 'conformance.counter.php',
+                        'query_name' => 'current',
+                        'history_export' => [
+                            'workflow' => [
+                                'workflow_type' => 'conformance.counter.php',
+                                'workflow_class' => 'conformance.counter.php',
+                            ],
+                            'history_events' => [
+                                [
+                                    'id' => 'event-started',
+                                    'sequence' => 1,
+                                    'type' => HistoryEventType::WorkflowStarted->value,
+                                    'payload' => [
+                                        'workflow_type' => 'conformance.counter.php',
+                                        'workflow_class' => 'conformance.counter.php',
+                                        'payload_codec' => 'avro',
+                                    ],
+                                    'recorded_at' => '2026-05-17T00:00:00+00:00',
+                                ],
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'conformance.counter.php' => StandaloneWorkflowWorkerCounterWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+
+        $this->assertSame('query_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('current', $result['query_task']['query_name'] ?? null);
+        $this->assertSame('query_task_pending', $result['deferred_workflow_poll']['poll_status'] ?? null);
+        $this->assertSame(6, $queryPolls);
+        $this->assertSame([
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+        ], array_column($requests, 'url'));
+        foreach ([1, 2, 3, 4, 5, 6] as $requestIndex) {
+            $this->assertSame(1, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
+        }
+        $this->assertSame(0, $requests[7]['body']['result'] ?? null);
+        $this->assertSame(
+            0,
+            Serializer::unserializeWithCodec('avro', $requests[7]['body']['result_envelope']['blob'] ?? ''),
+        );
+    }
+
     public function testQueryCompletionRejectedIsReportedAsFailedProcessing(): void
     {
         $http = new HttpFactory();

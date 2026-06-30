@@ -28,6 +28,7 @@ final class StandaloneWorkflowWorker
     private const READY_QUERY_DRAIN_ATTEMPTS = 3;
     private const INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS = 1;
     private const INITIAL_READY_QUERY_DRAIN_ATTEMPTS = 10;
+    private const QUERY_PENDING_DRAIN_ATTEMPTS = 10;
 
     /**
      * @var array<string, class-string<Workflow>>
@@ -196,7 +197,7 @@ final class StandaloneWorkflowWorker
             $poll = $this->client->lastWorkflowTaskPoll();
 
             if (($poll['poll_status'] ?? null) === 'query_task_pending') {
-                [$query, $failure] = $this->drainReadyQueryTask($queue, $workerId);
+                [$query, $failure] = $this->drainPendingQueryTask($queue, $workerId);
 
                 if (($query['processed'] ?? false) === true) {
                     $query['deferred_workflow_poll'] = $poll;
@@ -411,6 +412,23 @@ final class StandaloneWorkflowWorker
         $query['deferred_workflow_task'] = $workflowResult;
 
         return $query;
+    }
+
+    /**
+     * A workflow-task poll with query_task_pending means the server withheld a
+     * workflow lease to let a public query run first. Use the same startup
+     * window as the initial post-workflow drain because the query can become
+     * claimable just after the workflow poll returns.
+     *
+     * @return array{0: array<string, mixed>|null, 1: array<string, string>|null}
+     */
+    private function drainPendingQueryTask(?string $queue, ?string $workerId): array
+    {
+        return $this->drainReadyQueryTask(
+            $queue,
+            $workerId,
+            self::QUERY_PENDING_DRAIN_ATTEMPTS,
+        );
     }
 
     /**

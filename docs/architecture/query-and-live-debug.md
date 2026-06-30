@@ -205,8 +205,9 @@ from the `WorkflowStarted` snapshot can return before the first wait is
 recorded. After an active non-terminal workflow task completes or reports
 `waiting_for_history`, the driver performs a bounded query-task drain after the
 workflow task has recorded its commands. The initial non-terminal workflow task
-may use a longer startup drain window, while subsequent post-workflow and
-`query_task_pending` drains use a short minimum-duration window. This lets a
+and a workflow poll that reports `query_task_pending` use longer startup drain
+windows, while subsequent post-workflow drains use a short minimum-duration
+window. This lets a
 public query enqueued during start or workflow execution observe a consistent
 state and return before the next loop turn without turning the worker tick into
 an unbounded query loop.
