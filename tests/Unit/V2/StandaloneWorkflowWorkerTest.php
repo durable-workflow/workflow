@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
@@ -702,6 +703,78 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
         ], array_column($requests, 'url'));
+    }
+
+    public function testWorkflowPollQueryPendingStatusRetiresTimedOutQueryPollFence(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+        $firstPollRequestId = null;
+
+        $http->fake(function (Request $request) use ($http, &$firstPollRequestId, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                $pollRequestId = $request->data()['poll_request_id'] ?? null;
+                $firstPollRequestId ??= is_string($pollRequestId) ? $pollRequestId : null;
+
+                if ($pollRequestId === $firstPollRequestId) {
+                    throw new ConnectionException('cURL error 28: Operation timed out');
+                }
+
+                return $http->response([
+                    'task' => $this->queryTask([
+                        'lease_owner' => 'php-worker',
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'query_task_pending',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]);
+
+        $result = $worker->tick('polyglot', 'php-worker');
+
+        $this->assertSame('query_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('query_task_pending', $result['deferred_workflow_poll']['poll_status'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+        ], array_column($requests, 'url'));
+        $this->assertIsString($requests[0]['body']['poll_request_id'] ?? null);
+        $this->assertSame(
+            $requests[0]['body']['poll_request_id'] ?? null,
+            $requests[1]['body']['poll_request_id'] ?? null,
+        );
+        $this->assertIsString($requests[3]['body']['poll_request_id'] ?? null);
+        $this->assertNotSame(
+            $requests[0]['body']['poll_request_id'] ?? null,
+            $requests[3]['body']['poll_request_id'] ?? null,
+        );
     }
 
     public function testWorkflowPollQueryPendingStatusKeepsDrainingUntilCounterCurrentQueryArrives(): void

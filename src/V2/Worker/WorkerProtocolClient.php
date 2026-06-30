@@ -487,6 +487,10 @@ final class WorkerProtocolClient
             return [$task];
         }
 
+        if ($pollRequestKey !== null) {
+            unset($this->queryPollRequestIds[$pollRequestKey]);
+        }
+
         return [];
     }
 

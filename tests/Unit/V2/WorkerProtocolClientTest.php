@@ -458,7 +458,7 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
     }
 
-    public function testStandaloneQueryPollRecoversTimedOutGeneratedPollRequestOnNextCall(): void
+    public function testStandaloneQueryPollRetiresExhaustedGeneratedPollRequestOnNextCall(): void
     {
         $http = new HttpFactory();
         $requests = [];
@@ -491,7 +491,9 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertIsString($requests[0]['poll_request_id']);
         $this->assertNotSame('', $requests[0]['poll_request_id']);
         $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
-        $this->assertSame($requests[0]['poll_request_id'], $requests[2]['poll_request_id']);
+        $this->assertIsString($requests[2]['poll_request_id']);
+        $this->assertNotSame('', $requests[2]['poll_request_id']);
+        $this->assertNotSame($requests[0]['poll_request_id'], $requests[2]['poll_request_id']);
     }
 
     public function testStandaloneQueryLongPollRequestTimeoutHonorsCallerTimeout(): void
