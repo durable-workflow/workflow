@@ -207,7 +207,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[1]['body']['timeout_seconds'] ?? null);
         $this->assertSame('waiting-for-name', $requests[2]['body']['result'] ?? null);
     }
 
@@ -303,8 +303,8 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[1]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[3]['body']['timeout_seconds'] ?? null);
         $this->assertSame('waiting-for-name', $requests[4]['body']['result'] ?? null);
     }
 
@@ -438,7 +438,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         ], array_column($requests, 'url'));
         $this->assertSame(6, $queryPolls);
         foreach ([1, 3, 4, 5, 6, 7] as $requestIndex) {
-            $this->assertSame(1, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
+            $this->assertSame(0, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
         }
         $this->assertSame(0, $requests[8]['body']['result'] ?? null);
         $this->assertSame(
@@ -540,9 +540,9 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                 'type' => 'WorkflowTaskWaitingForHistory',
             ],
         ], $requests[1]['body']);
-        $this->assertSame(1, $requests[2]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(1, $requests[4]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[2]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[3]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[4]['body']['timeout_seconds'] ?? null);
     }
 
     public function testProcessOneWorkflowTaskDrainsReadyQueryAfterWaitingForHistory(): void
@@ -867,7 +867,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
         ], array_column($requests, 'url'));
         foreach ([1, 2, 3, 4, 5, 6] as $requestIndex) {
-            $this->assertSame(1, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
+            $this->assertSame(0, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
         }
         $this->assertSame(0, $requests[7]['body']['result'] ?? null);
         $this->assertSame(

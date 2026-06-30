@@ -16,9 +16,10 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksQueryTaskPollTimeoutShape(): void
+    public function testVersionTracksQueryTaskImmediateProbeTimeoutShape(): void
     {
-        $this->assertSame('1.11', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.12', WorkerProtocolVersion::VERSION);
+        $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }
 
     public function testVersionIncludesSignalWaitCommandShape(): void
@@ -298,16 +299,24 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertArrayHasKey('min_timeout_seconds', $semantics);
         $this->assertArrayHasKey('max_timeout_seconds', $semantics);
         $this->assertGreaterThan(0, $semantics['default_timeout_seconds']);
-        $this->assertGreaterThan(0, $semantics['min_timeout_seconds']);
+        $this->assertGreaterThanOrEqual(0, $semantics['min_timeout_seconds']);
         $this->assertGreaterThanOrEqual($semantics['min_timeout_seconds'], $semantics['default_timeout_seconds']);
         $this->assertLessThanOrEqual($semantics['max_timeout_seconds'], $semantics['default_timeout_seconds']);
+    }
+
+    public function testClampLongPollTimeoutAllowsImmediateProbe(): void
+    {
+        $this->assertSame(
+            0,
+            WorkerProtocolVersion::clampLongPollTimeout(0),
+        );
     }
 
     public function testClampLongPollTimeoutClampsBelowMinimum(): void
     {
         $this->assertSame(
             WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
-            WorkerProtocolVersion::clampLongPollTimeout(0),
+            WorkerProtocolVersion::clampLongPollTimeout(-1),
         );
     }
 

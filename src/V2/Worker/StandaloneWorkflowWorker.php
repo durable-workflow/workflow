@@ -29,6 +29,7 @@ final class StandaloneWorkflowWorker
     private const INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS = 1;
     private const INITIAL_READY_QUERY_DRAIN_ATTEMPTS = 10;
     private const QUERY_PENDING_DRAIN_ATTEMPTS = 10;
+    private const QUERY_DRAIN_POLL_TIMEOUT_SECONDS = 0;
 
     /**
      * @var array<string, class-string<Workflow>>
@@ -458,8 +459,9 @@ final class StandaloneWorkflowWorker
     /**
      * Server-routed query tasks can appear just after a workflow poll observes
      * a started run or just after the first wait is recorded. Poll a short,
-     * bounded window so the public query path is not left waiting for a later
-     * worker loop turn.
+     * bounded window of immediate probes so the public query path is not left
+     * waiting for a later worker loop turn, without turning startup drains into
+     * long polls that can starve heartbeat or the next workflow task.
      *
      * @return array{0: array<string, mixed>|null, 1: array<string, string>|null}
      */
@@ -473,7 +475,7 @@ final class StandaloneWorkflowWorker
                 $query = $this->processOneQueryTask(
                     $queue,
                     $workerId,
-                    WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
+                    self::QUERY_DRAIN_POLL_TIMEOUT_SECONDS,
                 );
             } catch (Throwable $throwable) {
                 return [

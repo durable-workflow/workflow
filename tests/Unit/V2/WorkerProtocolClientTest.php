@@ -332,7 +332,7 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT, $requestBody['timeout_seconds'] ?? null);
     }
 
-    public function testStandaloneQueryPollClampsZeroToMinimumServerTimeout(): void
+    public function testStandaloneQueryPollCanRequestImmediateProbe(): void
     {
         $http = new HttpFactory();
         $requestBody = null;
@@ -349,7 +349,7 @@ final class WorkerProtocolClientTest extends TestCase
             $client->pollQueryTasks(queue: 'polyglot', timeoutSeconds: 0, workerId: 'php-worker'),
         );
 
-        $this->assertSame(WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT, $requestBody['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requestBody['timeout_seconds'] ?? null);
     }
 
     public function testStandaloneQueryFailureUsesCachedLease(): void
@@ -502,6 +502,7 @@ final class WorkerProtocolClientTest extends TestCase
         $timeout = new ReflectionMethod($client, 'longPollRequestTimeoutSeconds');
         $timeout->setAccessible(true);
 
+        $this->assertSame(1, $timeout->invoke($client, 0));
         $this->assertSame(6, $timeout->invoke($client, 1));
         $this->assertSame(35, $timeout->invoke($client, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT));
         $this->assertSame(65, $timeout->invoke($client, WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT + 30));
@@ -513,6 +514,7 @@ final class WorkerProtocolClientTest extends TestCase
         $timeout = new ReflectionMethod($client, 'workerTaskLongPollRequestTimeoutSeconds');
         $timeout->setAccessible(true);
 
+        $this->assertSame(1, $timeout->invoke($client, 0));
         $this->assertSame(6, $timeout->invoke($client, 1));
         $this->assertSame(35, $timeout->invoke($client, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT));
         $this->assertSame(65, $timeout->invoke($client, WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT + 30));

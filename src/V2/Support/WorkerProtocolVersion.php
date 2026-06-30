@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.11';
+    public const VERSION = '1.12';
 
     private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
@@ -108,8 +108,13 @@ final class WorkerProtocolVersion
 
     /**
      * Minimum long-poll timeout in seconds.
+     *
+     * A zero-second timeout is an immediate probe: the server must return a
+     * currently claimable task or an empty response without holding the
+     * connection open. Standalone workers use this during startup fairness
+     * drains so public queries do not block heartbeat or workflow progress.
      */
-    public const MIN_LONG_POLL_TIMEOUT = 1;
+    public const MIN_LONG_POLL_TIMEOUT = 0;
 
     /**
      * Workflow task bridge verbs — the canonical set of operations an

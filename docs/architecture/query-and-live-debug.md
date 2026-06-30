@@ -184,12 +184,14 @@ The poll request names `worker_id` and `task_queue`, and may include
 `poll_request_id` so a worker can recover the same poll result after
 a local HTTP timeout. It may also include `timeout_seconds`, clamped by
 `WorkerProtocolVersion::longPollSemantics()`, to bound how long the server
-waits for query work before returning an empty response. A successful poll
-leases at most one query task and returns `poll_status = 'leased'`; an empty
-long-poll returns `poll_status = 'empty'` with no task. Query task long-poll
-timeout semantics are the same clamped
-`WorkerProtocolVersion::longPollSemantics()` used by workflow and activity
-task polling.
+waits for query work before returning an empty response. `timeout_seconds = 0`
+is an immediate probe in worker protocol version `1.12` and later: the server
+returns a currently claimable task or an empty response without holding the
+connection open. A successful poll leases at most one query task and returns
+`poll_status = 'leased'`; an empty poll returns `poll_status = 'empty'` with no
+task. Query task long-poll timeout semantics are the same clamped
+`WorkerProtocolVersion::longPollSemantics()` used by workflow and activity task
+polling.
 `WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
 default for standalone PHP workers that register workflow types, and
 `pollQueryTasks()` sends a stable `poll_request_id` for every query
@@ -204,13 +206,13 @@ driver also performs one short pre-execution drain so a query already routed
 from the `WorkflowStarted` snapshot can return before the first wait is
 recorded. After an active non-terminal workflow task completes or reports
 `waiting_for_history`, the driver performs a bounded query-task drain after the
-workflow task has recorded its commands. The initial non-terminal workflow task
-and a workflow poll that reports `query_task_pending` use longer startup drain
-windows, while subsequent post-workflow drains use a short minimum-duration
-window. This lets a
+workflow task has recorded its commands. These fairness drains use
+zero-second query-task probes. The initial non-terminal workflow task and a
+workflow poll that reports `query_task_pending` get more probes than steady
+state, but each probe yields immediately when no task is claimable. This lets a
 public query enqueued during start or workflow execution observe a consistent
 state and return before the next loop turn without turning the worker tick into
-an unbounded query loop.
+an unbounded query loop or starving heartbeat/workflow progress.
 Workers that build their own loop MUST preserve the same fairness property when
 they advertise `query_tasks`; a workflow-task long poll must not starve a
 waiting public query.
