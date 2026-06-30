@@ -199,9 +199,12 @@ to `WorkflowQueryTaskExecutor` so query-task replay can see the class's declared
 queries before invoking the handler.
 PHP workers that use `StandaloneWorkflowWorker` inherit a query-first tick:
 each tick polls, executes, and completes at most one server-routed query task
-before polling workflow tasks. Workers that build their own loop MUST preserve
-the same fairness property when they advertise `query_tasks`; a workflow-task
-long poll must not starve a waiting public query.
+before polling workflow tasks. After completing an active non-terminal workflow
+task, the driver also performs one minimum-duration query-task poll so a public
+query enqueued during workflow execution can return before the next loop turn.
+Workers that build their own loop MUST preserve the same fairness property when
+they advertise `query_tasks`; a workflow-task long poll must not starve a
+waiting public query.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,

@@ -258,7 +258,7 @@ final class StandaloneWorkflowWorker
                 ];
             }
 
-            return [
+            $workflowResult = [
                 'kind' => 'workflow_task',
                 'processed' => true,
                 'outcome' => $this->workerResponseOutcome($response, 'completed'),
@@ -266,6 +266,12 @@ final class StandaloneWorkflowWorker
                 'commands' => $step->commands,
                 'worker_response' => $response,
             ];
+
+            if (! $this->shouldDrainReadyQueryTaskAfterWorkflowTask($workflowResult)) {
+                return $workflowResult;
+            }
+
+            return $this->drainReadyQueryTaskAfterWorkflowTask($workflowResult, $queue, $workerId);
         } catch (Throwable $throwable) {
             $response = $this->client->failWorkflowTask(
                 $taskId,
@@ -288,6 +294,71 @@ final class StandaloneWorkflowWorker
                 'worker_response' => $response,
             ];
         }
+    }
+
+    /**
+     * A public query can be enqueued while the PHP worker is executing the
+     * initial workflow task. Drain one already-routed query before returning
+     * so that query does not wait for the caller's next loop turn.
+     *
+     * @param array<string, mixed> $workflowResult
+     * @return array<string, mixed>
+     */
+    private function drainReadyQueryTaskAfterWorkflowTask(
+        array $workflowResult,
+        ?string $queue,
+        ?string $workerId,
+    ): array {
+        try {
+            $query = $this->processOneQueryTask(
+                $queue,
+                $workerId,
+                WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
+            );
+        } catch (Throwable $throwable) {
+            $workflowResult['deferred_query_poll_failure'] = [
+                'message' => $throwable->getMessage(),
+                'type' => $throwable::class,
+            ];
+
+            return $workflowResult;
+        }
+
+        if (($query['processed'] ?? false) !== true) {
+            return $workflowResult;
+        }
+
+        $query['deferred_workflow_task'] = $workflowResult;
+
+        return $query;
+    }
+
+    /**
+     * @param array<string, mixed> $workflowResult
+     */
+    private function shouldDrainReadyQueryTaskAfterWorkflowTask(array $workflowResult): bool
+    {
+        if (($workflowResult['outcome'] ?? null) !== 'completed') {
+            return false;
+        }
+
+        $commands = $workflowResult['commands'] ?? null;
+        if (! is_array($commands) || $commands === []) {
+            return false;
+        }
+
+        foreach ($commands as $command) {
+            if (! is_array($command)) {
+                continue;
+            }
+
+            $type = $this->stringValue($command['type'] ?? null);
+            if ($type !== null && in_array($type, WorkerProtocolVersion::terminalCommandTypes(), true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

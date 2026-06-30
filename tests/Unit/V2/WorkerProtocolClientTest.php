@@ -332,6 +332,26 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT, $requestBody['timeout_seconds'] ?? null);
     }
 
+    public function testStandaloneQueryPollClampsZeroToMinimumServerTimeout(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['task' => null]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $this->assertSame(
+            [],
+            $client->pollQueryTasks(queue: 'polyglot', timeoutSeconds: 0, workerId: 'php-worker'),
+        );
+
+        $this->assertSame(WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT, $requestBody['timeout_seconds'] ?? null);
+    }
+
     public function testStandaloneQueryFailureUsesCachedLease(): void
     {
         $http = new HttpFactory();

@@ -129,6 +129,91 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         );
     }
 
+    public function testProcessOneWorkflowTaskDrainsReadyQueryAfterCompletion(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'polyglot.php.signal-query',
+                        'workflow_class' => 'polyglot.php.signal-query',
+                        'history_events' => [
+                            [
+                                'id' => 'event-started',
+                                'sequence' => 1,
+                                'event_type' => HistoryEventType::WorkflowStarted->value,
+                                'payload' => [
+                                    'workflow_type' => 'polyglot.php.signal-query',
+                                    'workflow_class' => 'polyglot.php.signal-query',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:00+00:00',
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/workflow-task-1/complete')) {
+                return $http->response([
+                    'task_id' => 'workflow-task-1',
+                    'workflow_task_attempt' => 1,
+                    'outcome' => 'completed',
+                    'recorded' => true,
+                    'status' => 200,
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->queryTask([
+                        'lease_owner' => 'php-worker',
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+
+        $this->assertSame('query_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('query-task-1', $result['query_task_id'] ?? null);
+        $this->assertSame('workflow_task', $result['deferred_workflow_task']['kind'] ?? null);
+        $this->assertSame('workflow-task-1', $result['deferred_workflow_task']['task_id'] ?? null);
+        $this->assertSame('completed', $result['deferred_workflow_task']['outcome'] ?? null);
+        $this->assertSame('open_signal_wait', $result['deferred_workflow_task']['commands'][0]['type'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+        ], array_column($requests, 'url'));
+        $this->assertSame(1, $requests[2]['body']['timeout_seconds'] ?? null);
+        $this->assertSame('waiting-for-name', $requests[3]['body']['result'] ?? null);
+    }
+
     public function testProcessOneWorkflowTaskAcceptsWaitingForHistoryResponseForEmptyCommands(): void
     {
         $http = new HttpFactory();
