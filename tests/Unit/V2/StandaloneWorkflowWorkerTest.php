@@ -262,6 +262,13 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                 ]);
             }
 
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'empty',
+                ]);
+            }
+
             return $http->response([
                 'task_id' => 'workflow-task-1',
                 'workflow_task_attempt' => 4,
@@ -288,6 +295,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame([
             'http://server:8080/api/worker/workflow-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/fail',
+            'http://server:8080/api/worker/query-tasks/poll',
         ], array_column($requests, 'url'));
         $this->assertSame([
             'lease_owner' => 'php-worker',
@@ -297,6 +305,103 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                 'type' => 'WorkflowTaskWaitingForHistory',
             ],
         ], $requests[1]['body']);
+    }
+
+    public function testProcessOneWorkflowTaskDrainsReadyQueryAfterWaitingForHistory(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_task_attempt' => 4,
+                        'lease_owner' => 'php-worker',
+                        'workflow_type' => 'polyglot.php.signal-query',
+                        'workflow_class' => 'polyglot.php.signal-query',
+                        'history_events' => [
+                            [
+                                'id' => 'event-started',
+                                'sequence' => 1,
+                                'event_type' => HistoryEventType::WorkflowStarted->value,
+                                'payload' => [
+                                    'workflow_type' => 'polyglot.php.signal-query',
+                                    'workflow_class' => 'polyglot.php.signal-query',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:00+00:00',
+                            ],
+                            [
+                                'id' => 'event-signal-wait-opened',
+                                'sequence' => 2,
+                                'event_type' => HistoryEventType::SignalWaitOpened->value,
+                                'payload' => [
+                                    'signal_name' => 'name-provided',
+                                    'signal_wait_id' => 'signal-wait-1',
+                                    'sequence' => 1,
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:01+00:00',
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/workflow-task-1/fail')) {
+                return $http->response([
+                    'task_id' => 'workflow-task-1',
+                    'workflow_task_attempt' => 4,
+                    'outcome' => 'waiting_for_history',
+                    'recorded' => true,
+                    'reason' => null,
+                    'next_task_id' => null,
+                    'status' => 200,
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->queryTask([
+                        'lease_owner' => 'php-worker',
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+
+        $this->assertSame('query_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('workflow_task', $result['deferred_workflow_task']['kind'] ?? null);
+        $this->assertSame('waiting_for_history', $result['deferred_workflow_task']['outcome'] ?? null);
+        $this->assertSame([], $result['deferred_workflow_task']['commands'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/fail',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+        ], array_column($requests, 'url'));
+        $this->assertSame('waiting-for-name', $requests[3]['body']['result'] ?? null);
     }
 
     public function testWorkflowPollQueryPendingStatusImmediatelyProcessesQueryTask(): void

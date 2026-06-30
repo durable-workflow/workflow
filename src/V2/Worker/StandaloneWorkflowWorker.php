@@ -338,7 +338,12 @@ final class StandaloneWorkflowWorker
      */
     private function shouldDrainReadyQueryTaskAfterWorkflowTask(array $workflowResult): bool
     {
-        if (($workflowResult['outcome'] ?? null) !== 'completed') {
+        $outcome = $workflowResult['outcome'] ?? null;
+        if ($outcome === 'waiting_for_history') {
+            return true;
+        }
+
+        if ($outcome !== 'completed') {
             return false;
         }
 
