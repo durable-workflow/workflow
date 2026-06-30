@@ -225,6 +225,19 @@ to reconstruct one. The worker replays committed history with
 commands suppressed, invokes the declared query method, and then
 returns exactly one terminal query-task outcome.
 
+For active PHP-authored workflows, a registered workflow type is the
+query routing boundary. If the leased task identifies a workflow type
+that the worker registered, but the server snapshot does not yet carry
+a `WorkflowStarted` event, the PHP executor builds a replay-only start
+snapshot from the run metadata and the registered workflow class's
+declared command contract. This makes initial public `current` and
+`state` queries answer from the workflow's initial in-memory state, and
+later queries answer from replayed signal history for the same run. The
+synthetic start snapshot is never written back to durable history and
+does not relax structured rejections: an undeclared query still fails
+with `rejected_unknown_query`, and unsupported signal delivery remains
+owned by the server's command-contract validation.
+
 Completion requires `lease_owner`, `query_task_attempt`, `result`,
 and optionally `result_envelope` with `codec`, `blob`, or
 `external_storage`. Failure requires `lease_owner`,

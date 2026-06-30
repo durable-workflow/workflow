@@ -162,12 +162,14 @@ final class WorkflowQueryTaskExecutor
         $events = is_array($historyExport['history_events'] ?? null)
             ? $historyExport['history_events']
             : [];
+        $hasWorkflowStartedEvent = false;
 
         foreach ($events as $index => $event) {
             if (! is_array($event) || $this->historyEventType($event) !== 'WorkflowStarted') {
                 continue;
             }
 
+            $hasWorkflowStartedEvent = true;
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $payload['workflow_class'] = $workflowClass;
             $payload['workflow_type'] = $workflowType;
@@ -192,9 +194,116 @@ final class WorkflowQueryTaskExecutor
             $events[$index] = $event;
         }
 
+        if (! $hasWorkflowStartedEvent) {
+            array_unshift(
+                $events,
+                $this->syntheticWorkflowStartedEvent(
+                    $historyExport,
+                    $workflowType,
+                    $workflowClass,
+                    $contract,
+                    $fingerprint,
+                ),
+            );
+        }
+
         $historyExport['history_events'] = $events;
 
         return $historyExport;
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     * @param array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
+     *     entry_declaring_class: class-string
+     * } $contract
+     * @param class-string<Workflow> $workflowClass
+     * @return array<string, mixed>
+     */
+    private function syntheticWorkflowStartedEvent(
+        array $historyExport,
+        string $workflowType,
+        string $workflowClass,
+        array $contract,
+        ?string $fingerprint,
+    ): array {
+        $workflow = is_array($historyExport['workflow'] ?? null)
+            ? $historyExport['workflow']
+            : [];
+        $payload = [
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $this->stringValue($workflow['instance_id'] ?? null),
+            'workflow_run_id' => $this->stringValue($workflow['run_id'] ?? null),
+            'payload_codec' => $this->historyExportPayloadCodec($historyExport),
+            'workflow_definition_fingerprint' => $fingerprint,
+            'declared_queries' => $contract['queries'],
+            'declared_query_contracts' => $contract['query_contracts'],
+            'declared_signals' => $contract['signals'],
+            'declared_signal_contracts' => $contract['signal_contracts'],
+            'declared_updates' => $contract['updates'],
+            'declared_update_contracts' => $contract['update_contracts'],
+            'declared_entry_method' => $contract['entry_method'],
+            'declared_entry_mode' => $contract['entry_mode'],
+            'declared_entry_declaring_class' => $contract['entry_declaring_class'],
+        ];
+
+        return [
+            'id' => $this->syntheticWorkflowStartedEventId($workflow),
+            'sequence' => 1,
+            'type' => 'WorkflowStarted',
+            'payload' => array_filter($payload, static fn (mixed $value): bool => $value !== null),
+            'workflow_task_id' => null,
+            'workflow_command_id' => null,
+            'recorded_at' => $this->historyExportStartedAt($historyExport),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $workflow
+     */
+    private function syntheticWorkflowStartedEventId(array $workflow): string
+    {
+        $runId = $this->stringValue($workflow['run_id'] ?? null);
+
+        return $runId !== null
+            ? sprintf('query-history-started-%s', $runId)
+            : 'query-history-started';
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     */
+    private function historyExportPayloadCodec(array $historyExport): string
+    {
+        $payloads = is_array($historyExport['payloads'] ?? null)
+            ? $historyExport['payloads']
+            : [];
+
+        return CodecRegistry::canonicalize(
+            $this->stringValue($payloads['codec'] ?? null) ?? CodecRegistry::defaultCodec(),
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     */
+    private function historyExportStartedAt(array $historyExport): ?string
+    {
+        $workflow = is_array($historyExport['workflow'] ?? null)
+            ? $historyExport['workflow']
+            : [];
+
+        return $this->stringValue($workflow['started_at'] ?? null)
+            ?? $this->stringValue($historyExport['exported_at'] ?? null);
     }
 
     /**
