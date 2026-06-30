@@ -121,19 +121,18 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame([
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/poll',
-            'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame('php-worker', $requests[3]['body']['lease_owner'] ?? null);
-        $this->assertSame(3, $requests[3]['body']['workflow_task_attempt'] ?? null);
-        $this->assertSame('complete_workflow', $requests[3]['body']['commands'][0]['type'] ?? null);
+        $this->assertSame('php-worker', $requests[2]['body']['lease_owner'] ?? null);
+        $this->assertSame(3, $requests[2]['body']['workflow_task_attempt'] ?? null);
+        $this->assertSame('complete_workflow', $requests[2]['body']['commands'][0]['type'] ?? null);
         $this->assertSame(
             'ready',
-            Serializer::unserializeWithCodec('avro', $requests[3]['body']['commands'][0]['result'] ?? ''),
+            Serializer::unserializeWithCodec('avro', $requests[2]['body']['commands'][0]['result'] ?? ''),
         );
     }
 
-    public function testProcessOneWorkflowTaskDrainsReadyQueryBeforeInitialExecution(): void
+    public function testProcessOneWorkflowTaskDrainsReadyQueryAfterInitialExecution(): void
     {
         $http = new HttpFactory();
         $requests = [];
@@ -203,12 +202,12 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('open_signal_wait', $result['deferred_workflow_task']['commands'][0]['type'] ?? null);
         $this->assertSame([
             'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
-            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
-        $this->assertSame('waiting-for-name', $requests[2]['body']['result'] ?? null);
+        $this->assertSame(1, $requests[2]['body']['timeout_seconds'] ?? null);
+        $this->assertSame('waiting-for-name', $requests[3]['body']['result'] ?? null);
     }
 
     public function testProcessOneWorkflowTaskDrainsReadyQueryAfterCompletion(): void
@@ -298,12 +297,12 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('open_signal_wait', $result['deferred_workflow_task']['commands'][0]['type'] ?? null);
         $this->assertSame([
             'http://server:8080/api/worker/workflow-tasks/poll',
-            'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+            'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(1, $requests[2]['body']['timeout_seconds'] ?? null);
         $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
         $this->assertSame('waiting-for-name', $requests[4]['body']['result'] ?? null);
     }
@@ -357,7 +356,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             if (str_ends_with($request->url(), '/query-tasks/poll')) {
                 $queryPolls++;
 
-                if ($queryPolls < 3) {
+                if ($queryPolls < 6) {
                     return $http->response([
                         'task' => null,
                         'poll_status' => 'empty',
@@ -374,6 +373,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                             'workflow' => [
                                 'workflow_type' => 'conformance.counter.php',
                                 'workflow_class' => 'conformance.counter.php',
+                                'last_history_sequence' => 2,
                             ],
                             'history_events' => [
                                 [
@@ -386,6 +386,17 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                                         'payload_codec' => 'avro',
                                     ],
                                     'recorded_at' => '2026-05-17T00:00:00+00:00',
+                                ],
+                                [
+                                    'id' => 'event-signal-wait-opened',
+                                    'sequence' => 2,
+                                    'type' => HistoryEventType::SignalWaitOpened->value,
+                                    'payload' => [
+                                        'signal_name' => 'increment',
+                                        'signal_wait_id' => 'signal-wait-1',
+                                        'sequence' => 1,
+                                    ],
+                                    'recorded_at' => '2026-05-17T00:00:01+00:00',
                                 ],
                             ],
                         ],
@@ -415,19 +426,23 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('completed', $result['deferred_workflow_task']['outcome'] ?? null);
         $this->assertSame([
             'http://server:8080/api/worker/workflow-tasks/poll',
-            'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
         ], array_column($requests, 'url'));
-        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(1, $requests[4]['body']['timeout_seconds'] ?? null);
-        $this->assertSame(0, $requests[5]['body']['result'] ?? null);
+        $this->assertSame(6, $queryPolls);
+        foreach ([2, 3, 4, 5, 6, 7] as $requestIndex) {
+            $this->assertSame(1, $requests[$requestIndex]['body']['timeout_seconds'] ?? null);
+        }
+        $this->assertSame(0, $requests[8]['body']['result'] ?? null);
         $this->assertSame(
             0,
-            Serializer::unserializeWithCodec('avro', $requests[5]['body']['result_envelope']['blob'] ?? ''),
+            Serializer::unserializeWithCodec('avro', $requests[8]['body']['result_envelope']['blob'] ?? ''),
         );
     }
 
@@ -789,7 +804,7 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('workflow_task', $result['kind'] ?? null);
         $this->assertTrue($result['processed'] ?? false);
         $this->assertSame('completed', $result['outcome'] ?? null);
-        $this->assertSame('avro', $requests[3]['body']['commands'][0]['payload_codec'] ?? null);
+        $this->assertSame('avro', $requests[2]['body']['commands'][0]['payload_codec'] ?? null);
     }
 
     /**

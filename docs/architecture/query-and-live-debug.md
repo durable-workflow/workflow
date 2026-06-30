@@ -201,12 +201,13 @@ PHP workers that use `StandaloneWorkflowWorker` inherit a query-first tick:
 each tick polls, executes, and completes at most one server-routed query task
 before polling workflow tasks. Around the initial workflow task and after an
 active non-terminal workflow task completes or reports `waiting_for_history`,
-the driver also performs a short bounded query-task drain: the pre-workflow
-window uses one minimum-duration poll, while post-workflow and
-`query_task_pending` drains may use up to three minimum-duration polls. This
-lets a public query enqueued during start or workflow execution return before
-the next loop turn without turning the worker tick into an unbounded query
-loop.
+the driver also performs a bounded query-task drain after the workflow task
+has recorded its commands. The initial non-terminal workflow task may use a
+longer startup drain window, while subsequent post-workflow and
+`query_task_pending` drains use a short minimum-duration window. This lets a
+public query enqueued during start or workflow execution observe the latest
+committed wait and return before the next loop turn without turning the worker
+tick into an unbounded query loop.
 Workers that build their own loop MUST preserve the same fairness property when
 they advertise `query_tasks`; a workflow-task long poll must not starve a
 waiting public query.
