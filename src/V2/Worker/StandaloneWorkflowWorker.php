@@ -208,6 +208,15 @@ final class StandaloneWorkflowWorker
 
         $task = $tasks[0];
         $taskId = $this->requiredString($task, 'task_id');
+        $preWorkflowQuery = null;
+        $preWorkflowQueryFailure = null;
+
+        if ($this->shouldDrainReadyQueryTaskBeforeWorkflowTask($task)) {
+            [$preWorkflowQuery, $preWorkflowQueryFailure] = $this->drainReadyQueryTaskBeforeWorkflowTask(
+                $queue,
+                $workerId,
+            );
+        }
 
         try {
             $workflowClass = $this->workflowClassForTask($task);
@@ -246,7 +255,7 @@ final class StandaloneWorkflowWorker
                     workflowTaskAttempt: $this->intValue($task['workflow_task_attempt'] ?? null),
                 );
 
-                return [
+                return $this->workflowResultWithPreWorkflowQuery([
                     'kind' => 'workflow_task',
                     'processed' => true,
                     'outcome' => 'failed',
@@ -255,7 +264,7 @@ final class StandaloneWorkflowWorker
                     'failure' => $failure,
                     'worker_response' => $response,
                     'failure_response' => $failResponse,
-                ];
+                ], $preWorkflowQuery, $preWorkflowQueryFailure);
             }
 
             $workflowResult = [
@@ -266,6 +275,15 @@ final class StandaloneWorkflowWorker
                 'commands' => $step->commands,
                 'worker_response' => $response,
             ];
+            $workflowResult = $this->workflowResultWithPreWorkflowQuery(
+                $workflowResult,
+                $preWorkflowQuery,
+                $preWorkflowQueryFailure,
+            );
+
+            if (($workflowResult['kind'] ?? null) === 'query_task') {
+                return $workflowResult;
+            }
 
             if (! $this->shouldDrainReadyQueryTaskAfterWorkflowTask($workflowResult)) {
                 return $workflowResult;
@@ -282,7 +300,7 @@ final class StandaloneWorkflowWorker
                 $this->intValue($task['workflow_task_attempt'] ?? null),
             );
 
-            return [
+            return $this->workflowResultWithPreWorkflowQuery([
                 'kind' => 'workflow_task',
                 'processed' => true,
                 'outcome' => 'failed',
@@ -292,14 +310,94 @@ final class StandaloneWorkflowWorker
                     'type' => $throwable::class,
                 ],
                 'worker_response' => $response,
-            ];
+            ], $preWorkflowQuery, $preWorkflowQueryFailure);
         }
     }
 
     /**
-     * A public query can be enqueued while the PHP worker is executing the
-     * initial workflow task. Drain one already-routed query before returning
-     * so that query does not wait for the caller's next loop turn.
+     * A public query can be enqueued after the workflow task is leased but
+     * before the workflow opens its first wait. Give that query a short chance
+     * to run before executing the initial workflow task.
+     *
+     * @return array{0: array<string, mixed>|null, 1: array<string, string>|null}
+     */
+    private function drainReadyQueryTaskBeforeWorkflowTask(?string $queue, ?string $workerId): array
+    {
+        try {
+            $query = $this->processOneQueryTask(
+                $queue,
+                $workerId,
+                WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
+            );
+        } catch (Throwable $throwable) {
+            return [
+                null,
+                [
+                    'message' => $throwable->getMessage(),
+                    'type' => $throwable::class,
+                ],
+            ];
+        }
+
+        if (($query['processed'] ?? false) !== true) {
+            return [null, null];
+        }
+
+        return [$query, null];
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     */
+    private function shouldDrainReadyQueryTaskBeforeWorkflowTask(array $task): bool
+    {
+        $payload = HistoryPayloadCompression::decompress($task);
+        $events = $this->historyEvents($payload['history_events'] ?? []);
+
+        if ($events === []) {
+            return false;
+        }
+
+        foreach ($events as $event) {
+            $type = $this->stringValue($event['event_type'] ?? null)
+                ?? $this->stringValue($event['type'] ?? null);
+
+            if ($type !== null && $type !== 'WorkflowStarted' && $type !== 'StartAccepted') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $workflowResult
+     * @param array<string, mixed>|null $query
+     * @param array<string, string>|null $failure
+     * @return array<string, mixed>
+     */
+    private function workflowResultWithPreWorkflowQuery(
+        array $workflowResult,
+        ?array $query,
+        ?array $failure,
+    ): array {
+        if ($query !== null) {
+            $query['deferred_workflow_task'] = $workflowResult;
+
+            return $query;
+        }
+
+        if ($failure !== null) {
+            $workflowResult['pre_workflow_query_poll_failure'] = $failure;
+        }
+
+        return $workflowResult;
+    }
+
+    /**
+     * A public query can be enqueued while the PHP worker is executing a
+     * workflow task. Drain one already-routed query before returning so that
+     * query does not wait for the caller's next loop turn.
      *
      * @param array<string, mixed> $workflowResult
      * @return array<string, mixed>
