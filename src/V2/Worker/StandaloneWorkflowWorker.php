@@ -11,6 +11,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Workflow;
 
 /**
@@ -25,6 +26,7 @@ use Workflow\V2\Workflow;
 final class StandaloneWorkflowWorker
 {
     private const READY_QUERY_DRAIN_ATTEMPTS = 3;
+    private const INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS = 1;
     private const INITIAL_READY_QUERY_DRAIN_ATTEMPTS = 10;
 
     /**
@@ -216,9 +218,19 @@ final class StandaloneWorkflowWorker
         $task = $tasks[0];
         $taskId = $this->requiredString($task, 'task_id');
         $initialWorkflowTask = $this->isInitialWorkflowTask($task);
+        $preWorkflowQuery = null;
+        $preWorkflowQueryFailure = null;
 
         try {
             $workflowClass = $this->workflowClassForTask($task);
+
+            if ($this->shouldDrainReadyQueryTaskBeforeWorkflowTask($initialWorkflowTask, $workflowClass)) {
+                [$preWorkflowQuery, $preWorkflowQueryFailure] = $this->drainReadyQueryTaskBeforeWorkflowTask(
+                    $queue,
+                    $workerId,
+                );
+            }
+
             $step = WorkflowFiberRunner::forClass(
                 $workflowClass,
                 $this->workflowIdForTask($task),
@@ -254,7 +266,7 @@ final class StandaloneWorkflowWorker
                     workflowTaskAttempt: $this->intValue($task['workflow_task_attempt'] ?? null),
                 );
 
-                return [
+                return $this->workflowResultWithPreWorkflowQuery([
                     'kind' => 'workflow_task',
                     'processed' => true,
                     'outcome' => 'failed',
@@ -263,7 +275,7 @@ final class StandaloneWorkflowWorker
                     'failure' => $failure,
                     'worker_response' => $response,
                     'failure_response' => $failResponse,
-                ];
+                ], $preWorkflowQuery, $preWorkflowQueryFailure);
             }
 
             $workflowResult = [
@@ -274,6 +286,15 @@ final class StandaloneWorkflowWorker
                 'commands' => $step->commands,
                 'worker_response' => $response,
             ];
+            $workflowResult = $this->workflowResultWithPreWorkflowQuery(
+                $workflowResult,
+                $preWorkflowQuery,
+                $preWorkflowQueryFailure,
+            );
+
+            if (($workflowResult['kind'] ?? null) === 'query_task') {
+                return $workflowResult;
+            }
 
             if (! $this->shouldDrainReadyQueryTaskAfterWorkflowTask($workflowResult)) {
                 return $workflowResult;
@@ -294,7 +315,7 @@ final class StandaloneWorkflowWorker
                 $this->intValue($task['workflow_task_attempt'] ?? null),
             );
 
-            return [
+            return $this->workflowResultWithPreWorkflowQuery([
                 'kind' => 'workflow_task',
                 'processed' => true,
                 'outcome' => 'failed',
@@ -304,8 +325,33 @@ final class StandaloneWorkflowWorker
                     'type' => $throwable::class,
                 ],
                 'worker_response' => $response,
-            ];
+            ], $preWorkflowQuery, $preWorkflowQueryFailure);
         }
+    }
+
+    /**
+     * A public query can be enqueued after the initial workflow task is leased
+     * but before the workflow opens its first wait. Give query-capable
+     * workflows one short chance to answer from the WorkflowStarted snapshot,
+     * then still complete the workflow task so the run records its wait.
+     *
+     * @return array{0: array<string, mixed>|null, 1: array<string, string>|null}
+     */
+    private function drainReadyQueryTaskBeforeWorkflowTask(?string $queue, ?string $workerId): array
+    {
+        return $this->drainReadyQueryTask(
+            $queue,
+            $workerId,
+            self::INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS,
+        );
+    }
+
+    /**
+     * @param class-string<Workflow> $workflowClass
+     */
+    private function shouldDrainReadyQueryTaskBeforeWorkflowTask(bool $initialWorkflowTask, string $workflowClass): bool
+    {
+        return $initialWorkflowTask && WorkflowDefinition::queryMethods($workflowClass) !== [];
     }
 
     /**
@@ -365,6 +411,30 @@ final class StandaloneWorkflowWorker
         $query['deferred_workflow_task'] = $workflowResult;
 
         return $query;
+    }
+
+    /**
+     * @param array<string, mixed> $workflowResult
+     * @param array<string, mixed>|null $query
+     * @param array<string, string>|null $failure
+     * @return array<string, mixed>
+     */
+    private function workflowResultWithPreWorkflowQuery(
+        array $workflowResult,
+        ?array $query,
+        ?array $failure,
+    ): array {
+        if ($query !== null) {
+            $query['deferred_workflow_task'] = $workflowResult;
+
+            return $query;
+        }
+
+        if ($failure !== null) {
+            $workflowResult['pre_workflow_query_poll_failure'] = $failure;
+        }
+
+        return $workflowResult;
     }
 
     /**
