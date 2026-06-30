@@ -110,6 +110,33 @@ final class StandaloneWorkflowWorker
                 $this->intValue($task['query_task_attempt'] ?? null),
             );
 
+            if (! $this->workerResponseAccepted($response, 'completed')) {
+                $failure = $this->completionRejectedFailure(
+                    'Query task completion was rejected by the server.',
+                    $response,
+                    'QueryTaskCompletionRejected',
+                );
+                $failResponse = $this->client->failQueryTask(
+                    $queryTaskId,
+                    $failure['message'],
+                    reason: 'query_rejected',
+                    failureType: $failure['type'],
+                    leaseOwner: $this->stringValue($task['lease_owner'] ?? null),
+                    queryTaskAttempt: $this->intValue($task['query_task_attempt'] ?? null),
+                );
+
+                return [
+                    'kind' => 'query_task',
+                    'processed' => true,
+                    'outcome' => 'failed',
+                    'query_task_id' => $queryTaskId,
+                    'query_task' => $this->queryTaskMetadata($task, $result),
+                    'failure' => $failure,
+                    'worker_response' => $response,
+                    'failure_response' => $failResponse,
+                ];
+            }
+
             return [
                 'kind' => 'query_task',
                 'processed' => true,
@@ -161,10 +188,22 @@ final class StandaloneWorkflowWorker
         );
 
         if ($tasks === []) {
+            $poll = $this->client->lastWorkflowTaskPoll();
+
+            if (($poll['poll_status'] ?? null) === 'query_task_pending') {
+                $query = $this->processOneQueryTask($queue, $workerId, $timeoutSeconds);
+
+                if (($query['processed'] ?? false) === true) {
+                    $query['deferred_workflow_poll'] = $poll;
+
+                    return $query;
+                }
+            }
+
             return [
                 'kind' => 'workflow_task',
                 'processed' => false,
-            ];
+            ] + $poll;
         }
 
         $task = $tasks[0];
@@ -189,10 +228,40 @@ final class StandaloneWorkflowWorker
                 $this->intValue($task['workflow_task_attempt'] ?? null),
             );
 
+            $acceptedOutcomes = $step->commands === []
+                ? ['completed', 'waiting_for_history']
+                : ['completed'];
+
+            if (! $this->workerResponseAccepted($response, $acceptedOutcomes)) {
+                $failure = $this->completionRejectedFailure(
+                    'Workflow task completion was rejected by the server.',
+                    $response,
+                    'WorkflowTaskCompletionRejected',
+                );
+                $failResponse = $this->client->failWorkflowTask(
+                    $taskId,
+                    $failure['message'],
+                    $failure['type'],
+                    leaseOwner: $this->stringValue($task['lease_owner'] ?? null),
+                    workflowTaskAttempt: $this->intValue($task['workflow_task_attempt'] ?? null),
+                );
+
+                return [
+                    'kind' => 'workflow_task',
+                    'processed' => true,
+                    'outcome' => 'failed',
+                    'task_id' => $taskId,
+                    'commands' => $step->commands,
+                    'failure' => $failure,
+                    'worker_response' => $response,
+                    'failure_response' => $failResponse,
+                ];
+            }
+
             return [
                 'kind' => 'workflow_task',
                 'processed' => true,
-                'outcome' => 'completed',
+                'outcome' => $this->workerResponseOutcome($response, 'completed'),
                 'task_id' => $taskId,
                 'commands' => $step->commands,
                 'worker_response' => $response,
@@ -378,7 +447,9 @@ final class StandaloneWorkflowWorker
      */
     private function payloadCodec(array $task): string
     {
-        return CodecRegistry::canonicalize($this->stringValue($task['payload_codec'] ?? null));
+        return CodecRegistry::canonicalize(
+            $this->stringValue($task['payload_codec'] ?? null) ?? CodecRegistry::defaultCodec(),
+        );
     }
 
     private function payloadEnvelopeCodec(mixed $payload, string $fallbackCodec): string
@@ -409,6 +480,61 @@ final class StandaloneWorkflowWorker
             'query_name' => $this->stringValue($task['query_name'] ?? null),
             'task_queue' => $this->stringValue($task['task_queue'] ?? null),
             'lease_owner' => $this->stringValue($task['lease_owner'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed>|null $response
+     * @param string|list<string> $expectedOutcomes
+     */
+    private function workerResponseAccepted(?array $response, string|array $expectedOutcomes): bool
+    {
+        if ($response === null) {
+            return true;
+        }
+
+        $expectedOutcomes = is_array($expectedOutcomes) ? $expectedOutcomes : [$expectedOutcomes];
+        $outcome = $this->stringValue($response['outcome'] ?? null);
+        if ($outcome !== null && ! in_array($outcome, $expectedOutcomes, true)) {
+            return false;
+        }
+
+        if (($response['recorded'] ?? null) === false) {
+            return false;
+        }
+
+        $status = $this->intValue($response['status'] ?? null);
+
+        return $status === null || $status < 400;
+    }
+
+    /**
+     * @param array<string, mixed>|null $response
+     */
+    private function workerResponseOutcome(?array $response, string $fallback): string
+    {
+        if ($response === null) {
+            return $fallback;
+        }
+
+        return $this->stringValue($response['outcome'] ?? null) ?? $fallback;
+    }
+
+    /**
+     * @param array<string, mixed>|null $response
+     * @return array{message: string, type: string, response?: array<string, mixed>}
+     */
+    private function completionRejectedFailure(string $fallbackMessage, ?array $response, string $type): array
+    {
+        $message = $this->stringValue($response['error'] ?? null)
+            ?? $this->stringValue($response['message'] ?? null)
+            ?? $this->stringValue($response['reason'] ?? null)
+            ?? $fallbackMessage;
+
+        return array_filter([
+            'message' => $message,
+            'type' => $type,
+            'response' => $response,
         ], static fn (mixed $value): bool => $value !== null);
     }
 

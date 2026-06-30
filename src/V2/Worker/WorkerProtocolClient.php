@@ -62,6 +62,11 @@ final class WorkerProtocolClient
      */
     private array $activityAttemptTaskIds = [];
 
+    /**
+     * @var array<string, mixed>
+     */
+    private array $lastWorkflowTaskPoll = [];
+
     private ?string $registeredWorkerId = null;
 
     private ?string $registeredTaskQueue = null;
@@ -219,6 +224,16 @@ final class WorkerProtocolClient
         }
 
         return $this->workerPost($this->workerApiPath.'/heartbeat', $body);
+    }
+
+    /**
+     * Metadata from the most recent standalone workflow-task poll.
+     *
+     * @return array<string, mixed>
+     */
+    public function lastWorkflowTaskPoll(): array
+    {
+        return $this->lastWorkflowTaskPoll;
     }
 
     /**
@@ -849,6 +864,8 @@ final class WorkerProtocolClient
             $body['accept_history_encoding'] = $acceptHistoryEncoding;
         }
 
+        $this->lastWorkflowTaskPoll = [];
+
         try {
             $response = $this->workerPost(
                 $this->workerApiPath.'/workflow-tasks/poll',
@@ -862,6 +879,14 @@ final class WorkerProtocolClient
 
             throw $exception;
         }
+
+        $response = is_array($response) ? $response : [];
+        $this->lastWorkflowTaskPoll = array_filter([
+            'poll_status' => $this->stringValue($response['poll_status'] ?? null),
+            'next_probe_at' => $this->stringValue($response['next_probe_at'] ?? null),
+            'reason' => $this->stringValue($response['reason'] ?? null),
+            'message' => $this->stringValue($response['message'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
 
         $task = $response['task'] ?? null;
         if (! is_array($task)) {

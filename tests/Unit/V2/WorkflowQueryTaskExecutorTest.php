@@ -288,6 +288,39 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
         $this->assertSame(8, $result['result'] ?? null);
     }
 
+    public function testExecutorAnswersInitialCounterMirrorQueryBeforeAnySignal(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.counter' => WorkflowQueryTaskExecutorCounterWorkflow::class,
+        ]))->execute($this->queryTask([
+            'workflow_type' => 'polyglot.php.counter',
+            'workflow_class' => 'polyglot.php.counter',
+            'query_name' => 'state',
+            'history_export' => [
+                'workflow' => [
+                    'workflow_type' => 'polyglot.php.counter',
+                    'workflow_class' => 'polyglot.php.counter',
+                ],
+                'history_events' => [
+                    [
+                        'id' => 'event-started',
+                        'sequence' => 1,
+                        'type' => HistoryEventType::WorkflowStarted->value,
+                        'payload' => [
+                            'workflow_type' => 'polyglot.php.counter',
+                            'workflow_class' => 'polyglot.php.counter',
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:00+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(0, $result['result'] ?? null);
+    }
+
     public function testExecutorDecodesAppliedSignalValueEnvelopeForRegisteredExternalWorkflowClass(): void
     {
         $result = (new WorkflowQueryTaskExecutor([
@@ -551,6 +584,12 @@ final class WorkflowQueryTaskExecutorCounterWorkflow extends Workflow
 
     #[QueryMethod]
     public function current(): int
+    {
+        return $this->count;
+    }
+
+    #[QueryMethod]
+    public function state(): int
     {
         return $this->count;
     }
