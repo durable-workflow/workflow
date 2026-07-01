@@ -50,6 +50,7 @@ final class QueryStateReplayer
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
         $workflowExecution = WorkflowExecution::start($workflow, $arguments, $run->started_at);
+        $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
 
         if (! $workflowExecution->valid()) {
             $this->syncWorkflowCursor($workflow, 0);
@@ -66,11 +67,13 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof LocalActivityCall) {
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY, [
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::LOCAL_ACTIVITY, [
                     'activity_type' => $current->activity,
                 ]);
 
-                $activityCompletion = $this->activityCompletionEvent($run, $sequence);
+                $activityCompletion = $this->activityCompletionEvent($run, $historySequence);
 
                 if ($activityCompletion !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -91,25 +94,27 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if ($this->activityOpenEvent($run, $sequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if ($this->activityOpenEvent($run, $historySequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                 return new ReplayState($workflow, $sequence, $current);
             }
 
             if ($current instanceof ActivityCall) {
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::ACTIVITY, [
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::ACTIVITY, [
                     'activity_type' => $current->activity,
                 ]);
 
-                $activityCompletion = $this->activityCompletionEvent($run, $sequence);
+                $activityCompletion = $this->activityCompletionEvent($run, $historySequence);
 
                 if ($activityCompletion !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -130,15 +135,15 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if ($this->activityOpenEvent($run, $sequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if ($this->activityOpenEvent($run, $historySequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
                 /** @var ActivityExecution|null $execution */
-                $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
+                $execution = $run->activityExecutions->firstWhere('sequence', $historySequence);
 
                 if ($execution === null || in_array(
                     $execution->status,
@@ -146,16 +151,16 @@ final class QueryStateReplayer
                     true
                 )) {
                     if ($execution !== null) {
-                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::ACTIVITY);
+                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::ACTIVITY);
                     }
 
-                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::ACTIVITY);
+                WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::ACTIVITY);
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 if ($execution->status === ActivityStatus::Completed) {
@@ -173,10 +178,12 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                ConditionWaits::assertReplayCompatible($run, $sequence, $current);
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                ConditionWaits::assertReplayCompatible($run, $historySequence, $current);
+
+                $resolutionEvent = $this->conditionWaitResolutionEvent($run, $historySequence);
 
                 if ($resolutionEvent === null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -195,9 +202,11 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof TimerCall) {
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::TIMER);
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $timerFired = $this->timerFiredEvent($run, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::TIMER);
+
+                $timerFired = $this->timerFiredEvent($run, $historySequence);
 
                 if ($timerFired !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -208,27 +217,27 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if ($this->timerScheduledEvent($run, $sequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if ($this->timerScheduledEvent($run, $historySequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                $timer = $run->timers->firstWhere('sequence', $sequence);
+                $timer = $run->timers->firstWhere('sequence', $historySequence);
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
                     if ($timer !== null) {
-                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::TIMER);
+                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::TIMER);
                     }
 
-                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::TIMER);
+                WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::TIMER);
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $workflowExecution->send(true, $timer->fired_at);
@@ -239,10 +248,12 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof SideEffectCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIDE_EFFECT);
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SIDE_EFFECT);
+
+                $sideEffectEvent = $this->sideEffectEvent($run, $historySequence);
 
                 if ($sideEffectEvent === null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -261,13 +272,15 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof VersionCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER, [
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::VERSION_MARKER, [
                     'change_id' => $current->changeId,
                 ]);
 
-                $versionEvent = $this->versionMarkerEvent($run, $sequence);
-                $resolution = VersionResolver::resolve($run, $versionEvent, $current, $sequence);
+                $versionEvent = $this->versionMarkerEvent($run, $historySequence);
+                $resolution = VersionResolver::resolve($run, $versionEvent, $current, $historySequence);
 
                 $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                 $current = $workflowExecution->send(
@@ -283,10 +296,12 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof UpsertSearchAttributesCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT);
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $upsertEvent = $this->searchAttributesUpsertedEvent($run, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT);
+
+                $upsertEvent = $this->searchAttributesUpsertedEvent($run, $historySequence);
 
                 if ($upsertEvent === null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -302,12 +317,14 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof SignalCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIGNAL_WAIT, [
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SIGNAL_WAIT, [
                     'signal_name' => $current->name,
                 ]);
 
-                $signalEvent = $this->signalResolutionEvent($run, $sequence, $current);
+                $signalEvent = $this->signalResolutionEvent($run, $historySequence, $current);
 
                 if ($signalEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -322,7 +339,7 @@ final class QueryStateReplayer
                 }
 
                 $signalTimeoutFired = $current->timeoutSeconds !== null
-                    ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name)
+                    ? $this->signalTimeoutFiredEvent($run, $historySequence, $current->name)
                     : null;
 
                 if ($signalTimeoutFired !== null) {
@@ -339,13 +356,15 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ChildWorkflowCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::CHILD_WORKFLOW, [
                     'child_workflow_type' => $current->workflow,
                 ]);
 
-                $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
-                $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
+                $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $historySequence);
+                $childRun = ChildRunHistory::childRunForSequence($run, $historySequence);
 
                 if ($resolutionEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -374,7 +393,7 @@ final class QueryStateReplayer
                 // worker, by a cross-run repair, or by a test that manipulates
                 // the child directly). Falling back to child DB state here
                 // would leak non-history state into query replay.
-                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
+                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $historySequence)) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
@@ -390,7 +409,7 @@ final class QueryStateReplayer
                 ], true)) {
                     WorkflowStepHistory::assertTypedHistoryRecorded(
                         $run,
-                        $sequence,
+                        $historySequence,
                         WorkflowStepHistory::CHILD_WORKFLOW
                     );
 
@@ -415,7 +434,7 @@ final class QueryStateReplayer
                 if ($childRun instanceof WorkflowRun) {
                     WorkflowStepHistory::assertTypedHistoryRecorded(
                         $run,
-                        $sequence,
+                        $historySequence,
                         WorkflowStepHistory::CHILD_WORKFLOW
                     );
                 }
@@ -425,9 +444,11 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof AllCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $leafDescriptors = $current->leafDescriptors($sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+
+                $leafDescriptors = $current->leafDescriptors($historySequence);
                 $groupSize = count($leafDescriptors);
 
                 if ($groupSize === 0) {
@@ -441,12 +462,16 @@ final class QueryStateReplayer
                 $results = [];
                 $failure = null;
 
-                WorkflowStepHistory::assertParallelGroupCompatible($run, $sequence, $leafDescriptors);
+                WorkflowStepHistory::assertParallelGroupCompatible($run, $historySequence, $leafDescriptors);
 
                 foreach ($leafDescriptors as $descriptor) {
                     $call = $descriptor['call'];
                     $offset = $descriptor['offset'];
-                    $itemSequence = $sequence + $offset;
+                    $itemPosition = $sequence + $offset;
+                    $itemSequence = $this->historySequenceForReplayPosition(
+                        $historySequencesByPosition,
+                        $itemPosition,
+                    );
                     WorkflowStepHistory::assertCompatible(
                         $run,
                         $itemSequence,
@@ -1133,10 +1158,106 @@ final class QueryStateReplayer
         return $event;
     }
 
+    /**
+     * @param array<int, int> $historySequencesByPosition
+     */
+    private function historySequenceForReplayPosition(array $historySequencesByPosition, int $sequence): int
+    {
+        return $historySequencesByPosition[$sequence] ?? $sequence;
+    }
+
+    /**
+     * Worker-protocol history can contain control-plane events before workflow
+     * commands, so replay position 1 may be persisted as a later durable
+     * sequence. Query replay needs the persisted command sequence when reading
+     * command outcomes from history.
+     *
+     * @return array<int, int>
+     */
+    private function historySequencesByReplayPosition(WorkflowRun $run): array
+    {
+        $positions = [];
+        $seen = [];
+
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            $eventType = $event->event_type instanceof HistoryEventType
+                ? $event->event_type->value
+                : $this->stringValue($event->event_type);
+
+            if (! $this->hasWorkflowCommandSequence($eventType)) {
+                continue;
+            }
+
+            $sequence = $this->eventSequence($event);
+
+            if ($sequence === null || isset($seen[$sequence])) {
+                continue;
+            }
+
+            $seen[$sequence] = true;
+            $positions[count($positions) + 1] = $sequence;
+        }
+
+        return $positions;
+    }
+
+    private function hasWorkflowCommandSequence(?string $type): bool
+    {
+        return in_array($type, [
+            HistoryEventType::ActivityScheduled->value,
+            HistoryEventType::ActivityStarted->value,
+            HistoryEventType::ActivityHeartbeatRecorded->value,
+            HistoryEventType::ActivityRetryScheduled->value,
+            HistoryEventType::ActivityCompleted->value,
+            HistoryEventType::ActivityFailed->value,
+            HistoryEventType::ActivityCancelled->value,
+            HistoryEventType::ActivityTimedOut->value,
+            HistoryEventType::TimerScheduled->value,
+            HistoryEventType::TimerCancelled->value,
+            HistoryEventType::TimerFired->value,
+            HistoryEventType::ConditionWaitOpened->value,
+            HistoryEventType::ConditionWaitSatisfied->value,
+            HistoryEventType::ConditionWaitTimedOut->value,
+            HistoryEventType::SignalWaitOpened->value,
+            HistoryEventType::SignalApplied->value,
+            HistoryEventType::ChildWorkflowScheduled->value,
+            HistoryEventType::ChildRunStarted->value,
+            HistoryEventType::ChildRunCompleted->value,
+            HistoryEventType::ChildRunFailed->value,
+            HistoryEventType::ChildRunCancelled->value,
+            HistoryEventType::ChildRunTerminated->value,
+            HistoryEventType::SideEffectRecorded->value,
+            HistoryEventType::VersionMarkerRecorded->value,
+            HistoryEventType::SearchAttributesUpserted->value,
+        ], true);
+    }
+
+    private function eventSequence(WorkflowHistoryEvent $event): ?int
+    {
+        return $this->intValue($event->payload['sequence'] ?? null)
+            ?? $this->intValue($event->payload['workflow_sequence'] ?? null)
+            ?? $this->intValue($event->sequence);
+    }
+
     private function stringValue(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
             ? $value
+            : null;
+    }
+
+    private function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
             : null;
     }
 

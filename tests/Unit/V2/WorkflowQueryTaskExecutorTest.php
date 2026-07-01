@@ -288,6 +288,123 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
         $this->assertSame(8, $result['result'] ?? null);
     }
 
+    public function testExecutorReplaysServerSequencedSignalAppliedForCounterMirror(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'conformance.counter.php' => WorkflowQueryTaskExecutorCounterWorkflow::class,
+        ]))->execute($this->queryTask([
+            'workflow_type' => 'conformance.counter.php',
+            'workflow_class' => 'conformance.counter.php',
+            'query_name' => 'current',
+            'history_export' => [
+                'workflow' => [
+                    'workflow_type' => 'conformance.counter.php',
+                    'workflow_class' => 'conformance.counter.php',
+                    'last_history_sequence' => 7,
+                ],
+                'history_events' => [
+                    [
+                        'id' => 'event-start-accepted',
+                        'sequence' => 1,
+                        'type' => HistoryEventType::StartAccepted->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'workflow_type' => 'conformance.counter.php',
+                            'workflow_class' => 'conformance.counter.php',
+                            'workflow_run_id' => 'run-1',
+                            'workflow_instance_id' => 'workflow-1',
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:00+00:00',
+                    ],
+                    [
+                        'id' => 'event-started',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::WorkflowStarted->value,
+                        'payload' => [
+                            'workflow_type' => 'conformance.counter.php',
+                            'workflow_class' => 'conformance.counter.php',
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:01+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-wait-opened-1',
+                        'sequence' => 3,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 3,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:10+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-received-1',
+                        'sequence' => 4,
+                        'type' => HistoryEventType::SignalReceived->value,
+                        'payload' => [
+                            'signal_id' => 'signal-1',
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:20+00:00',
+                    ],
+                    [
+                        'id' => 'event-message-cursor-advanced',
+                        'sequence' => 5,
+                        'type' => HistoryEventType::MessageCursorAdvanced->value,
+                        'payload' => [
+                            'stream_key' => 'instance:workflow-1',
+                            'previous_position' => 0,
+                            'new_position' => 1,
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:21+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-applied-1',
+                        'sequence' => 6,
+                        'type' => HistoryEventType::SignalApplied->value,
+                        'payload' => [
+                            'sequence' => 3,
+                            'signal_id' => 'signal-1',
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                            'value' => Serializer::serializeWithCodec('avro', 3),
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:22+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-wait-opened-2',
+                        'sequence' => 7,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 5,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-2',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:30+00:00',
+                    ],
+                ],
+                'signals' => [
+                    [
+                        'id' => 'signal-1',
+                        'name' => 'increment',
+                        'signal_wait_id' => 'wait-1',
+                        'status' => 'applied',
+                        'workflow_sequence' => 3,
+                        'payload_codec' => 'avro',
+                        'arguments' => Serializer::serializeWithCodec('avro', [3]),
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(3, $result['result'] ?? null);
+    }
+
     public function testExecutorAnswersInitialCounterMirrorQueryBeforeAnySignal(): void
     {
         $result = (new WorkflowQueryTaskExecutor([
