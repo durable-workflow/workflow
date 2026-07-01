@@ -38,6 +38,13 @@ jobs:
       with:
           fetch-depth: 10
 
+    - name: Pin Composer to the 2.x line
+      # The install step below relies on `--no-blocking`. Pin Composer to the
+      # latest 2.x release so that option is always present and keeps its current
+      # semantics regardless of the runner's bundled Composer version (a behaviour
+      # change would require a new Composer major, which this pin excludes).
+      run: composer self-update --2
+
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
 
@@ -51,7 +58,14 @@ jobs:
           ${{ runner.os }}-php-
 
     - name: Install dependencies
-      run: composer install --prefer-dist --no-progress
+      # Laravel 10.x is end-of-life and every remaining 10.x release now carries
+      # published security advisories. The dev test matrix still pins
+      # orchestra/testbench ^8 (Laravel 10 only), so Composer's default policy
+      # blocking refuses to install those releases and resolution fails before
+      # any test runs. --no-blocking lets the install resolve the latest 10.x for
+      # the test run; composer.json is unchanged and shipped users are unaffected.
+      # Composer is pinned to 2.x above so this flag is always available.
+      run: composer install --prefer-dist --no-progress --no-blocking
 
     - name: Check coding style via ECS
       run: vendor/bin/ecs check

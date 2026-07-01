@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Tests\Fixtures\TestVersionedActivityV1;
 use Tests\Fixtures\TestVersionedActivityV3;
 use Tests\Fixtures\TestVersionMinSupportedWorkflow;
 use Tests\Fixtures\TestVersionWorkflow;
@@ -98,6 +99,38 @@ final class VersionWorkflowTest extends TestCase
         $output = $workflow->output();
 
         $this->assertSame(WorkflowStub::DEFAULT_VERSION, $output['version1']);
+        $this->assertSame('v1_result', $output['result1']);
+    }
+
+    public function testGetVersionAddedToExistingHistoryDoesNotShiftReplay(): void
+    {
+        $workflow = WorkflowStub::make(TestVersionWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+
+        // Simulate a workflow whose history was recorded before the getVersion('step-1')
+        // call was introduced: index 0 holds the first activity's result rather than a
+        // version marker, so getVersion() must not consume that slot.
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => TestVersionedActivityV1::class,
+                'result' => Serializer::serialize('v1_result'),
+            ]);
+
+        $workflow->start();
+
+        while ($workflow->running());
+
+        $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
+
+        $output = $workflow->output();
+
+        // getVersion() falls back to the default version because the change did not
+        // exist when this history was recorded...
+        $this->assertSame(WorkflowStub::DEFAULT_VERSION, $output['version1']);
+        // ...and because the slot was left untouched, the first activity still reads
+        // its own recorded result instead of a shifted event.
         $this->assertSame('v1_result', $output['result1']);
     }
 

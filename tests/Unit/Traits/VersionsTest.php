@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\Traits;
 
 use Mockery;
+use Tests\Fixtures\TestVersionedActivityV1;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Exceptions\VersionNotSupportedException;
@@ -53,6 +54,44 @@ final class VersionsTest extends TestCase
 
         $this->assertSame(WorkflowStub::DEFAULT_VERSION, $result);
         $this->assertSame(1, $workflow->logs()->count());
+    }
+
+    public function testReturnsMinSupportedWithoutShiftingIndexForPreVersionHistory(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => TestVersionedActivityV1::class,
+                'result' => Serializer::serialize('activity_result'),
+            ]);
+        $result = null;
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+        ]);
+
+        WorkflowStub::getVersion('test-change', WorkflowStub::DEFAULT_VERSION, 1)
+            ->then(static function ($value) use (&$result): void {
+                $result = $value;
+            });
+
+        // A getVersion() call added to a workflow whose history predates it must
+        // not consume the slot of the first real event: it returns the minimum
+        // supported version, leaves the index untouched so that event still
+        // replays in place, and records no version marker.
+        $this->assertSame(WorkflowStub::DEFAULT_VERSION, $result);
+        $this->assertSame(0, WorkflowStub::getContext()->index);
+        $this->assertSame(1, $workflow->logs()->count());
+        $this->assertDatabaseMissing('workflow_logs', [
+            'stored_workflow_id' => $workflow->id(),
+            'class' => 'version:test-change',
+        ]);
     }
 
     public function testThrowsExceptionWhenVersionBelowMinSupported(): void
