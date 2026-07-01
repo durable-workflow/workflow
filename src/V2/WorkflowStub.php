@@ -4333,6 +4333,7 @@ final class WorkflowStub
             static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
                 && $command->status === CommandStatus::Accepted
                 && $command->applied_at === null
+                && $command->id !== $commandId
                 && $command->targetName() === $name
         );
 
