@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Model;
 use LogicException;
 use ReflectionMethod;
 use RuntimeException;
@@ -41,18 +42,7 @@ final class QueryStateReplayer
 
     public function replayState(WorkflowRun $run): ReplayState
     {
-        $run->loadMissing([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'commands',
-            'signals',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
+        $this->loadReplayRelations($run);
 
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $workflow = new $workflowClass($run);
@@ -652,6 +642,79 @@ final class QueryStateReplayer
                 get_debug_type($current),
             ));
         }
+    }
+
+    private function loadReplayRelations(WorkflowRun $run): void
+    {
+        if ($this->hasReplayRelationsLoaded($run)) {
+            return;
+        }
+
+        $run->loadMissing([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'commands',
+            'signals',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+    }
+
+    private function hasReplayRelationsLoaded(WorkflowRun $run): bool
+    {
+        foreach ([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'commands',
+            'signals',
+            'historyEvents',
+        ] as $relation) {
+            if (! $run->relationLoaded($relation)) {
+                return false;
+            }
+        }
+
+        if (! $run->relationLoaded('childLinks')) {
+            return false;
+        }
+
+        $childLinks = $run->getRelation('childLinks');
+
+        if (! is_iterable($childLinks)) {
+            return false;
+        }
+
+        foreach ($childLinks as $childLink) {
+            if (! $childLink instanceof Model || ! $childLink->relationLoaded('childRun')) {
+                return false;
+            }
+
+            $childRun = $childLink->getRelation('childRun');
+
+            if (! $childRun instanceof WorkflowRun) {
+                return false;
+            }
+
+            foreach (['instance', 'failures', 'historyEvents'] as $relation) {
+                if (! $childRun->relationLoaded($relation)) {
+                    return false;
+                }
+            }
+
+            $instance = $childRun->getRelation('instance');
+
+            if (! $instance instanceof Model || ! $instance->relationLoaded('currentRun')) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function signalResolutionEvent(

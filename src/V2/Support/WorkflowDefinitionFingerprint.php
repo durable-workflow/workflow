@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use LogicException;
+use Throwable;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -107,11 +108,15 @@ final class WorkflowDefinitionFingerprint
 
     private static function pinningEnabled(): bool
     {
-        $configured = function_exists('config')
-            ? config('workflows.v2.compatibility.pin_to_recorded_fingerprint', true)
-            : true;
+        if (! function_exists('config')) {
+            return true;
+        }
 
-        return (bool) $configured;
+        try {
+            return (bool) config('workflows.v2.compatibility.pin_to_recorded_fingerprint', true);
+        } catch (Throwable) {
+            return true;
+        }
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
