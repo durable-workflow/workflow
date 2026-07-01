@@ -11,7 +11,9 @@ use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Workflow;
 use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
 use function Workflow\V2\signal;
@@ -38,6 +40,29 @@ final class WorkflowQueryTaskExecutorStandaloneTest extends TestCase
 
         $this->assertSame('completed', $result['outcome'] ?? null, json_encode($result, JSON_PRETTY_PRINT));
         $this->assertSame(0, $result['result'] ?? null);
+    }
+
+    public function testStepHistoryCompatibilityDoesNotRequireLaravelConfigForTransientRuns(): void
+    {
+        $run = new WorkflowRun();
+        $container = Container::getInstance();
+        $facadeApplication = Facade::getFacadeApplication();
+
+        Container::setInstance(null);
+        Facade::setFacadeApplication(null);
+
+        try {
+            $eventTypes = WorkflowStepHistory::conflictingEventTypesForSequence(
+                $run,
+                1,
+                WorkflowStepHistory::SIGNAL_WAIT,
+            );
+        } finally {
+            Container::setInstance($container);
+            Facade::setFacadeApplication($facadeApplication);
+        }
+
+        $this->assertSame([], $eventTypes);
     }
 
     /**
@@ -84,7 +109,21 @@ final class WorkflowQueryTaskExecutorStandaloneTest extends TestCase
                         'data' => null,
                     ],
                 ],
-                'history_events' => [],
+                'history_events' => [
+                    [
+                        'id' => 'event-signal-wait-opened',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                        ],
+                        'workflow_task_id' => 'workflow-task-1',
+                        'workflow_command_id' => null,
+                        'recorded_at' => '2026-05-17T00:00:01+00:00',
+                    ],
+                ],
                 'commands' => [],
                 'signals' => [],
                 'updates' => [],

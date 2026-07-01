@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Contracts\Container\BindingResolutionException;
+use Illuminate\Support\Collection;
+use Traversable;
 use Workflow\V2\Activity;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
@@ -96,7 +99,7 @@ final class WorkflowStepHistory
         int $baseSequence,
         array $leafDescriptors,
     ): void {
-        $run->loadMissing('historyEvents');
+        self::ensureHistoryEventsLoaded($run);
 
         foreach ($leafDescriptors as $descriptor) {
             $offset = self::intValue($descriptor['offset'] ?? null);
@@ -138,10 +141,9 @@ final class WorkflowStepHistory
         int $sequence,
         string $expectedShape,
     ): array {
-        $run->loadMissing('historyEvents');
         $eventTypes = [];
 
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
@@ -186,9 +188,7 @@ final class WorkflowStepHistory
             return null;
         }
 
-        $run->loadMissing('historyEvents');
-
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
@@ -503,7 +503,7 @@ final class WorkflowStepHistory
     {
         $eventTypes = [];
 
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
@@ -520,6 +520,47 @@ final class WorkflowStepHistory
         }
 
         return array_values(array_unique($eventTypes));
+    }
+
+    /**
+     * @return Collection<int, mixed>
+     */
+    private static function historyEventsForRun(WorkflowRun $run): Collection
+    {
+        self::ensureHistoryEventsLoaded($run);
+
+        $events = $run->getRelation('historyEvents');
+
+        if ($events instanceof Collection) {
+            return $events;
+        }
+
+        if (is_array($events)) {
+            return new Collection($events);
+        }
+
+        if ($events instanceof Traversable) {
+            return new Collection(iterator_to_array($events, false));
+        }
+
+        return new Collection();
+    }
+
+    private static function ensureHistoryEventsLoaded(WorkflowRun $run): void
+    {
+        if ($run->relationLoaded('historyEvents')) {
+            return;
+        }
+
+        try {
+            $run->loadMissing('historyEvents');
+        } catch (BindingResolutionException $exception) {
+            if (! str_contains($exception->getMessage(), '[config]')) {
+                throw $exception;
+            }
+
+            $run->setRelation('historyEvents', new Collection());
+        }
     }
 
     /**
