@@ -94,6 +94,102 @@ final class WorkflowClientTest extends TestCase
         $this->assertTrue($captured['worker_protocol']);
     }
 
+    public function testUpdateWorkflowUsesControlPlaneEndpointWaitPolicyAndPayloadEnvelope(): void
+    {
+        $http = new HttpFactory();
+        $captured = null;
+
+        $http->fake(function (Request $request) use ($http, &$captured) {
+            $captured = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+                'authorization' => $request->hasHeader('Authorization', 'Bearer test-token'),
+                'namespace' => $request->hasHeader('X-Namespace', 'default'),
+                'control_plane' => $request->hasHeader(
+                    WorkflowClient::CONTROL_PLANE_HEADER,
+                    WorkflowClient::CONTROL_PLANE_VERSION,
+                ),
+                'worker_protocol' => $request->hasHeader(
+                    WorkflowClient::WORKER_PROTOCOL_HEADER,
+                    WorkerProtocolVersion::VERSION,
+                ),
+            ];
+
+            return $http->response([
+                'accepted' => true,
+                'workflow_id' => 'counter-php',
+                'update_id' => 'update-1',
+                'update_status' => 'accepted',
+            ]);
+        });
+
+        $client = new WorkflowClient($http, 'http://server:8080/', 'test-token');
+        $response = $client->updateWorkflow(
+            'counter-php',
+            'approve',
+            [true, 'release'],
+            waitFor: 'accepted',
+            waitTimeoutSeconds: 5,
+            requestId: 'request-1',
+        );
+
+        $this->assertSame('update-1', $response['update_id']);
+        $this->assertSame('POST', $captured['method']);
+        $this->assertSame('http://server:8080/api/workflows/counter-php/update/approve', $captured['url']);
+        $this->assertSame('accepted', $captured['body']['wait_for'] ?? null);
+        $this->assertSame(5, $captured['body']['wait_timeout_seconds'] ?? null);
+        $this->assertSame('request-1', $captured['body']['request_id'] ?? null);
+        $this->assertSame('avro', $captured['body']['input']['codec'] ?? null);
+        $this->assertSame(
+            [true, 'release'],
+            Serializer::unserializeWithCodec('avro', $captured['body']['input']['blob']),
+        );
+        $this->assertTrue($captured['authorization']);
+        $this->assertTrue($captured['namespace']);
+        $this->assertTrue($captured['control_plane']);
+        $this->assertTrue($captured['worker_protocol']);
+    }
+
+    public function testUpdateWorkflowRunUsesRunScopedEndpoint(): void
+    {
+        $http = new HttpFactory();
+        $captured = null;
+
+        $http->fake(function (Request $request) use ($http, &$captured) {
+            $captured = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            return $http->response([
+                'accepted' => true,
+                'workflow_id' => 'counter-php',
+                'run_id' => 'run-1',
+                'update_id' => 'update-1',
+                'update_status' => 'completed',
+            ]);
+        });
+
+        $client = new WorkflowClient($http, 'http://server:8080', 'test-token');
+        $response = $client->updateWorkflowRun(
+            'counter-php',
+            'run-1',
+            'approve',
+            [true],
+            waitFor: 'completed',
+            requestId: 'request-1',
+        );
+
+        $this->assertSame('update-1', $response['update_id']);
+        $this->assertSame('POST', $captured['method']);
+        $this->assertSame('http://server:8080/api/workflows/counter-php/runs/run-1/update/approve', $captured['url']);
+        $this->assertSame('completed', $captured['body']['wait_for'] ?? null);
+        $this->assertSame('request-1', $captured['body']['request_id'] ?? null);
+        $this->assertSame([true], Serializer::unserializeWithCodec('avro', $captured['body']['input']['blob']));
+    }
+
     public function testQueryWorkflowDecodesResultEnvelope(): void
     {
         $http = new HttpFactory();

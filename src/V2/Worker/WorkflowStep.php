@@ -71,6 +71,40 @@ final class WorkflowStep
         );
     }
 
+    public static function completeUpdate(string $updateId, mixed $result, string $payloadCodec = 'avro'): self
+    {
+        $command = [
+            'type' => 'complete_update',
+            'update_id' => $updateId,
+            'result' => [
+                'codec' => $payloadCodec,
+                'blob' => self::serializePayload($result, $payloadCodec),
+            ],
+            'payload_codec' => $payloadCodec,
+        ];
+
+        return new self(false, null, null, null, $command, [$command]);
+    }
+
+    public static function failUpdate(
+        string $updateId,
+        string $message,
+        ?string $exceptionClass = null,
+        ?string $exceptionType = null,
+        bool $nonRetryable = false,
+    ): self {
+        $command = array_filter([
+            'type' => 'fail_update',
+            'update_id' => $updateId,
+            'message' => $message,
+            'exception_class' => $exceptionClass,
+            'exception_type' => $exceptionType,
+            'non_retryable' => $nonRetryable ? true : null,
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return new self(false, null, null, null, $command, [$command]);
+    }
+
     public static function waiting(YieldedCommand $yielded): self
     {
         return new self(

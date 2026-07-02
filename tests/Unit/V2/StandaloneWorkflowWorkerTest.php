@@ -7,10 +7,12 @@ namespace Tests\Unit\V2;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use RuntimeException;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
 use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
+use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\HistoryExport;
@@ -979,6 +981,356 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('avro', $requests[2]['body']['commands'][0]['payload_codec'] ?? null);
     }
 
+    public function testProcessOneWorkflowTaskCompletesUpdateTaskWithReplayedUpdateState(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'polyglot.php.update',
+                        'workflow_class' => 'polyglot.php.update',
+                        'workflow_wait_kind' => 'update',
+                        'workflow_update_id' => 'update-1',
+                        'history_events' => $this->updateHistoryEvents([
+                            [
+                                'id' => 'event-update-applied-prior',
+                                'sequence' => 3,
+                                'event_type' => HistoryEventType::UpdateApplied->value,
+                                'payload' => [
+                                    'update_id' => 'update-prior',
+                                    'update_name' => 'approve',
+                                    'arguments' => [
+                                        'codec' => 'avro',
+                                        'blob' => Serializer::serializeWithCodec('avro', [true, 'prior']),
+                                    ],
+                                    'payload_codec' => 'avro',
+                                    'sequence' => 1,
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:02+00:00',
+                            ],
+                            [
+                                'id' => 'event-update-accepted',
+                                'sequence' => 5,
+                                'event_type' => HistoryEventType::UpdateAccepted->value,
+                                'payload' => [
+                                    'update_id' => 'update-1',
+                                    'update_name' => 'approve',
+                                    'arguments' => [
+                                        'codec' => 'avro',
+                                        'blob' => Serializer::serializeWithCodec('avro', [true, 'accepted']),
+                                    ],
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:04+00:00',
+                            ],
+                        ]),
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'task_id' => 'workflow-task-1',
+                'workflow_task_attempt' => 1,
+                'outcome' => 'completed',
+                'recorded' => true,
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.update' => StandaloneWorkflowWorkerUpdateWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+        $command = $requests[1]['body']['commands'][0] ?? [];
+
+        $this->assertSame('workflow_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('update-1', $result['workflow_update_id'] ?? null);
+        $this->assertSame('update', $result['workflow_wait_kind'] ?? null);
+        $this->assertSame('complete_update', $command['type'] ?? null);
+        $this->assertSame('update-1', $command['update_id'] ?? null);
+        $this->assertSame('avro', $command['result']['codec'] ?? null);
+        $this->assertSame([
+            'approved' => true,
+            'label' => 'accepted',
+            'count' => 2,
+            'events' => ['prior', 'accepted'],
+        ], Serializer::unserializeWithCodec('avro', $command['result']['blob'] ?? ''));
+    }
+
+    public function testProcessOneWorkflowTaskFailsWorkflowTaskWhenReplayBeforeUpdateThrows(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'polyglot.php.replay-update',
+                        'workflow_class' => 'polyglot.php.replay-update',
+                        'workflow_wait_kind' => 'update',
+                        'workflow_update_id' => 'update-3',
+                        'history_events' => [
+                            [
+                                'id' => 'event-started',
+                                'sequence' => 1,
+                                'event_type' => HistoryEventType::WorkflowStarted->value,
+                                'payload' => [
+                                    'workflow_type' => 'polyglot.php.replay-update',
+                                    'workflow_class' => 'polyglot.php.replay-update',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:00+00:00',
+                            ],
+                            [
+                                'id' => 'event-activity-failed',
+                                'sequence' => 2,
+                                'event_type' => HistoryEventType::ActivityFailed->value,
+                                'payload' => [
+                                    'sequence' => 1,
+                                    'exception_class' => RuntimeException::class,
+                                    'message' => 'activity exploded during replay',
+                                    'code' => 0,
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:01+00:00',
+                            ],
+                            [
+                                'id' => 'event-update-accepted',
+                                'sequence' => 6,
+                                'event_type' => HistoryEventType::UpdateAccepted->value,
+                                'payload' => [
+                                    'update_id' => 'update-3',
+                                    'update_name' => 'approve',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:05+00:00',
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'task_id' => 'workflow-task-1',
+                'workflow_task_attempt' => 1,
+                'outcome' => 'failed',
+                'recorded' => true,
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.replay-update' => StandaloneWorkflowWorkerReplayBeforeUpdateWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+        $urls = array_column($requests, 'url');
+        $failure = $requests[1]['body']['failure'] ?? [];
+
+        $this->assertSame('workflow_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('failed', $result['outcome'] ?? null);
+        $this->assertSame('activity exploded during replay', $result['failure']['message'] ?? null);
+        $this->assertSame(RuntimeException::class, $result['failure']['type'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/fail',
+        ], $urls);
+        $this->assertSame('activity exploded during replay', $failure['message'] ?? null);
+        $this->assertSame(RuntimeException::class, $failure['type'] ?? null);
+        $this->assertNotContains(
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+            $urls,
+        );
+    }
+
+    public function testProcessOneWorkflowTaskUsesCurrentWaitSequenceForAcceptedUpdateCursor(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'polyglot.php.cursor-update',
+                        'workflow_class' => 'polyglot.php.cursor-update',
+                        'workflow_wait_kind' => 'update',
+                        'workflow_update_id' => 'update-cursor',
+                        'update_name' => 'cursor',
+                        'history_events' => [
+                            [
+                                'id' => 'event-started',
+                                'sequence' => 1,
+                                'event_type' => HistoryEventType::WorkflowStarted->value,
+                                'payload' => [
+                                    'workflow_type' => 'polyglot.php.cursor-update',
+                                    'workflow_class' => 'polyglot.php.cursor-update',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:00+00:00',
+                            ],
+                            [
+                                'id' => 'event-activity-completed',
+                                'sequence' => 3,
+                                'event_type' => HistoryEventType::ActivityCompleted->value,
+                                'payload' => [
+                                    'sequence' => 1,
+                                    'result' => Serializer::serializeWithCodec('avro', 'ready'),
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:01+00:00',
+                            ],
+                            [
+                                'id' => 'event-signal-wait-opened',
+                                'sequence' => 5,
+                                'event_type' => HistoryEventType::SignalWaitOpened->value,
+                                'payload' => [
+                                    'signal_name' => 'advance',
+                                    'signal_wait_id' => 'signal-wait-1',
+                                    'sequence' => 2,
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:02+00:00',
+                            ],
+                            [
+                                'id' => 'event-update-accepted',
+                                'sequence' => 9,
+                                'event_type' => HistoryEventType::UpdateAccepted->value,
+                                'payload' => [
+                                    'update_id' => 'update-cursor',
+                                    'update_name' => 'cursor',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:08+00:00',
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'task_id' => 'workflow-task-1',
+                'workflow_task_attempt' => 1,
+                'outcome' => 'completed',
+                'recorded' => true,
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.cursor-update' => StandaloneWorkflowWorkerCursorUpdateWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+        $command = $requests[1]['body']['commands'][0] ?? [];
+        $decodedResult = Serializer::unserializeWithCodec('avro', $command['result']['blob'] ?? '');
+
+        $this->assertSame('workflow_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('complete_update', $command['type'] ?? null);
+        $this->assertSame('update-cursor', $command['update_id'] ?? null);
+        $this->assertSame(2, $decodedResult['cursor_sequence'] ?? null);
+        $this->assertSame(9, $decodedResult['accepted_event_sequence'] ?? null);
+    }
+
+    public function testProcessOneWorkflowTaskFailsUpdateTaskWhenHandlerThrows(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'polyglot.php.update',
+                        'workflow_class' => 'polyglot.php.update',
+                        'workflow_wait_kind' => 'update',
+                        'workflow_update_id' => 'update-2',
+                        'history_events' => $this->updateHistoryEvents([
+                            [
+                                'id' => 'event-update-accepted',
+                                'sequence' => 3,
+                                'event_type' => HistoryEventType::UpdateAccepted->value,
+                                'payload' => [
+                                    'update_id' => 'update-2',
+                                    'update_name' => 'approve',
+                                    'arguments' => [
+                                        'codec' => 'avro',
+                                        'blob' => Serializer::serializeWithCodec('avro', [false, 'refused']),
+                                    ],
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:02+00:00',
+                            ],
+                        ]),
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'task_id' => 'workflow-task-1',
+                'workflow_task_attempt' => 1,
+                'outcome' => 'completed',
+                'recorded' => true,
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.update' => StandaloneWorkflowWorkerUpdateWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+        $command = $requests[1]['body']['commands'][0] ?? [];
+
+        $this->assertSame('workflow_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('fail_update', $command['type'] ?? null);
+        $this->assertSame('update-2', $command['update_id'] ?? null);
+        $this->assertSame('approval refused by PHP update handler', $command['message'] ?? null);
+        $this->assertSame(RuntimeException::class, $command['exception_class'] ?? null);
+    }
+
     /**
      * @param array<string, mixed> $overrides
      * @return array<string, mixed>
@@ -1088,6 +1440,39 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'next_history_page_token' => null,
         ], $overrides);
     }
+
+    /**
+     * @param list<array<string, mixed>> $tail
+     * @return list<array<string, mixed>>
+     */
+    private function updateHistoryEvents(array $tail = []): array
+    {
+        return [
+            [
+                'id' => 'event-started',
+                'sequence' => 1,
+                'event_type' => HistoryEventType::WorkflowStarted->value,
+                'payload' => [
+                    'workflow_type' => 'polyglot.php.update',
+                    'workflow_class' => 'polyglot.php.update',
+                    'payload_codec' => 'avro',
+                ],
+                'recorded_at' => '2026-05-17T00:00:00+00:00',
+            ],
+            [
+                'id' => 'event-signal-wait-opened',
+                'sequence' => 2,
+                'event_type' => HistoryEventType::SignalWaitOpened->value,
+                'payload' => [
+                    'signal_name' => 'advance',
+                    'signal_wait_id' => 'signal-wait-1',
+                    'sequence' => 1,
+                ],
+                'recorded_at' => '2026-05-17T00:00:01+00:00',
+            ],
+            ...$tail,
+        ];
+    }
 }
 
 final class StandaloneWorkflowWorkerSimpleWorkflow extends Workflow
@@ -1123,5 +1508,85 @@ final class StandaloneWorkflowWorkerCounterWorkflow extends Workflow
     public function current(): int
     {
         return $this->count;
+    }
+}
+
+#[Signal('advance')]
+final class StandaloneWorkflowWorkerUpdateWorkflow extends Workflow
+{
+    /**
+     * @var list<string>
+     */
+    private array $events = [];
+
+    public function handle(): mixed
+    {
+        while (true) {
+            signal('advance');
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    #[UpdateMethod]
+    public function approve(bool $approved, string $label): array
+    {
+        if (! $approved) {
+            throw new RuntimeException('approval refused by PHP update handler');
+        }
+
+        $this->events[] = $label;
+
+        return [
+            'approved' => true,
+            'label' => $label,
+            'count' => count($this->events),
+            'events' => $this->events,
+        ];
+    }
+}
+
+final class StandaloneWorkflowWorkerReplayBeforeUpdateWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        Workflow::activity('demo.prior');
+
+        while (true) {
+            signal('advance');
+        }
+    }
+
+    #[UpdateMethod]
+    public function approve(): string
+    {
+        return 'not reached';
+    }
+}
+
+final class StandaloneWorkflowWorkerCursorUpdateWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        Workflow::activity('demo.prior');
+
+        while (true) {
+            signal('advance');
+        }
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    #[UpdateMethod]
+    public function cursor(): array
+    {
+        $visibleSequence = new \ReflectionProperty(Workflow::class, 'visibleSequence');
+
+        return [
+            'cursor_sequence' => $visibleSequence->getValue($this),
+            'accepted_event_sequence' => 9,
+        ];
     }
 }

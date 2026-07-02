@@ -17,9 +17,9 @@ use Workflow\V2\Support\WorkerProtocolVersion;
  * Control-plane HTTP client for Durable Workflow's standalone server.
  *
  * This covers the public workflow operations conformance uses across SDKs:
- * start, signal, and query. It deliberately returns decoded server payloads
- * so callers can keep exact request/response evidence when an operation is
- * rejected.
+ * start, signal, query, and update. It deliberately returns decoded server
+ * payloads so callers can keep exact request/response evidence when an
+ * operation is rejected.
  *
  * @api Stable v2 control-plane client API.
  */
@@ -133,6 +133,98 @@ final class WorkflowClient
         return $this->post(
             sprintf('/workflows/%s/signal/%s', $this->pathSegment($workflowId), $this->pathSegment($signalName)),
             $this->bodyWithInput($arguments, $payloadCodec),
+        );
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function updateWorkflow(
+        string $workflowId,
+        string $updateName,
+        array $arguments = [],
+        ?string $waitFor = null,
+        ?int $waitTimeoutSeconds = null,
+        ?string $requestId = null,
+        ?string $payloadCodec = null,
+    ): array {
+        if ($workflowId === '') {
+            throw new InvalidArgumentException('Workflow id cannot be empty.');
+        }
+
+        if ($updateName === '') {
+            throw new InvalidArgumentException('Update name cannot be empty.');
+        }
+
+        $body = $this->bodyWithInput($arguments, $payloadCodec);
+
+        if ($waitFor !== null) {
+            $body['wait_for'] = $waitFor;
+        }
+
+        if ($waitTimeoutSeconds !== null) {
+            $body['wait_timeout_seconds'] = $waitTimeoutSeconds;
+        }
+
+        if ($requestId !== null && $requestId !== '') {
+            $body['request_id'] = $requestId;
+        }
+
+        return $this->post(
+            sprintf('/workflows/%s/update/%s', $this->pathSegment($workflowId), $this->pathSegment($updateName)),
+            $body,
+        );
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function updateWorkflowRun(
+        string $workflowId,
+        string $runId,
+        string $updateName,
+        array $arguments = [],
+        ?string $waitFor = null,
+        ?int $waitTimeoutSeconds = null,
+        ?string $requestId = null,
+        ?string $payloadCodec = null,
+    ): array {
+        if ($workflowId === '') {
+            throw new InvalidArgumentException('Workflow id cannot be empty.');
+        }
+
+        if ($runId === '') {
+            throw new InvalidArgumentException('Run id cannot be empty.');
+        }
+
+        if ($updateName === '') {
+            throw new InvalidArgumentException('Update name cannot be empty.');
+        }
+
+        $body = $this->bodyWithInput($arguments, $payloadCodec);
+
+        if ($waitFor !== null) {
+            $body['wait_for'] = $waitFor;
+        }
+
+        if ($waitTimeoutSeconds !== null) {
+            $body['wait_timeout_seconds'] = $waitTimeoutSeconds;
+        }
+
+        if ($requestId !== null && $requestId !== '') {
+            $body['request_id'] = $requestId;
+        }
+
+        return $this->post(
+            sprintf(
+                '/workflows/%s/runs/%s/update/%s',
+                $this->pathSegment($workflowId),
+                $this->pathSegment($runId),
+                $this->pathSegment($updateName),
+            ),
+            $body,
         );
     }
 

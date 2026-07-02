@@ -233,7 +233,7 @@ final class StandaloneWorkflowWorker
                 );
             }
 
-            $step = WorkflowFiberRunner::forClass(
+            $runner = WorkflowFiberRunner::forClass(
                 $workflowClass,
                 $this->workflowIdForTask($task),
                 $this->runIdForTask($task),
@@ -241,7 +241,11 @@ final class StandaloneWorkflowWorker
                 $this->payloadCodec($task),
                 $this->historyEventsForTask($taskId, $task),
                 $this->client->namespace(),
-            )->step();
+            );
+            $workflowUpdateId = $this->workflowUpdateIdForTask($task);
+            $step = $workflowUpdateId === null
+                ? $runner->step()
+                : $runner->applyUpdate($workflowUpdateId, $this->stringValue($task['update_name'] ?? null));
 
             $response = $this->client->completeWorkflowTask(
                 $taskId,
@@ -273,6 +277,8 @@ final class StandaloneWorkflowWorker
                     'processed' => true,
                     'outcome' => 'failed',
                     'task_id' => $taskId,
+                    'workflow_update_id' => $workflowUpdateId,
+                    'workflow_wait_kind' => $this->stringValue($task['workflow_wait_kind'] ?? null),
                     'commands' => $step->commands,
                     'failure' => $failure,
                     'worker_response' => $response,
@@ -285,6 +291,8 @@ final class StandaloneWorkflowWorker
                 'processed' => true,
                 'outcome' => $this->workerResponseOutcome($response, 'completed'),
                 'task_id' => $taskId,
+                'workflow_update_id' => $workflowUpdateId,
+                'workflow_wait_kind' => $this->stringValue($task['workflow_wait_kind'] ?? null),
                 'commands' => $step->commands,
                 'worker_response' => $response,
             ];
@@ -678,6 +686,25 @@ final class StandaloneWorkflowWorker
     {
         return $this->stringValue($task['run_id'] ?? null)
             ?? $this->requiredString($task, 'workflow_run_id');
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     */
+    private function workflowUpdateIdForTask(array $task): ?string
+    {
+        $waitKind = $this->stringValue($task['workflow_wait_kind'] ?? null);
+        $updateId = $this->stringValue($task['workflow_update_id'] ?? null);
+
+        if ($updateId === null && $waitKind !== 'update') {
+            return null;
+        }
+
+        if ($updateId === null) {
+            throw new LogicException('Update workflow task is missing workflow_update_id.');
+        }
+
+        return $updateId;
     }
 
     /**

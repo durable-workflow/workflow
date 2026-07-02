@@ -23,6 +23,7 @@ use Workflow\Commands\V2ReplaySimulateCommand;
 use Workflow\Commands\V2ReplayVerifyCommand;
 use Workflow\Commands\V2ScheduleConformanceCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
+use Workflow\Commands\V2WorkflowUpdatesConformanceCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
@@ -157,6 +158,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2ReplayVerifyCommand::class,
             V2ScheduleConformanceCommand::class,
             V2ScheduleTickCommand::class,
+            V2WorkflowUpdatesConformanceCommand::class,
         ]);
 
         TypeRegistry::validateTypeMap();

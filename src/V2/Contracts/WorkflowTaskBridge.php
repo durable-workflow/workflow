@@ -303,10 +303,12 @@ interface WorkflowTaskBridge
      *   Child workflow retries apply after a child run failure; invalid start commands
      *   are protocol errors and are not retried as child attempts.
      *
-     * - complete_update: {type: 'complete_update', update_id: string, result?: string|null, payload_codec?: string|null}
+     * - complete_update:
+     *   {type: 'complete_update', update_id: string, result?: string|array|null, payload_codec?: string|null}
      *   Marks an accepted update lifecycle as applied and completed after an
-     *   external worker runs the update handler. payload_codec names the codec
-     *   for result bytes when it differs from the update input codec.
+     *   external worker runs the update handler. result accepts serialized
+     *   bytes or a {codec, blob} payload envelope. payload_codec names the
+     *   codec for result bytes when it differs from the update input codec.
      *
      * - fail_update: {type: 'fail_update', update_id: string, message: string, exception_class?: string, exception_type?: string}
      *   Marks an accepted update lifecycle as failed after an external worker

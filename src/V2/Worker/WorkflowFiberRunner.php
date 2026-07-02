@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use LogicException;
+use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -29,6 +30,7 @@ use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Support\VersionResolution;
 use Workflow\V2\Support\VersionResolver;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Workflow;
 
@@ -123,6 +125,16 @@ final class WorkflowFiberRunner
      * @var array<int, array{recorded_at: CarbonInterface|null}>
      */
     private array $recordedSearchAttributeUpserts = [];
+
+    /**
+     * @var list<array<string, mixed>>
+     */
+    private array $historyEvents = [];
+
+    /**
+     * @var array<string, true>
+     */
+    private array $appliedUpdateEvents = [];
 
     private bool $hasReplayHistory = false;
 
@@ -224,6 +236,32 @@ final class WorkflowFiberRunner
         return $this;
     }
 
+    public function applyUpdate(string $updateId, ?string $updateName = null): WorkflowStep
+    {
+        if ($updateId === '') {
+            throw new LogicException('Workflow update task field [workflow_update_id] must be non-empty.');
+        }
+
+        $this->step();
+
+        try {
+            $result = $this->invokeUpdateHandler($updateId, $updateName);
+        } catch (Throwable $throwable) {
+            return WorkflowStep::failUpdate(
+                $updateId,
+                $throwable->getMessage() !== '' ? $throwable->getMessage() : 'Workflow update execution failed.',
+                $throwable::class,
+                $throwable::class,
+            );
+        }
+
+        return WorkflowStep::completeUpdate(
+            $updateId,
+            $result,
+            $this->payloadCodec,
+        );
+    }
+
     private function nextObservableStep(): WorkflowStep
     {
         $immediateCommands = [];
@@ -246,6 +284,8 @@ final class WorkflowFiberRunner
                     get_debug_type($current),
                 ));
             }
+
+            $this->applyRecordedUpdatesForCurrentPosition();
 
             if ($current instanceof SideEffectCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
@@ -498,6 +538,157 @@ final class WorkflowFiberRunner
         return $this->hasReplayHistory ? null : $this->sequence;
     }
 
+    private function applyRecordedUpdatesForCurrentPosition(): void
+    {
+        $historySequence = $this->historySequenceForCurrentPosition();
+
+        if ($historySequence === null) {
+            return;
+        }
+
+        foreach ($this->historyEvents as $event) {
+            if (self::eventType($event) !== 'UpdateApplied') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+
+            if (self::eventSequence($event, $payload) !== $historySequence) {
+                continue;
+            }
+
+            $identity = self::historyEventIdentity($event, $payload);
+
+            if (isset($this->appliedUpdateEvents[$identity])) {
+                continue;
+            }
+
+            $this->invokeUpdateHandlerFromEvent($event);
+            $this->appliedUpdateEvents[$identity] = true;
+        }
+    }
+
+    private function invokeUpdateHandler(string $updateId, ?string $updateName): mixed
+    {
+        $event = $this->acceptedUpdateEvent($updateId, $updateName);
+
+        if ($event === null) {
+            throw new LogicException(sprintf('Workflow update [%s] was not found in task history.', $updateId));
+        }
+
+        return $this->invokeUpdateHandlerFromEvent($event, $updateName);
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     */
+    private function invokeUpdateHandlerFromEvent(array $event, ?string $fallbackUpdateName = null): mixed
+    {
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        $target = self::stringValue($payload['update_name'] ?? null) ?? $fallbackUpdateName;
+
+        if ($target === null) {
+            throw new LogicException('Workflow update history event is missing an update method name.');
+        }
+
+        $resolved = WorkflowDefinition::resolveUpdateTarget($this->workflow::class, $target);
+
+        if ($resolved === null) {
+            throw new LogicException(sprintf(
+                'Workflow update [%s] is not declared on workflow [%s].',
+                $target,
+                $this->workflow::class,
+            ));
+        }
+
+        $sequence = $this->updateHandlerSequence($event, $payload);
+        $arguments = self::updateArgumentsFromPayload(
+            $payload,
+            $this->payloadCodec,
+            $this->namespace,
+        );
+        $method = new ReflectionMethod($this->workflow, $resolved['method']);
+        $parameters = $this->workflow->resolveMethodDependencies($arguments, $method);
+
+        $this->workflow->syncExecutionCursor($sequence);
+        $this->workflow->setCommandDispatchEnabled(false);
+
+        try {
+            return $this->workflow->{$resolved['method']}(...$parameters);
+        } finally {
+            $this->workflow->setCommandDispatchEnabled(true);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     * @param array<string, mixed> $payload
+     */
+    private function updateHandlerSequence(array $event, array $payload): int
+    {
+        $payloadSequence = self::intValue($payload['sequence'] ?? null)
+            ?? self::intValue($payload['workflow_sequence'] ?? null);
+
+        if ($payloadSequence !== null) {
+            return $payloadSequence;
+        }
+
+        if (self::eventType($event) === 'UpdateAccepted') {
+            return $this->historySequenceForCurrentPosition() ?? $this->sequence;
+        }
+
+        return self::eventSequence($event, $payload) ?? $this->sequence;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int, mixed>
+     */
+    private static function updateArgumentsFromPayload(
+        array $payload,
+        string $fallbackCodec,
+        ?string $namespace,
+    ): array {
+        if (! array_key_exists('arguments', $payload)) {
+            return [];
+        }
+
+        $decoded = self::decodePayload(
+            $payload['arguments'],
+            $fallbackCodec,
+            self::stringValue($payload['payload_codec'] ?? null),
+            $namespace,
+        );
+
+        return is_array($decoded) ? array_values($decoded) : [$decoded];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function acceptedUpdateEvent(string $updateId, ?string $updateName): ?array
+    {
+        foreach (array_reverse($this->historyEvents) as $event) {
+            if (self::eventType($event) !== 'UpdateAccepted') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $eventUpdateId = self::stringValue($payload['update_id'] ?? null);
+            $eventUpdateName = self::stringValue($payload['update_name'] ?? null);
+
+            if ($eventUpdateId === $updateId) {
+                return $event;
+            }
+
+            if ($eventUpdateId === null && $updateName !== null && $eventUpdateName === $updateName) {
+                return $event;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -520,54 +711,56 @@ final class WorkflowFiberRunner
      */
     private function loadHistoryEvents(array $historyEvents): void
     {
-        $this->hasReplayHistory = $historyEvents !== [];
-        $this->syncRunReplayMetadata($historyEvents);
-        $this->startedAt = self::workflowStartedAt($historyEvents);
-        $this->historySequencesByPosition = self::indexHistorySequencesByPosition($historyEvents);
+        $this->historyEvents = self::normalizedHistoryEvents($historyEvents);
+        $this->appliedUpdateEvents = [];
+        $this->hasReplayHistory = $this->historyEvents !== [];
+        $this->syncRunReplayMetadata($this->historyEvents);
+        $this->startedAt = self::workflowStartedAt($this->historyEvents);
+        $this->historySequencesByPosition = self::indexHistorySequencesByPosition($this->historyEvents);
         $this->recordedActivityOutcomes = self::indexRecordedActivityOutcomes(
-            $historyEvents,
+            $this->historyEvents,
             $this->payloadCodec,
             $this->namespace,
         );
         $this->openActivityWaits = array_diff_key(
-            self::indexOpenActivityWaits($historyEvents),
+            self::indexOpenActivityWaits($this->historyEvents),
             $this->recordedActivityOutcomes,
         );
-        $this->recordedTimerOutcomes = self::indexRecordedTimerOutcomes($historyEvents);
+        $this->recordedTimerOutcomes = self::indexRecordedTimerOutcomes($this->historyEvents);
         $this->openTimerWaits = array_diff_key(
-            self::indexOpenTimerWaits($historyEvents),
+            self::indexOpenTimerWaits($this->historyEvents),
             $this->recordedTimerOutcomes,
         );
-        $this->recordedConditionOutcomes = self::indexRecordedConditionOutcomes($historyEvents);
+        $this->recordedConditionOutcomes = self::indexRecordedConditionOutcomes($this->historyEvents);
         $this->openConditionWaits = array_diff_key(
-            self::indexOpenConditionWaits($historyEvents),
+            self::indexOpenConditionWaits($this->historyEvents),
             $this->recordedConditionOutcomes,
         );
         $this->recordedSignalOutcomes = self::indexRecordedSignalOutcomes(
-            $historyEvents,
+            $this->historyEvents,
             $this->payloadCodec,
             $this->namespace,
         );
         $this->openSignalWaits = array_diff_key(
-            self::indexOpenSignalWaits($historyEvents),
+            self::indexOpenSignalWaits($this->historyEvents),
             $this->recordedSignalOutcomes,
         );
         $this->recordedChildOutcomes = self::indexRecordedChildOutcomes(
-            $historyEvents,
+            $this->historyEvents,
             $this->payloadCodec,
             $this->namespace,
         );
         $this->openChildWaits = array_diff_key(
-            self::indexOpenChildWaits($historyEvents),
+            self::indexOpenChildWaits($this->historyEvents),
             $this->recordedChildOutcomes,
         );
         $this->recordedSideEffects = self::indexRecordedSideEffects(
-            $historyEvents,
+            $this->historyEvents,
             $this->payloadCodec,
             $this->namespace,
         );
-        $this->recordedVersionMarkers = self::indexRecordedVersionMarkers($historyEvents);
-        $this->recordedSearchAttributeUpserts = self::indexRecordedSearchAttributeUpserts($historyEvents);
+        $this->recordedVersionMarkers = self::indexRecordedVersionMarkers($this->historyEvents);
+        $this->recordedSearchAttributeUpserts = self::indexRecordedSearchAttributeUpserts($this->historyEvents);
     }
 
     private function resolveVersion(
@@ -690,6 +883,38 @@ final class WorkflowFiberRunner
         ], static fn (mixed $value): bool => $value !== null));
 
         return $model;
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     * @param array<string, mixed> $payload
+     */
+    private static function historyEventIdentity(array $event, array $payload): string
+    {
+        return self::stringValue($event['id'] ?? null)
+            ?? implode(':', array_filter([
+                self::eventType($event),
+                (string) (self::eventSequence($event, $payload) ?? ''),
+                self::stringValue($payload['update_id'] ?? null),
+                self::stringValue($payload['update_name'] ?? null),
+            ], static fn (?string $value): bool => $value !== null && $value !== ''));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return list<array<string, mixed>>
+     */
+    private static function normalizedHistoryEvents(array $historyEvents): array
+    {
+        $normalized = [];
+
+        foreach ($historyEvents as $event) {
+            if (is_array($event)) {
+                $normalized[] = $event;
+            }
+        }
+
+        return $normalized;
     }
 
     /**
