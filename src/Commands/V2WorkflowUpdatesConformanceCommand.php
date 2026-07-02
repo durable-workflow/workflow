@@ -444,27 +444,37 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             $unknown['exception'] ?? null,
             $terminal['exception'] ?? null,
         ]));
-        $cellOutcomes = [
-            'accepted' => $this->acceptedCell($accepted['client'] ?? []),
-            'completed' => $this->completedClientCell($completedWait, $completed['command'] ?? []),
-            'failed' => $this->failedClientCell($failedWait, $failed['command'] ?? []),
-            'refused_unknown_update' => $this->exceptionCell($unknown, ['unknown_update', 'update_not_found']),
-            'duplicate_idempotent' => $this->duplicateCell($completed['client'] ?? [], $completedWait),
-            'terminal_refusal' => $this->exceptionCell($terminal, [
-                'workflow_not_running',
-                'workflow_terminal',
-                'instance_not_found',
-                'workflow_not_found',
-                'run_not_found',
-            ]),
-            'payload_round_trip' => $this->payloadCell($payloadRoundTrip['command'] ?? [], $payloadWait, $payload),
-        ];
         $unsupportedCells = [[
             'cell' => 'invalid_input_refusal',
             'classification' => 'typed_unsupported',
             'reason' => 'php_client_payload_validation_not_local',
             'message' => 'The PHP package client sends typed payload envelopes and does not perform local update parameter validation before server admission.',
         ]];
+        $cellOutcomes = [
+            'accepted' => $this->acceptedCell($accepted['client'] ?? []),
+            'completed' => $this->completedClientCell($completedWait, $completed['command'] ?? []),
+            'failed' => $this->failedClientCell($failedWait, $failed['command'] ?? []),
+            'refused_unknown_update' => $this->exceptionCell($unknown, [
+                'unknown_update',
+                'update_not_found',
+                'rejected_unknown_update',
+                'missing_workflow_update',
+                'update_not_registered',
+            ]),
+            'invalid_input_refusal' => $this->unsupportedCell($unsupportedCells[0]),
+            'duplicate_idempotent' => $this->duplicateCell($completed['client'] ?? [], $completedWait),
+            'terminal_refusal' => $this->exceptionCell($terminal, [
+                'workflow_not_running',
+                'workflow_terminal',
+                'run_not_active',
+                'rejected_not_active',
+                'not_active',
+                'instance_not_found',
+                'workflow_not_found',
+                'run_not_found',
+            ]),
+            'payload_round_trip' => $this->payloadCell($payloadRoundTrip['command'] ?? [], $payloadWait, $payload),
+        ];
 
         $failedCells = array_filter(
             $cellOutcomes,
@@ -780,11 +790,17 @@ class V2WorkflowUpdatesConformanceCommand extends Command
     {
         $exception = is_array($request['exception'] ?? null) ? $request['exception'] : null;
         $body = is_array($exception['body'] ?? null) ? $exception['body'] : [];
-        $reason = is_string($body['reason'] ?? null) ? $body['reason'] : null;
+        $observedReasons = array_values(array_filter([
+            self::nonEmptyString($body['reason'] ?? null),
+            self::nonEmptyString($body['rejection_reason'] ?? null),
+            self::nonEmptyString($body['command_reason'] ?? null),
+            self::nonEmptyString($body['outcome'] ?? null),
+        ]));
+        $reason = $observedReasons[0] ?? null;
         $status = is_int($exception['status'] ?? null) ? $exception['status'] : null;
         $reasonAccepted = $acceptedReasons === []
-            || $reason === null
-            || in_array($reason, $acceptedReasons, true);
+            || $observedReasons === []
+            || array_intersect($observedReasons, $acceptedReasons) !== [];
         $passed = $exception !== null
             && ($status === null || in_array($status, [400, 404, 409, 422], true))
             && $reasonAccepted;
@@ -793,12 +809,25 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         $evidence['checks'] = [
             'accepted_reasons' => $acceptedReasons,
             'observed_reason' => $reason,
+            'observed_reasons' => $observedReasons,
             'reason_accepted' => $reasonAccepted,
             'observed_status' => $status,
         ];
 
         return [
             'status' => $passed ? 'pass' : 'fail',
+            'evidence' => $evidence,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array{status: string, evidence: array<string, mixed>}
+     */
+    private function unsupportedCell(array $evidence): array
+    {
+        return [
+            'status' => 'unsupported',
             'evidence' => $evidence,
         ];
     }

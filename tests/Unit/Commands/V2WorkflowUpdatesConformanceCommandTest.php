@@ -85,11 +85,40 @@ final class V2WorkflowUpdatesConformanceCommandTest extends TestCase
             ],
             ['unknown_update', 'update_not_found'],
         ]);
+        $terminal = $this->invokeConformanceCell('exceptionCell', [
+            [
+                'outcome' => 'exception',
+                'exception' => [
+                    'status' => 409,
+                    'body' => [
+                        'outcome' => 'rejected_not_active',
+                        'rejection_reason' => 'run_not_active',
+                    ],
+                ],
+            ],
+            ['run_not_active', 'rejected_not_active'],
+        ]);
+        $unknownOutcome = $this->invokeConformanceCell('exceptionCell', [
+            [
+                'outcome' => 'exception',
+                'exception' => [
+                    'status' => 404,
+                    'body' => [
+                        'outcome' => 'rejected_unknown_update',
+                    ],
+                ],
+            ],
+            ['unknown_update', 'update_not_found', 'rejected_unknown_update'],
+        ]);
 
         $this->assertSame('fail', $unexpected['status']);
         $this->assertFalse($unexpected['evidence']['checks']['reason_accepted']);
         $this->assertSame('pass', $expected['status']);
         $this->assertTrue($expected['evidence']['checks']['reason_accepted']);
+        $this->assertSame('pass', $terminal['status']);
+        $this->assertContains('run_not_active', $terminal['evidence']['checks']['observed_reasons']);
+        $this->assertSame('pass', $unknownOutcome['status']);
+        $this->assertContains('rejected_unknown_update', $unknownOutcome['evidence']['checks']['observed_reasons']);
     }
 
     public function testDuplicateCellRequiresSameRequestAndUpdateId(): void
@@ -275,6 +304,19 @@ final class V2WorkflowUpdatesConformanceCommandTest extends TestCase
         $this->assertTrue($passing['evidence']['checks']['client_received_expected_payload']);
         $this->assertSame('fail', $clientMismatch['status']);
         $this->assertFalse($clientMismatch['evidence']['checks']['client_received_expected_payload']);
+    }
+
+    public function testUnsupportedCellRecordsTypedEvidence(): void
+    {
+        $unsupported = $this->invokeConformanceCell('unsupportedCell', [[
+            'cell' => 'invalid_input_refusal',
+            'classification' => 'typed_unsupported',
+            'reason' => 'php_client_payload_validation_not_local',
+        ]]);
+
+        $this->assertSame('unsupported', $unsupported['status']);
+        $this->assertSame('invalid_input_refusal', $unsupported['evidence']['cell']);
+        $this->assertSame('typed_unsupported', $unsupported['evidence']['classification']);
     }
 
     /**
