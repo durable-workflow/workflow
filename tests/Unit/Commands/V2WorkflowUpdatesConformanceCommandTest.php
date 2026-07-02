@@ -40,6 +40,11 @@ final class V2WorkflowUpdatesConformanceCommandTest extends TestCase
         $this->assertSame('workflow-php-updates-shard', $report['coverage_scope']);
         $this->assertFalse($report['runner_blocked']);
         $this->assertSame('2.0.0-alpha.241', $report['artifact_versions']['workflow-php']);
+        $this->assertSame('packagist_package', $report['php_client_worker_update_surface']['workflow_php_artifact_source']);
+        $this->assertContains(
+            'invalid_input_refusal',
+            $report['php_client_worker_update_surface']['required_cells'],
+        );
         $this->assertSame('pass', $scenarios['published_artifact_install_only']['status']);
         $this->assertSame('pass', $scenarios['declared_update_contract_visibility']['status']);
         $this->assertSame('fail', $scenarios['php_client_worker_update_surface']['status']);
@@ -152,6 +157,124 @@ final class V2WorkflowUpdatesConformanceCommandTest extends TestCase
         $this->assertFalse($newUpdate['evidence']['checks']['same_update_id']);
         $this->assertSame('fail', $newRequest['status']);
         $this->assertFalse($newRequest['evidence']['checks']['same_request']);
+    }
+
+    public function testCompletedClientCellRequiresCompletedClientResponseAndHandlerCommand(): void
+    {
+        $passing = $this->invokeConformanceCell('completedClientCell', [
+            [
+                'outcome' => 'response',
+                'response' => [
+                    'update_status' => 'completed',
+                    'wait_timed_out' => false,
+                ],
+            ],
+            ['type' => 'complete_update'],
+        ]);
+        $timedOut = $this->invokeConformanceCell('completedClientCell', [
+            [
+                'outcome' => 'response',
+                'response' => [
+                    'update_status' => 'accepted',
+                    'wait_timed_out' => true,
+                ],
+            ],
+            ['type' => 'complete_update'],
+        ]);
+
+        $this->assertSame('pass', $passing['status']);
+        $this->assertTrue($passing['evidence']['checks']['client_completed']);
+        $this->assertTrue($passing['evidence']['checks']['handler_completed']);
+        $this->assertSame('fail', $timedOut['status']);
+        $this->assertFalse($timedOut['evidence']['checks']['client_completed']);
+    }
+
+    public function testFailedClientCellAcceptsTypedFailureEnvelopeAndHandlerFailure(): void
+    {
+        $passing = $this->invokeConformanceCell('failedClientCell', [
+            [
+                'outcome' => 'exception',
+                'exception' => [
+                    'status' => 422,
+                    'body' => [
+                        'update_status' => 'failed',
+                        'failure_message' => 'PHP update failure cell',
+                    ],
+                ],
+            ],
+            ['type' => 'fail_update'],
+        ]);
+        $missingHandlerFailure = $this->invokeConformanceCell('failedClientCell', [
+            [
+                'outcome' => 'exception',
+                'exception' => [
+                    'status' => 422,
+                    'body' => [
+                        'update_status' => 'failed',
+                        'failure_message' => 'PHP update failure cell',
+                    ],
+                ],
+            ],
+            ['type' => 'complete_update'],
+        ]);
+
+        $this->assertSame('pass', $passing['status']);
+        $this->assertTrue($passing['evidence']['checks']['client_failed_exception']);
+        $this->assertTrue($passing['evidence']['checks']['handler_failed']);
+        $this->assertSame('fail', $missingHandlerFailure['status']);
+        $this->assertFalse($missingHandlerFailure['evidence']['checks']['handler_failed']);
+    }
+
+    public function testPayloadCellRequiresHandlerAndClientPayloadRoundTrip(): void
+    {
+        $payload = [
+            'string' => 'hello',
+            'number' => 42,
+            'nested' => [
+                'bool' => true,
+                'list' => [1, 2, 3],
+            ],
+        ];
+        $passing = $this->invokeConformanceCell('payloadCell', [
+            [
+                'type' => 'complete_update',
+                'decoded_result' => [
+                    'received' => $payload,
+                ],
+            ],
+            [
+                'outcome' => 'response',
+                'response' => [
+                    'decoded_result' => [
+                        'received' => $payload,
+                    ],
+                ],
+            ],
+            $payload,
+        ]);
+        $clientMismatch = $this->invokeConformanceCell('payloadCell', [
+            [
+                'type' => 'complete_update',
+                'decoded_result' => [
+                    'received' => $payload,
+                ],
+            ],
+            [
+                'outcome' => 'response',
+                'response' => [
+                    'decoded_result' => [
+                        'received' => ['string' => 'different'],
+                    ],
+                ],
+            ],
+            $payload,
+        ]);
+
+        $this->assertSame('pass', $passing['status']);
+        $this->assertTrue($passing['evidence']['checks']['handler_received_expected_payload']);
+        $this->assertTrue($passing['evidence']['checks']['client_received_expected_payload']);
+        $this->assertSame('fail', $clientMismatch['status']);
+        $this->assertFalse($clientMismatch['evidence']['checks']['client_received_expected_payload']);
     }
 
     /**

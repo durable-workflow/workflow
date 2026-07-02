@@ -116,6 +116,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         'completed',
         'failed',
         'refused_unknown_update',
+        'invalid_input_refusal',
         'duplicate_idempotent',
         'terminal_refusal',
         'payload_round_trip',
@@ -155,7 +156,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             $scenarioResults,
             $findings,
             $findingLinks,
-            $this->livePhpUpdateScenario($artifactVersions),
+            $this->livePhpUpdateScenario($artifactVersions, $artifactSources),
         );
         $this->appendScenario(
             $scenarioResults,
@@ -214,8 +215,9 @@ class V2WorkflowUpdatesConformanceCommand extends Command
 
     /**
      * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
      */
-    private function livePhpUpdateScenario(array $artifactVersions): array
+    private function livePhpUpdateScenario(array $artifactVersions, array $artifactSources): array
     {
         $serverUrl = $this->stringOption('server-url');
         $token = $this->stringOption('token');
@@ -234,6 +236,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                 'PHP workflow update conformance cannot run without server connection options.',
                 $this->phpSurfaceOutputs(
                     $artifactVersions,
+                    $artifactSources,
                     [],
                     [],
                     [],
@@ -244,19 +247,21 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                             'missing_options' => $missing,
                         ],
                     ],
+                    publishedArtifactCellExecuted: false,
                 ),
                 'workflow',
             );
         }
 
         try {
-            return $this->exerciseLivePhpUpdateSurface($serverUrl, $token, $artifactVersions);
+            return $this->exerciseLivePhpUpdateSurface($serverUrl, $token, $artifactVersions, $artifactSources);
         } catch (Throwable $exception) {
             return $this->failedScenario(
                 'php_client_worker_update_surface',
                 'PHP workflow update conformance failed before update surface evidence completed.',
                 $this->phpSurfaceOutputs(
                     $artifactVersions,
+                    $artifactSources,
                     [],
                     [],
                     [],
@@ -265,6 +270,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                         'exception_class' => $exception::class,
                         'message' => $exception->getMessage(),
                     ]],
+                    publishedArtifactCellExecuted: false,
                 ),
                 'workflow',
             );
@@ -273,12 +279,14 @@ class V2WorkflowUpdatesConformanceCommand extends Command
 
     /**
      * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
      * @return array<string, mixed>
      */
     private function exerciseLivePhpUpdateSurface(
         string $serverUrl,
         string $token,
         array $artifactVersions,
+        array $artifactSources,
     ): array {
         $runId = $this->runId();
         $namespace = $this->namespace();
@@ -321,12 +329,20 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             [true, 'accepted'],
             sprintf('%s-accepted', $runId),
         );
-        $duplicate = $this->requestUpdate(
+        $completed = $this->requestAndDriveUpdate(
+            $workflowClient,
+            $worker,
+            $workflowId,
+            'approve',
+            [true, 'completed'],
+            sprintf('%s-completed', $runId),
+        );
+        $completedWait = $this->requestUpdate(
             $workflowClient,
             $workflowId,
             'approve',
-            [true, 'accepted'],
-            sprintf('%s-accepted', $runId),
+            [true, 'completed'],
+            sprintf('%s-completed', $runId),
             'completed',
         );
         $failed = $this->requestAndDriveUpdate(
@@ -336,6 +352,14 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             'fail_update',
             ['PHP update failure cell'],
             sprintf('%s-failed', $runId),
+        );
+        $failedWait = $this->requestUpdate(
+            $workflowClient,
+            $workflowId,
+            'fail_update',
+            ['PHP update failure cell'],
+            sprintf('%s-failed', $runId),
+            'completed',
         );
         $payload = [
             'string' => 'hello',
@@ -352,6 +376,14 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             'adjust_payload',
             [$payload],
             sprintf('%s-payload', $runId),
+        );
+        $payloadWait = $this->requestUpdate(
+            $workflowClient,
+            $workflowId,
+            'adjust_payload',
+            [$payload],
+            sprintf('%s-payload', $runId),
+            'completed',
         );
         $unknown = $this->requestUpdate(
             $workflowClient,
@@ -380,11 +412,17 @@ class V2WorkflowUpdatesConformanceCommand extends Command
 
         $clientRequests = [
             'accepted' => $accepted['client'] ?? null,
-            'completed' => $duplicate,
-            'failed' => $failed['client'] ?? null,
+            'completed' => $completedWait,
+            'failed' => $failedWait,
             'refused_unknown_update' => $unknown,
-            'terminal' => $terminal,
+            'invalid_input_refusal' => [
+                'outcome' => 'typed_unsupported',
+                'reason' => 'php_client_payload_validation_not_local',
+            ],
+            'duplicate_idempotent' => $completedWait,
+            'terminal_refusal' => $terminal,
             'payload_round_trip' => $payloadRoundTrip['client'] ?? null,
+            'payload_round_trip_completed' => $payloadWait,
         ];
         $handlerBehavior = [
             'registration' => $registration,
@@ -393,6 +431,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             'start' => $start,
             'initial_worker_task' => $initialWorkerTask,
             'accepted_worker_task' => $accepted['worker'] ?? null,
+            'completed_worker_task' => $completed['worker'] ?? null,
             'failed_worker_task' => $failed['worker'] ?? null,
             'payload_worker_task' => $payloadRoundTrip['worker'] ?? null,
             'unknown_update_unexpected_worker_task' => $unknownWorkerTask,
@@ -401,15 +440,16 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             'terminal_unexpected_worker_task' => $terminalUnexpectedWorkerTask,
         ];
         $typedErrors = array_values(array_filter([
+            $failedWait['exception'] ?? null,
             $unknown['exception'] ?? null,
             $terminal['exception'] ?? null,
         ]));
         $cellOutcomes = [
             'accepted' => $this->acceptedCell($accepted['client'] ?? []),
-            'completed' => $this->completeCommandCell($accepted['command'] ?? []),
-            'failed' => $this->failCommandCell($failed['command'] ?? []),
+            'completed' => $this->completedClientCell($completedWait, $completed['command'] ?? []),
+            'failed' => $this->failedClientCell($failedWait, $failed['command'] ?? []),
             'refused_unknown_update' => $this->exceptionCell($unknown, ['unknown_update', 'update_not_found']),
-            'duplicate_idempotent' => $this->duplicateCell($accepted['client'] ?? [], $duplicate),
+            'duplicate_idempotent' => $this->duplicateCell($completed['client'] ?? [], $completedWait),
             'terminal_refusal' => $this->exceptionCell($terminal, [
                 'workflow_not_running',
                 'workflow_terminal',
@@ -417,12 +457,13 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                 'workflow_not_found',
                 'run_not_found',
             ]),
-            'payload_round_trip' => $this->payloadCell($payloadRoundTrip['command'] ?? [], $payload),
+            'payload_round_trip' => $this->payloadCell($payloadRoundTrip['command'] ?? [], $payloadWait, $payload),
         ];
         $unsupportedCells = [[
             'cell' => 'invalid_input_refusal',
             'classification' => 'typed_unsupported',
-            'reason' => 'The PHP package client sends typed payload envelopes and does not perform local update parameter validation before server admission.',
+            'reason' => 'php_client_payload_validation_not_local',
+            'message' => 'The PHP package client sends typed payload envelopes and does not perform local update parameter validation before server admission.',
         ]];
 
         $failedCells = array_filter(
@@ -433,20 +474,33 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             $cellOutcomes,
             static fn (array $cell): bool => ($cell['status'] ?? null) === 'pass',
         ));
+        $unsupportedCellIds = array_values(array_filter(array_map(
+            static fn (array $cell): ?string => self::nonEmptyString($cell['cell'] ?? null),
+            $unsupportedCells,
+        )));
+        $missingRequiredCells = array_values(array_diff(
+            self::PHP_REQUIRED_CELLS,
+            array_merge($coveredCells, $unsupportedCellIds),
+        ));
         $observedOutputs = $this->phpSurfaceOutputs(
             $artifactVersions,
+            $artifactSources,
             $handlerBehavior,
             $clientRequests,
             $coveredCells,
             $unsupportedCells,
             $typedErrors,
             $cellOutcomes,
+            $missingRequiredCells,
         );
-        $status = $failedCells === [] ? 'pass' : 'fail';
+        $status = $failedCells === [] && $missingRequiredCells === [] ? 'pass' : 'fail';
 
         return [
             'scenario_id' => 'php_client_worker_update_surface',
             'status' => $status,
+            'classification' => $status === 'pass' ? 'product-evidence' : 'product-gap',
+            'published_artifact_cell_executed' => true,
+            'local_product_source_checkouts_used' => false,
             'observed_outputs' => $observedOutputs,
             'linked_findings' => $status === 'pass'
                 ? []
@@ -455,6 +509,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                     'PHP client/worker update shard did not prove every required update cell.',
                     [
                         'failed_cells' => $failedCells,
+                        'missing_required_cells' => $missingRequiredCells,
                         'covered_cells' => $coveredCells,
                         'unsupported_cells' => $unsupportedCells,
                     ],
@@ -505,6 +560,15 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         string $waitFor = 'accepted',
     ): array {
         try {
+            $response = $workflowClient->updateWorkflow(
+                $workflowId,
+                $updateName,
+                $arguments,
+                waitFor: $waitFor,
+                waitTimeoutSeconds: $this->pollTimeoutSeconds(),
+                requestId: $requestId,
+            );
+
             return [
                 'outcome' => 'response',
                 'request' => [
@@ -513,16 +577,11 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                     'request_id' => $requestId,
                     'wait_for' => $waitFor,
                 ],
-                'response' => $workflowClient->updateWorkflow(
-                    $workflowId,
-                    $updateName,
-                    $arguments,
-                    waitFor: $waitFor,
-                    waitTimeoutSeconds: $this->pollTimeoutSeconds(),
-                    requestId: $requestId,
-                ),
+                'response' => $this->decorateClientResponse($response),
             ];
         } catch (WorkflowClientException $exception) {
+            $body = $exception->body();
+
             return [
                 'outcome' => 'exception',
                 'request' => [
@@ -534,7 +593,7 @@ class V2WorkflowUpdatesConformanceCommand extends Command
                 'exception' => [
                     'class' => $exception::class,
                     'status' => $exception->statusCode(),
-                    'body' => $exception->body(),
+                    'body' => $this->decorateClientResponse($body),
                     'message' => $exception->getMessage(),
                 ],
             ];
@@ -556,13 +615,30 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         $command = $commands[0];
 
         if (($command['type'] ?? null) === 'complete_update') {
-            $command['decoded_result'] = $this->decodeCommandPayload($command['result'] ?? null);
+            $command['decoded_result'] = $this->decodePayloadEnvelope($command['result'] ?? null);
         }
 
         return $command;
     }
 
-    private function decodeCommandPayload(mixed $payload): mixed
+    /**
+     * @param array<string, mixed> $response
+     * @return array<string, mixed>
+     */
+    private function decorateClientResponse(array $response): array
+    {
+        $envelope = $response['result_envelope'] ?? null;
+
+        if (is_array($envelope)) {
+            $response['decoded_result'] = $this->decodePayloadEnvelope($envelope);
+        } elseif (array_key_exists('result', $response)) {
+            $response['decoded_result'] = $response['result'];
+        }
+
+        return $response;
+    }
+
+    private function decodePayloadEnvelope(mixed $payload): mixed
     {
         if (! is_array($payload)) {
             return null;
@@ -571,7 +647,20 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         $codec = is_string($payload['codec'] ?? null) ? $payload['codec'] : 'avro';
         $blob = is_string($payload['blob'] ?? null) ? $payload['blob'] : null;
 
-        return $blob === null ? null : Serializer::unserializeWithCodec($codec, $blob);
+        if ($blob === null) {
+            return null;
+        }
+
+        try {
+            return Serializer::unserializeWithCodec($codec, $blob);
+        } catch (Throwable $exception) {
+            return [
+                'decode_error' => [
+                    'class' => $exception::class,
+                    'message' => $exception->getMessage(),
+                ],
+            ];
+        }
     }
 
     /**
@@ -603,6 +692,35 @@ class V2WorkflowUpdatesConformanceCommand extends Command
     }
 
     /**
+     * @param array<string, mixed> $client
+     * @param array<string, mixed> $command
+     * @return array{status: string, evidence: array<string, mixed>}
+     */
+    private function completedClientCell(array $client, array $command): array
+    {
+        $response = is_array($client['response'] ?? null) ? $client['response'] : [];
+        $clientCompleted = ($client['outcome'] ?? null) === 'response'
+            && ($response['update_status'] ?? null) === 'completed'
+            && ($response['wait_timed_out'] ?? false) === false;
+        $handlerCompleted = ($this->completeCommandCell($command)['status'] ?? null) === 'pass';
+        $passed = $clientCompleted && $handlerCompleted;
+
+        return [
+            'status' => $passed ? 'pass' : 'fail',
+            'evidence' => [
+                'client' => $client,
+                'handler_command' => $command,
+                'checks' => [
+                    'client_completed' => $clientCompleted,
+                    'handler_completed' => $handlerCompleted,
+                    'observed_update_status' => $response['update_status'] ?? null,
+                    'wait_timed_out' => $response['wait_timed_out'] ?? null,
+                ],
+            ],
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $command
      * @return array{status: string, evidence: array<string, mixed>}
      */
@@ -611,6 +729,45 @@ class V2WorkflowUpdatesConformanceCommand extends Command
         return [
             'status' => ($command['type'] ?? null) === 'fail_update' ? 'pass' : 'fail',
             'evidence' => $command,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @param array<string, mixed> $command
+     * @return array{status: string, evidence: array<string, mixed>}
+     */
+    private function failedClientCell(array $client, array $command): array
+    {
+        $response = is_array($client['response'] ?? null) ? $client['response'] : [];
+        $exception = is_array($client['exception'] ?? null) ? $client['exception'] : [];
+        $body = is_array($exception['body'] ?? null) ? $exception['body'] : [];
+        $exceptionStatus = is_int($exception['status'] ?? null) ? $exception['status'] : null;
+        $clientFailedResponse = ($client['outcome'] ?? null) === 'response'
+            && (($response['update_status'] ?? null) === 'failed'
+                || ($response['outcome'] ?? null) === 'update_failed');
+        $clientFailedException = ($client['outcome'] ?? null) === 'exception'
+            && ($exceptionStatus === null || in_array($exceptionStatus, [400, 409, 422], true))
+            && (($body['update_status'] ?? null) === 'failed'
+                || ($body['outcome'] ?? null) === 'update_failed'
+                || is_string($body['failure_message'] ?? null));
+        $handlerFailed = ($this->failCommandCell($command)['status'] ?? null) === 'pass';
+        $passed = $handlerFailed && ($clientFailedResponse || $clientFailedException);
+
+        return [
+            'status' => $passed ? 'pass' : 'fail',
+            'evidence' => [
+                'client' => $client,
+                'handler_command' => $command,
+                'checks' => [
+                    'client_failed_response' => $clientFailedResponse,
+                    'client_failed_exception' => $clientFailedException,
+                    'handler_failed' => $handlerFailed,
+                    'observed_response_update_status' => $response['update_status'] ?? null,
+                    'observed_exception_update_status' => $body['update_status'] ?? null,
+                    'observed_exception_status' => $exceptionStatus,
+                ],
+            ],
         ];
     }
 
@@ -693,41 +850,60 @@ class V2WorkflowUpdatesConformanceCommand extends Command
 
     /**
      * @param array<string, mixed> $command
+     * @param array<string, mixed> $client
      * @param array<string, mixed> $expected
      * @return array{status: string, evidence: array<string, mixed>}
      */
-    private function payloadCell(array $command, array $expected): array
+    private function payloadCell(array $command, array $client, array $expected): array
     {
-        $decoded = is_array($command['decoded_result'] ?? null) ? $command['decoded_result'] : [];
-        $received = is_array($decoded['received'] ?? null) ? $decoded['received'] : null;
+        $commandDecoded = is_array($command['decoded_result'] ?? null) ? $command['decoded_result'] : [];
+        $response = is_array($client['response'] ?? null) ? $client['response'] : [];
+        $clientDecoded = is_array($response['decoded_result'] ?? null) ? $response['decoded_result'] : [];
+        $commandReceived = is_array($commandDecoded['received'] ?? null) ? $commandDecoded['received'] : null;
+        $clientReceived = is_array($clientDecoded['received'] ?? null) ? $clientDecoded['received'] : null;
+        $passed = $commandReceived === $expected && $clientReceived === $expected;
 
         return [
-            'status' => $received === $expected ? 'pass' : 'fail',
-            'evidence' => $command,
+            'status' => $passed ? 'pass' : 'fail',
+            'evidence' => [
+                'handler_command' => $command,
+                'client' => $client,
+                'checks' => [
+                    'handler_received_expected_payload' => $commandReceived === $expected,
+                    'client_received_expected_payload' => $clientReceived === $expected,
+                ],
+            ],
         ];
     }
 
     /**
      * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
      * @param array<string, mixed> $handlerBehavior
      * @param array<string, mixed> $clientRequests
      * @param list<string> $coveredCells
      * @param list<array<string, mixed>> $unsupportedCells
      * @param list<array<string, mixed>> $typedErrors
      * @param array<string, array<string, mixed>> $cellOutcomes
+     * @param list<string> $missingRequiredCells
+     * @param bool $publishedArtifactCellExecuted
      * @return array<string, mixed>
      */
     private function phpSurfaceOutputs(
         array $artifactVersions,
+        array $artifactSources,
         array $handlerBehavior,
         array $clientRequests,
         array $coveredCells,
         array $unsupportedCells,
         array $typedErrors = [],
         array $cellOutcomes = [],
+        array $missingRequiredCells = [],
+        bool $publishedArtifactCellExecuted = true,
     ): array {
         return [
             'workflow_php_artifact_version' => $artifactVersions['workflow-php'] ?? null,
+            'workflow_php_artifact_source' => $artifactSources['workflow-php'] ?? null,
             'php_worker_update_handler' => $handlerBehavior,
             'php_client_update_request' => $clientRequests,
             'covered_cells' => $coveredCells,
@@ -735,6 +911,9 @@ class V2WorkflowUpdatesConformanceCommand extends Command
             'unsupported_cells' => $unsupportedCells,
             'typed_errors' => $typedErrors,
             'cell_outcomes' => $cellOutcomes,
+            'missing_required_cells' => $missingRequiredCells,
+            'published_artifact_cell_executed' => $publishedArtifactCellExecuted,
+            'local_product_source_checkouts_used' => false,
         ];
     }
 
