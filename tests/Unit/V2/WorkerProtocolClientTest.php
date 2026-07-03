@@ -551,6 +551,9 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame('http://server:8080/api/worker/workflow-tasks/poll', $requestUrl);
         $this->assertCount(1, $tasks);
         $this->assertSame('task-1', $tasks[0]['task_id']);
+        $this->assertIsString($requestBody['poll_request_id'] ?? null);
+        $this->assertNotSame('', $requestBody['poll_request_id']);
+        unset($requestBody['poll_request_id']);
         $this->assertSame([
             'worker_id' => 'php-worker',
             'task_queue' => 'polyglot',
@@ -665,6 +668,9 @@ final class WorkerProtocolClientTest extends TestCase
 
         $this->assertSame(['history_events' => [], 'next_history_page_token' => null], $history);
         $this->assertSame(['recorded' => true], $complete);
+        $this->assertIsString($requests[0]['body']['poll_request_id'] ?? null);
+        $this->assertNotSame('', $requests[0]['body']['poll_request_id']);
+        unset($requests[0]['body']['poll_request_id']);
         $this->assertSame([
             [
                 'method' => 'POST',
@@ -733,6 +739,9 @@ final class WorkerProtocolClientTest extends TestCase
         $complete = $client->completeWorkflowTask('task-waiting', []);
 
         $this->assertSame('waiting_for_history', $complete['outcome'] ?? null);
+        $this->assertIsString($requests[0]['body']['poll_request_id'] ?? null);
+        $this->assertNotSame('', $requests[0]['body']['poll_request_id']);
+        unset($requests[0]['body']['poll_request_id']);
         $this->assertSame([
             [
                 'method' => 'POST',
@@ -791,6 +800,9 @@ final class WorkerProtocolClientTest extends TestCase
         $claim = $client->claimActivityTask('activity-task-1', 'php-worker');
 
         $this->assertSame(['http://server:8080/api/worker/activity-tasks/poll'], $requestUrls);
+        $this->assertIsString($requestBodies[0]['poll_request_id'] ?? null);
+        $this->assertNotSame('', $requestBodies[0]['poll_request_id']);
+        unset($requestBodies[0]['poll_request_id']);
         $this->assertSame([[
             'worker_id' => 'php-worker',
             'task_queue' => 'polyglot',
@@ -798,6 +810,76 @@ final class WorkerProtocolClientTest extends TestCase
         ]], $requestBodies);
         $this->assertIsArray($claim);
         $this->assertSame('attempt-1', $claim['activity_attempt_id']);
+    }
+
+    public function testStandaloneWorkflowPollRetriesTimeoutWithSamePollRequestId(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = $request->data();
+
+            if (count($requests) === 1) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
+
+            return $http->response([
+                'task' => [
+                    'task_id' => 'workflow-task-retry',
+                    'workflow_task_attempt' => 1,
+                    'lease_owner' => 'php-worker',
+                ],
+                'poll_status' => 'leased',
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $tasks = $client->pollWorkflowTasks(queue: 'polyglot', workerId: 'php-worker');
+
+        $this->assertCount(1, $tasks);
+        $this->assertSame('workflow-task-retry', $tasks[0]['task_id']);
+        $this->assertCount(2, $requests);
+        $this->assertSame('php-worker', $requests[0]['worker_id']);
+        $this->assertSame('polyglot', $requests[0]['task_queue']);
+        $this->assertIsString($requests[0]['poll_request_id']);
+        $this->assertNotSame('', $requests[0]['poll_request_id']);
+        $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
+    }
+
+    public function testStandaloneActivityPollRetriesTimeoutWithSamePollRequestId(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = $request->data();
+
+            if (count($requests) === 1) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
+
+            return $http->response([
+                'task' => [
+                    'task_id' => 'activity-task-retry',
+                    'activity_attempt_id' => 'activity-attempt-retry',
+                    'lease_owner' => 'php-worker',
+                ],
+                'poll_status' => 'leased',
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $tasks = $client->pollActivityTasks(queue: 'polyglot', workerId: 'php-worker');
+
+        $this->assertCount(1, $tasks);
+        $this->assertSame('activity-task-retry', $tasks[0]['task_id']);
+        $this->assertCount(2, $requests);
+        $this->assertSame('php-worker', $requests[0]['worker_id']);
+        $this->assertSame('polyglot', $requests[0]['task_queue']);
+        $this->assertIsString($requests[0]['poll_request_id']);
+        $this->assertNotSame('', $requests[0]['poll_request_id']);
+        $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
     }
 
     public function testCompleteActivityAttemptAcceptsScalarResults(): void

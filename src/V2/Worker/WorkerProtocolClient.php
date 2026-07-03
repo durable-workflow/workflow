@@ -55,6 +55,16 @@ final class WorkerProtocolClient
     /**
      * @var array<string, string>
      */
+    private array $workflowPollRequestIds = [];
+
+    /**
+     * @var array<string, string>
+     */
+    private array $activityPollRequestIds = [];
+
+    /**
+     * @var array<string, string>
+     */
     private array $queryPollRequestIds = [];
 
     /**
@@ -580,6 +590,7 @@ final class WorkerProtocolClient
         int $timeoutSeconds = WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
         ?string $workerId = null,
         ?string $buildId = null,
+        ?string $pollRequestId = null,
     ): array {
         if ($this->embeddedBridgeMode) {
             return $this->pollEmbeddedTaskList(
@@ -592,7 +603,13 @@ final class WorkerProtocolClient
             );
         }
 
-        return $this->pollStandaloneActivityTasks($queue, $timeoutSeconds, $workerId, $buildId);
+        return $this->pollStandaloneActivityTasks(
+            $queue,
+            $timeoutSeconds,
+            $workerId,
+            $buildId,
+            $pollRequestId,
+        );
     }
 
     /**
@@ -846,18 +863,29 @@ final class WorkerProtocolClient
         ?int $historyPageSize,
         ?string $acceptHistoryEncoding,
     ): array {
+        $resolvedWorkerId = $this->resolveStandaloneWorkerId($workerId);
+        $resolvedTaskQueue = $this->resolveStandaloneTaskQueue($taskQueue);
+        $pollRequestKey = null;
+        $pollRequestId = is_string($pollRequestId) && trim($pollRequestId) !== ''
+            ? trim($pollRequestId)
+            : null;
+
+        if ($pollRequestId === null) {
+            $pollRequestKey = $this->pollRequestKey($resolvedWorkerId, $resolvedTaskQueue);
+            $pollRequestId = $this->workflowPollRequestIds[$pollRequestKey]
+                ?? 'workflow-poll-'.bin2hex(random_bytes(16));
+            $this->workflowPollRequestIds[$pollRequestKey] = $pollRequestId;
+        }
+
         $body = [
-            'worker_id' => $this->resolveStandaloneWorkerId($workerId),
-            'task_queue' => $this->resolveStandaloneTaskQueue($taskQueue),
+            'worker_id' => $resolvedWorkerId,
+            'task_queue' => $resolvedTaskQueue,
+            'poll_request_id' => $pollRequestId,
             'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
         if (($buildId ?? $this->registeredBuildId) !== null) {
             $body['build_id'] = $buildId ?? $this->registeredBuildId;
-        }
-
-        if ($pollRequestId !== null && $pollRequestId !== '') {
-            $body['poll_request_id'] = $pollRequestId;
         }
 
         if ($historyPageSize !== null) {
@@ -870,36 +898,52 @@ final class WorkerProtocolClient
 
         $this->lastWorkflowTaskPoll = [];
 
-        try {
-            $response = $this->workerPost(
-                $this->workerApiPath.'/workflow-tasks/poll',
-                $body,
-                $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
-            );
-        } catch (ConnectionException $exception) {
-            if ($this->isHttpTimeout($exception)) {
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $response = $this->workerPost(
+                    $this->workerApiPath.'/workflow-tasks/poll',
+                    $body,
+                    $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
+                );
+            } catch (ConnectionException $exception) {
+                if ($this->isHttpTimeout($exception)) {
+                    continue;
+                }
+
+                if ($pollRequestKey !== null) {
+                    unset($this->workflowPollRequestIds[$pollRequestKey]);
+                }
+
+                throw $exception;
+            }
+
+            if ($pollRequestKey !== null) {
+                unset($this->workflowPollRequestIds[$pollRequestKey]);
+            }
+
+            $response = is_array($response) ? $response : [];
+            $this->lastWorkflowTaskPoll = array_filter([
+                'poll_status' => $this->stringValue($response['poll_status'] ?? null),
+                'next_probe_at' => $this->stringValue($response['next_probe_at'] ?? null),
+                'reason' => $this->stringValue($response['reason'] ?? null),
+                'message' => $this->stringValue($response['message'] ?? null),
+            ], static fn (mixed $value): bool => $value !== null);
+
+            $task = $response['task'] ?? null;
+            if (! is_array($task)) {
                 return [];
             }
 
-            throw $exception;
+            $this->rememberWorkflowTaskLease($task);
+
+            return [$task];
         }
 
-        $response = is_array($response) ? $response : [];
-        $this->lastWorkflowTaskPoll = array_filter([
-            'poll_status' => $this->stringValue($response['poll_status'] ?? null),
-            'next_probe_at' => $this->stringValue($response['next_probe_at'] ?? null),
-            'reason' => $this->stringValue($response['reason'] ?? null),
-            'message' => $this->stringValue($response['message'] ?? null),
-        ], static fn (mixed $value): bool => $value !== null);
-
-        $task = $response['task'] ?? null;
-        if (! is_array($task)) {
-            return [];
+        if ($pollRequestKey !== null) {
+            unset($this->workflowPollRequestIds[$pollRequestKey]);
         }
 
-        $this->rememberWorkflowTaskLease($task);
-
-        return [$task];
+        return [];
     }
 
     /**
@@ -910,10 +954,26 @@ final class WorkerProtocolClient
         int $timeoutSeconds,
         ?string $workerId,
         ?string $buildId,
+        ?string $pollRequestId,
     ): array {
+        $resolvedWorkerId = $this->resolveStandaloneWorkerId($workerId);
+        $resolvedTaskQueue = $this->resolveStandaloneTaskQueue($taskQueue);
+        $pollRequestKey = null;
+        $pollRequestId = is_string($pollRequestId) && trim($pollRequestId) !== ''
+            ? trim($pollRequestId)
+            : null;
+
+        if ($pollRequestId === null) {
+            $pollRequestKey = $this->pollRequestKey($resolvedWorkerId, $resolvedTaskQueue);
+            $pollRequestId = $this->activityPollRequestIds[$pollRequestKey]
+                ?? 'activity-poll-'.bin2hex(random_bytes(16));
+            $this->activityPollRequestIds[$pollRequestKey] = $pollRequestId;
+        }
+
         $body = [
-            'worker_id' => $this->resolveStandaloneWorkerId($workerId),
-            'task_queue' => $this->resolveStandaloneTaskQueue($taskQueue),
+            'worker_id' => $resolvedWorkerId,
+            'task_queue' => $resolvedTaskQueue,
+            'poll_request_id' => $pollRequestId,
             'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
@@ -921,28 +981,44 @@ final class WorkerProtocolClient
             $body['build_id'] = $buildId ?? $this->registeredBuildId;
         }
 
-        try {
-            $response = $this->workerPost(
-                $this->workerApiPath.'/activity-tasks/poll',
-                $body,
-                $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
-            );
-        } catch (ConnectionException $exception) {
-            if ($this->isHttpTimeout($exception)) {
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $response = $this->workerPost(
+                    $this->workerApiPath.'/activity-tasks/poll',
+                    $body,
+                    $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
+                );
+            } catch (ConnectionException $exception) {
+                if ($this->isHttpTimeout($exception)) {
+                    continue;
+                }
+
+                if ($pollRequestKey !== null) {
+                    unset($this->activityPollRequestIds[$pollRequestKey]);
+                }
+
+                throw $exception;
+            }
+
+            if ($pollRequestKey !== null) {
+                unset($this->activityPollRequestIds[$pollRequestKey]);
+            }
+
+            $task = $response['task'] ?? null;
+            if (! is_array($task)) {
                 return [];
             }
 
-            throw $exception;
+            $this->rememberActivityTaskLease($task);
+
+            return [$task];
         }
 
-        $task = $response['task'] ?? null;
-        if (! is_array($task)) {
-            return [];
+        if ($pollRequestKey !== null) {
+            unset($this->activityPollRequestIds[$pollRequestKey]);
         }
 
-        $this->rememberActivityTaskLease($task);
-
-        return [$task];
+        return [];
     }
 
     /**
