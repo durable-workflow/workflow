@@ -352,6 +352,28 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame(0, $requestBody['timeout_seconds'] ?? null);
     }
 
+    public function testStandaloneQueryPollRecordsPollStatusMetadata(): void
+    {
+        $http = new HttpFactory();
+
+        $http->fake(fn () => $http->response([
+            'task' => null,
+            'poll_status' => 'workflow_task_pending',
+            'message' => 'Workflow task progress is required before this query can run.',
+        ]));
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+
+        $this->assertSame(
+            [],
+            $client->pollQueryTasks(queue: 'polyglot', timeoutSeconds: 0, workerId: 'php-worker'),
+        );
+        $this->assertSame([
+            'poll_status' => 'workflow_task_pending',
+            'message' => 'Workflow task progress is required before this query can run.',
+        ], $client->lastQueryTaskPoll());
+    }
+
     public function testStandaloneQueryFailureUsesCachedLease(): void
     {
         $http = new HttpFactory();

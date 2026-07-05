@@ -77,6 +77,11 @@ final class WorkerProtocolClient
      */
     private array $lastWorkflowTaskPoll = [];
 
+    /**
+     * @var array<string, mixed>
+     */
+    private array $lastQueryTaskPoll = [];
+
     private ?string $registeredWorkerId = null;
 
     private ?string $registeredTaskQueue = null;
@@ -244,6 +249,16 @@ final class WorkerProtocolClient
     public function lastWorkflowTaskPoll(): array
     {
         return $this->lastWorkflowTaskPoll;
+    }
+
+    /**
+     * Metadata from the most recent standalone query-task poll.
+     *
+     * @return array<string, mixed>
+     */
+    public function lastQueryTaskPoll(): array
+    {
+        return $this->lastQueryTaskPoll;
     }
 
     /**
@@ -464,6 +479,8 @@ final class WorkerProtocolClient
             'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
+        $this->lastQueryTaskPoll = [];
+
         for ($attempt = 0; $attempt < 2; $attempt++) {
             try {
                 $response = $this->workerPost(
@@ -486,6 +503,13 @@ final class WorkerProtocolClient
             if ($pollRequestKey !== null) {
                 unset($this->queryPollRequestIds[$pollRequestKey]);
             }
+
+            $response = is_array($response) ? $response : [];
+            $this->lastQueryTaskPoll = array_filter([
+                'poll_status' => $this->stringValue($response['poll_status'] ?? null),
+                'reason' => $this->stringValue($response['reason'] ?? null),
+                'message' => $this->stringValue($response['message'] ?? null),
+            ], static fn (mixed $value): bool => $value !== null);
 
             $task = $response['task'] ?? null;
             if (! is_array($task)) {

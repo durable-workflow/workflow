@@ -69,6 +69,23 @@ final class StandaloneWorkflowWorker
             return $query;
         }
 
+        if (($query['poll_status'] ?? null) === 'workflow_task_pending') {
+            $workflow = $this->processOneWorkflowTask($queue, $workerId, $workflowPollTimeoutSeconds);
+
+            if (($workflow['processed'] ?? false) === true) {
+                $workflow['deferred_query_poll'] = $query;
+
+                return $workflow;
+            }
+
+            return [
+                'kind' => 'idle',
+                'processed' => false,
+                'query' => $query,
+                'workflow' => $workflow,
+            ];
+        }
+
         $workflow = $this->processOneWorkflowTask($queue, $workerId, $workflowPollTimeoutSeconds);
 
         if (($workflow['processed'] ?? false) === true) {
@@ -101,7 +118,7 @@ final class StandaloneWorkflowWorker
             return [
                 'kind' => 'query_task',
                 'processed' => false,
-            ];
+            ] + $this->client->lastQueryTaskPoll();
         }
 
         $task = $tasks[0];

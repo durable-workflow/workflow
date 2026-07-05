@@ -79,6 +79,57 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         ], $requests[1]['body']);
     }
 
+    public function testTickProcessesWorkflowTaskWhenQueryPollReportsWorkflowTaskPending(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'workflow_task_pending',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask(),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'recorded' => true,
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.simple' => StandaloneWorkflowWorkerSimpleWorkflow::class,
+        ]);
+
+        $result = $worker->tick('polyglot', 'php-worker');
+
+        $this->assertSame('workflow_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('workflow_task_pending', $result['deferred_query_poll']['poll_status'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+        ], array_column($requests, 'url'));
+    }
+
     public function testTickCompletesWorkflowTaskWhenNoQueryTaskIsReady(): void
     {
         $http = new HttpFactory();

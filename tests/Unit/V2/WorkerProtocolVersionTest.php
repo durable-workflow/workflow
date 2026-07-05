@@ -218,6 +218,8 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::longPollSemantics(), $queryTasks['poll']['long_poll']);
         $this->assertTrue($queryTasks['poll']['poll_request_idempotency']);
         $this->assertSame('empty', $queryTasks['poll']['empty_response_poll_status']);
+        $this->assertSame('workflow_task_pending', $queryTasks['poll']['workflow_task_pending_poll_status']);
+        $this->assertContains('workflow_task_pending', $queryTasks['poll']['poll_statuses']);
         $this->assertTrue($queryTasks['poll']['requires_registered_worker']);
         $this->assertSame(
             WorkerProtocolVersion::CAPABILITY_QUERY_TASKS,

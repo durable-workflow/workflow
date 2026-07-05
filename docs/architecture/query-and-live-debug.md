@@ -189,9 +189,12 @@ is an immediate probe in worker protocol version `1.12` and later: the server
 returns a currently claimable task or an empty response without holding the
 connection open. A successful poll leases at most one query task and returns
 `poll_status = 'leased'`; an empty poll returns `poll_status = 'empty'` with no
-task. Query task long-poll timeout semantics are the same clamped
-`WorkerProtocolVersion::longPollSemantics()` used by workflow and activity task
-polling.
+task. When a current query is waiting behind a ready signal or update resume
+workflow task for the same run, the query-task poll returns
+`poll_status = 'workflow_task_pending'` with no task so the worker can advance
+the workflow task before polling the query again. Query task long-poll timeout
+semantics are the same clamped `WorkerProtocolVersion::longPollSemantics()`
+used by workflow and activity task polling.
 `WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
 default for standalone PHP workers that register workflow types, and
 `pollQueryTasks()` sends a stable `poll_request_id` for every query
@@ -215,7 +218,8 @@ state and return before the next loop turn without turning the worker tick into
 an unbounded query loop or starving heartbeat/workflow progress.
 Workers that build their own loop MUST preserve the same fairness property when
 they advertise `query_tasks`; a workflow-task long poll must not starve a
-waiting public query.
+waiting public query, and a query-task poll that reports `workflow_task_pending`
+must be followed by workflow-task progress for that run.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,
