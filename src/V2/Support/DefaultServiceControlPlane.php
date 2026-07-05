@@ -33,6 +33,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 {
     private const UNRESOLVED = 'unresolved';
 
+    private const WORKFLOW_QUERY_HANDLER_BINDING = 'workflow.v2.service_control_plane.workflow_query_handler';
+
     public function __construct(
         private ?WorkflowControlPlane $workflowControlPlane = null,
         private ?ServiceBoundaryPolicy $boundaryPolicy = null,
@@ -1229,12 +1231,26 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             );
         }
 
+        $queryOptions = $this->workflowCommandOptions(
+            $call,
+            $binding,
+            $options,
+        );
+        $queryOptions['service_call_id'] = $call->id;
+        $queryOptions['service_call_attempt'] = $attempt;
+        $queryOptions['service_call_max_attempts'] = $maxAttempts;
+        $queryOptions['caller_namespace'] = $call->caller_namespace;
+        $queryOptions['caller_workflow_instance_id'] = $call->caller_workflow_instance_id;
+        $queryOptions['caller_workflow_run_id'] = $call->caller_workflow_run_id;
+
         try {
-            $result = $this->workflows()->query($instanceId, $queryName, $this->workflowCommandOptions(
+            $result = $this->workflowQueryHandlerResult(
+                $instanceId,
+                $queryName,
+                $queryOptions,
                 $call,
-                $binding,
-                $options,
-            ));
+                $operation,
+            );
         } catch (Throwable $exception) {
             return $this->markHandlerFailure(
                 $call,
@@ -1273,6 +1289,41 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $attempt,
             $maxAttempts,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function workflowQueryHandlerResult(
+        string $instanceId,
+        string $queryName,
+        array $options,
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+    ): array {
+        $handler = $this->workflowQueryHandler();
+
+        if ($handler !== null) {
+            $result = $handler($instanceId, $queryName, $options, $call, $operation);
+
+            return is_array($result)
+                ? $result
+                : [
+                    'success' => false,
+                    'workflow_instance_id' => $instanceId,
+                    'workflow_id' => $instanceId,
+                    'run_id' => null,
+                    'target_scope' => 'instance',
+                    'query_name' => $queryName,
+                    'result' => null,
+                    'reason' => 'workflow_query_handler_invalid_result',
+                    'message' => 'Configured workflow query service handler did not return an array result.',
+                    'status' => 500,
+                ];
+        }
+
+        return $this->workflows()->query($instanceId, $queryName, $options);
     }
 
     /**
@@ -1741,6 +1792,23 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     private function boundaryPolicy(): ServiceBoundaryPolicy
     {
         return $this->boundaryPolicy ??= app(ServiceBoundaryPolicy::class);
+    }
+
+    private function workflowQueryHandler(): ?callable
+    {
+        if (! function_exists('app')) {
+            return null;
+        }
+
+        $container = app();
+
+        if (! method_exists($container, 'bound') || ! $container->bound(self::WORKFLOW_QUERY_HANDLER_BINDING)) {
+            return null;
+        }
+
+        $handler = $container->make(self::WORKFLOW_QUERY_HANDLER_BINDING);
+
+        return is_callable($handler) ? $handler : null;
     }
 
     private function releaseBoundaryAdmission(ServiceBoundaryRequest $request): void

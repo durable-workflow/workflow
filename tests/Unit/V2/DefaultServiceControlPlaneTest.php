@@ -267,6 +267,52 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame('billing', $fakeWorkflow->queries[0]['options']['namespace']);
     }
 
+    public function testWorkflowQueryBindingUsesConfiguredHostQueryHandler(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $hostQueryHandler = new FakeServiceWorkflowQueryHandler([
+            [
+                'success' => true,
+                'workflow_instance_id' => 'invoice-42',
+                'run_id' => 'run-routed-1',
+                'result' => 'routed query result',
+                'reason' => null,
+            ],
+        ]);
+        $this->app->instance(
+            'workflow.v2.service_control_plane.workflow_query_handler',
+            [$hostQueryHandler, 'query'],
+        );
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, new DefaultServiceBoundaryPolicy());
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'operation_mode' => ServiceCallOperationMode::Sync->value,
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowQuery->value,
+            'handler_binding' => [
+                'workflow_instance_id' => 'invoice-42',
+                'query_name' => 'status',
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Completed->value, $result['outcome']);
+        $this->assertSame('run-routed-1', $result['resolved_target_reference']);
+        $this->assertCount(0, $fakeWorkflow->queries);
+        $this->assertCount(1, $hostQueryHandler->queries);
+        $this->assertSame('invoice-42', $hostQueryHandler->queries[0]['instance_id']);
+        $this->assertSame('status', $hostQueryHandler->queries[0]['name']);
+        $this->assertSame('billing', $hostQueryHandler->queries[0]['options']['namespace']);
+        $this->assertSame(1, $hostQueryHandler->queries[0]['options']['service_call_attempt']);
+        $this->assertSame($result['service_call_id'], $hostQueryHandler->queries[0]['options']['service_call_id']);
+    }
+
     public function testExecuteRetriesTransientHandlerFailuresAndRecordsAttempts(): void
     {
         $fakeWorkflow = new FakeServiceWorkflowControlPlane();
@@ -899,6 +945,53 @@ final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
         $max = isset($rules['max_in_flight']) ? (int) $rules['max_in_flight'] : null;
 
         return $max !== null && $max > 0 ? $max : null;
+    }
+}
+
+final class FakeServiceWorkflowQueryHandler
+{
+    /**
+     * @var list<array{instance_id: string, name: string, options: array<string, mixed>, call_id: string, operation_id: string}>
+     */
+    public array $queries = [];
+
+    /**
+     * @param list<array<string, mixed>> $results
+     */
+    public function __construct(private array $results)
+    {
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function query(
+        string $instanceId,
+        string $name,
+        array $options,
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+    ): array {
+        $this->queries[] = [
+            'instance_id' => $instanceId,
+            'name' => $name,
+            'options' => $options,
+            'call_id' => $call->id,
+            'operation_id' => $operation->id,
+        ];
+
+        if ($this->results !== []) {
+            return array_shift($this->results);
+        }
+
+        return [
+            'success' => true,
+            'workflow_instance_id' => $instanceId,
+            'run_id' => 'run-routed-1',
+            'result' => null,
+            'reason' => null,
+        ];
     }
 }
 
