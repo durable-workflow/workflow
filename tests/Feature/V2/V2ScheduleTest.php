@@ -9,15 +9,18 @@ use LogicException;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\ScheduleStartResult;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\WorkflowStub;
 
@@ -132,6 +135,83 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(ScheduleStatus::Deleted, $deleted->status);
         $this->assertNotNull($deleted->deleted_at);
         $this->assertNull($deleted->next_fire_at);
+    }
+
+    public function testDeleteScheduleClearsBufferedActions(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'delete-clears-buffer',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertTrue($schedule->hasBufferedActions());
+
+        $deleted = ScheduleManager::delete($schedule);
+        $deleted->refresh();
+
+        $this->assertSame(ScheduleStatus::Deleted, $deleted->status);
+        $this->assertFalse($deleted->hasBufferedActions());
+        $this->assertNull($deleted->buffered_actions);
+    }
+
+    public function testDeletedScheduleSelectedBeforeDispatchIsNotStartedOrAttributed(): void
+    {
+        $starter = new class implements ScheduleWorkflowStarter
+        {
+            public bool $called = false;
+
+            public function start(
+                WorkflowSchedule $schedule,
+                ?\DateTimeInterface $occurrenceTime,
+                string $outcome,
+                ?string $effectiveOverlapPolicy = null,
+            ): ScheduleStartResult {
+                $this->called = true;
+
+                return new ScheduleStartResult('wf-stale-delete', 'run-stale-delete');
+            }
+        };
+
+        $this->app->instance(ScheduleWorkflowStarter::class, $starter);
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'selected-before-delete',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+        $selectedBeforeDelete = WorkflowSchedule::query()->findOrFail($schedule->id);
+
+        ScheduleManager::delete($schedule);
+
+        $startRun = new \ReflectionMethod(ScheduleManager::class, 'startRun');
+        $startRun->setAccessible(true);
+
+        try {
+            $startRun->invoke(null, $selectedBeforeDelete, now()->subMinute(), 'scheduled', null, null);
+            $this->fail('Deleted schedules must not dispatch selected stale work.');
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            $this->assertSame('schedule_deleted', $exception->blockedReason());
+        }
+
+        $this->assertFalse($starter->called);
+        $this->assertFalse(
+            WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->exists(),
+        );
     }
 
     public function testPauseDeletedScheduleThrows(): void

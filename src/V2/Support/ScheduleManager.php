@@ -309,6 +309,7 @@ final class ScheduleManager
             'status' => ScheduleStatus::Deleted->value,
             'deleted_at' => now(),
             'next_fire_at' => null,
+            'buffered_actions' => null,
         ])->save();
 
         self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
@@ -746,6 +747,24 @@ final class ScheduleManager
         ?string $effectiveOverlapPolicy = null,
         ?CommandContext $context = null,
     ): ScheduleStartResult {
+        $schedule->refresh();
+
+        if (! $schedule->status?->allowsTrigger()) {
+            $reason = $schedule->status === ScheduleStatus::Deleted
+                ? 'schedule_deleted'
+                : 'schedule_not_triggerable';
+
+            throw new WorkflowExecutionUnavailableException(
+                'schedule_start',
+                $schedule->schedule_id,
+                $reason,
+                sprintf(
+                    'Schedule [%s] is no longer active and cannot start a workflow.',
+                    $schedule->schedule_id,
+                ),
+            );
+        }
+
         $starter = app(ScheduleWorkflowStarter::class);
 
         try {
@@ -786,6 +805,7 @@ final class ScheduleManager
                 'status' => ScheduleStatus::Deleted->value,
                 'deleted_at' => now(),
                 'next_fire_at' => null,
+                'buffered_actions' => null,
             ])->save();
             self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
                 'reason' => 'max_runs_exhausted',
