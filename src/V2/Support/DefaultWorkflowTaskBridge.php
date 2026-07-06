@@ -15,6 +15,7 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
@@ -122,6 +123,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         'schedule_activity',
         'start_timer',
         'start_child_workflow',
+        'start_service_operation',
         'complete_update',
         'fail_update',
         'record_side_effect',
@@ -1449,6 +1451,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
             'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
             'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
+            'start_service_operation' => $this->applyStartServiceOperation(
+                $run,
+                $task,
+                $command,
+                $sequence,
+                $createdTaskIds,
+            ),
             'complete_update' => $this->applyCompleteUpdate($run, $task, $command, $sequence),
             'fail_update' => $this->applyFailUpdate($run, $task, $command, $sequence),
             'record_side_effect' => $this->applyRecordSideEffect($run, $task, $command, $sequence),
@@ -2161,6 +2170,313 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $createdTaskIds[] = $timerTask->id;
 
         return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, endpoint_name: string, service_name: string, operation_name: string, request_payload?: string|null, payload_codec?: string|null, namespace?: string, caller_namespace?: string, service_call_id?: string, idempotency_key?: string, mode_override?: string, wait_for?: string, wait_timeout_seconds?: int, target_workflow_instance_id?: string, target_workflow_run_id?: string, connection?: string, queue?: string, business_key?: string, labels?: array<string, mixed>, memo?: array<string, mixed>, search_attributes?: array<string, mixed>, duplicate_start_policy?: string, metadata?: array<string, mixed>, request_payload_reference?: string, principal_subject?: string, principal_method?: string, principal_roles?: list<string>, principal_tenant?: string, principal_claims?: array<string, mixed>} $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyStartServiceOperation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $requestPayload = isset($command['request_payload']) && is_string($command['request_payload'])
+            ? ExternalPayloads::externalizeForNamespace($command['request_payload'], $payloadCodec, $namespace)
+            : null;
+        $surface = $this->serviceControlPlane()->execute(
+            $command['endpoint_name'],
+            $command['service_name'],
+            $command['operation_name'],
+            $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec),
+        );
+
+        $eventType = self::serviceOperationEventTypeForSurface($surface);
+        $event = WorkflowHistoryEvent::record($run, $eventType, $this->serviceOperationEventPayload(
+            $run,
+            $sequence,
+            $command,
+            $surface,
+            $requestPayload,
+            $payloadCodec,
+        ), $task);
+
+        if (self::serviceOperationEventIsWorkflowVisible($eventType, $command, $surface)) {
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [
+                    'resume_source_kind' => 'service_call',
+                    'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null),
+                    'workflow_event_type' => $event->event_type->value,
+                    'workflow_history_event_id' => $event->id,
+                    'workflow_sequence' => $sequence,
+                ],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $resumeTask->id;
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array<string, mixed>
+     */
+    private function serviceOperationControlPlaneOptions(
+        WorkflowRun $run,
+        array $command,
+        int $sequence,
+        string $payloadCodec,
+    ): array {
+        $metadata = is_array($command['metadata'] ?? null) ? $command['metadata'] : [];
+        $metadata = [
+            'caller_sdk_language' => 'workflow-php',
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'workflow_sequence' => $sequence,
+        ] + $metadata;
+
+        return array_filter([
+            'namespace' => self::nonEmptyString($command['namespace'] ?? null) ?? $run->namespace,
+            'arguments' => $this->serviceOperationRequestArguments($command, $payloadCodec),
+            'payload_blob' => self::nonEmptyString($command['request_payload'] ?? null),
+            'payload_codec' => $payloadCodec,
+            'service_call_id' => self::nonEmptyString($command['service_call_id'] ?? null),
+            'idempotency_key' => self::nonEmptyString($command['idempotency_key'] ?? null)
+                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'mode_override' => self::nonEmptyString($command['mode_override'] ?? null),
+            'wait_for' => self::nonEmptyString($command['wait_for'] ?? null),
+            'wait_timeout_seconds' => is_int($command['wait_timeout_seconds'] ?? null)
+                ? $command['wait_timeout_seconds']
+                : null,
+            'caller_namespace' => self::nonEmptyString($command['caller_namespace'] ?? null) ?? $run->namespace,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'target_workflow_instance_id' => self::nonEmptyString($command['target_workflow_instance_id'] ?? null),
+            'target_workflow_run_id' => self::nonEmptyString($command['target_workflow_run_id'] ?? null),
+            'connection' => self::nonEmptyString($command['connection'] ?? null),
+            'queue' => self::nonEmptyString($command['queue'] ?? null),
+            'business_key' => self::nonEmptyString($command['business_key'] ?? null),
+            'labels' => is_array($command['labels'] ?? null) ? $command['labels'] : null,
+            'memo' => is_array($command['memo'] ?? null) ? $command['memo'] : null,
+            'search_attributes' => is_array($command['search_attributes'] ?? null)
+                ? $command['search_attributes']
+                : null,
+            'duplicate_start_policy' => self::nonEmptyString($command['duplicate_start_policy'] ?? null),
+            'metadata' => $metadata,
+            'request_payload_reference' => self::nonEmptyString($command['request_payload_reference'] ?? null),
+            'principal_subject' => self::nonEmptyString($command['principal_subject'] ?? null),
+            'principal_method' => self::nonEmptyString($command['principal_method'] ?? null),
+            'principal_roles' => is_array($command['principal_roles'] ?? null) ? $command['principal_roles'] : null,
+            'principal_tenant' => self::nonEmptyString($command['principal_tenant'] ?? null),
+            'principal_claims' => is_array($command['principal_claims'] ?? null) ? $command['principal_claims'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private function serviceOperationRequestArguments(array $command, string $payloadCodec): mixed
+    {
+        $payload = self::nonEmptyString($command['request_payload'] ?? null);
+
+        if ($payload === null) {
+            return null;
+        }
+
+        return Serializer::unserializeWithCodec($payloadCodec, $payload);
+    }
+
+    private function defaultServiceOperationIdempotencyKey(WorkflowRun $run, int $sequence): string
+    {
+        return implode(':', [
+            'workflow-service-operation',
+            $run->workflow_instance_id,
+            $run->id,
+            (string) $sequence,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
+    {
+        $status = self::nonEmptyString($surface['status'] ?? null);
+
+        return match ($status) {
+            'completed' => HistoryEventType::ServiceCallCompleted,
+            'failed' => HistoryEventType::ServiceCallFailed,
+            'cancelled' => HistoryEventType::ServiceCallCancelled,
+            default => ($surface['accepted'] ?? null) === false
+                ? HistoryEventType::ServiceCallFailed
+                : HistoryEventType::ServiceCallStarted,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationEventIsWorkflowVisible(
+        HistoryEventType $eventType,
+        array $command,
+        array $surface,
+    ): bool
+    {
+        if ($eventType !== HistoryEventType::ServiceCallStarted) {
+            return true;
+        }
+
+        return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($command['mode_override'] ?? null) === 'async'
+            || self::nonEmptyString($surface['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private function serviceOperationEventPayload(
+        WorkflowRun $run,
+        int $sequence,
+        array $command,
+        array $surface,
+        ?string $requestPayload,
+        string $payloadCodec,
+    ): array {
+        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $payload = [
+            'sequence' => $sequence,
+            'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)
+                ?? self::nonEmptyString($surface['id'] ?? null),
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'caller_sdk_language' => 'workflow-php',
+            'endpoint_name' => $command['endpoint_name'],
+            'service_name' => $command['service_name'],
+            'operation_name' => $command['operation_name'],
+            'service_sdk_language' => self::metadataString($surface, 'service_sdk_language')
+                ?? self::metadataString($command['metadata'] ?? null, 'service_sdk_language'),
+            'request_payload' => ExternalPayloads::historyValue(
+                $requestPayload,
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'response_payload' => $responsePayload,
+            'payload_codec' => $payloadCodec,
+            'operation_mode' => self::nonEmptyString($surface['operation_mode'] ?? null)
+                ?? self::nonEmptyString($command['mode_override'] ?? null),
+            'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
+                ?? self::nonEmptyString($command['wait_for'] ?? null),
+            'status' => self::nonEmptyString($surface['status'] ?? null),
+            'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
+            'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),
+            'resolved_target_reference' => self::nonEmptyString($surface['resolved_target_reference'] ?? null),
+            'linked_workflow_instance_id' => self::nonEmptyString($surface['linked_workflow_instance_id'] ?? null),
+            'linked_workflow_run_id' => self::nonEmptyString($surface['linked_workflow_run_id'] ?? null),
+            'linked_workflow_update_id' => self::nonEmptyString($surface['linked_workflow_update_id'] ?? null),
+            'service_call' => $surface,
+            'response_or_failure_surface' => $surface,
+        ];
+
+        if (($surface['accepted'] ?? null) === false || ($payload['status'] ?? null) === 'failed') {
+            $failure = self::serviceOperationFailurePayload($surface);
+            $payload += [
+                'exception_type' => $failure['type'] ?? null,
+                'exception_class' => $failure['class'] ?? RuntimeException::class,
+                'message' => $failure['message'] ?? 'Service operation failed.',
+                'code' => $failure['code'] ?? 0,
+                'exception' => $failure,
+            ];
+        }
+
+        if (($payload['status'] ?? null) === 'cancelled') {
+            $payload += [
+                'exception_type' => 'service_call_cancelled',
+                'exception_class' => RuntimeException::class,
+                'message' => self::nonEmptyString($surface['failure_message'] ?? null) ?? 'Service operation cancelled.',
+                'code' => 0,
+                'exception' => [
+                    'class' => RuntimeException::class,
+                    'type' => 'service_call_cancelled',
+                    'message' => self::nonEmptyString($surface['failure_message'] ?? null)
+                        ?? 'Service operation cancelled.',
+                    'code' => 0,
+                ],
+            ];
+        }
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private static function serviceOperationFailurePayload(array $surface): array
+    {
+        $type = self::metadataString($surface, 'caller_observed_error_type')
+            ?? self::metadataString($surface, 'service_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'caller_observed_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'service_error_type')
+            ?? self::nonEmptyString($surface['failure_type'] ?? null)
+            ?? self::nonEmptyString($surface['error_type'] ?? null)
+            ?? self::nonEmptyString($surface['outcome_reason'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'service_operation_failed';
+        $message = self::metadataString($surface, 'typed_error_message')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'typed_error_message')
+            ?? self::nonEmptyString($surface['outcome_message'] ?? null)
+            ?? self::nonEmptyString($surface['failure_message'] ?? null)
+            ?? self::nonEmptyString($surface['message'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'Service operation failed.';
+
+        return [
+            'class' => RuntimeException::class,
+            'type' => $type,
+            'message' => $message,
+            'code' => 0,
+        ];
+    }
+
+    private function serviceControlPlane(): ServiceControlPlane
+    {
+        /** @var ServiceControlPlane $controlPlane */
+        $controlPlane = app(ServiceControlPlane::class);
+
+        return $controlPlane;
+    }
+
+    private static function metadataString(mixed $container, string $key): ?string
+    {
+        if (! is_array($container)) {
+            return null;
+        }
+
+        $value = $container[$key] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**
@@ -3425,6 +3741,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'schedule_activity' => self::normalizeScheduleActivityCommand($command),
             'start_timer' => self::normalizeStartTimerCommand($command),
             'start_child_workflow' => self::normalizeStartChildWorkflowCommand($command),
+            'start_service_operation' => self::normalizeStartServiceOperationCommand($command),
             'continue_as_new' => self::normalizeContinueAsNewCommand($command),
             'complete_update' => self::normalizeCompleteUpdateCommand($command),
             'fail_update' => self::normalizeFailUpdateCommand($command),
@@ -3761,6 +4078,130 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'execution_timeout_seconds' => $executionTimeoutSeconds,
             'run_timeout_seconds' => $runTimeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     endpoint_name: string,
+     *     service_name: string,
+     *     operation_name: string,
+     *     request_payload?: string|null,
+     *     payload_codec?: string|null,
+     *     namespace?: string,
+     *     caller_namespace?: string,
+     *     service_call_id?: string,
+     *     idempotency_key?: string,
+     *     mode_override?: string,
+     *     wait_for?: string,
+     *     wait_timeout_seconds?: int,
+     *     target_workflow_instance_id?: string,
+     *     target_workflow_run_id?: string,
+     *     connection?: string,
+     *     queue?: string,
+     *     business_key?: string,
+     *     labels?: array<string, mixed>,
+     *     memo?: array<string, mixed>,
+     *     search_attributes?: array<string, mixed>,
+     *     duplicate_start_policy?: string,
+     *     metadata?: array<string, mixed>,
+     *     request_payload_reference?: string,
+     *     principal_subject?: string,
+     *     principal_method?: string,
+     *     principal_roles?: list<string>,
+     *     principal_tenant?: string,
+     *     principal_claims?: array<string, mixed>
+     * }|null
+     */
+    private static function normalizeStartServiceOperationCommand(array $command): ?array
+    {
+        $endpointName = self::normalizeRequiredString($command['endpoint_name'] ?? null);
+        $serviceName = self::normalizeRequiredString($command['service_name'] ?? null);
+        $operationName = self::normalizeRequiredString($command['operation_name'] ?? null);
+        $requestPayload = self::normalizeCommandPayloadString($command, 'request_payload');
+        $modeOverride = self::normalizeServiceOperationMode($command['mode_override'] ?? null);
+        $waitFor = self::normalizeServiceOperationWaitFor($command['wait_for'] ?? null);
+        $waitTimeoutSeconds = self::normalizeNonNegativeInt($command['wait_timeout_seconds'] ?? null);
+
+        if ($endpointName === null || $serviceName === null || $operationName === null || $requestPayload === null) {
+            return null;
+        }
+
+        if (($command['mode_override'] ?? null) !== null && $modeOverride === null) {
+            return null;
+        }
+
+        if (($command['wait_for'] ?? null) !== null && $waitFor === null) {
+            return null;
+        }
+
+        if (($command['wait_timeout_seconds'] ?? null) !== null && $waitTimeoutSeconds === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'start_service_operation',
+            'endpoint_name' => $endpointName,
+            'service_name' => $serviceName,
+            'operation_name' => $operationName,
+            'request_payload' => $requestPayload['payload'],
+            'payload_codec' => $requestPayload['payload_codec'],
+            'namespace' => self::normalizeOptionalString($command['namespace'] ?? null),
+            'caller_namespace' => self::normalizeOptionalString($command['caller_namespace'] ?? null),
+            'service_call_id' => self::normalizeOptionalString($command['service_call_id'] ?? null),
+            'idempotency_key' => self::normalizeOptionalString($command['idempotency_key'] ?? null),
+            'mode_override' => $modeOverride,
+            'wait_for' => $waitFor,
+            'wait_timeout_seconds' => $waitTimeoutSeconds,
+            'target_workflow_instance_id' => self::normalizeOptionalString(
+                $command['target_workflow_instance_id'] ?? null,
+            ),
+            'target_workflow_run_id' => self::normalizeOptionalString($command['target_workflow_run_id'] ?? null),
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'business_key' => self::normalizeOptionalString($command['business_key'] ?? null),
+            'labels' => is_array($command['labels'] ?? null) ? $command['labels'] : null,
+            'memo' => is_array($command['memo'] ?? null) ? $command['memo'] : null,
+            'search_attributes' => is_array($command['search_attributes'] ?? null)
+                ? $command['search_attributes']
+                : null,
+            'duplicate_start_policy' => self::normalizeOptionalString($command['duplicate_start_policy'] ?? null),
+            'metadata' => is_array($command['metadata'] ?? null) ? $command['metadata'] : null,
+            'request_payload_reference' => self::normalizeOptionalString($command['request_payload_reference'] ?? null),
+            'principal_subject' => self::normalizeOptionalString($command['principal_subject'] ?? null),
+            'principal_method' => self::normalizeOptionalString($command['principal_method'] ?? null),
+            'principal_roles' => self::normalizeStringList($command['principal_roles'] ?? null),
+            'principal_tenant' => self::normalizeOptionalString($command['principal_tenant'] ?? null),
+            'principal_claims' => is_array($command['principal_claims'] ?? null) ? $command['principal_claims'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private static function normalizeServiceOperationMode(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['sync', 'async'], true) ? $value : null;
+    }
+
+    private static function normalizeServiceOperationWaitFor(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['accepted', 'completed'], true) ? $value : null;
+    }
+
+    private static function normalizeNonNegativeInt(mixed $value): ?int
+    {
+        return is_int($value) && $value >= 0 ? $value : null;
     }
 
     /**

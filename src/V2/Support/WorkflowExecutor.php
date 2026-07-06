@@ -14,6 +14,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
@@ -899,6 +900,79 @@ final class WorkflowExecutor
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 return $this->waitForNextResumeSource($run, $task, true);
+            }
+
+            if ($current instanceof ServiceOperationCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
+
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::SERVICE_OPERATION,
+                    ['operation_name' => $current->operationName],
+                )) {
+                    return null;
+                }
+
+                $serviceEvent = $this->serviceOperationEvent($run, $sequence);
+
+                if ($serviceEvent === null) {
+                    try {
+                        $serviceEvent = $this->recordServiceOperationEvent($run, $task, $sequence, $current);
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+                }
+
+                if (
+                    $serviceEvent->event_type === HistoryEventType::ServiceCallStarted
+                    && ! self::serviceOperationStartedEventIsVisible($serviceEvent, $current)
+                ) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
+                try {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    if (in_array($serviceEvent->event_type, [
+                        HistoryEventType::ServiceCallFailed,
+                        HistoryEventType::ServiceCallCancelled,
+                    ], true)) {
+                        $current = $workflowExecution->throw(
+                            $this->serviceOperationException($serviceEvent),
+                            $serviceEvent->recorded_at,
+                        );
+
+                        $this->recordFailureHandled(
+                            $run,
+                            $task,
+                            null,
+                            $sequence,
+                            $serviceEvent->payload,
+                        );
+                    } else {
+                        $current = $workflowExecution->send(
+                            $this->serviceOperationResult($serviceEvent, $run),
+                            $serviceEvent->recorded_at,
+                        );
+                    }
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
             }
 
             if ($current instanceof ChildWorkflowCall) {
@@ -4371,6 +4445,391 @@ final class WorkflowExecutor
         );
 
         return $event;
+    }
+
+    private function serviceOperationEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        $events = $run->historyEvents->filter(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [
+                    HistoryEventType::ServiceCallStarted,
+                    HistoryEventType::ServiceCallCompleted,
+                    HistoryEventType::ServiceCallFailed,
+                    HistoryEventType::ServiceCallCancelled,
+                ],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        /** @var WorkflowHistoryEvent|null $terminal */
+        $terminal = $events->first(static fn (WorkflowHistoryEvent $event): bool => in_array(
+            $event->event_type,
+            [
+                HistoryEventType::ServiceCallCompleted,
+                HistoryEventType::ServiceCallFailed,
+                HistoryEventType::ServiceCallCancelled,
+            ],
+            true,
+        ));
+
+        /** @var WorkflowHistoryEvent|null $started */
+        $started = $events->first();
+
+        return $terminal ?? $started;
+    }
+
+    private function recordServiceOperationEvent(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        ServiceOperationCall $call,
+    ): WorkflowHistoryEvent {
+        $payloadCodec = $call->options?->payloadCodec
+            ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
+                ? $run->payload_codec
+                : CodecRegistry::defaultCodec());
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $serializedRequest = Serializer::serializeWithCodec($payloadCodec, $call->requestPayload);
+        $storedRequest = ExternalPayloads::externalizeForNamespace($serializedRequest, $payloadCodec, $namespace);
+        $surface = $this->serviceControlPlane()->execute(
+            $call->endpointName,
+            $call->serviceName,
+            $call->operationName,
+            $this->serviceOperationControlPlaneOptions($run, $sequence, $call, $payloadCodec, $serializedRequest),
+        );
+        $eventType = self::serviceOperationEventTypeForSurface($surface);
+
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            $eventType,
+            $this->serviceOperationEventPayload(
+                $run,
+                $sequence,
+                $call,
+                $surface,
+                $storedRequest,
+                $payloadCodec,
+            ),
+            $task,
+        );
+        $run->historyEvents->push($event);
+
+        return $event;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serviceOperationControlPlaneOptions(
+        WorkflowRun $run,
+        int $sequence,
+        ServiceOperationCall $call,
+        string $payloadCodec,
+        string $serializedRequest,
+    ): array {
+        $options = $call->options?->toCommandOptions() ?? [];
+        $metadata = is_array($options['metadata'] ?? null) ? $options['metadata'] : [];
+        $metadata = [
+            'caller_sdk_language' => 'workflow-php',
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'workflow_sequence' => $sequence,
+        ] + $metadata;
+
+        return array_filter([
+            'namespace' => self::nonEmptyString($options['namespace'] ?? null) ?? $run->namespace,
+            'arguments' => $call->requestPayload,
+            'payload_blob' => $serializedRequest,
+            'payload_codec' => $payloadCodec,
+            'service_call_id' => self::nonEmptyString($options['service_call_id'] ?? null),
+            'idempotency_key' => self::nonEmptyString($options['idempotency_key'] ?? null)
+                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'mode_override' => self::nonEmptyString($options['mode_override'] ?? null),
+            'wait_for' => self::nonEmptyString($options['wait_for'] ?? null),
+            'wait_timeout_seconds' => is_int($options['wait_timeout_seconds'] ?? null)
+                ? $options['wait_timeout_seconds']
+                : null,
+            'caller_namespace' => self::nonEmptyString($options['caller_namespace'] ?? null) ?? $run->namespace,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'target_workflow_instance_id' => self::nonEmptyString($options['target_workflow_instance_id'] ?? null),
+            'target_workflow_run_id' => self::nonEmptyString($options['target_workflow_run_id'] ?? null),
+            'connection' => self::nonEmptyString($options['connection'] ?? null),
+            'queue' => self::nonEmptyString($options['queue'] ?? null),
+            'business_key' => self::nonEmptyString($options['business_key'] ?? null),
+            'labels' => is_array($options['labels'] ?? null) ? $options['labels'] : null,
+            'memo' => is_array($options['memo'] ?? null) ? $options['memo'] : null,
+            'search_attributes' => is_array($options['search_attributes'] ?? null)
+                ? $options['search_attributes']
+                : null,
+            'duplicate_start_policy' => self::nonEmptyString($options['duplicate_start_policy'] ?? null),
+            'metadata' => $metadata,
+            'request_payload_reference' => self::nonEmptyString($options['request_payload_reference'] ?? null),
+            'principal_subject' => self::nonEmptyString($options['principal_subject'] ?? null),
+            'principal_method' => self::nonEmptyString($options['principal_method'] ?? null),
+            'principal_roles' => is_array($options['principal_roles'] ?? null) ? $options['principal_roles'] : null,
+            'principal_tenant' => self::nonEmptyString($options['principal_tenant'] ?? null),
+            'principal_claims' => is_array($options['principal_claims'] ?? null) ? $options['principal_claims'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private function defaultServiceOperationIdempotencyKey(WorkflowRun $run, int $sequence): string
+    {
+        return implode(':', [
+            'workflow-service-operation',
+            $run->workflow_instance_id,
+            $run->id,
+            (string) $sequence,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
+    {
+        $status = self::nonEmptyString($surface['status'] ?? null);
+
+        return match ($status) {
+            'completed' => HistoryEventType::ServiceCallCompleted,
+            'failed' => HistoryEventType::ServiceCallFailed,
+            'cancelled' => HistoryEventType::ServiceCallCancelled,
+            default => ($surface['accepted'] ?? null) === false
+                ? HistoryEventType::ServiceCallFailed
+                : HistoryEventType::ServiceCallStarted,
+        };
+    }
+
+    private static function serviceOperationStartedEventIsVisible(
+        WorkflowHistoryEvent $event,
+        ServiceOperationCall $call,
+    ): bool
+    {
+        if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
+            return true;
+        }
+
+        $surface = is_array($event->payload['service_call'] ?? null)
+            ? $event->payload['service_call']
+            : [];
+
+        return self::serviceOperationResumesOnAdmission($call)
+            || self::nonEmptyString($event->payload['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($event->payload['operation_mode'] ?? null) === 'async'
+            || self::nonEmptyString($surface['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    private static function serviceOperationResumesOnAdmission(ServiceOperationCall $call): bool
+    {
+        return $call->options?->shouldResumeOnAdmission() ?? false;
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private function serviceOperationEventPayload(
+        WorkflowRun $run,
+        int $sequence,
+        ServiceOperationCall $call,
+        array $surface,
+        ?string $storedRequest,
+        string $payloadCodec,
+    ): array {
+        $metadata = $call->options?->metadata ?? [];
+        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $payload = [
+            'sequence' => $sequence,
+            'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)
+                ?? self::nonEmptyString($surface['id'] ?? null),
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'caller_sdk_language' => 'workflow-php',
+            'endpoint_name' => $call->endpointName,
+            'service_name' => $call->serviceName,
+            'operation_name' => $call->operationName,
+            'service_sdk_language' => self::metadataString($surface, 'service_sdk_language')
+                ?? self::metadataString($metadata, 'service_sdk_language'),
+            'request_payload' => ExternalPayloads::historyValue(
+                $storedRequest,
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'response_payload' => $responsePayload,
+            'payload_codec' => $payloadCodec,
+            'operation_mode' => self::nonEmptyString($surface['operation_mode'] ?? null)
+                ?? $call->options?->modeOverride,
+            'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
+                ?? $call->options?->waitFor,
+            'status' => self::nonEmptyString($surface['status'] ?? null),
+            'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
+            'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),
+            'resolved_target_reference' => self::nonEmptyString($surface['resolved_target_reference'] ?? null),
+            'linked_workflow_instance_id' => self::nonEmptyString($surface['linked_workflow_instance_id'] ?? null),
+            'linked_workflow_run_id' => self::nonEmptyString($surface['linked_workflow_run_id'] ?? null),
+            'linked_workflow_update_id' => self::nonEmptyString($surface['linked_workflow_update_id'] ?? null),
+            'service_call' => $surface,
+            'response_or_failure_surface' => $surface,
+        ];
+
+        if (($surface['accepted'] ?? null) === false || ($payload['status'] ?? null) === 'failed') {
+            $failure = self::serviceOperationFailurePayload($surface);
+            $payload += [
+                'exception_type' => $failure['type'] ?? null,
+                'exception_class' => $failure['class'] ?? RuntimeException::class,
+                'message' => $failure['message'] ?? 'Service operation failed.',
+                'code' => $failure['code'] ?? 0,
+                'exception' => $failure,
+            ];
+        }
+
+        if (($payload['status'] ?? null) === 'cancelled') {
+            $message = self::nonEmptyString($surface['failure_message'] ?? null) ?? 'Service operation cancelled.';
+            $payload += [
+                'exception_type' => 'service_call_cancelled',
+                'exception_class' => RuntimeException::class,
+                'message' => $message,
+                'code' => 0,
+                'exception' => [
+                    'class' => RuntimeException::class,
+                    'type' => 'service_call_cancelled',
+                    'message' => $message,
+                    'code' => 0,
+                ],
+            ];
+        }
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private static function serviceOperationFailurePayload(array $surface): array
+    {
+        $type = self::metadataString($surface, 'caller_observed_error_type')
+            ?? self::metadataString($surface, 'service_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'caller_observed_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'service_error_type')
+            ?? self::nonEmptyString($surface['failure_type'] ?? null)
+            ?? self::nonEmptyString($surface['error_type'] ?? null)
+            ?? self::nonEmptyString($surface['outcome_reason'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'service_operation_failed';
+        $message = self::metadataString($surface, 'typed_error_message')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'typed_error_message')
+            ?? self::nonEmptyString($surface['outcome_message'] ?? null)
+            ?? self::nonEmptyString($surface['failure_message'] ?? null)
+            ?? self::nonEmptyString($surface['message'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'Service operation failed.';
+
+        return [
+            'class' => RuntimeException::class,
+            'type' => $type,
+            'message' => $message,
+            'code' => 0,
+        ];
+    }
+
+    private function serviceOperationResult(WorkflowHistoryEvent $event, WorkflowRun $run): ServiceOperationResult
+    {
+        $surface = is_array($event->payload['service_call'] ?? null)
+            ? $event->payload['service_call']
+            : [];
+        $surface += array_filter([
+            'service_call_id' => self::nonEmptyString($event->payload['service_call_id'] ?? null),
+            'status' => self::nonEmptyString($event->payload['status'] ?? null),
+            'outcome' => self::nonEmptyString($event->payload['outcome'] ?? null),
+            'endpoint_name' => self::nonEmptyString($event->payload['endpoint_name'] ?? null),
+            'service_name' => self::nonEmptyString($event->payload['service_name'] ?? null),
+            'operation_name' => self::nonEmptyString($event->payload['operation_name'] ?? null),
+            'operation_mode' => self::nonEmptyString($event->payload['operation_mode'] ?? null),
+            'wait_for' => self::nonEmptyString($event->payload['wait_for'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return ServiceOperationResult::fromSurface(
+            $surface,
+            $this->serviceOperationResponsePayload($event, $run),
+        );
+    }
+
+    private function serviceOperationResponsePayload(WorkflowHistoryEvent $event, WorkflowRun $run): mixed
+    {
+        if (! array_key_exists('response_payload', $event->payload)) {
+            return null;
+        }
+
+        $payload = $event->payload['response_payload'];
+
+        if (! is_string($payload)) {
+            return $payload;
+        }
+
+        $codec = self::nonEmptyString($event->payload['payload_codec'] ?? null)
+            ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
+                ? $run->payload_codec
+                : CodecRegistry::defaultCodec());
+
+        try {
+            return Serializer::unserializeWithCodec($codec, $payload);
+        } catch (Throwable) {
+            return $payload;
+        }
+    }
+
+    private function serviceOperationException(WorkflowHistoryEvent $event): Throwable
+    {
+        $payload = is_array($event->payload['exception'] ?? null) ? $event->payload['exception'] : [];
+        $exceptionClass = self::nonEmptyString($event->payload['exception_class'] ?? null) ?? RuntimeException::class;
+        $message = self::nonEmptyString($event->payload['message'] ?? null) ?? 'Service operation failed.';
+        $code = self::intValue($event->payload['code'] ?? null) ?? 0;
+
+        if (! is_string($payload['type'] ?? null) && is_string($event->payload['exception_type'] ?? null)) {
+            $payload['type'] = $event->payload['exception_type'];
+        }
+
+        if (! is_string($payload['class'] ?? null)) {
+            $payload['class'] = $exceptionClass;
+        }
+
+        if (! is_string($payload['message'] ?? null)) {
+            $payload['message'] = $message;
+        }
+
+        if (! is_int($payload['code'] ?? null)) {
+            $payload['code'] = $code;
+        }
+
+        try {
+            return FailureFactory::restoreForReplay($payload, $exceptionClass, $message, $code);
+        } catch (UnresolvedWorkflowFailureException) {
+            return FailureFactory::restoreExternalWorkerFailure($payload, $exceptionClass, $message, $code);
+        }
+    }
+
+    private function serviceControlPlane(): ServiceControlPlane
+    {
+        /** @var ServiceControlPlane $controlPlane */
+        $controlPlane = app(ServiceControlPlane::class);
+
+        return $controlPlane;
+    }
+
+    private static function metadataString(mixed $container, string $key): ?string
+    {
+        if (! is_array($container)) {
+            return null;
+        }
+
+        $value = $container[$key] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     private function activityException(

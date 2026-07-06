@@ -21,10 +21,12 @@ final class WorkflowCommandNormalizerTest extends TestCase
             'continue_as_new' => ['arguments'],
             'complete_update' => ['result'],
             'record_side_effect' => ['result'],
+            'start_service_operation' => ['request_payload'],
         ], WorkflowCommandNormalizer::payloadEnvelopeFields());
 
         $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'result'));
         $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result'));
+        $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('start_service_operation', 'request_payload'));
         $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments'));
         $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result'));
     }
@@ -442,6 +444,56 @@ final class WorkflowCommandNormalizerTest extends TestCase
             'type' => 'continue_as_new',
             'arguments' => $arguments,
             'payload_codec' => 'avro',
+        ]], $out);
+    }
+
+    public function testStartServiceOperationNormalizesPayloadEnvelopeAndCallerMetadata(): void
+    {
+        $requestPayload = Serializer::serializeWithCodec('json', [
+            'amount' => 4200,
+            'currency' => 'USD',
+        ]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'payments',
+                'service_name' => 'PythonPayments',
+                'operation_name' => 'authorize',
+                'request_payload' => [
+                    'codec' => 'json',
+                    'blob' => $requestPayload,
+                ],
+                'service_call_id' => 'svc-php-1',
+                'idempotency_key' => 'workflow-service-operation:wf-1:run-1:1',
+                'mode_override' => 'ASYNC',
+                'wait_for' => 'ACCEPTED',
+                'wait_timeout_seconds' => 0,
+                'metadata' => [
+                    'caller_sdk_language' => 'workflow-php',
+                    'service_sdk_language' => 'sdk-python',
+                ],
+                'principal_roles' => ['workflow'],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'payments',
+            'service_name' => 'PythonPayments',
+            'operation_name' => 'authorize',
+            'request_payload' => $requestPayload,
+            'payload_codec' => 'json',
+            'service_call_id' => 'svc-php-1',
+            'idempotency_key' => 'workflow-service-operation:wf-1:run-1:1',
+            'mode_override' => 'async',
+            'wait_for' => 'accepted',
+            'wait_timeout_seconds' => 0,
+            'metadata' => [
+                'caller_sdk_language' => 'workflow-php',
+                'service_sdk_language' => 'sdk-python',
+            ],
+            'principal_roles' => ['workflow'],
         ]], $out);
     }
 

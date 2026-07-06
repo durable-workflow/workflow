@@ -36,6 +36,8 @@ final class WorkflowStepHistory
 
     public const SEARCH_ATTRIBUTES_UPSERT = 'search attributes upsert';
 
+    public const SERVICE_OPERATION = 'service operation';
+
     public const SIDE_EFFECT = 'side effect';
 
     public const TIMER = 'timer';
@@ -229,6 +231,7 @@ final class WorkflowStepHistory
         return match ($expectedShape) {
             self::ACTIVITY, self::LOCAL_ACTIVITY => 'activity_type',
             self::CHILD_WORKFLOW => 'child_workflow_type',
+            self::SERVICE_OPERATION => 'operation_name',
             self::SIGNAL_WAIT => 'signal_name',
             self::VERSION_MARKER => 'change_id',
             default => null,
@@ -334,6 +337,12 @@ final class WorkflowStepHistory
                 HistoryEventType::ChildRunCancelled,
                 HistoryEventType::ChildRunTerminated,
             ], true),
+            self::SERVICE_OPERATION => in_array($event->event_type, [
+                HistoryEventType::ServiceCallStarted,
+                HistoryEventType::ServiceCallCompleted,
+                HistoryEventType::ServiceCallFailed,
+                HistoryEventType::ServiceCallCancelled,
+            ], true),
             self::CONDITION_WAIT => self::isConditionWaitEvent($event),
             self::CONTINUE_AS_NEW => $event->event_type === HistoryEventType::WorkflowContinuedAsNew,
             self::SIGNAL_WAIT => in_array($event->event_type, [
@@ -413,6 +422,10 @@ final class WorkflowStepHistory
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated,
+            HistoryEventType::ServiceCallStarted,
+            HistoryEventType::ServiceCallCompleted,
+            HistoryEventType::ServiceCallFailed,
+            HistoryEventType::ServiceCallCancelled,
             HistoryEventType::WorkflowContinuedAsNew,
             HistoryEventType::ConditionWaitOpened,
             HistoryEventType::ConditionWaitSatisfied,

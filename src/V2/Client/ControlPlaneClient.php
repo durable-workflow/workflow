@@ -216,6 +216,122 @@ final class ControlPlaneClient
     }
 
     /**
+     * Start a Nexus service operation through the control plane.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     *
+     * @api Stable v2 control-plane client API.
+     */
+    public function startServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $requestPayload = null,
+        array $options = [],
+    ): array {
+        $body = $this->withoutNulls([
+            'namespace' => $this->stringOption($options, 'namespace'),
+            'arguments' => $requestPayload,
+            'payload_codec' => $this->stringOption($options, 'payload_codec'),
+            'service_call_id' => $this->stringOption($options, 'service_call_id'),
+            'mode_override' => $this->stringOption($options, 'mode_override'),
+            'wait_for' => $this->stringOption($options, 'wait_for'),
+            'wait_timeout_seconds' => $this->intOption($options, 'wait_timeout_seconds'),
+            'idempotency_key' => $this->stringOption($options, 'idempotency_key'),
+            'caller_namespace' => $this->stringOption($options, 'caller_namespace'),
+            'caller_workflow_instance_id' => $this->stringOption($options, 'caller_workflow_instance_id'),
+            'caller_workflow_run_id' => $this->stringOption($options, 'caller_workflow_run_id'),
+            'target_workflow_instance_id' => $this->stringOption($options, 'target_workflow_instance_id'),
+            'target_workflow_run_id' => $this->stringOption($options, 'target_workflow_run_id'),
+            'connection' => $this->stringOption($options, 'connection'),
+            'queue' => $this->stringOption($options, 'queue'),
+            'business_key' => $this->stringOption($options, 'business_key'),
+            'labels' => $this->arrayOption($options, 'labels'),
+            'memo' => $this->arrayOption($options, 'memo'),
+            'search_attributes' => $this->arrayOption($options, 'search_attributes'),
+            'duplicate_start_policy' => $this->stringOption($options, 'duplicate_start_policy'),
+            'metadata' => $this->arrayOption($options, 'metadata'),
+            'request_payload_reference' => $this->stringOption($options, 'request_payload_reference'),
+            'principal_subject' => $this->stringOption($options, 'principal_subject'),
+            'principal_method' => $this->stringOption($options, 'principal_method'),
+            'principal_roles' => $this->arrayOption($options, 'principal_roles'),
+            'principal_tenant' => $this->stringOption($options, 'principal_tenant'),
+            'principal_claims' => $this->arrayOption($options, 'principal_claims'),
+        ]);
+
+        if ($requestPayload === null) {
+            unset($body['arguments']);
+        }
+
+        return $this->post(
+            $this->serviceOperationPath($endpointName, $serviceName, $operationName, 'execute'),
+            $body,
+            [200, 202, 409],
+            $this->intOption($options, 'request_timeout_seconds'),
+        );
+    }
+
+    /**
+     * Alias for {@see startServiceOperation()}.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function executeServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $requestPayload = null,
+        array $options = [],
+    ): array {
+        return $this->startServiceOperation($endpointName, $serviceName, $operationName, $requestPayload, $options);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function describeServiceCall(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+    ): array {
+        return $this->get($this->serviceOperationPath(
+            $endpointName,
+            $serviceName,
+            $operationName,
+            'service-calls/'.$this->pathSegment($serviceCallId),
+        ));
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function cancelServiceCall(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+        array $options = [],
+    ): array {
+        return $this->post(
+            $this->serviceOperationPath(
+                $endpointName,
+                $serviceName,
+                $operationName,
+                'service-calls/'.$this->pathSegment($serviceCallId).'/cancel',
+            ),
+            $this->withoutNulls([
+                'reason' => $this->stringOption($options, 'reason'),
+            ]),
+            [200, 202],
+            $this->intOption($options, 'request_timeout_seconds'),
+        );
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function describeWorkflow(string $workflowId): array
@@ -700,6 +816,21 @@ final class ControlPlaneClient
         $path = sprintf('/schedules/%s', $this->pathSegment($scheduleId));
 
         return $suffix === null ? $path : $path.'/'.trim($suffix, '/');
+    }
+
+    private function serviceOperationPath(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $suffix,
+    ): string {
+        return sprintf(
+            '/service-endpoints/%s/services/%s/operations/%s/%s',
+            $this->pathSegment($endpointName),
+            $this->pathSegment($serviceName),
+            $this->pathSegment($operationName),
+            trim($suffix, '/'),
+        );
     }
 
     private static function normalizePath(string $path): string

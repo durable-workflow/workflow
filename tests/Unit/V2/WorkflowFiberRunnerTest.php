@@ -20,6 +20,9 @@ use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\ServiceOperationCall;
+use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Worker\WorkflowStep;
@@ -1389,6 +1392,174 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame(['ready'], Serializer::unserializeWithCodec('avro', $scheduled->commands[0]['arguments']));
     }
 
+    public function testServiceOperationCommandUsesPerCallPayloadCodec(): void
+    {
+        $payload = ['amount' => 4200, 'currency' => 'USD'];
+
+        $step = WorkflowStep::yielded(new ServiceOperationCall(
+            'payments',
+            'PythonPayments',
+            'authorize',
+            $payload,
+            new ServiceOperationOptions(
+                waitFor: ServiceOperationOptions::WAIT_ACCEPTED,
+                payloadCodec: 'json',
+                metadata: ['service_sdk_language' => 'sdk-python'],
+            ),
+        ), 'avro');
+
+        $this->assertSame('start_service_operation', $step->command['type']);
+        $this->assertSame('json', $step->command['payload_codec']);
+        $this->assertSame($payload, Serializer::unserializeWithCodec('json', $step->command['request_payload']));
+        $this->assertSame('accepted', $step->command['wait_for']);
+        $this->assertSame(['service_sdk_language' => 'sdk-python'], $step->command['metadata']);
+    }
+
+    public function testRunnerResumesStartedServiceOperationWhenHistoryRecordsAcceptedAdmission(): void
+    {
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerServiceOperationWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ServiceCallStarted',
+                'payload' => [
+                    'sequence' => 1,
+                    'service_call_id' => 'svc-accepted-1',
+                    'endpoint_name' => 'payments',
+                    'service_name' => 'PythonPayments',
+                    'operation_name' => 'authorize',
+                    'operation_mode' => 'sync',
+                    'wait_for' => 'accepted',
+                    'status' => 'started',
+                    'outcome' => 'accepted',
+                    'service_call' => [
+                        'service_call_id' => 'svc-accepted-1',
+                        'endpoint_name' => 'payments',
+                        'service_name' => 'PythonPayments',
+                        'operation_name' => 'authorize',
+                        'operation_mode' => 'sync',
+                        'wait_for' => 'accepted',
+                        'status' => 'started',
+                        'outcome' => 'accepted',
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertSame('svc-accepted-1', $completed->result['service_call_id']);
+        $this->assertSame('accepted', $completed->result['service_call']['wait_for']);
+    }
+
+    public function testRunnerWaitsForStartedServiceOperationWhenAdmissionIsNotWorkflowVisible(): void
+    {
+        $waiting = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerServiceOperationWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ServiceCallStarted',
+                'payload' => [
+                    'sequence' => 1,
+                    'service_call_id' => 'svc-sync-1',
+                    'endpoint_name' => 'payments',
+                    'service_name' => 'PythonPayments',
+                    'operation_name' => 'authorize',
+                    'operation_mode' => 'sync',
+                    'status' => 'started',
+                    'outcome' => 'accepted',
+                    'service_call' => [
+                        'service_call_id' => 'svc-sync-1',
+                        'operation_mode' => 'sync',
+                        'status' => 'started',
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($waiting->completed);
+        $this->assertNull($waiting->command);
+        $this->assertSame([], $waiting->commands);
+        $this->assertInstanceOf(ServiceOperationCall::class, $waiting->yielded);
+    }
+
+    public function testRunnerThrowsTypedServiceOperationFailureIntoWorkflow(): void
+    {
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerHandledServiceOperationFailureWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ServiceCallFailed',
+                'payload' => [
+                    'sequence' => 1,
+                    'service_call_id' => 'svc-failed-1',
+                    'endpoint_name' => 'payments',
+                    'service_name' => 'PythonPayments',
+                    'operation_name' => 'authorize',
+                    'status' => 'failed',
+                    'outcome' => 'failed',
+                    'exception_class' => RuntimeException::class,
+                    'exception_type' => 'payment_declined',
+                    'message' => 'card declined',
+                    'code' => 0,
+                    'exception' => [
+                        'class' => RuntimeException::class,
+                        'type' => 'payment_declined',
+                        'message' => 'card declined',
+                        'code' => 0,
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ], [
+                'sequence' => 3,
+                'event_type' => 'FailureHandled',
+                'payload' => [
+                    'sequence' => 1,
+                    'exception_class' => RuntimeException::class,
+                    'exception_type' => 'payment_declined',
+                    'message' => 'card declined',
+                    'handled' => true,
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame([
+            'message' => 'card declined',
+            'type' => 'payment_declined',
+        ], $completed->result);
+    }
+
     public function testRunnerSurfacesContinueAsNewCommand(): void
     {
         $scheduled = $this->runnerFor(WorkerProtocolRunnerContinueAsNewWorkflow::class)->step();
@@ -1795,6 +1966,52 @@ final class WorkerProtocolRunnerSearchAttributesThenActivityWorkflow extends Wor
         ]);
 
         return Workflow::activity('demo.after-search-attributes', 'ready');
+    }
+}
+
+final class WorkerProtocolRunnerServiceOperationWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        $result = Workflow::serviceOperation(
+            'payments',
+            'PythonPayments',
+            'authorize',
+            ['amount' => 4200, 'currency' => 'USD'],
+        );
+
+        if (! $result instanceof ServiceOperationResult) {
+            return ['service_call_id' => null];
+        }
+
+        return $result->toArray();
+    }
+}
+
+final class WorkerProtocolRunnerHandledServiceOperationFailureWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        try {
+            Workflow::serviceOperation(
+                'payments',
+                'PythonPayments',
+                'authorize',
+                ['amount' => 4200, 'currency' => 'USD'],
+            );
+        } catch (RuntimeException $exception) {
+            return [
+                'message' => $exception->getMessage(),
+                'type' => $exception instanceof RestoredWorkflowException
+                    ? $exception->failurePayload()['type'] ?? null
+                    : null,
+            ];
+        }
+
+        return [
+            'message' => 'not caught',
+            'type' => null,
+        ];
     }
 }
 

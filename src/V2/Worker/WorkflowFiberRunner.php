@@ -24,6 +24,8 @@ use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\ServiceOperationCall;
+use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -110,6 +112,16 @@ final class WorkflowFiberRunner
      * @var array<int, true>
      */
     private array $openChildWaits = [];
+
+    /**
+     * @var array<int, array{status: string, result?: ServiceOperationResult, exception?: Throwable, recorded_at: CarbonInterface|null, admission_visible?: bool}>
+     */
+    private array $recordedServiceOperationOutcomes = [];
+
+    /**
+     * @var array<int, true>
+     */
+    private array $openServiceOperationWaits = [];
 
     /**
      * @var array<int, array{result: mixed, recorded_at: CarbonInterface|null}>
@@ -472,6 +484,41 @@ final class WorkflowFiberRunner
                 }
             }
 
+            if ($current instanceof ServiceOperationCall) {
+                $historySequence = $this->historySequenceForCurrentPosition();
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedServiceOperationOutcomes[$historySequence] ?? null);
+
+                if ($recorded !== null) {
+                    if (
+                        $recorded['status'] === 'started'
+                        && ! self::serviceOperationStartedOutcomeIsVisible($recorded, $current)
+                    ) {
+                        $this->waitingForHistory = true;
+
+                        return WorkflowStep::waiting($current)
+                            ->withPrependedCommands($immediateCommands);
+                    }
+
+                    ++$this->sequence;
+                    if (isset($recorded['exception'])) {
+                        $this->execution->throw($recorded['exception'], $recorded['recorded_at']);
+                    } else {
+                        $this->execution->send($recorded['result'] ?? null, $recorded['recorded_at']);
+                    }
+
+                    continue;
+                }
+
+                if ($historySequence !== null && isset($this->openServiceOperationWaits[$historySequence])) {
+                    $this->waitingForHistory = true;
+
+                    return WorkflowStep::waiting($current)
+                        ->withPrependedCommands($immediateCommands);
+                }
+            }
+
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
                 $recorded = $historySequence === null
@@ -523,6 +570,8 @@ final class WorkflowFiberRunner
                 || isset($this->openConditionWaits[$historySequence]),
             $this->pendingYielded instanceof SignalCall => isset($this->recordedSignalOutcomes[$historySequence])
                 || isset($this->openSignalWaits[$historySequence]),
+            $this->pendingYielded instanceof ServiceOperationCall => isset($this->recordedServiceOperationOutcomes[$historySequence])
+                || isset($this->openServiceOperationWaits[$historySequence]),
             $this->pendingYielded instanceof ChildWorkflowCall => isset($this->recordedChildOutcomes[$historySequence])
                 || isset($this->openChildWaits[$historySequence]),
             default => false,
@@ -754,6 +803,14 @@ final class WorkflowFiberRunner
             self::indexOpenChildWaits($this->historyEvents),
             $this->recordedChildOutcomes,
         );
+        $this->recordedServiceOperationOutcomes = self::indexRecordedServiceOperationOutcomes($this->historyEvents);
+        $this->openServiceOperationWaits = array_diff_key(
+            self::indexOpenServiceOperationWaits($this->historyEvents),
+            array_filter(
+                $this->recordedServiceOperationOutcomes,
+                static fn (array $outcome): bool => ($outcome['status'] ?? null) !== 'started',
+            ),
+        );
         $this->recordedSideEffects = self::indexRecordedSideEffects(
             $this->historyEvents,
             $this->payloadCodec,
@@ -976,6 +1033,10 @@ final class WorkflowFiberRunner
             'ChildRunFailed',
             'ChildRunCancelled',
             'ChildRunTerminated',
+            'ServiceCallStarted',
+            'ServiceCallCompleted',
+            'ServiceCallFailed',
+            'ServiceCallCancelled',
             'SideEffectRecorded',
             'VersionMarkerRecorded',
             'SearchAttributesUpserted',
@@ -1398,6 +1459,122 @@ final class WorkflowFiberRunner
 
         foreach ($historyEvents as $event) {
             if (! in_array(self::eventType($event), ['ChildWorkflowScheduled', 'ChildRunStarted'], true)) {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+
+            if ($sequence !== null) {
+                $open[$sequence] = true;
+            }
+        }
+
+        return $open;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, array{status: string, result?: ServiceOperationResult, exception?: Throwable, recorded_at: CarbonInterface|null, admission_visible?: bool}>
+     */
+    private static function indexRecordedServiceOperationOutcomes(array $historyEvents): array
+    {
+        $outcomes = [];
+
+        foreach ($historyEvents as $event) {
+            $type = self::eventType($event);
+
+            if (! in_array($type, [
+                'ServiceCallStarted',
+                'ServiceCallCompleted',
+                'ServiceCallFailed',
+                'ServiceCallCancelled',
+            ], true)) {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+
+            if ($sequence === null) {
+                continue;
+            }
+
+            $recordedAt = self::eventRecordedAt($event, $payload);
+
+            if (in_array($type, ['ServiceCallFailed', 'ServiceCallCancelled'], true)) {
+                $outcomes[$sequence] = [
+                    'status' => $type === 'ServiceCallCancelled' ? 'cancelled' : 'failed',
+                    'exception' => self::failureFromEvent(
+                        $payload,
+                        $type === 'ServiceCallCancelled'
+                            ? 'Service operation cancelled.'
+                            : 'Service operation failed.',
+                    ),
+                    'recorded_at' => $recordedAt,
+                ];
+
+                continue;
+            }
+
+            $surface = is_array($payload['service_call'] ?? null) ? $payload['service_call'] : [];
+            $surface += array_filter([
+                'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
+                'status' => self::stringValue($payload['status'] ?? null),
+                'outcome' => self::stringValue($payload['outcome'] ?? null),
+                'endpoint_name' => self::stringValue($payload['endpoint_name'] ?? null),
+                'service_name' => self::stringValue($payload['service_name'] ?? null),
+                'operation_name' => self::stringValue($payload['operation_name'] ?? null),
+                'operation_mode' => self::stringValue($payload['operation_mode'] ?? null),
+                'wait_for' => self::stringValue($payload['wait_for'] ?? null),
+            ], static fn (mixed $value): bool => $value !== null);
+
+            $outcomes[$sequence] = [
+                'status' => $type === 'ServiceCallCompleted' ? 'completed' : 'started',
+                'result' => ServiceOperationResult::fromSurface($surface, $payload['response_payload'] ?? null),
+                'recorded_at' => $recordedAt,
+                'admission_visible' => $type === 'ServiceCallStarted'
+                    ? self::serviceOperationStartedPayloadIsVisible($payload, $surface)
+                    : true,
+            ];
+        }
+
+        return $outcomes;
+    }
+
+    /**
+     * @param array{status: string, result?: ServiceOperationResult, exception?: Throwable, recorded_at: CarbonInterface|null, admission_visible?: bool} $recorded
+     */
+    private static function serviceOperationStartedOutcomeIsVisible(
+        array $recorded,
+        ServiceOperationCall $call,
+    ): bool {
+        return ($recorded['admission_visible'] ?? false)
+            || ($call->options?->shouldResumeOnAdmission() ?? false);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationStartedPayloadIsVisible(array $payload, array $surface): bool
+    {
+        return self::stringValue($payload['wait_for'] ?? null) === 'accepted'
+            || self::stringValue($payload['operation_mode'] ?? null) === 'async'
+            || self::stringValue($surface['wait_for'] ?? null) === 'accepted'
+            || self::stringValue($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, true>
+     */
+    private static function indexOpenServiceOperationWaits(array $historyEvents): array
+    {
+        $open = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'ServiceCallStarted') {
                 continue;
             }
 

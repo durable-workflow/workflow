@@ -22,7 +22,8 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
  * Retry and timeout fields are scope-checked: durable activity retry policy
  * and per-attempt/total/heartbeat timeouts only belong on `schedule_activity`,
  * durable child workflow retry policy and execution/run timeouts only belong
- * on `start_child_workflow`, and the worker-side `non_retryable` failure
+ * on `start_child_workflow`, Nexus service-call admission settings only belong
+ * on `start_service_operation`, and the worker-side `non_retryable` failure
  * marker only belongs on `fail_workflow` / `fail_update`. Structured
  * exception payloads belong on `fail_workflow` so terminal worker failures can
  * preserve the original typed failure. Workflow failure itself is non-retryable,
@@ -106,8 +107,9 @@ final class WorkflowCommandNormalizer
                 'continue_as_new',
                 'complete_update',
                 'record_side_effect',
+                'start_service_operation',
             ],
-            'guidance' => 'payload_codec identifies the codec used for command payload bytes and only applies to commands that carry result or arguments payloads.',
+            'guidance' => 'payload_codec identifies the codec used for command payload bytes and only applies to commands that carry result, arguments, or request_payload bytes.',
         ],
     ];
 
@@ -128,6 +130,7 @@ final class WorkflowCommandNormalizer
         'continue_as_new' => ['arguments'],
         'complete_update' => ['result'],
         'record_side_effect' => ['result'],
+        'start_service_operation' => ['request_payload'],
     ];
 
     /**
@@ -305,6 +308,122 @@ final class WorkflowCommandNormalizer
                     'retry_policy' => $retryPolicy,
                     'execution_timeout_seconds' => $executionTimeout,
                     'run_timeout_seconds' => $runTimeout,
+                ], static fn (mixed $value): bool => $value !== null);
+
+                continue;
+            }
+
+            if ($type === 'start_service_operation') {
+                $endpointName = self::requiredCommandString($command, 'endpoint_name', $index, $errors);
+                $serviceName = self::requiredCommandString($command, 'service_name', $index, $errors);
+                $operationName = self::requiredCommandString($command, 'operation_name', $index, $errors);
+                $requestPayload = self::resolveCommandPayloadWithCodec($command, 'request_payload', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload(
+                    $command,
+                    $requestPayload,
+                    'request_payload',
+                    $index,
+                    $errors,
+                );
+
+                if ($endpointName === null || $serviceName === null || $operationName === null) {
+                    continue;
+                }
+
+                if (! is_string($requestPayload['payload'] ?? null)) {
+                    $errors["commands.{$index}.request_payload"] = [
+                        'Start service operation commands require a string request_payload or payload envelope.',
+                    ];
+
+                    continue;
+                }
+
+                $modeOverride = self::optionalCommandString($command, 'mode_override', $index, $errors);
+                if ($modeOverride !== null) {
+                    $modeOverride = strtolower($modeOverride);
+                    if (! in_array($modeOverride, ['sync', 'async'], true)) {
+                        $errors["commands.{$index}.mode_override"] = [
+                            'The mode_override must be one of: sync, async.',
+                        ];
+
+                        continue;
+                    }
+                }
+
+                $waitFor = self::optionalCommandString($command, 'wait_for', $index, $errors);
+                if ($waitFor !== null) {
+                    $waitFor = strtolower($waitFor);
+                    if (! in_array($waitFor, ['accepted', 'completed'], true)) {
+                        $errors["commands.{$index}.wait_for"] = [
+                            'The wait_for must be one of: accepted, completed.',
+                        ];
+
+                        continue;
+                    }
+                }
+
+                $waitTimeoutSeconds = self::optionalNonNegativeInt(
+                    $command,
+                    'wait_timeout_seconds',
+                    $index,
+                    $errors,
+                );
+
+                $normalized[] = array_filter([
+                    'type' => $type,
+                    'endpoint_name' => $endpointName,
+                    'service_name' => $serviceName,
+                    'operation_name' => $operationName,
+                    'request_payload' => $requestPayload['payload'],
+                    'payload_codec' => $payloadCodec,
+                    'namespace' => self::optionalCommandString($command, 'namespace', $index, $errors),
+                    'caller_namespace' => self::optionalCommandString($command, 'caller_namespace', $index, $errors),
+                    'service_call_id' => self::optionalCommandString($command, 'service_call_id', $index, $errors),
+                    'idempotency_key' => self::optionalCommandString($command, 'idempotency_key', $index, $errors),
+                    'mode_override' => $modeOverride,
+                    'wait_for' => $waitFor,
+                    'wait_timeout_seconds' => $waitTimeoutSeconds,
+                    'target_workflow_instance_id' => self::optionalCommandString(
+                        $command,
+                        'target_workflow_instance_id',
+                        $index,
+                        $errors,
+                    ),
+                    'target_workflow_run_id' => self::optionalCommandString(
+                        $command,
+                        'target_workflow_run_id',
+                        $index,
+                        $errors,
+                    ),
+                    'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
+                    'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
+                    'business_key' => self::optionalCommandString($command, 'business_key', $index, $errors),
+                    'labels' => self::optionalCommandArray($command, 'labels', $index, $errors),
+                    'memo' => self::optionalCommandArray($command, 'memo', $index, $errors),
+                    'search_attributes' => self::optionalCommandArray($command, 'search_attributes', $index, $errors),
+                    'duplicate_start_policy' => self::optionalCommandString(
+                        $command,
+                        'duplicate_start_policy',
+                        $index,
+                        $errors,
+                    ),
+                    'metadata' => self::optionalCommandArray($command, 'metadata', $index, $errors),
+                    'request_payload_reference' => self::optionalCommandString(
+                        $command,
+                        'request_payload_reference',
+                        $index,
+                        $errors,
+                    ),
+                    'principal_subject' => self::optionalCommandString($command, 'principal_subject', $index, $errors),
+                    'principal_method' => self::optionalCommandString($command, 'principal_method', $index, $errors),
+                    'principal_roles' => self::optionalCommandStringList(
+                        $command,
+                        'principal_roles',
+                        $index,
+                        $errors,
+                    ),
+                    'principal_tenant' => self::optionalCommandString($command, 'principal_tenant', $index, $errors),
+                    'principal_claims' => self::optionalCommandArray($command, 'principal_claims', $index, $errors),
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -840,6 +959,84 @@ final class WorkflowCommandNormalizer
         }
 
         return (int) $command[$field];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function optionalNonNegativeInt(array $command, string $field, int $index, array &$errors): ?int
+    {
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return null;
+        }
+
+        if (! is_int($command[$field]) || (int) $command[$field] < 0) {
+            $errors["commands.{$index}.{$field}"] = [
+                sprintf('Workflow task command field [%s] must be a non-negative integer when provided.', $field),
+            ];
+
+            return null;
+        }
+
+        return (int) $command[$field];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return array<string, mixed>|null
+     */
+    private static function optionalCommandArray(array $command, string $field, int $index, array &$errors): ?array
+    {
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return null;
+        }
+
+        if (! is_array($command[$field])) {
+            $errors["commands.{$index}.{$field}"] = [
+                sprintf('Workflow task command field [%s] must be an object when provided.', $field),
+            ];
+
+            return null;
+        }
+
+        return $command[$field];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return list<string>|null
+     */
+    private static function optionalCommandStringList(array $command, string $field, int $index, array &$errors): ?array
+    {
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return null;
+        }
+
+        if (! is_array($command[$field])) {
+            $errors["commands.{$index}.{$field}"] = [
+                sprintf('Workflow task command field [%s] must be a list of strings when provided.', $field),
+            ];
+
+            return null;
+        }
+
+        $values = [];
+        foreach (array_values($command[$field]) as $position => $value) {
+            if (! is_string($value) || trim($value) === '') {
+                $errors["commands.{$index}.{$field}.{$position}"] = [
+                    sprintf('Workflow task command field [%s] entries must be non-empty strings.', $field),
+                ];
+
+                continue;
+            }
+
+            $values[] = trim($value);
+        }
+
+        return $values;
     }
 
     /**

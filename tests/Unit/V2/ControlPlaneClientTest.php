@@ -103,6 +103,98 @@ final class ControlPlaneClientTest extends TestCase
         $this->assertSame(['input' => [5]], $requests[1]['body']);
     }
 
+    public function testStartServiceOperationSendsCallerMetadataAndReturnsConflictSurface(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+        $namespaceHeader = false;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody, &$namespaceHeader) {
+            $requestBody = $request->data();
+            $namespaceHeader = $request->hasHeader('X-Namespace', 'tenant-a');
+
+            $this->assertSame(
+                'http://server:8080/api/service-endpoints/payments/services/PythonPayments/operations/authorize/execute',
+                (string) $request->url(),
+            );
+
+            return $http->response([
+                'service_call_id' => 'svc-php-1',
+                'status' => 'failed',
+                'outcome' => 'failed',
+                'caller_observed_error_type' => 'payment_declined',
+                'typed_error_message' => 'card declined',
+            ], 409, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token', namespace: 'tenant-a');
+        $response = $client->startServiceOperation(
+            'payments',
+            'PythonPayments',
+            'authorize',
+            ['amount' => 4200, 'currency' => 'USD'],
+            [
+                'namespace' => 'tenant-b',
+                'payload_codec' => 'json',
+                'service_call_id' => 'svc-php-1',
+                'mode_override' => 'async',
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => 0,
+                'idempotency_key' => 'workflow-service-operation:wf-1:run-1:1',
+                'caller_namespace' => 'tenant-a',
+                'caller_workflow_instance_id' => 'wf-1',
+                'caller_workflow_run_id' => 'run-1',
+                'target_workflow_instance_id' => 'py-service-wf',
+                'target_workflow_run_id' => 'py-service-run',
+                'metadata' => [
+                    'caller_sdk_language' => 'workflow-php',
+                    'service_sdk_language' => 'sdk-python',
+                    'artifact_tuple' => 'workflow=2.0.0-alpha.249,sdk-python=0.4.95',
+                    'published_artifact_worker_execution' => true,
+                ],
+                'request_payload_reference' => 'payload-ref-1',
+                'principal_subject' => 'workflow:wf-1',
+                'principal_method' => 'workflow',
+                'principal_roles' => ['workflow'],
+                'principal_tenant' => 'tenant-a',
+                'principal_claims' => ['scope' => 'service:call'],
+            ],
+        );
+
+        $this->assertTrue($namespaceHeader);
+        $this->assertSame('svc-php-1', $response['service_call_id']);
+        $this->assertSame('payment_declined', $response['caller_observed_error_type']);
+        $this->assertSame([
+            'namespace' => 'tenant-b',
+            'arguments' => ['amount' => 4200, 'currency' => 'USD'],
+            'payload_codec' => 'json',
+            'service_call_id' => 'svc-php-1',
+            'mode_override' => 'async',
+            'wait_for' => 'accepted',
+            'wait_timeout_seconds' => 0,
+            'idempotency_key' => 'workflow-service-operation:wf-1:run-1:1',
+            'caller_namespace' => 'tenant-a',
+            'caller_workflow_instance_id' => 'wf-1',
+            'caller_workflow_run_id' => 'run-1',
+            'target_workflow_instance_id' => 'py-service-wf',
+            'target_workflow_run_id' => 'py-service-run',
+            'metadata' => [
+                'caller_sdk_language' => 'workflow-php',
+                'service_sdk_language' => 'sdk-python',
+                'artifact_tuple' => 'workflow=2.0.0-alpha.249,sdk-python=0.4.95',
+                'published_artifact_worker_execution' => true,
+            ],
+            'request_payload_reference' => 'payload-ref-1',
+            'principal_subject' => 'workflow:wf-1',
+            'principal_method' => 'workflow',
+            'principal_roles' => ['workflow'],
+            'principal_tenant' => 'tenant-a',
+            'principal_claims' => ['scope' => 'service:call'],
+        ], $requestBody);
+    }
+
     public function testCancelAndTerminateWorkflowSupportCurrentRunAndRunTargetedPaths(): void
     {
         $http = new HttpFactory();

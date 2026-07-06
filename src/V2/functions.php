@@ -19,6 +19,8 @@ use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\LocalActivityCall;
 use Workflow\V2\Support\LocalActivityOptions;
+use Workflow\V2\Support\ServiceOperationCall;
+use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
@@ -54,6 +56,34 @@ if (! function_exists(__NAMESPACE__ . '\\localActivity')) {
         }
 
         return WorkflowFiberContext::suspend(new LocalActivityCall($activity, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\serviceOperation')) {
+    /**
+     * Start a durable Nexus service operation from workflow code.
+     *
+     * The workflow fiber suspends on a deterministic command. The runtime
+     * records the durable service-call id and resumes with a
+     * {@see Support\ServiceOperationResult}, or throws a typed restored
+     * failure when the service call reaches a failed/cancelled terminal state.
+     *
+     * @api Stable v2 workflow authoring API.
+     */
+    function serviceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $requestPayload = null,
+        ?ServiceOperationOptions $options = null,
+    ): mixed {
+        return WorkflowFiberContext::suspend(new ServiceOperationCall(
+            $endpointName,
+            $serviceName,
+            $operationName,
+            $requestPayload,
+            $options,
+        ));
     }
 }
 

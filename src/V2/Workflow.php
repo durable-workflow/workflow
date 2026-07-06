@@ -12,6 +12,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\MessageService;
+use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
 
@@ -284,6 +285,28 @@ abstract class Workflow
     public static function executeActivity(string $activity, mixed ...$arguments): mixed
     {
         return activity($activity, ...$arguments);
+    }
+
+    /**
+     * Start a durable Nexus service operation and wait according to its
+     * operation mode.
+     *
+     * Returns a {@see \Workflow\V2\Support\ServiceOperationResult} containing
+     * the durable service-call id and the latest call surface. Terminal service
+     * failures are thrown as typed restored workflow exceptions.
+     *
+     * @api Stable v2 workflow authoring API.
+     *
+     * @see serviceOperation()
+     */
+    public static function serviceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $requestPayload = null,
+        ?ServiceOperationOptions $options = null,
+    ): mixed {
+        return serviceOperation($endpointName, $serviceName, $operationName, $requestPayload, $options);
     }
 
     public static function workerSession(string $sessionId, ?WorkerSessionOptions $options = null): WorkerSession

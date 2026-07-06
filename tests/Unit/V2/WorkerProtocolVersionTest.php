@@ -16,9 +16,10 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksQueryTaskImmediateProbeTimeoutShape(): void
+    public function testVersionTracksServiceOperationCommandShape(): void
     {
-        $this->assertSame('1.12', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.13', WorkerProtocolVersion::VERSION);
+        $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }
 
@@ -77,6 +78,7 @@ final class WorkerProtocolVersionTest extends TestCase
             'schedule_activity',
             'start_timer',
             'start_child_workflow',
+            'start_service_operation',
             'complete_update',
             'fail_update',
             'record_side_effect',
@@ -188,6 +190,32 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame('1.10', $shape['exception']['minimum_protocol_version']);
         $this->assertSame('bool', $shape['non_retryable']['shape']);
         $this->assertFalse($shape['non_retryable']['required']);
+    }
+
+    public function testDescribeIncludesServiceOperationCommandShape(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('service_operation_command', $summary);
+
+        $shape = $summary['service_operation_command'];
+        $this->assertSame('start_service_operation', $shape['type']);
+        $this->assertSame('non_terminal_command', $shape['category']);
+        $this->assertSame('1.13', $shape['minimum_protocol_version']);
+        $this->assertSame(
+            ['type', 'endpoint_name', 'service_name', 'operation_name', 'request_payload'],
+            $shape['required_fields'],
+        );
+        $this->assertContains('payload_codec', $shape['optional_fields']);
+        $this->assertContains('service_call_id', $shape['optional_fields']);
+        $this->assertContains('metadata', $shape['optional_fields']);
+        $this->assertSame(['sync', 'async'], $shape['mode_override']['valid_values']);
+        $this->assertSame(['accepted', 'completed'], $shape['wait_for']['valid_values']);
+        $this->assertContains('ServiceCallStarted', $shape['service_call_result_events']);
+        $this->assertContains(
+            'published_artifact_worker_execution',
+            $shape['metadata']['reserved_conformance_keys'],
+        );
     }
 
     public function testDescribeIncludesQueryTaskSemantics(): void

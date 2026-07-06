@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.12';
+    public const VERSION = '1.13';
 
     private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
@@ -38,6 +38,8 @@ final class WorkerProtocolVersion
     private const WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
     private const FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION = '1.10';
+
+    private const SERVICE_OPERATION_COMMAND_MINIMUM_PROTOCOL_VERSION = '1.13';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -185,6 +187,7 @@ final class WorkerProtocolVersion
             'schedule_activity',
             'start_timer',
             'start_child_workflow',
+            'start_service_operation',
             'complete_update',
             'fail_update',
             'record_side_effect',
@@ -298,6 +301,7 @@ final class WorkerProtocolVersion
      *     worker_sessions: array<string, mixed>,
      *     query_tasks: array<string, mixed>,
      *     upsert_search_attributes_command: array<string, mixed>,
+     *     service_operation_command: array<string, mixed>,
      *     fail_workflow_command: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
@@ -328,6 +332,7 @@ final class WorkerProtocolVersion
             'worker_sessions' => self::workerSessionSemantics(),
             'query_tasks' => self::queryTaskSemantics(),
             'upsert_search_attributes_command' => self::upsertSearchAttributesCommandShape(),
+            'service_operation_command' => self::serviceOperationCommandShape(),
             'fail_workflow_command' => self::failWorkflowCommandShape(),
             'payload_codecs_universal' => CodecRegistry::universal(),
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
@@ -375,6 +380,81 @@ final class WorkerProtocolVersion
                 'valid_values' => WorkflowSearchAttribute::VALID_TYPES,
                 'invalid_values' => 'ignored',
                 'omitted_values' => 'infer_from_attribute_value',
+            ],
+        ];
+    }
+
+    /**
+     * Published workflow-task command shape for durable Nexus service calls.
+     *
+     * @return array<string, mixed>
+     */
+    public static function serviceOperationCommandShape(): array
+    {
+        return [
+            'type' => 'start_service_operation',
+            'category' => 'non_terminal_command',
+            'minimum_protocol_version' => self::SERVICE_OPERATION_COMMAND_MINIMUM_PROTOCOL_VERSION,
+            'required_fields' => ['type', 'endpoint_name', 'service_name', 'operation_name', 'request_payload'],
+            'optional_fields' => [
+                'payload_codec',
+                'namespace',
+                'caller_namespace',
+                'service_call_id',
+                'idempotency_key',
+                'mode_override',
+                'wait_for',
+                'wait_timeout_seconds',
+                'target_workflow_instance_id',
+                'target_workflow_run_id',
+                'connection',
+                'queue',
+                'business_key',
+                'labels',
+                'memo',
+                'search_attributes',
+                'duplicate_start_policy',
+                'metadata',
+                'request_payload_reference',
+                'principal_subject',
+                'principal_method',
+                'principal_roles',
+                'principal_tenant',
+                'principal_claims',
+            ],
+            'request_payload' => [
+                'shape' => 'serialized payload string or payload envelope',
+                'envelope_fields' => ['codec', 'blob', 'external_storage'],
+                'codec_field' => 'payload_codec',
+            ],
+            'mode_override' => [
+                'shape' => 'string',
+                'valid_values' => ['sync', 'async'],
+                'required' => false,
+            ],
+            'wait_for' => [
+                'shape' => 'string',
+                'valid_values' => ['accepted', 'completed'],
+                'required' => false,
+            ],
+            'wait_timeout_seconds' => [
+                'shape' => 'non-negative integer',
+                'required' => false,
+            ],
+            'metadata' => [
+                'shape' => 'array<string, mixed>',
+                'reserved_conformance_keys' => [
+                    'caller_sdk_language',
+                    'service_sdk_language',
+                    'artifact_tuple',
+                    'published_artifact_worker_execution',
+                ],
+            ],
+            'service_call_result_events' => [
+                'ServiceCallStarted',
+                'ServiceCallCompleted',
+                'ServiceCallFailed',
+                'ServiceCallCancelled',
             ],
         ];
     }

@@ -150,6 +150,35 @@ Additive changes — new public methods, new optional parameters with
 defaults, new constants — are minor-version changes and do not require a
 major bump.
 
+## Workflow service operation caller API
+
+PHP workflow code can initiate a durable Nexus service operation from inside
+the workflow context with:
+
+- `Workflow\V2\Workflow::serviceOperation(string $endpointName, string $serviceName, string $operationName, mixed $requestPayload = null, ?Workflow\V2\Support\ServiceOperationOptions $options = null): mixed`
+- `Workflow\V2\serviceOperation(string $endpointName, string $serviceName, string $operationName, mixed $requestPayload = null, ?Workflow\V2\Support\ServiceOperationOptions $options = null): mixed`
+
+The workflow-visible return value is
+`Workflow\V2\Support\ServiceOperationResult`. Terminal failed/cancelled service
+calls are replayed into workflow code as restored typed failures rather than as
+transport errors. Accepted async/admission-only calls return a
+`ServiceOperationResult` that carries the durable `service_call_id` so workflow
+code can persist or expose the reference deterministically.
+
+`Workflow\V2\Support\ServiceOperationOptions` is the stable option object for
+target namespace, idempotency, stable service-call ids, async/admission wait
+mode, payload codec, routing, principal context, and metadata. Metadata is
+propagated to the control plane and service-call history so conformance and
+observability can record caller workflow ids, SDK language, service SDK
+language, artifact tuple, and published-artifact worker execution fields.
+
+Out-of-workflow control-plane clients can use the same operation surface with:
+
+- `Workflow\V2\Client\ControlPlaneClient::startServiceOperation(...)`
+- `Workflow\V2\Client\ControlPlaneClient::executeServiceOperation(...)`
+- `Workflow\V2\Client\ControlPlaneClient::describeServiceCall(...)`
+- `Workflow\V2\Client\ControlPlaneClient::cancelServiceCall(...)`
+
 ## Server-facing standalone activity stability list
 
 The standalone-activity start contract is the server-facing stable API
@@ -512,6 +541,10 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ChildRunFailed` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_type`, `exception_class`, `message`, `exception`, `code`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `ParallelFailureSelector`, `RunLineageView` |
 | `ChildRunCancelled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_class`, `message`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `RunLineageView`, parent-close projections |
 | `ChildRunTerminated` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_class`, `message`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `RunLineageView`, parent-close projections |
+| `ServiceCallStarted` | `sequence`, `service_call_id`, `workflow_instance_id`, `workflow_run_id`, `caller_workflow_instance_id`, `caller_workflow_run_id`, `caller_sdk_language`, `endpoint_name`, `service_name`, `operation_name`, `service_sdk_language`, `request_payload`, `response_payload`, `payload_codec`, `operation_mode`, `wait_for`, `status`, `outcome`, `resolved_binding_kind`, `resolved_target_reference`, `linked_workflow_instance_id`, `linked_workflow_run_id`, `linked_workflow_update_id`, `service_call`, `response_or_failure_surface` | `WorkflowStepHistory`, `WorkflowExecutor`, `WorkflowFiberRunner`, `QueryStateReplayer`, Nexus observability |
+| `ServiceCallCompleted` | `sequence`, `service_call_id`, `workflow_instance_id`, `workflow_run_id`, `caller_workflow_instance_id`, `caller_workflow_run_id`, `caller_sdk_language`, `endpoint_name`, `service_name`, `operation_name`, `service_sdk_language`, `request_payload`, `response_payload`, `payload_codec`, `operation_mode`, `wait_for`, `status`, `outcome`, `resolved_binding_kind`, `resolved_target_reference`, `linked_workflow_instance_id`, `linked_workflow_run_id`, `linked_workflow_update_id`, `service_call`, `response_or_failure_surface` | `WorkflowStepHistory`, `WorkflowExecutor`, `WorkflowFiberRunner`, `QueryStateReplayer`, Nexus observability |
+| `ServiceCallFailed` | `sequence`, `service_call_id`, `workflow_instance_id`, `workflow_run_id`, `caller_workflow_instance_id`, `caller_workflow_run_id`, `caller_sdk_language`, `endpoint_name`, `service_name`, `operation_name`, `service_sdk_language`, `request_payload`, `response_payload`, `payload_codec`, `operation_mode`, `wait_for`, `status`, `outcome`, `resolved_binding_kind`, `resolved_target_reference`, `linked_workflow_instance_id`, `linked_workflow_run_id`, `linked_workflow_update_id`, `service_call`, `response_or_failure_surface`, `exception_type`, `exception_class`, `message`, `code`, `exception` | `WorkflowStepHistory`, `WorkflowExecutor`, `WorkflowFiberRunner`, `QueryStateReplayer`, typed service failure propagation |
+| `ServiceCallCancelled` | `sequence`, `service_call_id`, `workflow_instance_id`, `workflow_run_id`, `caller_workflow_instance_id`, `caller_workflow_run_id`, `caller_sdk_language`, `endpoint_name`, `service_name`, `operation_name`, `service_sdk_language`, `request_payload`, `response_payload`, `payload_codec`, `operation_mode`, `wait_for`, `status`, `outcome`, `resolved_binding_kind`, `resolved_target_reference`, `linked_workflow_instance_id`, `linked_workflow_run_id`, `linked_workflow_update_id`, `service_call`, `response_or_failure_surface`, `exception_type`, `exception_class`, `message`, `code`, `exception` | `WorkflowStepHistory`, `WorkflowExecutor`, `WorkflowFiberRunner`, `QueryStateReplayer`, typed service failure propagation |
 | `SearchAttributesUpserted` | `sequence`, `attributes`, `merged` | `WorkflowStepHistory`, `HistoryTimeline`, visibility/search projections, history export |
 | `MemoUpserted` | `sequence`, `entries`, `merged` | `WorkflowStepHistory`, `HistoryTimeline`, run detail projections, history export |
 | `RepairRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `outcome`, `liveness_state`, `wait_kind`, `task_id`, `task_type` | `HistoryTimeline`, `RunCommandContract`, repair diagnostics, operator detail projections |

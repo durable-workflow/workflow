@@ -15,6 +15,8 @@ use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\ServiceOperationCall;
+use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -160,6 +162,7 @@ final class WorkflowStep
             $yielded instanceof SignalCall => self::signalWaitCommand($yielded),
             $yielded instanceof AwaitCall || $yielded instanceof AwaitWithTimeoutCall => self::conditionWaitCommand($yielded),
             $yielded instanceof ChildWorkflowCall => self::childWorkflowCommand($yielded, $payloadCodec),
+            $yielded instanceof ServiceOperationCall => self::serviceOperationCommand($yielded, $payloadCodec),
             $yielded instanceof SideEffectCall => throw new UnsupportedWorkflowYieldException(
                 'Worker protocol side effects require WorkflowFiberRunner history resolution before command emission.',
             ),
@@ -242,6 +245,27 @@ final class WorkflowStep
     /**
      * @return array<string, mixed>
      */
+    private static function serviceOperationCommand(ServiceOperationCall $call, string $payloadCodec): array
+    {
+        $options = self::serviceOperationOptions($call->options);
+        $effectivePayloadCodec = is_string($options['payload_codec'] ?? null) && $options['payload_codec'] !== ''
+            ? $options['payload_codec']
+            : $payloadCodec;
+
+        return array_filter([
+            'type' => 'start_service_operation',
+            'endpoint_name' => $call->endpointName,
+            'service_name' => $call->serviceName,
+            'operation_name' => $call->operationName,
+            'request_payload' => self::serializePayload($call->requestPayload, $effectivePayloadCodec),
+            ...$options,
+            'payload_codec' => $effectivePayloadCodec,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private static function activityOptions(?ActivityOptions $options): array
     {
         if ($options === null) {
@@ -280,6 +304,14 @@ final class WorkflowStep
             'connection' => $options->connection,
             'queue' => $options->queue,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function serviceOperationOptions(?ServiceOperationOptions $options): array
+    {
+        return $options?->toCommandOptions() ?? [];
     }
 
     /**

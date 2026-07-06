@@ -16,6 +16,10 @@ enum HistoryEventType: string
     case ChildRunFailed = 'ChildRunFailed';
     case ChildRunCancelled = 'ChildRunCancelled';
     case ChildRunTerminated = 'ChildRunTerminated';
+    case ServiceCallStarted = 'ServiceCallStarted';
+    case ServiceCallCompleted = 'ServiceCallCompleted';
+    case ServiceCallFailed = 'ServiceCallFailed';
+    case ServiceCallCancelled = 'ServiceCallCancelled';
     case ConditionWaitOpened = 'ConditionWaitOpened';
     case ConditionWaitSatisfied = 'ConditionWaitSatisfied';
     case ConditionWaitTimedOut = 'ConditionWaitTimedOut';

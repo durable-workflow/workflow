@@ -355,6 +355,52 @@ final class QueryStateReplayer
                 return new ReplayState($workflow, $sequence, $current);
             }
 
+            if ($current instanceof ServiceOperationCall) {
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SERVICE_OPERATION, [
+                    'operation_name' => $current->operationName,
+                ]);
+
+                $serviceEvent = $this->serviceOperationEvent($run, $historySequence);
+
+                if ($serviceEvent === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                if (
+                    $serviceEvent->event_type === HistoryEventType::ServiceCallStarted
+                    && ! self::serviceOperationStartedEventIsVisible($serviceEvent, $current)
+                ) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                if (in_array($serviceEvent->event_type, [
+                    HistoryEventType::ServiceCallFailed,
+                    HistoryEventType::ServiceCallCancelled,
+                ], true)) {
+                    $current = $workflowExecution->throw(
+                        $this->serviceOperationException($serviceEvent),
+                        $serviceEvent->recorded_at,
+                    );
+                } else {
+                    $current = $workflowExecution->send(
+                        $this->serviceOperationResult($serviceEvent),
+                        $serviceEvent->recorded_at,
+                    );
+                }
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
@@ -1119,6 +1165,107 @@ final class QueryStateReplayer
         );
 
         return $event;
+    }
+
+    private function serviceOperationEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        $events = $run->historyEvents->filter(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [
+                    HistoryEventType::ServiceCallStarted,
+                    HistoryEventType::ServiceCallCompleted,
+                    HistoryEventType::ServiceCallFailed,
+                    HistoryEventType::ServiceCallCancelled,
+                ],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        /** @var WorkflowHistoryEvent|null $terminal */
+        $terminal = $events->first(static fn (WorkflowHistoryEvent $event): bool => in_array(
+            $event->event_type,
+            [
+                HistoryEventType::ServiceCallCompleted,
+                HistoryEventType::ServiceCallFailed,
+                HistoryEventType::ServiceCallCancelled,
+            ],
+            true,
+        ));
+
+        /** @var WorkflowHistoryEvent|null $started */
+        $started = $events->first();
+
+        return $terminal ?? $started;
+    }
+
+    private function serviceOperationResult(WorkflowHistoryEvent $event): ServiceOperationResult
+    {
+        $surface = is_array($event->payload['service_call'] ?? null)
+            ? $event->payload['service_call']
+            : [];
+        $surface += array_filter([
+            'service_call_id' => self::nonEmptyString($event->payload['service_call_id'] ?? null),
+            'status' => self::nonEmptyString($event->payload['status'] ?? null),
+            'outcome' => self::nonEmptyString($event->payload['outcome'] ?? null),
+            'endpoint_name' => self::nonEmptyString($event->payload['endpoint_name'] ?? null),
+            'service_name' => self::nonEmptyString($event->payload['service_name'] ?? null),
+            'operation_name' => self::nonEmptyString($event->payload['operation_name'] ?? null),
+            'operation_mode' => self::nonEmptyString($event->payload['operation_mode'] ?? null),
+            'wait_for' => self::nonEmptyString($event->payload['wait_for'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return ServiceOperationResult::fromSurface($surface, $event->payload['response_payload'] ?? null);
+    }
+
+    private static function serviceOperationStartedEventIsVisible(
+        WorkflowHistoryEvent $event,
+        ServiceOperationCall $call,
+    ): bool
+    {
+        if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
+            return true;
+        }
+
+        $surface = is_array($event->payload['service_call'] ?? null)
+            ? $event->payload['service_call']
+            : [];
+
+        return ($call->options?->shouldResumeOnAdmission() ?? false)
+            || self::nonEmptyString($event->payload['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($event->payload['operation_mode'] ?? null) === 'async'
+            || self::nonEmptyString($surface['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    private function serviceOperationException(WorkflowHistoryEvent $event): Throwable
+    {
+        $payload = is_array($event->payload['exception'] ?? null) ? $event->payload['exception'] : [];
+        $exceptionClass = self::nonEmptyString($event->payload['exception_class'] ?? null) ?? RuntimeException::class;
+        $message = self::nonEmptyString($event->payload['message'] ?? null) ?? 'Service operation failed.';
+        $code = self::intValue($event->payload['code'] ?? null) ?? 0;
+
+        if (! is_string($payload['type'] ?? null) && is_string($event->payload['exception_type'] ?? null)) {
+            $payload['type'] = $event->payload['exception_type'];
+        }
+
+        if (! is_string($payload['class'] ?? null)) {
+            $payload['class'] = $exceptionClass;
+        }
+
+        if (! is_string($payload['message'] ?? null)) {
+            $payload['message'] = $message;
+        }
+
+        if (! is_int($payload['code'] ?? null)) {
+            $payload['code'] = $code;
+        }
+
+        try {
+            return FailureFactory::restoreForReplay($payload, $exceptionClass, $message, $code);
+        } catch (\Workflow\V2\Exceptions\UnresolvedWorkflowFailureException) {
+            return FailureFactory::restoreExternalWorkerFailure($payload, $exceptionClass, $message, $code);
+        }
     }
 
     private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
