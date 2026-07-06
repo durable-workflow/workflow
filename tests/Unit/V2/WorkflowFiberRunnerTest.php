@@ -1462,6 +1462,45 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame('accepted', $completed->result['service_call']['wait_for']);
     }
 
+    public function testRunnerDecodesCompletedServiceOperationResponsePayload(): void
+    {
+        $responsePayload = ['authorized' => true, 'auth_code' => 'A-42'];
+
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerServiceOperationWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ServiceCallCompleted',
+                'payload' => [
+                    'sequence' => 1,
+                    'service_call_id' => 'svc-completed-1',
+                    'endpoint_name' => 'payments',
+                    'service_name' => 'PythonPayments',
+                    'operation_name' => 'authorize',
+                    'status' => 'completed',
+                    'outcome' => 'completed',
+                    'payload_codec' => 'json',
+                    'response_payload' => Serializer::serializeWithCodec('json', $responsePayload),
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertSame('completed', $completed->result['status']);
+        $this->assertSame($responsePayload, $completed->result['response_payload']);
+    }
+
     public function testRunnerWaitsForStartedServiceOperationWhenAdmissionIsNotWorkflowVisible(): void
     {
         $waiting = WorkflowFiberRunner::forClass(

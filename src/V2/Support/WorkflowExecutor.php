@@ -4767,7 +4767,7 @@ final class WorkflowExecutor
 
         $payload = $event->payload['response_payload'];
 
-        if (! is_string($payload)) {
+        if (! is_string($payload) && ! self::isPayloadEnvelope($payload)) {
             return $payload;
         }
 
@@ -4775,12 +4775,30 @@ final class WorkflowExecutor
             ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
                 ? $run->payload_codec
                 : CodecRegistry::defaultCodec());
+        $serialized = ExternalPayloads::payloadBlob(
+            $payload,
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return null;
+        }
 
         try {
-            return Serializer::unserializeWithCodec($codec, $payload);
+            return Serializer::unserializeWithCodec($codec, $serialized);
         } catch (Throwable) {
             return $payload;
         }
+    }
+
+    private static function isPayloadEnvelope(mixed $payload): bool
+    {
+        return is_array($payload)
+            && (
+                (isset($payload['blob']) && is_string($payload['blob']))
+                || (isset($payload['external_storage']) && is_array($payload['external_storage']))
+            );
     }
 
     private function serviceOperationException(WorkflowHistoryEvent $event): Throwable

@@ -9,6 +9,7 @@ use LogicException;
 use ReflectionMethod;
 use RuntimeException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -391,7 +392,7 @@ final class QueryStateReplayer
                     );
                 } else {
                     $current = $workflowExecution->send(
-                        $this->serviceOperationResult($serviceEvent),
+                        $this->serviceOperationResult($serviceEvent, $run),
                         $serviceEvent->recorded_at,
                     );
                 }
@@ -1199,7 +1200,7 @@ final class QueryStateReplayer
         return $terminal ?? $started;
     }
 
-    private function serviceOperationResult(WorkflowHistoryEvent $event): ServiceOperationResult
+    private function serviceOperationResult(WorkflowHistoryEvent $event, WorkflowRun $run): ServiceOperationResult
     {
         $surface = is_array($event->payload['service_call'] ?? null)
             ? $event->payload['service_call']
@@ -1215,7 +1216,52 @@ final class QueryStateReplayer
             'wait_for' => self::nonEmptyString($event->payload['wait_for'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
 
-        return ServiceOperationResult::fromSurface($surface, $event->payload['response_payload'] ?? null);
+        return ServiceOperationResult::fromSurface(
+            $surface,
+            $this->serviceOperationResponsePayload($event, $run),
+        );
+    }
+
+    private function serviceOperationResponsePayload(WorkflowHistoryEvent $event, WorkflowRun $run): mixed
+    {
+        if (! array_key_exists('response_payload', $event->payload)) {
+            return null;
+        }
+
+        $payload = $event->payload['response_payload'];
+
+        if (! is_string($payload) && ! self::isPayloadEnvelope($payload)) {
+            return $payload;
+        }
+
+        $codec = self::nonEmptyString($event->payload['payload_codec'] ?? null)
+            ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
+                ? $run->payload_codec
+                : CodecRegistry::defaultCodec());
+        $serialized = ExternalPayloads::payloadBlob(
+            $payload,
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return null;
+        }
+
+        try {
+            return Serializer::unserializeWithCodec($codec, $serialized);
+        } catch (Throwable) {
+            return $payload;
+        }
+    }
+
+    private static function isPayloadEnvelope(mixed $payload): bool
+    {
+        return is_array($payload)
+            && (
+                (isset($payload['blob']) && is_string($payload['blob']))
+                || (isset($payload['external_storage']) && is_array($payload['external_storage']))
+            );
     }
 
     private static function serviceOperationStartedEventIsVisible(
@@ -1391,6 +1437,13 @@ final class QueryStateReplayer
     }
 
     private function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
+    private static function nonEmptyString(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
             ? $value

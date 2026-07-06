@@ -9,15 +9,35 @@ use Tests\TestCase;
 use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Signal;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Workflow;
 use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
 use function Workflow\V2\signal;
 
 final class WorkflowQueryTaskExecutorTest extends TestCase
 {
+    private ?string $externalPayloadRoot = null;
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->externalPayloadRoot !== null) {
+            $this->removeDirectory($this->externalPayloadRoot);
+            $this->externalPayloadRoot = null;
+        }
+
+        parent::tearDown();
+    }
+
     public function testExecutorReplaysHistoryExportAndCompletesKnownQuery(): void
     {
         $result = (new WorkflowQueryTaskExecutor())->execute($this->queryTask());
@@ -129,6 +149,66 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
 
         $this->assertSame('completed', $result['outcome'] ?? null);
         $this->assertSame('waiting-for-timer', $result['result'] ?? null);
+    }
+
+    public function testExecutorReplaysCompletedServiceOperationResponsePayloadForQuery(): void
+    {
+        $codec = 'json';
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeExternalPayloadRoot());
+        $this->bindExternalPayloadPolicy($driver);
+        $responsePayload = ['authorized' => true, 'auth_code' => 'A-42'];
+        $storedResponse = ExternalPayloads::externalize(
+            Serializer::serializeWithCodec($codec, $responsePayload),
+            $codec,
+            $driver,
+            1,
+        );
+
+        $result = (new WorkflowQueryTaskExecutor())->execute($this->queryTask([
+            'workflow_type' => 'service-operation-query-workflow',
+            'workflow_class' => WorkflowQueryTaskExecutorServiceOperationWorkflow::class,
+            'query_name' => 'authorization',
+            'history_export' => [
+                'workflow' => [
+                    'workflow_type' => 'service-operation-query-workflow',
+                    'workflow_class' => WorkflowQueryTaskExecutorServiceOperationWorkflow::class,
+                    'last_history_sequence' => 2,
+                ],
+                'history_events' => [
+                    [
+                        'id' => 'event-started',
+                        'sequence' => 1,
+                        'type' => HistoryEventType::WorkflowStarted->value,
+                        'payload' => [
+                            'workflow_type' => 'service-operation-query-workflow',
+                            'workflow_class' => WorkflowQueryTaskExecutorServiceOperationWorkflow::class,
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:00+00:00',
+                    ],
+                    [
+                        'id' => 'event-service-completed',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::ServiceCallCompleted->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'service_call_id' => 'svc-completed-1',
+                            'endpoint_name' => 'payments',
+                            'service_name' => 'PythonPayments',
+                            'operation_name' => 'authorize',
+                            'status' => 'completed',
+                            'outcome' => 'completed',
+                            'payload_codec' => $codec,
+                            'response_payload' => ExternalPayloads::historyValue($storedResponse, $codec, null),
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:01+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame($responsePayload, $result['result'] ?? null);
     }
 
     public function testExecutorCorrelatesReceivedSignalHistoryByWaitIdWhenSequenceIsSparse(): void
@@ -800,6 +880,65 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
             ],
         ]), $overrides);
     }
+
+    private function bindExternalPayloadPolicy(ExternalPayloadStorageDriver $driver): void
+    {
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new class($driver) implements ExternalPayloadStoragePolicy {
+                public function __construct(
+                    private readonly ExternalPayloadStorageDriver $driver,
+                ) {
+                }
+
+                public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+                {
+                    return $this->driver;
+                }
+
+                public function thresholdBytesFor(?string $namespace): ?int
+                {
+                    return 1;
+                }
+            },
+        );
+    }
+
+    private function makeExternalPayloadRoot(): string
+    {
+        $this->externalPayloadRoot = sys_get_temp_dir().'/dw-query-service-response-'.bin2hex(random_bytes(6));
+
+        return $this->externalPayloadRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } elseif (is_file($path)) {
+                unlink($path);
+            }
+        }
+
+        rmdir($directory);
+    }
 }
 
 #[Signal('increment', [[
@@ -827,5 +966,30 @@ final class WorkflowQueryTaskExecutorCounterWorkflow extends Workflow
     public function state(): int
     {
         return $this->count;
+    }
+}
+
+final class WorkflowQueryTaskExecutorServiceOperationWorkflow extends Workflow
+{
+    private mixed $authorization = null;
+
+    public function handle(): void
+    {
+        $result = Workflow::serviceOperation(
+            'payments',
+            'PythonPayments',
+            'authorize',
+            ['amount' => 4200, 'currency' => 'USD'],
+        );
+
+        $this->authorization = $result instanceof ServiceOperationResult
+            ? $result->responsePayload
+            : null;
+    }
+
+    #[QueryMethod]
+    public function authorization(): mixed
+    {
+        return $this->authorization;
     }
 }

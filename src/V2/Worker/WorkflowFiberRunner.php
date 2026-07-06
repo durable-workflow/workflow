@@ -803,7 +803,11 @@ final class WorkflowFiberRunner
             self::indexOpenChildWaits($this->historyEvents),
             $this->recordedChildOutcomes,
         );
-        $this->recordedServiceOperationOutcomes = self::indexRecordedServiceOperationOutcomes($this->historyEvents);
+        $this->recordedServiceOperationOutcomes = self::indexRecordedServiceOperationOutcomes(
+            $this->historyEvents,
+            $this->payloadCodec,
+            $this->namespace,
+        );
         $this->openServiceOperationWaits = array_diff_key(
             self::indexOpenServiceOperationWaits($this->historyEvents),
             array_filter(
@@ -1477,7 +1481,11 @@ final class WorkflowFiberRunner
      * @param list<array<string, mixed>> $historyEvents
      * @return array<int, array{status: string, result?: ServiceOperationResult, exception?: Throwable, recorded_at: CarbonInterface|null, admission_visible?: bool}>
      */
-    private static function indexRecordedServiceOperationOutcomes(array $historyEvents): array
+    private static function indexRecordedServiceOperationOutcomes(
+        array $historyEvents,
+        string $fallbackCodec,
+        ?string $namespace,
+    ): array
     {
         $outcomes = [];
 
@@ -1531,7 +1539,10 @@ final class WorkflowFiberRunner
 
             $outcomes[$sequence] = [
                 'status' => $type === 'ServiceCallCompleted' ? 'completed' : 'started',
-                'result' => ServiceOperationResult::fromSurface($surface, $payload['response_payload'] ?? null),
+                'result' => ServiceOperationResult::fromSurface(
+                    $surface,
+                    self::serviceOperationResponsePayload($payload, $fallbackCodec, $namespace),
+                ),
                 'recorded_at' => $recordedAt,
                 'admission_visible' => $type === 'ServiceCallStarted'
                     ? self::serviceOperationStartedPayloadIsVisible($payload, $surface)
@@ -1563,6 +1574,45 @@ final class WorkflowFiberRunner
             || self::stringValue($payload['operation_mode'] ?? null) === 'async'
             || self::stringValue($surface['wait_for'] ?? null) === 'accepted'
             || self::stringValue($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function serviceOperationResponsePayload(
+        array $payload,
+        string $fallbackCodec,
+        ?string $namespace,
+    ): mixed {
+        if (! array_key_exists('response_payload', $payload)) {
+            return null;
+        }
+
+        $responsePayload = $payload['response_payload'];
+
+        if (! is_string($responsePayload) && ! self::isPayloadEnvelope($responsePayload)) {
+            return $responsePayload;
+        }
+
+        try {
+            return self::decodePayload(
+                $responsePayload,
+                $fallbackCodec,
+                self::stringValue($payload['payload_codec'] ?? null),
+                $namespace,
+            );
+        } catch (Throwable) {
+            return $responsePayload;
+        }
+    }
+
+    private static function isPayloadEnvelope(mixed $payload): bool
+    {
+        return is_array($payload)
+            && (
+                (isset($payload['blob']) && is_string($payload['blob']))
+                || (isset($payload['external_storage']) && is_array($payload['external_storage']))
+            );
     }
 
     /**
