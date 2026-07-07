@@ -301,21 +301,30 @@ final class ScheduleManager
 
     public static function delete(WorkflowSchedule $schedule, ?CommandContext $context = null): WorkflowSchedule
     {
-        if ($schedule->status === ScheduleStatus::Deleted) {
-            return $schedule;
-        }
+        DB::transaction(static function () use ($schedule, $context): void {
+            /** @var WorkflowSchedule $locked */
+            $locked = WorkflowSchedule::query()
+                ->lockForUpdate()
+                ->findOrFail($schedule->id);
 
-        $schedule->forceFill([
-            'status' => ScheduleStatus::Deleted->value,
-            'deleted_at' => now(),
-            'next_fire_at' => null,
-            'buffered_actions' => null,
-        ])->save();
+            if ($locked->status === ScheduleStatus::Deleted) {
+                return;
+            }
 
-        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
-            'reason' => 'deleted',
-            'deleted_at' => $schedule->deleted_at?->toIso8601String(),
-        ], $context);
+            $locked->forceFill([
+                'status' => ScheduleStatus::Deleted->value,
+                'deleted_at' => now(),
+                'next_fire_at' => null,
+                'buffered_actions' => null,
+            ])->save();
+
+            self::recordScheduleEvent($locked, HistoryEventType::ScheduleDeleted, [
+                'reason' => 'deleted',
+                'deleted_at' => $locked->deleted_at?->toIso8601String(),
+            ], $context);
+        });
+
+        $schedule->refresh();
 
         return $schedule;
     }

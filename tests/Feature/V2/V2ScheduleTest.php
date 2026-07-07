@@ -132,6 +132,10 @@ final class V2ScheduleTest extends TestCase
         );
 
         $deleted = ScheduleManager::delete($schedule);
+        $this->assertSame($schedule, $deleted);
+        $this->assertSame(ScheduleStatus::Deleted, $schedule->status);
+        $this->assertNotNull($schedule->deleted_at);
+        $this->assertNull($schedule->next_fire_at);
         $this->assertSame(ScheduleStatus::Deleted, $deleted->status);
         $this->assertNotNull($deleted->deleted_at);
         $this->assertNull($deleted->next_fire_at);
