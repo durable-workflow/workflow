@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -128,6 +129,29 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
         $this->assertInstanceOf(ConfiguredWorkflowRun::class, $resolved);
         $this->assertSame('01JCONFIGRUN00000000000002', $resolved?->id);
+    }
+
+    public function testLockedCurrentRunResolverSkipsRunLookupForEmptyInstance(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'empty-locked-current-run-instance',
+            'workflow_class' => 'App\\Workflows\\EmptyLockedResolverWorkflow',
+            'workflow_type' => 'empty.locked.resolver.workflow',
+            'run_count' => 0,
+        ]);
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = (string) $query->sql;
+        });
+
+        $resolved = CurrentRunResolver::forInstance($instance->fresh(), lockForUpdate: true);
+
+        $this->assertNull($resolved);
+        $this->assertFalse(
+            collect($queries)->contains(static fn (string $sql): bool => str_contains($sql, 'workflow_runs')),
+            'Empty locked instances should not issue a workflow_runs lookup that can gap-lock concurrent first-run inserts.',
+        );
     }
 
     public function testCurrentRunResolverBypassesLoadedRunsWhenLockingCurrentRun(): void

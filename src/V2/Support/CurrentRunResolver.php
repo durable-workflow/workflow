@@ -36,6 +36,15 @@ final class CurrentRunResolver
         array $relations = [],
         bool $lockForUpdate = false,
     ): array {
+        if ($lockForUpdate && self::instanceHasNoRuns($instance)) {
+            self::attachResolvedRun($instance, null);
+
+            return [
+                'run' => null,
+                'source' => null,
+            ];
+        }
+
         $lineageRunId = self::lineageResolvedRunId($instance, $lockForUpdate);
         $run = $lineageRunId === null
             ? null
@@ -173,6 +182,12 @@ final class CurrentRunResolver
         }
 
         return self::queryForInstance($instance->id, $relations)->first();
+    }
+
+    private static function instanceHasNoRuns(WorkflowInstance $instance): bool
+    {
+        return ($instance->current_run_id ?? null) === null
+            && (int) ($instance->run_count ?? 0) === 0;
     }
 
     private static function attachResolvedRun(WorkflowInstance $instance, ?WorkflowRun $run): void
