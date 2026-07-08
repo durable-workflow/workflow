@@ -752,7 +752,8 @@ do not introduce new durable truth.
 - Replay-debug bundles, archive bundles, and import bundles share one
   bundle format and one verifier. `workflow:v2:replay-simulate`,
   `workflow:v2:replay-verify`, `workflow:v2:replay-conformance`,
-  `workflow:v2:namespace-conformance`, and
+  `workflow:v2:namespace-conformance`,
+  `workflow:v2:search-attributes-conformance`, and
   `workflow:v2:schedule-conformance` are the supported tools for
   offline replay and conformance evidence; production correctness is
   never debugged in-band.
@@ -783,6 +784,18 @@ do not introduce new durable truth.
   explicit published-artifact version and source entries; the shard is
   merged with the server, CLI, Python, Waterline, cleanup, and Nexus
   evidence before a full namespace conformance run can pass.
+- `php artisan workflow:v2:search-attributes-conformance` emits the
+  Workflow PHP runtime's search-attribute evidence shard for host
+  harnesses. The shard runs against a standalone server through the
+  published `ControlPlaneClient`, `WorkerProtocolClient`, and PHP
+  workflow runtime, proving PHP workflow start attributes, workflow-side
+  upserts, public visibility queries, workflow storage type names, and
+  namespace value isolation. Host harnesses must supply explicit
+  published-artifact version and source entries; the shard reports every
+  required `search_attribute_runtime_contract` scenario and marks
+  out-of-shard cells as not covered with linked findings before the full
+  server, CLI, Python, Waterline, codec, latency, and adversarial-query
+  evidence is merged.
 - `php artisan workflow:v2:schedule-conformance` emits the Workflow PHP
   runtime's schedule conformance evidence shard for host harnesses. The
   shard runs against a standalone server through the published

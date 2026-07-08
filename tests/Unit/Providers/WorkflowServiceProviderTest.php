@@ -346,6 +346,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'workflow:v2:rebuild-projections',
             'workflow:v2:replay-conformance',
             'workflow:v2:schedule-conformance',
+            'workflow:v2:search-attributes-conformance',
             'workflow:v2:schedule-tick',
         ];
 
@@ -371,6 +372,7 @@ final class WorkflowServiceProviderTest extends TestCase
         foreach ([
             'workflow:v2:namespace-conformance',
             'workflow:v2:schedule-conformance',
+            'workflow:v2:search-attributes-conformance',
         ] as $commandName) {
             $this->assertArrayHasKey($commandName, $commands);
 
