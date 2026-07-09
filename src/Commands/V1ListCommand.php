@@ -14,7 +14,7 @@ class V1ListCommand extends Command
         {--status= : Filter by status (running, pending, etc.)}
         {--json : Output as JSON}';
 
-    protected $description = 'List v1 workflows (from stored_workflows table) to track completion after upgrading to v2';
+    protected $description = 'List active v1 workflows from the workflows table after upgrading to v2';
 
     public function handle(): int
     {
@@ -40,7 +40,7 @@ class V1ListCommand extends Command
         }
 
         if ($workflows->isEmpty()) {
-            $this->info('No active v1 workflows found.');
+            $this->info('No active v1 workflows found in the workflows table.');
             $this->line('');
             $this->line('All v1 workflows have completed. You may safely drop v1 tables if desired:');
             $this->line('');
@@ -60,7 +60,7 @@ class V1ListCommand extends Command
 
         foreach ($workflows as $workflow) {
             $table->addRow([
-                substr($workflow->id, 0, 24) . '...',
+                $this->shortenId((string) $workflow->id),
                 $this->shortenClass($workflow->class),
                 $workflow->status,
                 $this->formatDate($workflow->created_at),
@@ -70,13 +70,25 @@ class V1ListCommand extends Command
         $table->render();
 
         $this->line('');
-        $this->info(sprintf('Found %d active v1 workflow(s).', $workflows->count()));
+        $this->info(sprintf(
+            'Found %d active v1 workflow(s) in the workflows table.',
+            $workflows->count()
+        ));
         $this->line('');
         $this->line('These workflows will continue executing on the v1 engine until they complete.');
         $this->line('Run this command periodically to track v1 workflow completion.');
         $this->line('');
 
         return self::SUCCESS;
+    }
+
+    private function shortenId(string $id): string
+    {
+        if (strlen($id) <= 24) {
+            return $id;
+        }
+
+        return substr($id, 0, 24) . '...';
     }
 
     private function shortenClass(?string $class): string
