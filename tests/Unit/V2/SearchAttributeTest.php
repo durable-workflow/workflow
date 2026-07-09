@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
@@ -119,6 +120,58 @@ class SearchAttributeTest extends TestCase
         $this->assertSame('short', $attrs['description']->value_string);
         $this->assertEquals(WorkflowSearchAttribute::TYPE_FLOAT, $attrs['score']->type);
         $this->assertEqualsWithDelta(5.0, $attrs['score']->value_float, 0.001);
+    }
+
+    public function testItBulkUpsertsManyAttributesWithoutPerAttributeReads(): void
+    {
+        $run = $this->createRun();
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+
+        $this->service->upsert($run, new UpsertSearchAttributesCall([
+            'customer_id' => 'cust_123',
+            'order_total_cents' => 4250,
+            'discount_ratio' => 0.15,
+            'priority_tier' => 'gold',
+            'is_vip' => true,
+            'created_at' => '2026-07-08T12:00:00Z',
+            'tags' => ['php', 'mirror'],
+        ]), 1, attributeTypes: [
+            'customer_id' => WorkflowSearchAttribute::TYPE_KEYWORD,
+            'order_total_cents' => WorkflowSearchAttribute::TYPE_INT,
+            'discount_ratio' => WorkflowSearchAttribute::TYPE_FLOAT,
+            'priority_tier' => WorkflowSearchAttribute::TYPE_KEYWORD,
+            'is_vip' => WorkflowSearchAttribute::TYPE_BOOL,
+            'created_at' => WorkflowSearchAttribute::TYPE_DATETIME,
+            'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+        ]);
+
+        $searchAttributeSelects = collect($queries)
+            ->map(static fn (string $sql): string => strtolower($sql))
+            ->filter(static fn (string $sql): bool => str_starts_with(ltrim($sql), 'select'))
+            ->filter(static fn (string $sql): bool => str_contains($sql, 'workflow_search_attributes'))
+            ->values();
+
+        $this->assertLessThanOrEqual(
+            1,
+            $searchAttributeSelects->count(),
+            sprintf(
+                "Search attribute upsert should not read once per attribute.\nQueries:\n%s",
+                $searchAttributeSelects->implode("\n"),
+            ),
+        );
+
+        $attrs = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
+            ->get()
+            ->keyBy('key');
+
+        $this->assertCount(7, $attrs);
+        $this->assertSame(['php', 'mirror'], $attrs['tags']->getValue());
+        $this->assertEqualsWithDelta(0.15, $attrs['discount_ratio']->getValue(), 0.001);
+        $this->assertTrue($attrs['is_vip']->getValue());
     }
 
     public function testItRejectsDeclaredSearchAttributeTypeIncompatibleWithValue(): void
