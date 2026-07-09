@@ -23,6 +23,189 @@ use function Workflow\V2\signal;
 
 final class StandaloneWorkflowWorkerTest extends TestCase
 {
+    public function testTickWithHeartbeatEmitsPeriodicWorkerHeartbeatUsingRegisteredIdentity(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/register')) {
+                return $http->response([
+                    'registered' => true,
+                    'heartbeat_interval_seconds' => 30,
+                    'stale_after_seconds' => 90,
+                ], 201);
+            }
+
+            if (str_ends_with($request->url(), '/heartbeat')) {
+                return $http->response([
+                    'heartbeat_recorded' => true,
+                    'heartbeat_interval_seconds' => 30,
+                    'stale_after_seconds' => 90,
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'empty',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'empty',
+                ]);
+            }
+
+            return $http->response(['recorded' => true]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-worker',
+            taskQueue: 'polyglot',
+            supportedWorkflowTypes: ['polyglot.php.simple'],
+        );
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.simple' => StandaloneWorkflowWorkerSimpleWorkflow::class,
+        ]);
+
+        $first = $worker->tickWithHeartbeat(
+            queue: 'polyglot',
+            taskSlots: ['workflow_available' => 1, 'activity_available' => 0],
+            processMetrics: ['process_id' => 1234, 'memory_bytes' => 2048],
+            now: 1_000,
+        );
+        $second = $worker->tickWithHeartbeat(
+            queue: 'polyglot',
+            taskSlots: ['workflow_available' => 1, 'activity_available' => 0],
+            processMetrics: ['process_id' => 1234, 'memory_bytes' => 2048],
+            now: 1_029,
+        );
+        $third = $worker->tickWithHeartbeat(
+            queue: 'polyglot',
+            taskSlots: ['workflow_available' => 1, 'activity_available' => 0],
+            processMetrics: ['process_id' => 1234, 'memory_bytes' => 2048],
+            now: 1_030,
+        );
+
+        $heartbeatRequests = array_values(array_filter(
+            $requests,
+            static fn (array $request): bool => str_ends_with($request['url'], '/heartbeat'),
+        ));
+
+        $this->assertSame(30, $worker->heartbeatIntervalSeconds());
+        $this->assertSame([
+            'heartbeat_recorded' => true,
+            'heartbeat_interval_seconds' => 30,
+            'stale_after_seconds' => 90,
+        ], $first['worker_heartbeat'] ?? null);
+        $this->assertArrayNotHasKey('worker_heartbeats', $second);
+        $this->assertSame([
+            'heartbeat_recorded' => true,
+            'heartbeat_interval_seconds' => 30,
+            'stale_after_seconds' => 90,
+        ], $third['worker_heartbeat'] ?? null);
+
+        $this->assertCount(2, $heartbeatRequests);
+        $this->assertSame([
+            'worker_id' => 'php-worker',
+            'task_slots' => [
+                'workflow_available' => 1,
+                'activity_available' => 0,
+            ],
+            'process_metrics' => [
+                'process_id' => 1234,
+                'memory_bytes' => 2048,
+            ],
+        ], $heartbeatRequests[0]['body']);
+        $this->assertSame($heartbeatRequests[0]['body'], $heartbeatRequests[1]['body']);
+    }
+
+    public function testRunProcessesBoundedHeartbeatAwareLoop(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/register')) {
+                return $http->response([
+                    'registered' => true,
+                    'heartbeat_interval_seconds' => 60,
+                ], 201);
+            }
+
+            if (str_ends_with($request->url(), '/heartbeat')) {
+                return $http->response([
+                    'heartbeat_recorded' => true,
+                    'heartbeat_interval_seconds' => 60,
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'empty',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => null,
+                    'poll_status' => 'empty',
+                ]);
+            }
+
+            return $http->response(['recorded' => true]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-worker',
+            taskQueue: 'polyglot',
+            supportedWorkflowTypes: ['polyglot.php.simple'],
+        );
+        $worker = new StandaloneWorkflowWorker($client, [
+            'polyglot.php.simple' => StandaloneWorkflowWorkerSimpleWorkflow::class,
+        ]);
+
+        $result = $worker->run(
+            queue: 'polyglot',
+            idleSleepMicroseconds: 0,
+            maxTicks: 2,
+        );
+
+        $this->assertSame('worker_loop', $result['kind'] ?? null);
+        $this->assertSame(2, $result['ticks'] ?? null);
+        $this->assertSame(60, $result['heartbeat_interval_seconds'] ?? null);
+        $this->assertCount(1, array_filter(
+            $requests,
+            static fn (array $request): bool => str_ends_with($request['url'], '/heartbeat'),
+        ));
+        $this->assertCount(2, array_filter(
+            $requests,
+            static fn (array $request): bool => str_ends_with($request['url'], '/query-tasks/poll'),
+        ));
+        $this->assertCount(2, array_filter(
+            $requests,
+            static fn (array $request): bool => str_ends_with($request['url'], '/workflow-tasks/poll'),
+        ));
+    }
+
     public function testTickCompletesRoutedQueryBeforePollingWorkflowTasks(): void
     {
         $http = new HttpFactory();

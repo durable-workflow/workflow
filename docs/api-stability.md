@@ -291,6 +291,9 @@ tick polls and completes at most one query task before polling workflow tasks,
 then executes workflow tasks through `WorkflowFiberRunner` and completes or
 fails them through `WorkerProtocolClient`. That query-first order is part of
 the public worker shim contract for workers that advertise `query_tasks`.
+Long-running service workers can use `tickWithHeartbeat()` or `run()` to emit
+periodic worker heartbeat records with task-slot and process telemetry on the
+server-advertised cadence while preserving the same task-processing order.
 `namespace()` returns the worker client's selected namespace, and
 `withNamespace()` creates a fresh worker client with the same connection
 settings for a different namespace. That clone intentionally does not carry

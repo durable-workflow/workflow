@@ -261,6 +261,16 @@ final class WorkerProtocolClient
         return $this->lastQueryTaskPoll;
     }
 
+    public function registeredWorkerId(): ?string
+    {
+        return $this->registeredWorkerId;
+    }
+
+    public function registeredTaskQueue(): ?string
+    {
+        return $this->registeredTaskQueue;
+    }
+
     /**
      * Poll for workflow work. Standalone server polls lease the returned
      * task immediately; embedded bridge polls return unleased opportunities

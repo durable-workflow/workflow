@@ -10,6 +10,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryPayloadCompression;
+use Workflow\V2\Support\WorkerHeartbeatTelemetry;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Workflow;
@@ -25,6 +26,7 @@ use Workflow\V2\Workflow;
  */
 final class StandaloneWorkflowWorker
 {
+    private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60;
     private const READY_QUERY_DRAIN_ATTEMPTS = 3;
     private const INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS = 1;
     private const INITIAL_READY_QUERY_DRAIN_ATTEMPTS = 10;
@@ -38,6 +40,12 @@ final class StandaloneWorkflowWorker
 
     private readonly WorkflowQueryTaskExecutor $queryExecutor;
 
+    private readonly int $processStartedAt;
+
+    private int $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
+
+    private ?int $nextHeartbeatAt = null;
+
     /**
      * @param array<string, class-string<Workflow>> $workflowClassesByType
      */
@@ -48,6 +56,7 @@ final class StandaloneWorkflowWorker
     ) {
         $this->workflowClassesByType = $this->normalizeWorkflowClasses($workflowClassesByType);
         $this->queryExecutor = $queryExecutor ?? new WorkflowQueryTaskExecutor($this->workflowClassesByType);
+        $this->processStartedAt = time();
     }
 
     /**
@@ -98,6 +107,152 @@ final class StandaloneWorkflowWorker
             'query' => $query,
             'workflow' => $workflow,
         ];
+    }
+
+    /**
+     * Process one worker tick while maintaining the standalone worker
+     * heartbeat cadence advertised by the server.
+     *
+     * @param array<string, int>|null $taskSlots
+     * @param array<string, mixed>|null $processMetrics
+     * @return array<string, mixed>
+     */
+    public function tickWithHeartbeat(
+        ?string $queue = null,
+        ?string $workerId = null,
+        int $queryPollTimeoutSeconds = 1,
+        int $workflowPollTimeoutSeconds = 1,
+        ?array $taskSlots = null,
+        ?array $processMetrics = null,
+        ?int $now = null,
+    ): array {
+        $resolvedWorkerId = $this->resolveHeartbeatWorkerId($workerId);
+        $heartbeats = [];
+
+        $heartbeat = $this->heartbeatIfDue(
+            $resolvedWorkerId,
+            $taskSlots,
+            $processMetrics,
+            $now,
+        );
+        if ($heartbeat !== null) {
+            $heartbeats[] = $heartbeat;
+        }
+
+        $result = $this->tick(
+            $queue,
+            $resolvedWorkerId,
+            $queryPollTimeoutSeconds,
+            $workflowPollTimeoutSeconds,
+        );
+
+        $postTickHeartbeat = $this->heartbeatIfDue(
+            $resolvedWorkerId,
+            $taskSlots,
+            $processMetrics,
+            $now === null ? null : $now,
+        );
+        if ($postTickHeartbeat !== null) {
+            $heartbeats[] = $postTickHeartbeat;
+        }
+
+        if ($heartbeats !== []) {
+            $result['worker_heartbeats'] = $heartbeats;
+            $result['worker_heartbeat'] = $heartbeats[array_key_last($heartbeats)];
+            $result['heartbeat_interval_seconds'] = $this->heartbeatIntervalSeconds;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Run a heartbeat-aware polling loop until the optional callback returns
+     * false or the optional tick limit is reached.
+     *
+     * @param callable(int, array<string, mixed>|null): bool|null $shouldContinue
+     * @param array<string, int>|null $taskSlots
+     * @param array<string, mixed>|null $processMetrics
+     * @return array<string, mixed>
+     */
+    public function run(
+        ?string $queue = null,
+        ?string $workerId = null,
+        ?callable $shouldContinue = null,
+        int $queryPollTimeoutSeconds = 1,
+        int $workflowPollTimeoutSeconds = 1,
+        ?array $taskSlots = null,
+        ?array $processMetrics = null,
+        int $idleSleepMicroseconds = 100_000,
+        ?int $maxTicks = null,
+    ): array {
+        $ticks = 0;
+        $lastResult = null;
+
+        while ($maxTicks === null || $ticks < $maxTicks) {
+            if ($shouldContinue !== null && $shouldContinue($ticks, $lastResult) === false) {
+                break;
+            }
+
+            $lastResult = $this->tickWithHeartbeat(
+                $queue,
+                $workerId,
+                $queryPollTimeoutSeconds,
+                $workflowPollTimeoutSeconds,
+                $taskSlots,
+                $processMetrics,
+            );
+            $ticks++;
+
+            if (($lastResult['processed'] ?? false) !== true && $idleSleepMicroseconds > 0) {
+                usleep($idleSleepMicroseconds);
+            }
+        }
+
+        return [
+            'kind' => 'worker_loop',
+            'ticks' => $ticks,
+            'last_result' => $lastResult,
+            'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
+            'next_heartbeat_at' => $this->nextHeartbeatAt,
+        ];
+    }
+
+    /**
+     * @param array<string, int>|null $taskSlots
+     * @param array<string, mixed>|null $processMetrics
+     * @return array<string, mixed>|null
+     */
+    public function heartbeatIfDue(
+        ?string $workerId = null,
+        ?array $taskSlots = null,
+        ?array $processMetrics = null,
+        ?int $now = null,
+    ): ?array {
+        $timestamp = $now ?? time();
+
+        if ($this->nextHeartbeatAt !== null && $timestamp < $this->nextHeartbeatAt) {
+            return null;
+        }
+
+        $response = $this->client->heartbeatWorker(
+            $this->resolveHeartbeatWorkerId($workerId),
+            $taskSlots ?? $this->defaultHeartbeatTaskSlots(),
+            $processMetrics ?? WorkerHeartbeatTelemetry::processMetrics($this->processStartedAt),
+        ) ?? [];
+
+        $interval = $this->heartbeatIntervalFromResponse($response);
+        if ($interval !== null) {
+            $this->heartbeatIntervalSeconds = $interval;
+        }
+
+        $this->nextHeartbeatAt = $timestamp + $this->heartbeatIntervalSeconds;
+
+        return $response;
+    }
+
+    public function heartbeatIntervalSeconds(): int
+    {
+        return $this->heartbeatIntervalSeconds;
     }
 
     /**
@@ -551,6 +706,44 @@ final class StandaloneWorkflowWorker
         }
 
         return true;
+    }
+
+    private function resolveHeartbeatWorkerId(?string $workerId): string
+    {
+        $resolved = $workerId ?? $this->client->registeredWorkerId();
+
+        if (! is_string($resolved) || trim($resolved) === '') {
+            throw new LogicException(
+                'Heartbeat-aware standalone worker loops require workerId, or a prior registerWorker() call on the client.'
+            );
+        }
+
+        return trim($resolved);
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function defaultHeartbeatTaskSlots(): array
+    {
+        return WorkerHeartbeatTelemetry::taskSlots(
+            workflowCapacity: 1,
+            workflowInflight: 0,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     */
+    private function heartbeatIntervalFromResponse(array $response): ?int
+    {
+        $interval = $this->intValue($response['heartbeat_interval_seconds'] ?? null);
+
+        if ($interval === null || $interval < 1) {
+            return null;
+        }
+
+        return min(3600, $interval);
     }
 
     /**
