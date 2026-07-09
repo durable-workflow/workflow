@@ -20,7 +20,8 @@ class V2NamespaceConformanceCommand extends Command
 {
     protected $signature = 'workflow:v2:namespace-conformance
         {--server-url= : Base URL for the standalone server under test}
-        {--token= : Bearer token for control-plane and worker-plane requests}
+        {--token= : Bearer token for control-plane requests}
+        {--worker-token= : Bearer token for worker-plane requests; defaults to --token}
         {--namespace-a=tenant-a : First tenant namespace}
         {--namespace-b=tenant-b : Second tenant namespace}
         {--shared-namespace=shared : Shared namespace reserved for the full conformance run}
@@ -243,6 +244,7 @@ class V2NamespaceConformanceCommand extends Command
     {
         $serverUrl = $this->stringOption('server-url');
         $token = $this->stringOption('token');
+        $workerTokenOption = $this->stringOption('worker-token');
 
         if ($serverUrl === null || $token === null) {
             $missing = [];
@@ -275,10 +277,13 @@ class V2NamespaceConformanceCommand extends Command
             ];
         }
 
+        $workerToken = $workerTokenOption ?? $token;
+
         try {
             return $this->exerciseLivePhpNamespaceSurface(
                 $serverUrl,
                 $token,
+                $workerToken,
                 $artifactVersions,
                 $namespaces,
                 $taskQueue,
@@ -321,6 +326,7 @@ class V2NamespaceConformanceCommand extends Command
     private function exerciseLivePhpNamespaceSurface(
         string $serverUrl,
         string $token,
+        string $workerToken,
         array $artifactVersions,
         array $namespaces,
         string $taskQueue,
@@ -331,6 +337,8 @@ class V2NamespaceConformanceCommand extends Command
 
         $defaultClient = new ControlPlaneClient($this->http, $serverUrl, $token);
         $defaultWorkflowClient = new WorkflowClient($this->http, $serverUrl, $token);
+        $tenantAControlClient = $defaultClient->withNamespace($namespaces['a']);
+        $tenantBControlClient = $defaultClient->withNamespace($namespaces['b']);
         $tenantAWorkflowClient = $defaultWorkflowClient->withNamespace($namespaces['a']);
         $tenantBWorkflowClient = $defaultWorkflowClient->withNamespace($namespaces['b']);
 
@@ -364,6 +372,10 @@ class V2NamespaceConformanceCommand extends Command
 
         $workflowA = sprintf('%s-%s-workflow', $runId, $namespaces['a']);
         $workflowB = sprintf('%s-%s-workflow', $runId, $namespaces['b']);
+        $mutationWorkflowA = sprintf('%s-%s-mutation-workflow', $runId, $namespaces['a']);
+        $workerWorkflowA = sprintf('%s-%s-worker-workflow', $runId, $namespaces['a']);
+        $workerWorkflowB = sprintf('%s-%s-worker-workflow', $runId, $namespaces['b']);
+        $workflowSurfaceTaskQueue = $taskQueue.'-workflow-surface';
 
         $startA = $tenantAWorkflowClient->startWorkflow($workflowType, $workflowA, [
             [
@@ -372,15 +384,74 @@ class V2NamespaceConformanceCommand extends Command
                 'runtime' => 'workflow-php',
             ],
         ], [
-            'task_queue' => $taskQueue,
+            'task_queue' => $workflowSurfaceTaskQueue,
+        ]);
+        $startB = $tenantBWorkflowClient->startWorkflow($workflowType, $workflowB, [
+            [
+                'conformance_run_id' => $runId,
+                'namespace' => $namespaces['b'],
+                'runtime' => 'workflow-php',
+                'probe' => 'workflow-surface',
+            ],
+        ], [
+            'task_queue' => $workflowSurfaceTaskQueue,
         ]);
 
+        $tenantADescribeA = $tenantAControlClient->describeWorkflow($workflowA);
+        $tenantAListA = $tenantAControlClient->listWorkflows(['query' => $workflowA]);
+        $tenantBListA = $tenantBControlClient->listWorkflows(['query' => $workflowA]);
+        $tenantBDescribeA = $this->notFoundOutcome(
+            static fn (): mixed => $tenantBControlClient->describeWorkflow($workflowA),
+        );
         $crossNamespaceLookup = $this->notFoundOutcome(
             static fn (): mixed => $tenantBWorkflowClient->queryWorkflow($workflowA, '__namespace_probe'),
         );
 
-        $workerA = new WorkerProtocolClient($this->http, $serverUrl, $token, $namespaces['a']);
-        $workerB = new WorkerProtocolClient($this->http, $serverUrl, $token, $namespaces['b']);
+        $startMutationA = $tenantAWorkflowClient->startWorkflow($workflowType, $mutationWorkflowA, [
+            [
+                'conformance_run_id' => $runId,
+                'namespace' => $namespaces['a'],
+                'runtime' => 'workflow-php',
+                'probe' => 'mutation-isolation',
+            ],
+        ], [
+            'task_queue' => $workflowSurfaceTaskQueue,
+        ]);
+        $crossNamespaceSignal = $this->notFoundOutcome(
+            static fn (): mixed => $tenantBControlClient->signalWorkflow(
+                $mutationWorkflowA,
+                '__namespace_probe_signal',
+                [['blocked' => true]],
+                ['request_id' => $runId.'-cross-signal'],
+            ),
+        );
+        $crossNamespaceCancel = $this->notFoundOutcome(
+            static fn (): mixed => $tenantBControlClient->cancelWorkflow(
+                $mutationWorkflowA,
+                [
+                    'reason' => 'PHP namespace conformance cross-namespace cancel probe',
+                    'request_id' => $runId.'-cross-cancel',
+                ],
+            ),
+        );
+
+        $workflowSurfaceChecks = $this->workflowSurfaceChecks(
+            $workflowA,
+            $startA,
+            $mutationWorkflowA,
+            $workflowB,
+            $startB,
+            $tenantADescribeA,
+            $tenantAListA,
+            $tenantBListA,
+            $tenantBDescribeA,
+            $crossNamespaceLookup,
+            $crossNamespaceSignal,
+            $crossNamespaceCancel,
+        );
+
+        $workerA = new WorkerProtocolClient($this->http, $serverUrl, $workerToken, $namespaces['a']);
+        $workerB = new WorkerProtocolClient($this->http, $serverUrl, $workerToken, $namespaces['b']);
         $workerAId = sprintf('%s-%s-worker', $runId, $namespaces['a']);
         $workerBId = sprintf('%s-%s-worker', $runId, $namespaces['b']);
 
@@ -395,6 +466,17 @@ class V2NamespaceConformanceCommand extends Command
             supportedWorkflowTypes: [$workflowType],
         );
 
+        $startWorkerA = $tenantAWorkflowClient->startWorkflow($workflowType, $workerWorkflowA, [
+            [
+                'conformance_run_id' => $runId,
+                'namespace' => $namespaces['a'],
+                'runtime' => 'workflow-php',
+                'probe' => 'worker-isolation',
+            ],
+        ], [
+            'task_queue' => $taskQueue,
+        ]);
+
         $tenantBBeforeOwnStart = $workerB->pollWorkflowTasks(
             queue: $taskQueue,
             timeoutSeconds: $pollTimeoutSeconds,
@@ -404,11 +486,12 @@ class V2NamespaceConformanceCommand extends Command
             timeoutSeconds: $pollTimeoutSeconds,
         );
 
-        $startB = $tenantBWorkflowClient->startWorkflow($workflowType, $workflowB, [
+        $startWorkerB = $tenantBWorkflowClient->startWorkflow($workflowType, $workerWorkflowB, [
             [
                 'conformance_run_id' => $runId,
                 'namespace' => $namespaces['b'],
                 'runtime' => 'workflow-php',
+                'probe' => 'worker-isolation',
             ],
         ], [
             'task_queue' => $taskQueue,
@@ -423,10 +506,10 @@ class V2NamespaceConformanceCommand extends Command
             timeoutSeconds: $pollTimeoutSeconds,
         );
 
-        $tenantADelivery = $this->tasksContainWorkflow($tenantATasks, $workflowA);
-        $tenantBDelivery = $this->tasksContainWorkflow($tenantBTasks, $workflowB);
+        $tenantADelivery = $this->tasksContainWorkflow($tenantATasks, $workerWorkflowA);
+        $tenantBDelivery = $this->tasksContainWorkflow($tenantBTasks, $workerWorkflowB);
         $crossDeliveryAbsent = $tenantBBeforeOwnStart === []
-            && ! $this->tasksContainWorkflow($tenantAAfterBStart, $workflowB);
+            && ! $this->tasksContainWorkflow($tenantAAfterBStart, $workerWorkflowB);
 
         return [
             [
@@ -458,7 +541,7 @@ class V2NamespaceConformanceCommand extends Command
             ],
             [
                 'scenario_id' => 'sdk_namespace_selection_parity',
-                'status' => $crossNamespaceLookup['not_found'] ? 'pass' : 'fail',
+                'status' => $workflowSurfaceChecks['passed'] ? 'pass' : 'fail',
                 'observed_outputs' => [
                     'python_client_namespace' => 'covered_by_full_harness',
                     'php_client_namespace' => [
@@ -471,15 +554,39 @@ class V2NamespaceConformanceCommand extends Command
                         'selected_namespace' => $defaultWorkflowClient->namespace(),
                         'documented_default' => 'default',
                     ],
+                    'workflow_public_surface' => [
+                        'task_queue' => $workflowSurfaceTaskQueue,
+                        'tenant_a_start' => $startA,
+                        'tenant_b_start' => $startB,
+                        'tenant_a_describe' => $tenantADescribeA,
+                        'tenant_a_list' => $tenantAListA,
+                        'tenant_b_list_for_tenant_a_workflow' => $tenantBListA,
+                        'tenant_b_describe_tenant_a_workflow_denied' => $tenantBDescribeA,
+                        'tenant_b_query_tenant_a_workflow_denied' => $crossNamespaceLookup,
+                        'tenant_a_mutation_probe_start' => $startMutationA,
+                        'tenant_b_signal_tenant_a_workflow_denied' => $crossNamespaceSignal,
+                        'tenant_b_cancel_tenant_a_workflow_denied' => $crossNamespaceCancel,
+                        'semantic_checks' => $workflowSurfaceChecks,
+                    ],
                     'cross_namespace_lookup_denied' => $crossNamespaceLookup,
+                    'cross_namespace_describe_denied' => $tenantBDescribeA,
+                    'cross_namespace_signal_denied' => $crossNamespaceSignal,
+                    'cross_namespace_cancel_denied' => $crossNamespaceCancel,
                     'tenant_a_workflow' => $startA,
                 ],
-                'linked_findings' => $crossNamespaceLookup['not_found']
+                'linked_findings' => $workflowSurfaceChecks['passed']
                     ? []
                     : [$this->finding(
                         'sdk_namespace_selection_parity',
-                        'PHP cross-namespace workflow lookup did not fail as not-found.',
-                        $crossNamespaceLookup,
+                        'PHP workflow public surfaces did not prove namespace-scoped start/list/describe/query/signal/cancel behavior.',
+                        [
+                            'semantic_checks' => $workflowSurfaceChecks,
+                            'tenant_b_describe_tenant_a_workflow_denied' => $tenantBDescribeA,
+                            'tenant_b_query_tenant_a_workflow_denied' => $crossNamespaceLookup,
+                            'tenant_b_signal_tenant_a_workflow_denied' => $crossNamespaceSignal,
+                            'tenant_b_cancel_tenant_a_workflow_denied' => $crossNamespaceCancel,
+                            'tenant_b_list_for_tenant_a_workflow' => $tenantBListA,
+                        ],
                         'workflow',
                     )],
             ],
@@ -500,14 +607,15 @@ class V2NamespaceConformanceCommand extends Command
                         'response' => $tenantBRegistration,
                     ],
                     'tenant_a_delivery' => [
-                        'workflow_id' => $workflowA,
+                        'workflow_id' => $workerWorkflowA,
                         'delivered' => $tenantADelivery,
+                        'start_response' => $startWorkerA,
                         'tasks' => $tenantATasks,
                     ],
                     'tenant_b_delivery' => [
-                        'workflow_id' => $workflowB,
+                        'workflow_id' => $workerWorkflowB,
                         'delivered' => $tenantBDelivery,
-                        'start_response' => $startB,
+                        'start_response' => $startWorkerB,
                         'tasks' => $tenantBTasks,
                     ],
                     'cross_delivery_absent' => [
@@ -616,6 +724,99 @@ class V2NamespaceConformanceCommand extends Command
         ];
     }
 
+    /**
+     * @param array<string, mixed> $tenantADescribe
+     * @param array<string, mixed> $tenantAList
+     * @param array<string, mixed> $tenantBList
+     * @param array<string, mixed> $tenantBDescribeDenied
+     * @param array<string, mixed> $tenantBQueryDenied
+     * @param array<string, mixed> $tenantBSignalDenied
+     * @param array<string, mixed> $tenantBCancelDenied
+     *
+     * @return array<string, mixed>
+     */
+    private function workflowSurfaceChecks(
+        string $workflowA,
+        array $startA,
+        string $mutationWorkflowA,
+        string $workflowB,
+        array $startB,
+        array $tenantADescribe,
+        array $tenantAList,
+        array $tenantBList,
+        array $tenantBDescribeDenied,
+        array $tenantBQueryDenied,
+        array $tenantBSignalDenied,
+        array $tenantBCancelDenied,
+    ): array {
+        $tenantAStartWorkflowId = self::workflowId($startA);
+        $tenantBStartWorkflowId = self::workflowId($startB);
+        $tenantAListWorkflowIds = self::listedWorkflowIds($tenantAList);
+        $tenantBListWorkflowIds = self::listedWorkflowIds($tenantBList);
+        $tenantADescribeWorkflowId = self::workflowId($tenantADescribe);
+
+        $checks = [
+            'tenant_a_start_identifies_started_workflow' => [
+                'expected' => $workflowA,
+                'actual' => $tenantAStartWorkflowId,
+                'passed' => $tenantAStartWorkflowId === $workflowA,
+            ],
+            'tenant_b_start_identifies_started_workflow' => [
+                'expected' => $workflowB,
+                'actual' => $tenantBStartWorkflowId,
+                'passed' => $tenantBStartWorkflowId === $workflowB,
+            ],
+            'tenant_a_describe_identifies_started_workflow' => [
+                'expected' => $workflowA,
+                'actual' => $tenantADescribeWorkflowId,
+                'passed' => $tenantADescribeWorkflowId === $workflowA,
+            ],
+            'tenant_a_list_includes_started_workflow' => [
+                'expected' => $workflowA,
+                'listed_workflow_ids' => $tenantAListWorkflowIds,
+                'passed' => in_array($workflowA, $tenantAListWorkflowIds, true),
+            ],
+            'tenant_b_list_excludes_tenant_a_workflow' => [
+                'expected_absent' => $workflowA,
+                'listed_workflow_ids' => $tenantBListWorkflowIds,
+                'passed' => ! in_array($workflowA, $tenantBListWorkflowIds, true),
+            ],
+            'tenant_b_describe_tenant_a_workflow_returns_not_found' => [
+                'workflow_id' => $workflowA,
+                'passed' => ($tenantBDescribeDenied['not_found'] ?? false) === true,
+                'response' => $tenantBDescribeDenied,
+            ],
+            'tenant_b_query_tenant_a_workflow_returns_not_found' => [
+                'workflow_id' => $workflowA,
+                'passed' => ($tenantBQueryDenied['not_found'] ?? false) === true,
+                'response' => $tenantBQueryDenied,
+            ],
+            'tenant_b_signal_tenant_a_workflow_returns_not_found' => [
+                'workflow_id' => $mutationWorkflowA,
+                'passed' => ($tenantBSignalDenied['not_found'] ?? false) === true,
+                'response' => $tenantBSignalDenied,
+            ],
+            'tenant_b_cancel_tenant_a_workflow_returns_not_found' => [
+                'workflow_id' => $mutationWorkflowA,
+                'passed' => ($tenantBCancelDenied['not_found'] ?? false) === true,
+                'response' => $tenantBCancelDenied,
+            ],
+        ];
+
+        $failures = [];
+        foreach ($checks as $checkId => $check) {
+            if (($check['passed'] ?? false) !== true) {
+                $failures[] = $checkId;
+            }
+        }
+
+        return [
+            'passed' => $failures === [],
+            'checks' => $checks,
+            'failures' => $failures,
+        ];
+    }
+
     private static function namespaceName(mixed $payload): ?string
     {
         if (! is_array($payload)) {
@@ -684,6 +885,67 @@ class V2NamespaceConformanceCommand extends Command
         }
 
         return array_values(array_unique($names));
+    }
+
+    private static function workflowId(mixed $payload): ?string
+    {
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        foreach (['workflow_id', 'workflow_instance_id', 'workflowInstanceId'] as $key) {
+            $value = $payload[$key] ?? null;
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        foreach (['data', 'record', 'workflow', 'run', 'execution'] as $key) {
+            $value = $payload[$key] ?? null;
+            if (is_array($value)) {
+                $nested = self::workflowId($value);
+                if ($nested !== null) {
+                    return $nested;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     *
+     * @return list<string>
+     */
+    private static function listedWorkflowIds(array $payload): array
+    {
+        if (isset($payload['workflows']) && is_array($payload['workflows'])) {
+            $entries = $payload['workflows'];
+        } elseif (isset($payload['executions']) && is_array($payload['executions'])) {
+            $entries = $payload['executions'];
+        } elseif (isset($payload['data']) && is_array($payload['data'])) {
+            $entries = $payload['data'];
+        } elseif (array_is_list($payload)) {
+            $entries = $payload;
+        } else {
+            $entries = [];
+        }
+
+        $workflowIds = [];
+        foreach ($entries as $entry) {
+            if (is_string($entry) && $entry !== '') {
+                $workflowIds[] = $entry;
+                continue;
+            }
+
+            $workflowId = self::workflowId($entry);
+            if ($workflowId !== null) {
+                $workflowIds[] = $workflowId;
+            }
+        }
+
+        return array_values(array_unique($workflowIds));
     }
 
     /**

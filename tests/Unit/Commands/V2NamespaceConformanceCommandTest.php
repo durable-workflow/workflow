@@ -23,6 +23,7 @@ final class V2NamespaceConformanceCommandTest extends TestCase
         $this->artisan('workflow:v2:namespace-conformance', [
             '--server-url' => 'http://server:8080',
             '--token' => 'test-token',
+            '--worker-token' => 'worker-token',
             '--run-id' => 'php-ns-test',
             '--artifact-version' => [
                 'server=0.2.171',
@@ -59,6 +60,9 @@ final class V2NamespaceConformanceCommandTest extends TestCase
             $scenarios['sdk_namespace_selection_parity']['observed_outputs']['cross_namespace_lookup_denied']['not_found'],
         );
         $this->assertTrue(
+            $scenarios['sdk_namespace_selection_parity']['observed_outputs']['workflow_public_surface']['semantic_checks']['passed'],
+        );
+        $this->assertTrue(
             $scenarios['namespace_create_update_describe_and_list']['observed_outputs']['semantic_checks']['passed'],
         );
         $this->assertTrue(
@@ -78,6 +82,8 @@ final class V2NamespaceConformanceCommandTest extends TestCase
 
         $this->assertCount(1, $tenantAWorkerRequests);
         $this->assertCount(1, $tenantBWorkerRequests);
+        $this->assertTrue($tenantAWorkerRequests[0]['headers']['worker_auth']);
+        $this->assertTrue($tenantBWorkerRequests[0]['headers']['worker_auth']);
         $this->assertSame('iso', $tenantAWorkerRequests[0]['body']['task_queue']);
         $this->assertSame('iso', $tenantBWorkerRequests[0]['body']['task_queue']);
     }
@@ -128,8 +134,19 @@ final class V2NamespaceConformanceCommandTest extends TestCase
     {
         $http = new HttpFactory();
         $pollCount = 0;
+        $workflowA = 'php-ns-bad-tenant-a-workflow';
+        $mutationWorkflowA = 'php-ns-bad-tenant-a-mutation-workflow';
+        $workerWorkflowA = 'php-ns-bad-tenant-a-worker-workflow';
+        $workerWorkflowB = 'php-ns-bad-tenant-b-worker-workflow';
 
-        $http->fake(function (Request $request) use ($http, &$pollCount) {
+        $http->fake(function (Request $request) use (
+            $http,
+            &$pollCount,
+            $workflowA,
+            $mutationWorkflowA,
+            $workerWorkflowA,
+            $workerWorkflowB,
+        ) {
             $method = strtoupper($request->method());
             $url = (string) $request->url();
             $path = (string) parse_url($url, PHP_URL_PATH);
@@ -177,6 +194,41 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                 ], 200, $controlHeaders);
             }
 
+            if ($method === 'GET' && $path === sprintf('/api/workflows/%s', $workflowA)) {
+                if ($request->hasHeader('X-Namespace', 'tenant-b')) {
+                    return $http->response([
+                        'reason' => 'workflow_not_found',
+                        'message' => 'Workflow not found.',
+                    ], 404, $controlHeaders);
+                }
+
+                return $http->response([
+                    'workflow_id' => $workflowA,
+                    'run_id' => $workflowA . '-run',
+                    'workflow_type' => 'workflow-v2-namespace-conformance',
+                    'task_queue' => 'iso-workflow-surface',
+                ], 200, $controlHeaders);
+            }
+
+            if ($method === 'GET' && $path === '/api/workflows') {
+                parse_str(parse_url($url, PHP_URL_QUERY) ?: '', $query);
+                $queryText = (string) ($query['query'] ?? '');
+
+                if ($request->hasHeader('X-Namespace', 'tenant-a') && $queryText === $workflowA) {
+                    return $http->response([
+                        'workflows' => [
+                            [
+                                'workflow_id' => $workflowA,
+                                'run_id' => $workflowA . '-run',
+                                'task_queue' => 'iso-workflow-surface',
+                            ],
+                        ],
+                    ], 200, $controlHeaders);
+                }
+
+                return $http->response(['workflows' => []], 200, $controlHeaders);
+            }
+
             if ($method === 'POST' && $path === '/api/workflows') {
                 $workflowId = (string) ($request->data()['workflow_id'] ?? 'unknown');
 
@@ -187,7 +239,21 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                 ], 201, $controlHeaders);
             }
 
-            if ($method === 'GET' && $path === '/api/workflows/php-ns-bad-tenant-a-workflow') {
+            if ($method === 'POST' && $path === sprintf('/api/workflows/%s/query/__namespace_probe', $workflowA)) {
+                return $http->response([
+                    'reason' => 'workflow_not_found',
+                    'message' => 'Workflow not found.',
+                ], 404, $controlHeaders);
+            }
+
+            if ($method === 'POST' && $path === sprintf('/api/workflows/%s/signal/__namespace_probe_signal', $mutationWorkflowA)) {
+                return $http->response([
+                    'reason' => 'workflow_not_found',
+                    'message' => 'Workflow not found.',
+                ], 404, $controlHeaders);
+            }
+
+            if ($method === 'POST' && $path === sprintf('/api/workflows/%s/cancel', $mutationWorkflowA)) {
                 return $http->response([
                     'reason' => 'workflow_not_found',
                     'message' => 'Workflow not found.',
@@ -209,7 +275,7 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                     2 => $http->response([
                         'task' => [
                             'task_id' => 'task-a',
-                            'workflow_id' => 'php-ns-bad-tenant-a-workflow',
+                            'workflow_id' => $workerWorkflowA,
                             'workflow_task_attempt' => 1,
                             'lease_owner' => 'php-ns-bad-tenant-a-worker',
                             'task_queue' => 'iso',
@@ -218,7 +284,7 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                     4 => $http->response([
                         'task' => [
                             'task_id' => 'task-b',
-                            'workflow_id' => 'php-ns-bad-tenant-b-workflow',
+                            'workflow_id' => $workerWorkflowB,
                             'workflow_task_attempt' => 1,
                             'lease_owner' => 'php-ns-bad-tenant-b-worker',
                             'task_queue' => 'iso',
@@ -315,6 +381,9 @@ final class V2NamespaceConformanceCommandTest extends TestCase
         $http = new HttpFactory();
         $workflowA = sprintf('%s-tenant-a-workflow', $runId);
         $workflowB = sprintf('%s-tenant-b-workflow', $runId);
+        $mutationWorkflowA = sprintf('%s-tenant-a-mutation-workflow', $runId);
+        $workerWorkflowA = sprintf('%s-tenant-a-worker-workflow', $runId);
+        $workerWorkflowB = sprintf('%s-tenant-b-worker-workflow', $runId);
         $workerA = sprintf('%s-tenant-a-worker', $runId);
         $workerB = sprintf('%s-tenant-b-worker', $runId);
 
@@ -323,6 +392,9 @@ final class V2NamespaceConformanceCommandTest extends TestCase
             &$requests,
             $workflowA,
             $workflowB,
+            $mutationWorkflowA,
+            $workerWorkflowA,
+            $workerWorkflowB,
             $workerA,
             $workerB,
             $crossNamespaceReason,
@@ -334,6 +406,8 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                 'tenant_a' => $request->hasHeader('X-Namespace', 'tenant-a'),
                 'tenant_b' => $request->hasHeader('X-Namespace', 'tenant-b'),
                 'default' => $request->hasHeader('X-Namespace', 'default'),
+                'control_auth' => $request->hasHeader('Authorization', 'Bearer test-token'),
+                'worker_auth' => $request->hasHeader('Authorization', 'Bearer worker-token'),
             ];
             $requests[] = [
                 'method' => $method,
@@ -382,6 +456,41 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                 ], 200, $controlHeaders);
             }
 
+            if ($method === 'GET' && $path === sprintf('/api/workflows/%s', $workflowA)) {
+                if ($request->hasHeader('X-Namespace', 'tenant-b')) {
+                    return $http->response([
+                        'reason' => 'workflow_not_found',
+                        'message' => 'Workflow not found.',
+                    ], 404, $controlHeaders);
+                }
+
+                return $http->response([
+                    'workflow_id' => $workflowA,
+                    'run_id' => $workflowA . '-run',
+                    'workflow_type' => 'workflow-v2-namespace-conformance',
+                    'task_queue' => 'iso-workflow-surface',
+                ], 200, $controlHeaders);
+            }
+
+            if ($method === 'GET' && $path === '/api/workflows') {
+                parse_str(parse_url($url, PHP_URL_QUERY) ?: '', $query);
+                $queryText = (string) ($query['query'] ?? '');
+
+                if ($request->hasHeader('X-Namespace', 'tenant-a') && $queryText === $workflowA) {
+                    return $http->response([
+                        'workflows' => [
+                            [
+                                'workflow_id' => $workflowA,
+                                'run_id' => $workflowA . '-run',
+                                'task_queue' => 'iso-workflow-surface',
+                            ],
+                        ],
+                    ], 200, $controlHeaders);
+                }
+
+                return $http->response(['workflows' => []], 200, $controlHeaders);
+            }
+
             if ($method === 'POST' && $path === '/api/workflows') {
                 $workflowId = (string) ($request->data()['workflow_id'] ?? 'unknown');
 
@@ -398,6 +507,20 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                     'message' => $crossNamespaceReason === 'query_not_found'
                         ? 'Workflow query [__namespace_probe] is not declared.'
                         : 'Workflow not found.',
+                ], 404, $controlHeaders);
+            }
+
+            if ($method === 'POST' && $path === sprintf('/api/workflows/%s/signal/__namespace_probe_signal', $mutationWorkflowA)) {
+                return $http->response([
+                    'reason' => 'workflow_not_found',
+                    'message' => 'Workflow not found.',
+                ], 404, $controlHeaders);
+            }
+
+            if ($method === 'POST' && $path === sprintf('/api/workflows/%s/cancel', $mutationWorkflowA)) {
+                return $http->response([
+                    'reason' => 'workflow_not_found',
+                    'message' => 'Workflow not found.',
                 ], 404, $controlHeaders);
             }
 
@@ -424,7 +547,7 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                     return $http->response([
                         'task' => [
                             'task_id' => 'task-a',
-                            'workflow_id' => $workflowA,
+                            'workflow_id' => $workerWorkflowA,
                             'workflow_task_attempt' => 1,
                             'lease_owner' => $workerA,
                             'task_queue' => 'iso',
@@ -440,7 +563,7 @@ final class V2NamespaceConformanceCommandTest extends TestCase
                     return $http->response([
                         'task' => [
                             'task_id' => 'task-b',
-                            'workflow_id' => $workflowB,
+                            'workflow_id' => $workerWorkflowB,
                             'workflow_task_attempt' => 1,
                             'lease_owner' => $workerB,
                             'task_queue' => 'iso',
