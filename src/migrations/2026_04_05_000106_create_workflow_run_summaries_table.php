@@ -150,6 +150,9 @@ return new class() extends WorkflowMigration {
             // Composite indexes
             $table->index(['status_bucket', 'started_at']);
             $table->index(['sort_timestamp', 'id'], 'workflow_run_summaries_sort_order_index');
+            $table->index(['namespace', 'sort_timestamp', 'id'], 'wfrs_namespace_sort_idx');
+            $table->index(['namespace', 'workflow_type', 'sort_timestamp', 'id'], 'wfrs_namespace_type_sort_idx');
+            $table->index(['namespace', 'status_bucket', 'sort_timestamp', 'id'], 'wfrs_namespace_status_sort_idx');
             $table->index('sort_key', 'workflow_run_summaries_sort_key_index');
         });
     }

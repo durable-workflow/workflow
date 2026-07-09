@@ -33,6 +33,7 @@ return new class() extends WorkflowMigration {
                 ->after('fairness_key');
 
             $table->index(['queue', 'status', 'priority', 'available_at'], 'workflow_tasks_dispatch_order_index');
+            $table->index(['namespace', 'queue', 'status'], 'workflow_tasks_namespace_queue_status_idx');
             $table->index(['queue', 'status', 'fairness_key'], 'workflow_tasks_fairness_class_index');
         });
     }
@@ -41,6 +42,7 @@ return new class() extends WorkflowMigration {
     {
         Schema::table('workflow_tasks', static function (Blueprint $table): void {
             $table->dropIndex('workflow_tasks_dispatch_order_index');
+            $table->dropIndex('workflow_tasks_namespace_queue_status_idx');
             $table->dropIndex('workflow_tasks_fairness_class_index');
             $table->dropColumn(['priority', 'fairness_key', 'fairness_weight']);
         });

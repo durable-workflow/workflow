@@ -233,13 +233,6 @@ final class WorkflowServiceProvider extends ServiceProvider
             }
 
             Log::warning(sprintf('[Workflow] Cache backend validation failed: %s', $result['message']));
-        } else {
-            $validation = $validator->validateMultiNodeCapable($cache);
-            Log::info(sprintf(
-                '[Workflow] Cache backend validation passed: backend=%s, multi_node=%s',
-                $validation['backend'],
-                $multiNode ? 'true' : 'false'
-            ));
         }
     }
 

@@ -265,6 +265,10 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_instances', 'memo'));
         $this->assertFalse(Schema::hasColumn('workflow_runs', 'memo'));
         $this->assertFalse(Schema::hasColumn('workflow_runs', 'search_attributes'));
+        $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_sort_idx');
+        $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_type_sort_idx');
+        $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_status_sort_idx');
+        $this->assertIndexExists('workflow_tasks', 'workflow_tasks_namespace_queue_status_idx');
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',
@@ -395,6 +399,19 @@ final class MigrationsTest extends TestCase
         }
 
         $this->fail("Unable to determine {$table}.{$column} length for {$driver}.");
+    }
+
+    private function assertIndexExists(string $table, string $index): void
+    {
+        foreach (Schema::getIndexes($table) as $definition) {
+            if (($definition['name'] ?? null) === $index) {
+                $this->assertTrue(true);
+
+                return;
+            }
+        }
+
+        $this->fail("Expected index [{$index}] to exist on [{$table}].");
     }
 
     private function assertSqliteWorkflowTablesExist(string $connection): void
