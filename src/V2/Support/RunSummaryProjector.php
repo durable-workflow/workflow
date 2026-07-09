@@ -13,6 +13,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Workflow;
 
 final class RunSummaryProjector
 {
@@ -536,7 +537,11 @@ final class RunSummaryProjector
      */
     private static function freshRunCommandContract(WorkflowRun $run): array
     {
-        if (! is_string($run->workflow_class) || $run->workflow_class === '') {
+        if (! is_string($run->workflow_class)
+            || $run->workflow_class === ''
+            || ! class_exists($run->workflow_class)
+            || ! is_subclass_of($run->workflow_class, Workflow::class)
+        ) {
             return [
                 'entry_mode' => null,
                 'source' => RunCommandContract::SOURCE_UNAVAILABLE,

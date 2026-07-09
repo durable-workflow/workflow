@@ -243,6 +243,8 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame('workflow-task', $summary->wait_kind);
         $this->assertSame('Workflow task ready', $summary->wait_reason);
         $this->assertSame($result['task_id'], $summary->next_task_id);
+        $this->assertNull($summary->declared_entry_mode);
+        $this->assertSame('unavailable', $summary->declared_contract_source);
 
         $forbiddenTables = [
             'activity_executions',
