@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
+use Throwable;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -26,6 +27,12 @@ final class RunSummaryProjector
 
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
+        $fastSummary = self::projectFreshWorkflowTaskRun($run);
+
+        if ($fastSummary instanceof WorkflowRunSummary) {
+            return $fastSummary;
+        }
+
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
         $currentRun = $run->instance === null
@@ -373,6 +380,182 @@ final class RunSummaryProjector
         RunLineageProjector::project($run);
 
         return $summary;
+    }
+
+    private static function projectFreshWorkflowTaskRun(WorkflowRun $run): ?WorkflowRunSummary
+    {
+        if ($run->status->isTerminal()) {
+            return null;
+        }
+
+        if ((int) ($run->last_history_sequence ?? 0) !== 2) {
+            return null;
+        }
+
+        $nextTask = self::freshStartWorkflowTask($run);
+
+        if (! $nextTask instanceof WorkflowTask) {
+            return null;
+        }
+
+        $run->loadMissing('instance');
+
+        $waitReason = match (true) {
+            self::taskWaitingForCompatibleWorker(
+                $nextTask,
+                $run
+            ) => 'Workflow task waiting for a compatible worker',
+            TaskRepairPolicy::dispatchFailed($nextTask) => 'Workflow task dispatch failed',
+            TaskRepairPolicy::claimFailed($nextTask) => 'Workflow task claim failed',
+            TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
+            TaskRepairPolicy::dispatchOverdue($nextTask) => 'Workflow task ready but dispatch is overdue',
+            $nextTask->status === TaskStatus::Leased => 'Workflow task leased to worker',
+            default => 'Workflow task ready',
+        };
+        [$livenessState, $livenessReason] = self::taskLiveness($nextTask, $run, 'Workflow');
+        $statusBucket = $run->status->statusBucket();
+        $commandContract = self::freshRunCommandContract($run);
+        $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
+        $historyEventCount = max(0, (int) ($run->last_history_sequence ?? 0));
+        $summaryModel = self::summaryModel();
+
+        /** @var WorkflowRunSummary $summary */
+        $summary = IdempotentProjectionUpsert::upsert(
+            $summaryModel,
+            [
+                'id' => $run->id,
+            ],
+            [
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'run_number' => $run->run_number,
+                'is_current_run' => $run->instance?->current_run_id === $run->id,
+                'engine_source' => self::engineSource($run),
+                'projection_schema_version' => self::SCHEMA_VERSION,
+                'class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace ?? $run->instance?->namespace,
+                'business_key' => $run->business_key ?? $run->instance?->business_key,
+                'visibility_labels' => $run->visibility_labels ?? $run->instance?->visibility_labels,
+                'compatibility' => $run->compatibility,
+                'declared_entry_mode' => $commandContract['entry_mode'],
+                'declared_contract_source' => $commandContract['source'],
+                'status' => $run->status->value,
+                'status_bucket' => $statusBucket->value,
+                'closed_reason' => $run->closed_reason,
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'started_at' => $run->started_at,
+                'sort_timestamp' => $sortTimestamp,
+                'sort_key' => RunSummarySortKey::key(
+                    $run->started_at,
+                    $run->created_at,
+                    $run->updated_at,
+                    $run->id,
+                ),
+                'closed_at' => $run->closed_at,
+                'archived_at' => $run->archived_at,
+                'archive_command_id' => $run->archive_command_id,
+                'archive_reason' => $run->archive_reason,
+                'duration_ms' => null,
+                'wait_kind' => 'workflow-task',
+                'wait_reason' => $waitReason,
+                'wait_started_at' => $nextTask->leased_at ?? $nextTask->available_at,
+                'wait_deadline_at' => $nextTask->lease_expires_at,
+                'open_wait_id' => sprintf('workflow-task:%s', $nextTask->id),
+                'resume_source_kind' => 'workflow_task',
+                'resume_source_id' => $nextTask->id,
+                'next_task_at' => $nextTask->available_at,
+                'liveness_state' => $livenessState,
+                'liveness_reason' => $livenessReason,
+                'next_task_id' => $nextTask->id,
+                'next_task_type' => $nextTask->task_type->value,
+                'next_task_status' => $nextTask->status->value,
+                'next_task_lease_expires_at' => $nextTask->lease_expires_at,
+                'repair_blocked_reason' => null,
+                'repair_attention' => false,
+                'task_problem' => false,
+                'exception_count' => 0,
+                'history_event_count' => $historyEventCount,
+                'history_size_bytes' => 0,
+                'history_fan_out' => 0,
+                'continue_as_new_recommended' => false,
+                'history_budget_pressure' => 'ok',
+                'created_at' => $run->created_at,
+                'updated_at' => $run->closed_at ?? $run->last_progress_at ?? $run->updated_at,
+            ],
+        );
+
+        return $summary;
+    }
+
+    private static function freshStartWorkflowTask(WorkflowRun $run): ?WorkflowTask
+    {
+        if ($run->relationLoaded('tasks')) {
+            /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowTask> $tasks */
+            $tasks = $run->getRelation('tasks');
+        } else {
+            /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowTask> $tasks */
+            $tasks = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->where('workflow_run_id', $run->id)
+                ->limit(2)
+                ->get();
+        }
+
+        if ($tasks->count() !== 1) {
+            return null;
+        }
+
+        /** @var WorkflowTask $task */
+        $task = $tasks->first();
+
+        if (
+            $task->task_type !== TaskType::Workflow
+            || ! in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+        ) {
+            return null;
+        }
+
+        if (is_array($task->payload) && $task->payload !== []) {
+            return null;
+        }
+
+        if (
+            TaskRepairPolicy::leaseExpired($task)
+            || TaskRepairPolicy::dispatchFailed($task)
+            || TaskRepairPolicy::claimFailed($task)
+            || TaskRepairPolicy::dispatchOverdue($task)
+        ) {
+            return null;
+        }
+
+        return $task;
+    }
+
+    /**
+     * @return array{entry_mode: 'canonical'|null, source: string}
+     */
+    private static function freshRunCommandContract(WorkflowRun $run): array
+    {
+        if (! is_string($run->workflow_class) || $run->workflow_class === '') {
+            return [
+                'entry_mode' => null,
+                'source' => RunCommandContract::SOURCE_UNAVAILABLE,
+            ];
+        }
+
+        try {
+            $contract = RunCommandContract::snapshot($run->workflow_class);
+
+            return [
+                'entry_mode' => $contract['entry_mode'],
+                'source' => RunCommandContract::SOURCE_DURABLE_HISTORY,
+            ];
+        } catch (Throwable) {
+            return [
+                'entry_mode' => null,
+                'source' => RunCommandContract::SOURCE_UNAVAILABLE,
+            ];
+        }
     }
 
     /**
