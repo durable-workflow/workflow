@@ -12,7 +12,7 @@ and release-authority page:
 - <https://durable-workflow.github.io/docs/2.0/compatibility>
 - machine-readable mirror: `surface_stability_contract` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.surface-stability.contract`, version `1`.
+  `durable-workflow.v2.surface-stability.contract`, version `2`.
 
 The companion platform-wide normative protocol-spec catalog — *which*
 surface has *which* machine-readable spec, *what format* the spec uses,
@@ -34,6 +34,11 @@ document adds workflow-package-specific detail under those rules; it must
 not contradict the platform authority. When this document and the
 platform authority disagree, the platform authority wins, and the
 disagreement is a bug here.
+
+Version 2 adds the Rust SDK per-package authority and the worker-protocol
+negotiation rule: a worker request is compatible when it uses the server's
+advertised major and a minor no greater than the advertised minor. Missing,
+malformed, different-major, and future-minor headers fail closed.
 
 The platform surface families that own the contents of this document are
 `official_sdks` (for the `Workflow` PHP authoring and `Support\*` API)

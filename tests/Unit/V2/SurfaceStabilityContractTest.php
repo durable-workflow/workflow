@@ -29,7 +29,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $manifest = SurfaceStabilityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.surface-stability.contract', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(2, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/compatibility',
             $manifest['authority_url'],
@@ -149,6 +149,53 @@ final class SurfaceStabilityContractTest extends TestCase
         );
     }
 
+    public function testWorkerProtocolNegotiationIncludesRustProtocolAndFailsClosed(): void
+    {
+        $manifest = SurfaceStabilityContract::manifest();
+        $negotiation = $manifest['surface_families']['worker_protocol']['negotiation'];
+
+        $this->assertSame('worker_protocol.version', $negotiation['advertised_version_path']);
+        $this->assertSame('1.13', $negotiation['default_advertised_version']);
+        $this->assertSame(
+            'same_major_and_minor_less_than_or_equal_to_advertised',
+            $negotiation['request_header_rule'],
+        );
+        $this->assertSame('1.0', $negotiation['accepted_request_versions_by_default'][0]);
+        $this->assertContains('1.2', $negotiation['accepted_request_versions_by_default']);
+        $this->assertSame('1.13', $negotiation['accepted_request_versions_by_default'][13]);
+        $this->assertSame('advertised_version', $negotiation['response_version']);
+        $this->assertSame(
+            [
+                'missing_header',
+                'malformed_version',
+                'different_major',
+                'minor_greater_than_advertised',
+            ],
+            $negotiation['fail_closed_on'],
+        );
+    }
+
+    public function testOfficialSdkContractIncludesRustPackageAuthority(): void
+    {
+        $manifest = SurfaceStabilityContract::manifest();
+        $officialSdks = $manifest['surface_families']['official_sdks'];
+
+        $this->assertSame(
+            'README.md and `[package.metadata.durable-workflow]` in `durable-workflow/sdk-rust`',
+            $officialSdks['per_package_contracts']['rust_sdk'],
+        );
+        $this->assertSame(
+            [
+                'package' => 'durable-workflow',
+                'release_line' => '0.1.x',
+                'supported_server_versions' => '>=0.2,<0.3',
+                'worker_protocol_version' => '1.2',
+                'control_plane_version' => '2',
+            ],
+            $officialSdks['package_compatibility']['rust_sdk'],
+        );
+    }
+
     public function testReleaseCheckNamesEnforcementGates(): void
     {
         $manifest = SurfaceStabilityContract::manifest();
@@ -157,6 +204,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertArrayHasKey('docs_authority_aligned', $check['gates']);
         $this->assertArrayHasKey('install_docs_aligned', $check['gates']);
         $this->assertArrayHasKey('package_metadata_aligned', $check['gates']);
+        $this->assertArrayHasKey('rust_sdk_protocol_authority_aligned', $check['gates']);
         $this->assertArrayHasKey('version_history_aligned', $check['gates']);
 
         $this->assertStringContainsString(

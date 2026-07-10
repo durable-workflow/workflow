@@ -28,7 +28,7 @@ final class SurfaceStabilityContract
 {
     public const SCHEMA = 'durable-workflow.v2.surface-stability.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/compatibility';
 
@@ -183,6 +183,7 @@ final class SurfaceStabilityContract
                 'requires_protocol_header' => 'X-Durable-Workflow-Protocol-Version',
                 'breaking_change_release' => 'major',
                 'notes' => 'Includes the `external_execution_surface_contract`, `external_executor_config_contract`, `invocable_carrier_contract`, `external_task_input_contract`, and `external_task_result_contract` published from `/api/cluster/info`. Each nested contract carries its own schema/version and may evolve independently per its own contract rules.',
+                'negotiation' => self::workerProtocolNegotiation(),
             ],
             'cli_json' => [
                 'description' => 'The `--output=json` and `--output=jsonl` shapes emitted by the `dw` CLI. This is the contract that automation, agents, and operator scripts depend on.',
@@ -206,7 +207,7 @@ final class SurfaceStabilityContract
                 'notes' => 'MCP tool names, parameter schemas, and `payload_preview_limit_bytes` semantics are part of the contract. Tool descriptions and discovery hints are diagnostic.',
             ],
             'official_sdks' => [
-                'description' => 'The first-party SDKs distributed by the project: PHP `durable-workflow/workflow` (workflow authoring + embedded host), `durable-workflow/server`, `dw` CLI, and `durable_workflow` Python SDK.',
+                'description' => 'The first-party SDKs distributed by the project: PHP `durable-workflow/workflow` (workflow authoring + embedded host), `durable-workflow/server`, `dw` CLI, the `durable_workflow` Python SDK, and the `durable-workflow` Rust SDK.',
                 'stability_level' => self::STABILITY_STABLE,
                 'authority_manifest' => 'client_compatibility',
                 'breaking_change_release' => 'major',
@@ -216,6 +217,16 @@ final class SurfaceStabilityContract
                     'server' => 'README.md and docs/contracts/* in `durable-workflow/server`',
                     'cli' => 'docs/polyglot/cli-reference.md',
                     'python_sdk' => 'README.md in `durable-workflow/sdk-python`',
+                    'rust_sdk' => 'README.md and `[package.metadata.durable-workflow]` in `durable-workflow/sdk-rust`',
+                ],
+                'package_compatibility' => [
+                    'rust_sdk' => [
+                        'package' => 'durable-workflow',
+                        'release_line' => '0.1.x',
+                        'supported_server_versions' => '>=0.2,<0.3',
+                        'worker_protocol_version' => '1.2',
+                        'control_plane_version' => '2',
+                    ],
                 ],
             ],
             'history_event_wire_formats' => [
@@ -236,6 +247,40 @@ final class SurfaceStabilityContract
     }
 
     /**
+     * @return array{
+     *     advertised_version_path: string,
+     *     default_advertised_version: string,
+     *     request_header_rule: string,
+     *     accepted_request_versions_by_default: list<string>,
+     *     response_version: string,
+     *     fail_closed_on: list<string>
+     * }
+     */
+    private static function workerProtocolNegotiation(): array
+    {
+        [$major, $minor] = array_map('intval', explode('.', WorkerProtocolVersion::VERSION, 2));
+        $acceptedVersions = [];
+
+        for ($candidateMinor = 0; $candidateMinor <= $minor; $candidateMinor++) {
+            $acceptedVersions[] = sprintf('%d.%d', $major, $candidateMinor);
+        }
+
+        return [
+            'advertised_version_path' => 'worker_protocol.version',
+            'default_advertised_version' => WorkerProtocolVersion::VERSION,
+            'request_header_rule' => 'same_major_and_minor_less_than_or_equal_to_advertised',
+            'accepted_request_versions_by_default' => $acceptedVersions,
+            'response_version' => 'advertised_version',
+            'fail_closed_on' => [
+                'missing_header',
+                'malformed_version',
+                'different_major',
+                'minor_greater_than_advertised',
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function releaseCheck(): array
@@ -246,10 +291,11 @@ final class SurfaceStabilityContract
                 'docs_authority_aligned' => 'docs/compatibility.md (in durable-workflow.github.io) lists every surface family in this manifest with the same stability level.',
                 'install_docs_aligned' => 'docs/installation.md and any package install snippets do not claim a stability level different from the one this manifest assigns to the relevant SDK.',
                 'package_metadata_aligned' => 'composer.json / pyproject.toml / package.json prerelease tags match the `stability_level` for the SDK family they belong to.',
+                'rust_sdk_protocol_authority_aligned' => 'The released Rust crate metadata, Rust guide, compatibility matrix, and worker-protocol OpenAPI agree with the server negotiation contract.',
                 'version_history_aligned' => 'The version-history table in docs/compatibility.md does not introduce stability claims that contradict this manifest.',
             ],
             'enforcement' => [
-                'machine' => 'docs site CI runs scripts/check-compatibility-authority.js, which loads static/compatibility-contract.json (a copy of this manifest) and walks docs/compatibility.md, docs/installation.md, and the version-history table.',
+                'machine' => 'docs site CI runs scripts/check-compatibility-authority.js, which loads static/compatibility-contract.json (a copy of this manifest), checks the released Rust crate metadata and worker-protocol OpenAPI, and walks docs/compatibility.md, docs/polyglot/rust.md, docs/installation.md, and the version-history table.',
                 'human' => 'Release reviewers tick the compatibility-authority check on every release PR before tagging.',
             ],
         ];
