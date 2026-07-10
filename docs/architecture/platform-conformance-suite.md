@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `18`.
+`durable-workflow.v2.platform-conformance.suite`, version `19`.
 
 ## Why one suite
 
@@ -74,7 +74,7 @@ them from the declared locations.
 | --- | --- | --- | --- |
 | `control_plane_request_response` | `cli`, `sdk-python` | `tests/fixtures/control-plane/` | Frozen request bodies and response shapes for `workflow.start`, `signal`, `query`, `update`, `cancel`, `task-history`, namespace storage. |
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
-| `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
+| `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP, Python, and Rust workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
 | `search_attribute_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/search-attribute-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity search attributes across PHP and Python workers, CLI query surfaces, Waterline operator visibility, cross-language codecs, load latency, boolean grammar, and adversarial query handling. |
 | `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
 | `namespace_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/namespace-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation. |
@@ -106,6 +106,11 @@ version 18 adds the Laravel branch: published Workflow and Waterline
 Composer package pins, documented environment setup, workflow/activity
 files, the queue worker, and `php artisan app:quickstart-workflow` must
 reach `status=completed` and `output=Hello, Laravel!` within 10 minutes.
+Suite version 19 adds Rust worker signal/query cells and makes replayed
+workflow-instance state a separate mandatory cell. That replay cell pins
+the published crates.io `durable-workflow` crate at exactly `0.1.2` and
+must prove running, cold-restarted, restored, and completed state through
+Rust, PHP, and Python callers without query-side mutation.
 Skew refusal matrix coverage is stable in suite version 15 and later and
 is required for every target that claims the server, SDK, CLI, worker,
 or Waterline compatibility surface.
@@ -156,9 +161,10 @@ smoke scenarios pass.
 Required scenarios:
 
 - `published_artifact_install_only` — server image, CLI installer,
-  Python package, PHP package, and Waterline package are resolved from
-  published channels; no local source checkout is used as the artifact
-  under test.
+  Python package, PHP package, Rust crate, and Waterline package are
+  resolved from published channels; no local source checkout is used as
+  the artifact under test. Rust cells use crates.io package
+  `durable-workflow` with the exact Cargo requirement `=0.1.2`.
 - `python_worker_cli_and_sdk_baseline` — a Python-authored workflow
   exposes `increment`, `set`, and `current` handlers through CLI and
   Python SDK clients.
@@ -168,6 +174,23 @@ Required scenarios:
   workflow accepts the supported PHP-facing client path and CLI path.
 - `php_worker_python_and_cli_clients` — a PHP-authored workflow accepts
   the Python SDK client path and CLI path.
+- `rust_worker_rust_php_python_clients` — a Rust worker exposes signal
+  and query handlers through Rust, PHP, and Python SDK callers with
+  equivalent payloads and results using its snapshot-derived
+  transport-state query surface.
+- `python_worker_rust_client` — the Rust SDK client sends signals to and
+  queries a Python worker with the same payload and result shapes as the
+  Python and PHP caller paths.
+- `php_worker_rust_client` — the Rust SDK client sends signals to and
+  queries a PHP worker with the same payload and result shapes as the
+  Python and PHP caller paths. The worker runtime is `workflow-php`;
+  `workflow-php-sdk` identifies a client path, not the worker runtime.
+- `rust_query_error_and_immutability` — successful and failed Rust query
+  calls emit no workflow commands and append no history, and a failed
+  query cannot change the answer returned by a later successful query.
+  Unknown and malformed queries, unavailable workers, protocol failures,
+  missing workflows, and signals sent to terminal workflows must each
+  return their documented stable outcome.
 - `ordered_signal_delivery` — rapid ordered signals are reflected in the
   queried value and recorded in documented history order.
 - `dedup_contract_observation` — duplicate client-side keys are observed
@@ -177,6 +200,17 @@ Required scenarios:
   applied after replay reaches a consistent point.
 - `query_during_replay` — a query waits for replay consistency and does
   not run against stale state.
+- `rust_replayed_instance_state_query_after_cold_restart` — using the
+  exact published crates.io `durable-workflow =0.1.2` crate, start and
+  query a running Rust workflow, stop the worker, start a fresh Rust
+  worker process, restore the workflow instance from durable history,
+  complete the restored workflow, and query the terminal state. Rust,
+  PHP, and Python SDK callers must observe equivalent state at each
+  checkpoint. Successful and failed replayed queries must each emit no
+  workflow commands and append no history, and a failed replayed query
+  must not change the state returned by a later query. This is distinct
+  from the snapshot-derived Rust transport-state cells and from the
+  language-neutral `query_during_replay` timing scenario.
 - `completed_run_signal_and_query` — documented terminal-run signal and
   query behavior is verified.
 - `unknown_signal_and_query_errors` — unknown names return stable

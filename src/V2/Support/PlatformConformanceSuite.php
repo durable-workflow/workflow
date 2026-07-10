@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 18;
+    public const VERSION = 19;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -124,7 +124,7 @@ final class PlatformConformanceSuite
                 ],
             ],
             'official_sdk' => [
-                'description' => 'First-party SDK distributed by the project (PHP workflow package, Python SDK, future first-party SDKs). Must drive the worker plane, replay frozen history, and round-trip the control plane.',
+                'description' => 'First-party SDK distributed by the project (PHP workflow package, Python SDK, and Rust SDK). Must drive the worker plane, replay frozen history, and round-trip the control plane.',
                 'required_surface_families' => [
                     'official_sdks',
                     'worker_protocol',
@@ -279,7 +279,7 @@ final class PlatformConformanceSuite
             ],
             'signal_query_runtime_contract' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
-                'description' => 'Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility.',
+                'description' => 'Live published-artifact scenarios for signal delivery and query consistency across PHP, Python, and Rust workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility.',
                 'sources' => [
                     [
                         'repository' => 'durable-workflow.github.io',
@@ -293,14 +293,82 @@ final class PlatformConformanceSuite
                     'php_worker_cli_and_sdk_baseline',
                     'python_worker_php_facing_and_cli_clients',
                     'php_worker_python_and_cli_clients',
+                    'rust_worker_rust_php_python_clients',
+                    'python_worker_rust_client',
+                    'php_worker_rust_client',
+                    'rust_query_error_and_immutability',
                     'ordered_signal_delivery',
                     'dedup_contract_observation',
                     'signal_during_replay',
                     'query_during_replay',
+                    'rust_replayed_instance_state_query_after_cold_restart',
                     'completed_run_signal_and_query',
                     'unknown_signal_and_query_errors',
                     'malformed_signal_and_query_payloads',
                     'waterline_operator_visibility',
+                ],
+                'required_scenario_contracts' => [
+                    'rust_worker_rust_php_python_clients' => [
+                        'worker_runtime' => 'sdk-rust',
+                        'artifact' => self::rustSignalsQueryArtifact(),
+                        'query_state_model' => 'snapshot_derived_transport_state',
+                        'caller_paths' => ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+                    ],
+                    'python_worker_rust_client' => [
+                        'worker_runtime' => 'sdk-python',
+                        'artifact' => self::rustSignalsQueryArtifact(),
+                        'rust_role' => 'client',
+                        'caller_paths' => ['sdk-rust'],
+                    ],
+                    'php_worker_rust_client' => [
+                        'worker_runtime' => 'workflow-php',
+                        'artifact' => self::rustSignalsQueryArtifact(),
+                        'rust_role' => 'client',
+                        'caller_paths' => ['sdk-rust'],
+                    ],
+                    'rust_query_error_and_immutability' => [
+                        'worker_runtime' => 'sdk-rust',
+                        'artifact' => self::rustSignalsQueryArtifact(),
+                        'query_state_model' => 'snapshot_derived_transport_state',
+                        'required_assertions' => [
+                            'unknown_query_has_stable_outcome',
+                            'malformed_query_payload_has_stable_outcome',
+                            'unavailable_query_worker_has_stable_outcome',
+                            'protocol_query_failure_has_stable_outcome',
+                            'missing_workflow_query_has_stable_outcome',
+                            'terminal_signal_has_stable_outcome',
+                            'successful_query_emits_no_workflow_commands',
+                            'failed_query_emits_no_workflow_commands',
+                            'successful_query_appends_no_history',
+                            'failed_query_appends_no_history',
+                            'failed_query_does_not_change_later_answer',
+                        ],
+                    ],
+                    'rust_replayed_instance_state_query_after_cold_restart' => [
+                        'worker_runtime' => 'sdk-rust',
+                        'artifact' => self::rustSignalsQueryArtifact(),
+                        'query_state_model' => 'replayed_workflow_instance_state',
+                        'lifecycle' => [
+                            'start_running_workflow',
+                            'query_running_state',
+                            'cold_stop_rust_worker',
+                            'start_fresh_rust_worker_process',
+                            'restore_state_from_durable_history',
+                            'complete_restored_workflow',
+                            'query_completed_state',
+                        ],
+                        'caller_paths' => ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+                        'required_assertions' => [
+                            'callers_observe_equivalent_state_at_each_checkpoint',
+                            'restored_state_matches_committed_pre_restart_state',
+                            'completed_state_matches_terminal_workflow_state',
+                            'successful_replayed_query_emits_no_workflow_commands',
+                            'failed_replayed_query_emits_no_workflow_commands',
+                            'successful_replayed_query_appends_no_history',
+                            'failed_replayed_query_appends_no_history',
+                            'failed_replayed_query_does_not_change_state_returned_by_later_query',
+                        ],
+                    ],
                 ],
             ],
             'search_attribute_runtime_contract' => [
@@ -480,6 +548,19 @@ final class PlatformConformanceSuite
                 ],
                 'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/mcp-workflows.md',
             ],
+        ];
+    }
+
+    /**
+     * @return array{package: string, version: string, source: string, cargo_requirement: string}
+     */
+    private static function rustSignalsQueryArtifact(): array
+    {
+        return [
+            'package' => 'durable-workflow',
+            'version' => '0.1.2',
+            'source' => 'crates.io',
+            'cargo_requirement' => '=0.1.2',
         ];
     }
 

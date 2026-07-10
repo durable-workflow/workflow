@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(18, $manifest['version']);
+        $this->assertSame(19, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -174,7 +174,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame(
-            17,
+            19,
             $manifest['version'],
             'the workflow mirror must stay aligned with the currently published platform conformance contract',
         );
@@ -387,27 +387,30 @@ final class PlatformConformanceSuiteTest extends TestCase
             );
         }
 
-        foreach ([
-            'published_artifact_install_only',
-            'python_worker_cli_and_sdk_baseline',
-            'php_worker_cli_and_sdk_baseline',
-            'python_worker_php_facing_and_cli_clients',
-            'php_worker_python_and_cli_clients',
-            'ordered_signal_delivery',
-            'dedup_contract_observation',
-            'signal_during_replay',
-            'query_during_replay',
-            'completed_run_signal_and_query',
-            'unknown_signal_and_query_errors',
-            'malformed_signal_and_query_payloads',
-            'waterline_operator_visibility',
-        ] as $scenario) {
-            $this->assertContains(
-                $scenario,
-                $category['required_scenarios'],
-                "signals/queries conformance must name scenario $scenario",
-            );
-        }
+        $this->assertSame(
+            [
+                'published_artifact_install_only',
+                'python_worker_cli_and_sdk_baseline',
+                'php_worker_cli_and_sdk_baseline',
+                'python_worker_php_facing_and_cli_clients',
+                'php_worker_python_and_cli_clients',
+                'rust_worker_rust_php_python_clients',
+                'python_worker_rust_client',
+                'php_worker_rust_client',
+                'rust_query_error_and_immutability',
+                'ordered_signal_delivery',
+                'dedup_contract_observation',
+                'signal_during_replay',
+                'query_during_replay',
+                'rust_replayed_instance_state_query_after_cold_restart',
+                'completed_run_signal_and_query',
+                'unknown_signal_and_query_errors',
+                'malformed_signal_and_query_payloads',
+                'waterline_operator_visibility',
+            ],
+            $category['required_scenarios'],
+            'signals/queries conformance must match the public scenario manifest exactly',
+        );
 
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -423,6 +426,128 @@ final class PlatformConformanceSuiteTest extends TestCase
             $category['sources'],
             'the public scenario manifest must be the consumable source for full signals/queries coverage',
         );
+
+        $rustContracts = $category['required_scenario_contracts'];
+        $this->assertSame(
+            [
+                'rust_worker_rust_php_python_clients',
+                'python_worker_rust_client',
+                'php_worker_rust_client',
+                'rust_query_error_and_immutability',
+                'rust_replayed_instance_state_query_after_cold_restart',
+            ],
+            array_keys($rustContracts),
+            'Rust scenario contracts must use the public manifest identifiers exactly',
+        );
+        $replayContract = $rustContracts['rust_replayed_instance_state_query_after_cold_restart'];
+
+        $this->assertSame(
+            [
+                'package' => 'durable-workflow',
+                'version' => '0.1.2',
+                'source' => 'crates.io',
+                'cargo_requirement' => '=0.1.2',
+            ],
+            $replayContract['artifact'],
+            'the Rust replay cell must exercise the exact published crate that advertises replayed instance-state queries',
+        );
+        $this->assertSame('sdk-rust', $replayContract['worker_runtime']);
+        $this->assertSame('replayed_workflow_instance_state', $replayContract['query_state_model']);
+        $this->assertSame(
+            ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+            $replayContract['caller_paths'],
+        );
+
+        $this->assertSame(
+            [
+                'start_running_workflow',
+                'query_running_state',
+                'cold_stop_rust_worker',
+                'start_fresh_rust_worker_process',
+                'restore_state_from_durable_history',
+                'complete_restored_workflow',
+                'query_completed_state',
+            ],
+            $replayContract['lifecycle'],
+            'the Rust replay cell must preserve its running and completed query checkpoints in lifecycle order',
+        );
+
+        $this->assertSame(
+            [
+                'callers_observe_equivalent_state_at_each_checkpoint',
+                'restored_state_matches_committed_pre_restart_state',
+                'completed_state_matches_terminal_workflow_state',
+                'successful_replayed_query_emits_no_workflow_commands',
+                'failed_replayed_query_emits_no_workflow_commands',
+                'successful_replayed_query_appends_no_history',
+                'failed_replayed_query_appends_no_history',
+                'failed_replayed_query_does_not_change_state_returned_by_later_query',
+            ],
+            $replayContract['required_assertions'],
+            'the Rust replay cell must preserve each replay-handler immutability invariant separately',
+        );
+
+        $this->assertSame(
+            ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+            $rustContracts['rust_worker_rust_php_python_clients']['caller_paths'],
+        );
+
+        foreach ([
+            'python_worker_rust_client' => 'sdk-python',
+            'php_worker_rust_client' => 'workflow-php',
+        ] as $scenario => $workerRuntime) {
+            $this->assertSame($workerRuntime, $rustContracts[$scenario]['worker_runtime']);
+            $this->assertSame('client', $rustContracts[$scenario]['rust_role']);
+            $this->assertSame(['sdk-rust'], $rustContracts[$scenario]['caller_paths']);
+        }
+
+        foreach ([
+            'rust_worker_rust_php_python_clients',
+            'rust_query_error_and_immutability',
+        ] as $snapshotScenario) {
+            $this->assertSame(
+                'snapshot_derived_transport_state',
+                $rustContracts[$snapshotScenario]['query_state_model'],
+                "$snapshotScenario must remain distinct from replayed workflow-instance state coverage",
+            );
+        }
+
+        $this->assertSame(
+            [
+                'unknown_query_has_stable_outcome',
+                'malformed_query_payload_has_stable_outcome',
+                'unavailable_query_worker_has_stable_outcome',
+                'protocol_query_failure_has_stable_outcome',
+                'missing_workflow_query_has_stable_outcome',
+                'terminal_signal_has_stable_outcome',
+                'successful_query_emits_no_workflow_commands',
+                'failed_query_emits_no_workflow_commands',
+                'successful_query_appends_no_history',
+                'failed_query_appends_no_history',
+                'failed_query_does_not_change_later_answer',
+            ],
+            $rustContracts['rust_query_error_and_immutability']['required_assertions'],
+            'the Rust snapshot handler contract must preserve its exact adversarial and immutability assertions',
+        );
+
+        foreach ([
+            'rust_worker_rust_php_python_clients',
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_query_error_and_immutability',
+            'rust_replayed_instance_state_query_after_cold_restart',
+        ] as $rustScenario) {
+            $this->assertSame(
+                [
+                    'package' => 'durable-workflow',
+                    'version' => '0.1.2',
+                    'source' => 'crates.io',
+                    'cargo_requirement' => '=0.1.2',
+                ],
+                $rustContracts[$rustScenario]['artifact'],
+                "$rustScenario must exercise the exact published Rust crate",
+            );
+        }
     }
 
     public function testSearchAttributeRuntimeContractNamesFullParitySurface(): void
