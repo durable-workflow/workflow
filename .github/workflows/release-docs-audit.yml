@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+
       - name: Resolve release tag
         id: release
         shell: bash
@@ -46,6 +51,11 @@ jobs:
           PACKAGIST_PACKAGE_NAME: durable-workflow/workflow
           PACKAGIST_PACKAGE_VERSION: ${{ steps.release.outputs.tag }}
         run: scripts/ci/check-packagist-release.sh
+
+      - name: Verify published platform conformance mirror
+        env:
+          WORKFLOW_PLATFORM_CONFORMANCE_VERSION: ${{ steps.release.outputs.tag }}
+        run: scripts/ci/check-platform-conformance-mirror.sh
 
       - name: Require live docs release audit refresh
         env:
