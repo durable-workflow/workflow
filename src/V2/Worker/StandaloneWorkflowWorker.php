@@ -18,14 +18,16 @@ use Workflow\V2\Workflow;
 /**
  * Small worker-protocol driver for PHP workflows hosted outside Laravel queues.
  *
- * The driver intentionally processes query tasks before workflow tasks on each
- * tick so workers that advertise query_tasks do not starve public query calls
- * behind a workflow-task long poll.
+ * The driver starts with query-task priority, then gives the opposite task
+ * class priority after every processed task. This bounded alternation keeps
+ * query calls responsive without letting them starve ready workflow tasks.
  *
  * @api Stable v2 worker protocol API.
  */
 final class StandaloneWorkflowWorker
 {
+    private const TASK_CLASS_QUERY = 'query';
+    private const TASK_CLASS_WORKFLOW = 'workflow';
     private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60;
     private const READY_QUERY_DRAIN_ATTEMPTS = 3;
     private const INITIAL_PRE_WORKFLOW_QUERY_DRAIN_ATTEMPTS = 1;
@@ -46,6 +48,8 @@ final class StandaloneWorkflowWorker
 
     private ?int $nextHeartbeatAt = null;
 
+    private ?string $lastProcessedTaskClass = null;
+
     /**
      * @param array<string, class-string<Workflow>> $workflowClassesByType
      */
@@ -60,9 +64,9 @@ final class StandaloneWorkflowWorker
     }
 
     /**
-     * Process at most one unit of work, preferring query tasks over workflow
-     * tasks so query calls can complete while a workflow worker is otherwise
-     * idle or waiting on workflow-task history.
+     * Process a bounded unit of work. The first tick gives query tasks priority;
+     * later ticks give priority to the opposite of the last processed task
+     * class and fall back immediately when that class has no ready work.
      *
      * @return array<string, mixed>
      */
@@ -72,6 +76,29 @@ final class StandaloneWorkflowWorker
         int $queryPollTimeoutSeconds = 1,
         int $workflowPollTimeoutSeconds = 1,
     ): array {
+        if ($this->lastProcessedTaskClass === self::TASK_CLASS_QUERY) {
+            $workflow = $this->processOneWorkflowTask($queue, $workerId, $workflowPollTimeoutSeconds);
+
+            if (($workflow['processed'] ?? false) === true) {
+                return $workflow;
+            }
+
+            $query = $this->processOneQueryTask($queue, $workerId, $queryPollTimeoutSeconds);
+
+            if (($query['processed'] ?? false) === true) {
+                $query['deferred_workflow_poll'] = $workflow;
+
+                return $query;
+            }
+
+            return [
+                'kind' => 'idle',
+                'processed' => false,
+                'workflow' => $workflow,
+                'query' => $query,
+            ];
+        }
+
         $query = $this->processOneQueryTask($queue, $workerId, $queryPollTimeoutSeconds);
 
         if (($query['processed'] ?? false) === true) {
@@ -303,6 +330,7 @@ final class StandaloneWorkflowWorker
                     leaseOwner: $this->stringValue($task['lease_owner'] ?? null),
                     queryTaskAttempt: $this->intValue($task['query_task_attempt'] ?? null),
                 );
+                $this->lastProcessedTaskClass = self::TASK_CLASS_QUERY;
 
                 return [
                     'kind' => 'query_task',
@@ -315,6 +343,8 @@ final class StandaloneWorkflowWorker
                     'failure_response' => $failResponse,
                 ];
             }
+
+            $this->lastProcessedTaskClass = self::TASK_CLASS_QUERY;
 
             return [
                 'kind' => 'query_task',
@@ -339,6 +369,7 @@ final class StandaloneWorkflowWorker
                 ? $failure['validation_errors']
                 : null,
         );
+        $this->lastProcessedTaskClass = self::TASK_CLASS_QUERY;
 
         return [
             'kind' => 'query_task',
@@ -443,6 +474,7 @@ final class StandaloneWorkflowWorker
                     leaseOwner: $this->stringValue($task['lease_owner'] ?? null),
                     workflowTaskAttempt: $this->intValue($task['workflow_task_attempt'] ?? null),
                 );
+                $this->lastProcessedTaskClass = self::TASK_CLASS_WORKFLOW;
 
                 return $this->workflowResultWithPreWorkflowQuery([
                     'kind' => 'workflow_task',
@@ -468,6 +500,7 @@ final class StandaloneWorkflowWorker
                 'commands' => $step->commands,
                 'worker_response' => $response,
             ];
+            $this->lastProcessedTaskClass = self::TASK_CLASS_WORKFLOW;
             $workflowResult = $this->workflowResultWithPreWorkflowQuery(
                 $workflowResult,
                 $preWorkflowQuery,
@@ -496,6 +529,7 @@ final class StandaloneWorkflowWorker
                 $this->stringValue($task['lease_owner'] ?? null),
                 $this->intValue($task['workflow_task_attempt'] ?? null),
             );
+            $this->lastProcessedTaskClass = self::TASK_CLASS_WORKFLOW;
 
             return $this->workflowResultWithPreWorkflowQuery([
                 'kind' => 'workflow_task',

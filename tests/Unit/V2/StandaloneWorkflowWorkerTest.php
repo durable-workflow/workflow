@@ -262,6 +262,149 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         ], $requests[1]['body']);
     }
 
+    public function testTickMakesBoundedSignalProgressWhileCurrentQueriesRemainContinuouslyReady(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+        $queryValues = [];
+        $queryPolls = 0;
+        $workflowPolls = 0;
+        $signalApplied = false;
+
+        $http->fake(function (Request $request) use (
+            $http,
+            &$queryPolls,
+            &$queryValues,
+            &$requests,
+            &$signalApplied,
+            &$workflowPolls,
+        ) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                $queryPolls++;
+                $task = $this->queryTask([
+                    'query_task_id' => 'query-task-'.$queryPolls,
+                    'workflow_type' => 'conformance.counter.php',
+                    'workflow_class' => 'conformance.counter.php',
+                    'query_name' => 'current',
+                    'history_export' => [
+                        'workflow' => [
+                            'workflow_type' => 'conformance.counter.php',
+                            'workflow_class' => 'conformance.counter.php',
+                        ],
+                    ],
+                ]);
+                $task['history_export']['history_events'] = $this->counterHistoryEvents(
+                    signalAccepted: $signalApplied,
+                    includeNextWait: $signalApplied,
+                    typeKey: 'type',
+                );
+
+                return $http->response([
+                    'task' => $task,
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                $workflowPolls++;
+
+                if ($workflowPolls === 1) {
+                    $task = $this->workflowTask([
+                        'task_id' => 'workflow-signal-task',
+                        'workflow_type' => 'conformance.counter.php',
+                        'workflow_class' => 'conformance.counter.php',
+                        'workflow_wait_kind' => 'signal',
+                        'resume_source_kind' => 'workflow_signal',
+                    ]);
+                    $task['history_events'] = $this->counterHistoryEvents(
+                        signalAccepted: true,
+                        includeNextWait: false,
+                        typeKey: 'event_type',
+                    );
+
+                    return $http->response([
+                        'task' => $task,
+                        'poll_status' => 'leased',
+                    ]);
+                }
+
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'task_id' => 'workflow-load-task-'.$workflowPolls,
+                        'workflow_id' => 'workflow-load-'.$workflowPolls,
+                        'run_id' => 'run-load-'.$workflowPolls,
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_contains($request->url(), '/workflow-tasks/workflow-signal-task/complete')) {
+                $signalApplied = true;
+
+                return $http->response([
+                    'outcome' => 'completed',
+                    'recorded' => true,
+                    'status' => 200,
+                ]);
+            }
+
+            if (str_contains($request->url(), '/workflow-tasks/')) {
+                return $http->response([
+                    'outcome' => 'completed',
+                    'recorded' => true,
+                    'status' => 200,
+                ]);
+            }
+
+            if (str_contains($request->url(), '/query-tasks/')) {
+                $queryValues[] = $request->data()['result'] ?? null;
+
+                return $http->response([
+                    'outcome' => 'completed',
+                    'status' => 200,
+                ]);
+            }
+
+            return $http->response([], 404);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'conformance.counter.php' => StandaloneWorkflowWorkerCounterWorkflow::class,
+            'polyglot.php.simple' => StandaloneWorkflowWorkerSimpleWorkflow::class,
+        ]);
+
+        $results = [];
+        for ($tick = 0; $tick < 5; $tick++) {
+            $results[] = $worker->tick('polyglot', 'php-worker');
+        }
+
+        $pollOrder = array_values(array_map(
+            static fn (array $request): string => str_contains($request['url'], '/query-tasks/')
+                ? 'query'
+                : 'workflow',
+            array_filter(
+                $requests,
+                static fn (array $request): bool => str_ends_with($request['url'], '/poll'),
+            ),
+        ));
+
+        $this->assertTrue($signalApplied);
+        $this->assertSame([0, 4, 4], $queryValues);
+        $this->assertSame(3, $queryPolls);
+        $this->assertSame(3, $workflowPolls);
+        $this->assertSame(['query', 'workflow', 'query', 'workflow', 'query', 'workflow'], $pollOrder);
+        foreach ($results as $result) {
+            $this->assertTrue($result['processed'] ?? false);
+        }
+    }
+
     public function testTickProcessesWorkflowTaskWhenQueryPollReportsWorkflowTaskPending(): void
     {
         $http = new HttpFactory();
@@ -1673,6 +1816,77 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             ],
             'next_history_page_token' => null,
         ], $overrides);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function counterHistoryEvents(
+        bool $signalAccepted,
+        bool $includeNextWait,
+        string $typeKey,
+    ): array {
+        $events = [
+            [
+                'id' => 'event-started',
+                'sequence' => 1,
+                $typeKey => HistoryEventType::WorkflowStarted->value,
+                'payload' => [
+                    'workflow_type' => 'conformance.counter.php',
+                    'workflow_class' => 'conformance.counter.php',
+                    'payload_codec' => 'avro',
+                ],
+                'recorded_at' => '2026-05-17T00:00:00+00:00',
+            ],
+            [
+                'id' => 'event-signal-wait-opened-1',
+                'sequence' => 2,
+                $typeKey => HistoryEventType::SignalWaitOpened->value,
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                ],
+                'recorded_at' => '2026-05-17T00:00:10+00:00',
+            ],
+        ];
+
+        if (! $signalAccepted) {
+            return $events;
+        }
+
+        $events[] = [
+            'id' => 'event-signal-received-1',
+            'sequence' => 3,
+            $typeKey => HistoryEventType::SignalReceived->value,
+            'payload' => [
+                'signal_name' => 'increment',
+                'signal_wait_id' => 'wait-1',
+                'workflow_sequence' => 1,
+                'payload_codec' => 'avro',
+                'arguments' => [
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', [4]),
+                ],
+            ],
+            'recorded_at' => '2026-05-17T00:00:20+00:00',
+        ];
+
+        if ($includeNextWait) {
+            $events[] = [
+                'id' => 'event-signal-wait-opened-2',
+                'sequence' => 4,
+                $typeKey => HistoryEventType::SignalWaitOpened->value,
+                'payload' => [
+                    'sequence' => 2,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-2',
+                ],
+                'recorded_at' => '2026-05-17T00:00:30+00:00',
+            ];
+        }
+
+        return $events;
     }
 
     /**

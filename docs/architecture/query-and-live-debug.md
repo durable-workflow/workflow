@@ -202,20 +202,26 @@ poll attempt. When the standalone server only knows an external workflow type
 key, PHP workers should pass the same `workflow_type => workflow_class` registry
 to `WorkflowQueryTaskExecutor` so query-task replay can see the class's declared
 queries before invoking the handler.
-PHP workers that use `StandaloneWorkflowWorker` inherit a query-first tick:
-each tick polls, executes, and completes at most one server-routed query task
-before polling workflow tasks. For a query-capable initial workflow task, the
-driver also performs one short pre-execution drain so a query already routed
-from the `WorkflowStarted` snapshot can return before the first wait is
-recorded. After an active non-terminal workflow task completes or reports
+PHP workers that use `StandaloneWorkflowWorker` inherit a bounded alternating
+tick. The first tick gives query tasks priority. After any task is processed,
+the opposite task class receives the first poll on the next tick; when that
+class has no claimable task, the worker falls back to the other class in the
+same tick. When both classes remain claimable, neither waits behind more than
+one priority turn. For a query-capable initial workflow task, the driver also
+performs one short pre-execution drain so a query already routed from the
+`WorkflowStarted` snapshot can return before the first wait is recorded. After
+an active non-terminal workflow task completes or reports
 `waiting_for_history`, the driver performs a bounded query-task drain after the
-workflow task has recorded its commands. These fairness drains use
-zero-second query-task probes. The initial non-terminal workflow task and a
-workflow poll that reports `query_task_pending` get more probes than steady
-state, but each probe yields immediately when no task is claimable. This lets a
-public query enqueued during start or workflow execution observe a consistent
-state and return before the next loop turn without turning the worker tick into
-an unbounded query loop or starving heartbeat/workflow progress.
+workflow task has recorded its commands. These drains can complete at most one
+query task each, so startup can produce at most two consecutive query-task
+completions while workflow work is ready; steady-state work alternates the
+classes. The fairness drains use zero-second query-task probes. The initial
+non-terminal workflow task and a workflow poll that reports
+`query_task_pending` get more probes than steady state, but each probe yields
+immediately when no task is claimable. This lets a public query enqueued during
+start or workflow execution observe a consistent state and return before the
+next loop turn without turning the worker tick into an unbounded query loop or
+starving heartbeat or workflow progress.
 Workers that build their own loop MUST preserve the same fairness property when
 they advertise `query_tasks`; a workflow-task long poll must not starve a
 waiting public query, and a query-task poll that reports `workflow_task_pending`

@@ -291,14 +291,17 @@ the returned lease fields so follow-up history, heartbeat, complete, and fail
 calls can send the required `lease_owner`, `workflow_task_attempt`,
 `activity_attempt_id`, and `query_task_attempt` values.
 `StandaloneWorkflowWorker` is the stable PHP worker driver for service-mode
-workflow workers that want the package to orchestrate the polling loop. Each
-tick polls and completes at most one query task before polling workflow tasks,
-then executes workflow tasks through `WorkflowFiberRunner` and completes or
-fails them through `WorkerProtocolClient`. That query-first order is part of
-the public worker shim contract for workers that advertise `query_tasks`.
+workflow workers that want the package to orchestrate the polling loop. The
+first tick gives query tasks priority; after a task is processed, the opposite
+task class receives priority on the next tick, with same-tick fallback when no
+task of the preferred class is claimable. This bounded alternating order is
+part of the public worker shim contract for workers that advertise
+`query_tasks`. Workflow tasks execute through `WorkflowFiberRunner` and
+complete or fail through `WorkerProtocolClient`.
 Long-running service workers can use `tickWithHeartbeat()` or `run()` to emit
 periodic worker heartbeat records with task-slot and process telemetry on the
-server-advertised cadence while preserving the same task-processing order.
+server-advertised cadence while preserving the same bounded task-processing
+order.
 `namespace()` returns the worker client's selected namespace, and
 `withNamespace()` creates a fresh worker client with the same connection
 settings for a different namespace. That clone intentionally does not carry
