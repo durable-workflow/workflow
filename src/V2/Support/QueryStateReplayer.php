@@ -801,7 +801,33 @@ final class QueryStateReplayer
             return $applied;
         }
 
-        return $received ?? $applied;
+        if ($received !== null && $this->receivedSignalIsCommitted($received, $applied, $run, $sequence)) {
+            return $received;
+        }
+
+        return $applied;
+    }
+
+    private function receivedSignalIsCommitted(
+        WorkflowHistoryEvent $received,
+        ?WorkflowHistoryEvent $applied,
+        WorkflowRun $run,
+        int $sequence,
+    ): bool {
+        // A received event can be visible while its workflow task is still in
+        // flight. Only use it as a legacy payload mirror after durable history
+        // or the signal projection proves that application was committed.
+        if ($applied !== null || $this->intValue($received->payload['workflow_sequence'] ?? null) === $sequence) {
+            return true;
+        }
+
+        $signal = $this->signalRecordForEvent($received, $run);
+        $status = $signal?->status;
+        $status = $status instanceof \BackedEnum
+            ? $status->value
+            : $status;
+
+        return $status === 'applied';
     }
 
     private function appliedSignalEvent(
@@ -809,11 +835,27 @@ final class QueryStateReplayer
         int $sequence,
         SignalCall $signalCall,
     ): ?WorkflowHistoryEvent {
+        $waitIds = $this->signalWaitIdsForSequence($run, $sequence, $signalCall->name);
+
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalApplied
-                && ($event->payload['sequence'] ?? null) === $sequence
-                && ($event->payload['signal_name'] ?? null) === $signalCall->name
+            static function (WorkflowHistoryEvent $event) use ($sequence, $signalCall, $waitIds): bool {
+                if (
+                    $event->event_type !== HistoryEventType::SignalApplied
+                    || ($event->payload['sequence'] ?? null) !== $sequence
+                    || ($event->payload['signal_name'] ?? null) !== $signalCall->name
+                ) {
+                    return false;
+                }
+
+                if ($waitIds === []) {
+                    return true;
+                }
+
+                $signalWaitId = $event->payload['signal_wait_id'] ?? null;
+
+                return is_string($signalWaitId) && isset($waitIds[$signalWaitId]);
+            }
         );
 
         return $event;
@@ -836,13 +878,13 @@ final class QueryStateReplayer
                     return false;
                 }
 
-                if (($event->payload['workflow_sequence'] ?? null) === $sequence) {
+                $signalWaitId = $event->payload['signal_wait_id'] ?? null;
+
+                if (is_string($signalWaitId) && isset($waitIds[$signalWaitId])) {
                     return true;
                 }
 
-                $signalWaitId = $event->payload['signal_wait_id'] ?? null;
-
-                return is_string($signalWaitId) && isset($waitIds[$signalWaitId]);
+                return $waitIds === [] && ($event->payload['workflow_sequence'] ?? null) === $sequence;
             }
         );
 
@@ -1371,6 +1413,7 @@ final class QueryStateReplayer
     {
         $positions = [];
         $seen = [];
+        $seenStepIdentities = [];
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
@@ -1386,16 +1429,51 @@ final class QueryStateReplayer
             }
 
             $sequence = $this->eventSequence($event);
+            $stepIdentity = $this->replayStepIdentity($eventType, $event);
 
-            if ($sequence === null || isset($seen[$sequence])) {
+            // Signal wait/open and applied events describe one workflow step.
+            // Their numeric sequences can differ in server-routed snapshots,
+            // while the wait id remains the stable correlation authority.
+            if (
+                $sequence === null
+                || isset($seen[$sequence])
+                || ($stepIdentity !== null && isset($seenStepIdentities[$stepIdentity]))
+            ) {
                 continue;
             }
 
             $seen[$sequence] = true;
+            if ($stepIdentity !== null) {
+                $seenStepIdentities[$stepIdentity] = true;
+            }
             $positions[count($positions) + 1] = $sequence;
         }
 
         return $positions;
+    }
+
+    private function replayStepIdentity(?string $eventType, WorkflowHistoryEvent $event): ?string
+    {
+        if (! in_array($eventType, [
+            HistoryEventType::SignalWaitOpened->value,
+            HistoryEventType::SignalApplied->value,
+        ], true)) {
+            return null;
+        }
+
+        $signalWaitId = $this->stringValue($event->payload['signal_wait_id'] ?? null);
+
+        if ($signalWaitId !== null) {
+            return 'signal-wait:'.$signalWaitId;
+        }
+
+        if ($eventType !== HistoryEventType::SignalApplied->value) {
+            return null;
+        }
+
+        $signalId = $this->stringValue($event->payload['signal_id'] ?? null);
+
+        return $signalId === null ? null : 'signal:'.$signalId;
     }
 
     private function hasWorkflowCommandSequence(?string $type): bool
