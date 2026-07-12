@@ -867,10 +867,16 @@ final class QueryStateReplayer
         SignalCall $signalCall,
     ): ?WorkflowHistoryEvent {
         $waitIds = $this->signalWaitIdsForSequence($run, $sequence, $signalCall->name);
+        $waitSequences = $this->signalWaitSequences($run, $signalCall->name);
 
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
-            static function (WorkflowHistoryEvent $event) use ($sequence, $signalCall, $waitIds): bool {
+            static function (WorkflowHistoryEvent $event) use (
+                $sequence,
+                $signalCall,
+                $waitIds,
+                $waitSequences,
+            ): bool {
                 if (
                     $event->event_type !== HistoryEventType::SignalReceived
                     || ($event->payload['signal_name'] ?? null) !== $signalCall->name
@@ -880,8 +886,17 @@ final class QueryStateReplayer
 
                 $signalWaitId = $event->payload['signal_wait_id'] ?? null;
 
-                if (is_string($signalWaitId) && isset($waitIds[$signalWaitId])) {
-                    return true;
+                if (is_string($signalWaitId) && $signalWaitId !== '') {
+                    // A durable wait id is the correlation authority. Do not
+                    // apply the same received row again at a conflicting
+                    // mutable workflow_sequence from a later projection.
+                    if (isset($waitSequences[$signalWaitId])) {
+                        return $waitSequences[$signalWaitId] === $sequence;
+                    }
+
+                    if (isset($waitIds[$signalWaitId])) {
+                        return true;
+                    }
                 }
 
                 return $waitIds === [] && ($event->payload['workflow_sequence'] ?? null) === $sequence;
@@ -889,6 +904,32 @@ final class QueryStateReplayer
         );
 
         return $event;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function signalWaitSequences(WorkflowRun $run, string $signalName): array
+    {
+        $sequences = [];
+
+        foreach ($run->historyEvents as $event) {
+            if (
+                $event->event_type !== HistoryEventType::SignalWaitOpened
+                || ($event->payload['signal_name'] ?? null) !== $signalName
+            ) {
+                continue;
+            }
+
+            $signalWaitId = $this->stringValue($event->payload['signal_wait_id'] ?? null);
+            $sequence = $this->intValue($event->payload['sequence'] ?? null);
+
+            if ($signalWaitId !== null && $sequence !== null) {
+                $sequences[$signalWaitId] = $sequence;
+            }
+        }
+
+        return $sequences;
     }
 
     private function signalEventCarriesPayload(WorkflowHistoryEvent $event, ?WorkflowRun $run): bool

@@ -126,6 +126,7 @@ final class WorkflowQueryTaskExecutor
     {
         $historyExport = $task['history_export'] ?? null;
         $historyExport = is_array($historyExport) ? $historyExport : $this->historyExportFromTask($task);
+        $historyExport = $this->historyExportAtQueryCutoff($historyExport, $task);
 
         $workflowType = $this->workflowTypeFromHistoryExport($historyExport)
             ?? $this->stringValue($task['workflow_type'] ?? null);
@@ -138,6 +139,43 @@ final class WorkflowQueryTaskExecutor
         }
 
         return (new WorkflowReplayer())->runFromHistoryExport($historyExport);
+    }
+
+    /**
+     * Query tasks admitted while a workflow task is in flight carry a durable
+     * history cutoff. SignalReceived payloads can be enriched later from the
+     * mutable signal projection, so neither that projected workflow sequence
+     * nor the current signal rows may prove application inside the cutoff.
+     *
+     * @param array<string, mixed> $historyExport
+     * @param array<string, mixed> $task
+     * @return array<string, mixed>
+     */
+    private function historyExportAtQueryCutoff(array $historyExport, array $task): array
+    {
+        if ($this->intValue($task['history_cutoff_sequence'] ?? null) === null) {
+            return $historyExport;
+        }
+
+        $events = is_array($historyExport['history_events'] ?? null)
+            ? $historyExport['history_events']
+            : [];
+
+        foreach ($events as $index => $event) {
+            if (! is_array($event) || $this->historyEventType($event) !== 'SignalReceived') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            unset($payload['workflow_sequence']);
+            $event['payload'] = $payload;
+            $events[$index] = $event;
+        }
+
+        $historyExport['history_events'] = $events;
+        $historyExport['signals'] = [];
+
+        return $historyExport;
     }
 
     /**
