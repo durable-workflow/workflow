@@ -54,23 +54,7 @@ final class WorkflowExecutor
 {
     public function run(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
     {
-        $run->load([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'tasks',
-            'commands',
-            'updates',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
-
-        if ($this->deadlineExpired($run)) {
-            $this->timeoutRun($run, $task);
-
+        if ($this->timeoutIfDeadlineExpired($run, $task)) {
             return null;
         }
 
@@ -3073,6 +3057,39 @@ final class WorkflowExecutor
         );
 
         return $command;
+    }
+
+    /**
+     * Close a run whose server-enforced execution or run deadline elapsed.
+     *
+     * External worker bridges call this while holding the task and run locks,
+     * immediately before accepting commands. This makes the deadline the
+     * authority at the workflow-task commit boundary, even when the watchdog
+     * cannot repair a run because its task remains leased.
+     */
+    public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'updates',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+
+        if (! $this->deadlineExpired($run)) {
+            return false;
+        }
+
+        $this->timeoutRun($run, $task);
+
+        return true;
     }
 
     private function deadlineExpired(WorkflowRun $run): bool

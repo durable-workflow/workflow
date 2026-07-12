@@ -221,6 +221,8 @@ final class FailureSnapshots
                 ?? self::sourceIdForEvent($event),
             'propagation_kind' => $failure?->propagation_kind
                 ?? self::propagationKindForEvent($event),
+            'reason' => self::stringValue($event->payload['timeout_kind'] ?? null)
+                ?? self::stringValue($event->payload['reason'] ?? null),
             'failure_category' => self::stringValue($event->payload['failure_category'] ?? null)
                 ?? ($failure?->failure_category?->value ?? $failure?->failure_category)
                 ?? self::failureCategoryForEvent($event),

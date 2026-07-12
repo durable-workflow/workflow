@@ -890,6 +890,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
+            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'run_timed_out',
+                ];
+            }
+
             $sequence = ($run->last_history_sequence ?? 0) + 1;
             $createdTaskIds = [];
             $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);

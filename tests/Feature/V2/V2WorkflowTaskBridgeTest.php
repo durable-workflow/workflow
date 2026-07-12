@@ -1822,6 +1822,63 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($completionEvent);
     }
 
+    public function testLateExternalWorkflowCompletionClosesRunWithTypedRunTimeout(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->instance->forceFill([
+            'execution_timeout_seconds' => 30,
+        ])->save();
+        $run->forceFill([
+            'execution_deadline_at' => now()->addSeconds(28),
+            'run_timeout_seconds' => 1,
+            'run_deadline_at' => now()->subSecond(),
+        ])->save();
+
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('too late'),
+            ],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame($run->id, $result['workflow_run_id']);
+        $this->assertSame('failed', $result['run_status']);
+        $this->assertSame('run_timed_out', $result['reason']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('timed_out', $run->closed_reason);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($task->lease_expires_at);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+        $this->assertSame('timeout', $failure->failure_category->value);
+        $this->assertSame('timeout', $failure->propagation_kind);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowTimedOut->value)
+            ->firstOrFail();
+        $this->assertSame('run_timeout', $timedOutEvent->payload['timeout_kind']);
+        $this->assertSame('timeout', $timedOutEvent->payload['failure_category']);
+
+        $snapshots = FailureSnapshots::forRun($run->fresh(['historyEvents', 'failures']));
+        $this->assertSame('run_timeout', $snapshots[0]['reason']);
+        $this->assertSame('timeout', $snapshots[0]['failure_category']);
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+        ]);
+    }
+
     public function testCompleteWithWorkflowCompletionPreservesExternalResultPayloadCodec(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
