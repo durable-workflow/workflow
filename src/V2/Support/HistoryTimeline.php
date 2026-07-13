@@ -61,6 +61,35 @@ final class HistoryTimeline
             ->all();
     }
 
+    /**
+     * Map one self-describing history event without hydrating its run's
+     * history or other growing relations. Child-resolution events snapshot
+     * the metadata needed by the timeline into their payload, which lets a
+     * claim repair the newly appended point entry with constant memory.
+     *
+     * @return array<string, mixed>
+     */
+    public static function fromChildResolutionEvent(WorkflowHistoryEvent $event): array
+    {
+        if (! in_array($event->event_type, ChildRunHistory::resolutionEventTypes(), true)) {
+            throw new \LogicException('Incremental child timeline projection requires a child-resolution event.');
+        }
+
+        $failure = FailureSnapshots::forSelfDescribingEvent($event);
+        $failures = is_string($failure['id'] ?? null)
+            ? collect([$failure['id'] => $failure])
+            : collect();
+
+        return self::mapEvent(
+            $event,
+            collect(),
+            collect(),
+            collect(),
+            collect(),
+            $failures,
+        );
+    }
+
     private static function mapEvent(
         WorkflowHistoryEvent $event,
         Collection $commands,

@@ -21,6 +21,7 @@ use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -36,10 +37,13 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ChildRunHistory;
@@ -57,6 +61,7 @@ use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowTaskPayload;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Workflow as V2Workflow;
 use Workflow\V2\WorkflowStub;
@@ -287,6 +292,1000 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertTrue($result['claimed']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+    }
+
+    public function testSuccessfulClaimProjectionUsesSummaryCountersWithoutHydratingHistory(): void
+    {
+        $run = $this->createWaitingRun();
+        $projectionCardinality = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE + 1;
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $expected = $this->recordClaimHistory(
+            $run,
+            $task,
+            $projectionCardinality,
+        );
+        $this->createClaimProjectionCardinality($run, $projectionCardinality);
+        $summaryBeforeClaim = $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            $expected['history_size_bytes'],
+            $expected['history_fan_out'],
+        );
+        $summaryBeforeClaim->forceFill([
+            'exception_count' => $projectionCardinality,
+        ])->save();
+
+        $retrievedHistoryEvents = 0;
+        $retrievedTasks = 0;
+        $retrievedActivityExecutions = 0;
+        $retrievedFailures = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowTask::class,
+            static function () use (&$retrievedTasks): void {
+                $retrievedTasks++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.ActivityExecution::class,
+            static function () use (&$retrievedActivityExecutions): void {
+                $retrievedActivityExecutions++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowFailure::class,
+            static function () use (&$retrievedFailures): void {
+                $retrievedFailures++;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->bridge->claimStatus($task->id, 'bounded-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertTrue($result['claimed']);
+        $this->assertSame($projectionCardinality, $expected['history_event_count']);
+        $this->assertSame(17, $expected['history_fan_out']);
+        $this->assertSame($expected['history_event_count'], $summary->history_event_count);
+        $this->assertSame($expected['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($expected['history_fan_out'], $summary->history_fan_out);
+        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertSame('workflow_task_leased', $summary->liveness_state);
+        $this->assertSame('Workflow task leased to worker', $summary->wait_reason);
+        $this->assertFalse($summary->task_problem);
+        $this->assertSame($projectionCardinality, $summary->exception_count);
+        $this->assertSame(0, $retrievedHistoryEvents);
+        $this->assertSame(1, $retrievedTasks);
+        $this->assertSame(0, $retrievedActivityExecutions);
+        $this->assertSame(0, $retrievedFailures);
+        $this->assertNotEmpty($retrievedRuns);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('activityExecutions'));
+            $this->assertFalse($retrievedRun->relationLoaded('failures'));
+        }
+
+        $historyQueries = array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        ));
+
+        $this->assertSame([], $historyQueries);
+
+        $this->assertFalse(collect($queries)->contains(
+            static fn (array $query): bool => str_contains($query['query'], 'activity_executions'),
+        ));
+        $this->assertFalse(collect($queries)->contains(
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_failures'),
+        ));
+    }
+
+    public function testSuccessfulClaimProjectionUsesOneBoundedAggregateWhenSummaryIsMissing(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $expected = $this->recordClaimHistory($run, $task, 12);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->bridge->claimStatus($task->id, 'bounded-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $historyQueries = array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        ));
+
+        $this->assertTrue($result['claimed']);
+        $this->assertSame($expected['history_event_count'], $summary->history_event_count);
+        $this->assertSame($expected['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($expected['history_fan_out'], $summary->history_fan_out);
+        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+        $this->assertCount(1, $historyQueries);
+        $this->assertStringContainsString('count(*)', strtolower($historyQueries[0]['query']));
+    }
+
+    public function testSuccessfulClaimProjectionRemainsBoundedThroughCustomHistoryRole(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $expected = $this->recordClaimHistory($run, $task, 8);
+        $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            $expected['history_size_bytes'],
+            $expected['history_fan_out'],
+        );
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->bridge->claimStatus($task->id, 'custom-bounded-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertTrue($result['claimed']);
+        $this->assertSame([
+            ['projectRun', $run->id],
+        ], $customRole->calls);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+        $this->assertFalse(collect($queries)->contains(
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        ));
+    }
+
+    public function testSuccessfulClaimIncrementallyProjectsAcceptedUpdateWaitLease(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [true],
+            ]),
+            'source' => 'worker-protocol',
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [true]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $command->command_sequence,
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forUpdate($update),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun($run);
+
+        $waitId = sprintf('update:%s', $update->id);
+        $waitBeforeClaim = WorkflowRunWait::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('wait_id', $waitId)
+            ->sole();
+
+        $this->assertSame(TaskStatus::Ready->value, $waitBeforeClaim->task_status);
+
+        $result = $this->bridge->claimStatus($task->id, 'update-worker');
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $waitAfterClaim = WorkflowRunWait::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('wait_id', $waitId)
+            ->sole();
+
+        $this->assertTrue($result['claimed']);
+        $this->assertSame('update', $summary->wait_kind);
+        $this->assertSame('Waiting for update approve', $summary->wait_reason);
+        $this->assertSame($waitId, $summary->open_wait_id);
+        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertSame('workflow_task_leased', $summary->liveness_state);
+        $this->assertSame(sprintf('Update task %s is leased to a worker.', $task->id), $summary->liveness_reason);
+        $this->assertSame($task->id, $waitAfterClaim->task_id);
+        $this->assertTrue($waitAfterClaim->task_backed);
+        $this->assertSame(TaskType::Workflow->value, $waitAfterClaim->task_type);
+        $this->assertSame(TaskStatus::Leased->value, $waitAfterClaim->task_status);
+    }
+
+    public function testPreUpgradeChildResumeClaimBoundedlyRepairsObservabilityProjections(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test-greeting-workflow',
+            'arguments' => Serializer::serialize(['child-arg']),
+        ]]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+
+        $preUpgradeRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                return WorkflowRunSummary::query()->findOrFail($run->id);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+        $this->app->instance(HistoryProjectionRole::class, $preUpgradeRole);
+
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+        $completed = $this->bridge->complete($childTask->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize(['child_result' => 'ok']),
+        ]]);
+
+        $this->assertTrue($completed['completed']);
+        $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+
+        /** @var WorkflowHistoryEvent $resolution */
+        $resolution = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->sole();
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $waitId = sprintf('child:%s', $link->id);
+        $summaryBeforeClaim = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $waitBeforeClaim = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('wait_id', $waitId)
+            ->sole();
+        $lineageBeforeClaim = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->where('lineage_id', $link->id)
+            ->sole();
+
+        $this->assertSame('child', $summaryBeforeClaim->wait_kind);
+        $this->assertSame('waiting_for_child', $summaryBeforeClaim->liveness_state);
+        $this->assertSame('open', $waitBeforeClaim->status);
+        $this->assertSame(RunStatus::Waiting->value, $lineageBeforeClaim->status);
+        $this->assertNull($lineageBeforeClaim->closed_reason);
+        $this->assertDatabaseMissing('workflow_run_timeline_entries', [
+            'workflow_run_id' => $parentRun->id,
+            'history_event_id' => $resolution->id,
+        ]);
+
+        $preUpgradePayload = is_array($resumeTask->payload) ? $resumeTask->payload : [];
+        unset($preUpgradePayload['workflow_history_event_id']);
+        $resumeTask->forceFill(['payload' => $preUpgradePayload])->save();
+        $this->assertArrayNotHasKey('workflow_history_event_id', $resumeTask->refresh()->payload);
+
+        $budgetRun = WorkflowRun::query()->findOrFail($parentRun->id);
+        $expectedBudget = HistoryBudget::forRun($budgetRun);
+        $budgetRun->unsetRelation('historyEvents');
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $claimed = $this->bridge->claimStatus($resumeTask->id, 'parent-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $wait = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('wait_id', $waitId)
+            ->sole();
+        $timeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('history_event_id', $resolution->id)
+            ->sole();
+        $lineage = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->where('lineage_id', $link->id)
+            ->sole();
+        $historyQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'))
+            ->values();
+        $lineageQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains(
+                $query['query'],
+                'workflow_run_lineage_entries',
+            ))
+            ->values();
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertSame([['projectRun', $parentRun->id]], $customRole->calls);
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('Workflow task leased to worker', $summary->wait_reason);
+        $this->assertSame(sprintf('workflow-task:%s', $resumeTask->id), $summary->open_wait_id);
+        $this->assertSame('workflow_task_leased', $summary->liveness_state);
+        $this->assertSame($resumeTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertTrue($summary->task_problem);
+        $this->assertSame($expectedBudget['history_event_count'], $summary->history_event_count);
+        $this->assertSame($expectedBudget['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($expectedBudget['history_fan_out'], $summary->history_fan_out);
+
+        $this->assertSame('resolved', $wait->status);
+        $this->assertSame(RunStatus::Completed->value, $wait->source_status);
+        $this->assertSame('Child workflow test-greeting-workflow completed.', $wait->summary);
+        $this->assertSame($resolution->recorded_at?->toJSON(), $wait->resolved_at?->toJSON());
+        $this->assertTrue($wait->task_backed);
+        $this->assertSame($resumeTask->id, $wait->task_id);
+        $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
+
+        $this->assertSame(HistoryEventType::ChildRunCompleted->value, $timeline->type);
+        $this->assertSame('child', $timeline->kind);
+        $this->assertSame('child_workflow_run', $timeline->source_kind);
+        $this->assertSame($link->child_workflow_run_id, $timeline->source_id);
+        $this->assertSame('Child workflow test-greeting-workflow completed.', $timeline->summary);
+
+        $this->assertSame($link->id, $lineage->child_call_id);
+        $this->assertSame($link->child_workflow_instance_id, $lineage->related_workflow_instance_id);
+        $this->assertSame($link->child_workflow_run_id, $lineage->related_workflow_run_id);
+        $this->assertSame(RunStatus::Completed->value, $lineage->status);
+        $this->assertSame(RunStatus::Completed->statusBucket()->value, $lineage->status_bucket);
+        $this->assertSame('completed', $lineage->closed_reason);
+        $this->assertSame(
+            ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            $lineage->payload['history_authority'] ?? null,
+        );
+        $this->assertFalse($lineage->payload['diagnostic_only'] ?? true);
+
+        $this->assertSame(1, $retrievedHistoryEvents);
+        $this->assertNotEmpty($retrievedRuns);
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('childLinks'));
+            $this->assertFalse($retrievedRun->relationLoaded('lineageEntries'));
+        }
+
+        $this->assertCount(2, $historyQueries);
+        $this->assertTrue($historyQueries->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
+        ));
+        $this->assertTrue($historyQueries->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 1'),
+        ));
+        $this->assertFalse($historyQueries->contains(static function (array $query): bool {
+            $sql = strtolower($query['query']);
+
+            return str_starts_with(ltrim($sql), 'select')
+                && ! str_contains($sql, 'count(*)')
+                && ! str_contains($sql, 'limit 1');
+        }));
+        $this->assertNotEmpty($lineageQueries);
+        $this->assertFalse($lineageQueries->contains(static function (array $query): bool {
+            $sql = strtolower($query['query']);
+
+            return str_starts_with(ltrim($sql), 'select')
+                && ! str_contains($sql, 'count(*)')
+                && ! str_contains($sql, 'limit 1');
+        }));
+    }
+
+    public function testChildResumeClaimKeepsEveryCoalescedResolutionProjectionBounded(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['first-child']),
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['second-child']),
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        foreach ($links->values() as $index => $link) {
+            /** @var WorkflowTask $childTask */
+            $childTask = WorkflowTask::query()
+                ->where('workflow_run_id', $link->child_workflow_run_id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->sole();
+
+            $this->assertTrue($this->bridge->claimStatus($childTask->id, "child-worker-{$index}")['claimed']);
+            $completed = $this->bridge->complete($childTask->id, $index === 0
+                ? [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                ]]
+                : [[
+                    'type' => 'fail_workflow',
+                    'message' => 'second child failed',
+                    'exception_class' => RuntimeException::class,
+                ]]);
+
+            $this->assertTrue($completed['completed']);
+        }
+
+        $resolutions = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+            ])
+            ->orderBy('sequence')
+            ->get();
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        /** @var WorkflowHistoryEvent $firstResolution */
+        $firstResolution = $resolutions->first();
+        /** @var WorkflowHistoryEvent $lastResolution */
+        $lastResolution = $resolutions->last();
+
+        $this->assertCount(2, $resolutions);
+        $this->assertSame('child', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame($firstResolution->id, $resumeTask->payload['workflow_history_event_id'] ?? null);
+        $this->assertNotSame($lastResolution->id, $resumeTask->payload['workflow_history_event_id'] ?? null);
+
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $claimed = $this->bridge->claimStatus($resumeTask->id, 'parent-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $waits = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->orderBy('sequence')
+            ->get();
+        $timelineEventIds = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->pluck('history_event_id')
+            ->all();
+        $lineageStatuses = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->orderBy('sequence')
+            ->pluck('status')
+            ->all();
+        $historyQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'))
+            ->values();
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertSame($resumeTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertTrue($summary->task_problem);
+        $this->assertSame(1, $summary->exception_count);
+        $this->assertCount(2, $waits);
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $waits->pluck('source_status')->all());
+        foreach ($waits as $wait) {
+            $this->assertSame($resumeTask->id, $wait->task_id);
+            $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
+        }
+        $this->assertEqualsCanonicalizing($resolutions->pluck('id')->all(), $timelineEventIds);
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $lineageStatuses);
+
+        $this->assertSame(1, $retrievedHistoryEvents);
+        $this->assertNotEmpty($retrievedRuns);
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('childLinks'));
+            $this->assertFalse($retrievedRun->relationLoaded('lineageEntries'));
+        }
+        $this->assertCount(1, $historyQueries);
+        $this->assertTrue($historyQueries->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 1'),
+        ));
+    }
+
+    public function testSignalTaskClaimKeepsMultipleChildResolutionProjectionsBounded(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['first-child']),
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['second-child']),
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $signal = $this->recordReceivedSignal($parentRun, 'advance', 'signal-wait-child-race');
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun($parentRun->fresh() ?? $parentRun);
+
+        foreach ($links->values() as $index => $link) {
+            /** @var WorkflowTask $childTask */
+            $childTask = WorkflowTask::query()
+                ->where('workflow_run_id', $link->child_workflow_run_id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->sole();
+
+            $this->assertTrue($this->bridge->claimStatus($childTask->id, "child-worker-{$index}")['claimed']);
+
+            $completed = $this->bridge->complete($childTask->id, $index === 0
+                ? [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                ]]
+                : [[
+                    'type' => 'fail_workflow',
+                    'message' => 'second child failed',
+                    'exception_class' => RuntimeException::class,
+                ]]);
+
+            $this->assertTrue($completed['completed']);
+        }
+
+        $resolutions = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+            ])
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $resolutions);
+        $this->assertSame([
+            HistoryEventType::ChildRunCompleted->value,
+            HistoryEventType::ChildRunFailed->value,
+        ], $resolutions->pluck('event_type')
+            ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
+            ->all());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+        $this->assertSame('signal', $signalTask->payload['workflow_wait_kind'] ?? null);
+
+        $budgetRun = WorkflowRun::query()->findOrFail($parentRun->id);
+        $expectedBudget = HistoryBudget::forRun($budgetRun);
+        $budgetRun->unsetRelation('historyEvents');
+
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $claimed = $this->bridge->claimStatus($signalTask->id, 'signal-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $waits = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->orderBy('sequence')
+            ->get();
+        $timeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->orderBy('sequence')
+            ->get();
+        $lineage = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->orderBy('sequence')
+            ->get();
+        $historyQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'))
+            ->values();
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertSame($signalTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertSame('workflow_task_leased', $summary->liveness_state);
+        $this->assertSame(sprintf('Signal task %s is leased to a worker.', $signalTask->id), $summary->liveness_reason);
+        $this->assertTrue($summary->task_problem);
+        $this->assertSame(1, $summary->exception_count);
+        $this->assertSame($expectedBudget['history_event_count'], $summary->history_event_count);
+        $this->assertSame($expectedBudget['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($expectedBudget['history_fan_out'], $summary->history_fan_out);
+
+        $this->assertCount(2, $waits);
+        $this->assertSame(['resolved', 'resolved'], $waits->pluck('status')->all());
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $waits->pluck('source_status')->all());
+        foreach ($waits as $wait) {
+            $this->assertTrue($wait->task_backed);
+            $this->assertSame($signalTask->id, $wait->task_id);
+            $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
+        }
+
+        $this->assertCount(2, $timeline);
+        $this->assertSame([
+            HistoryEventType::ChildRunCompleted->value,
+            HistoryEventType::ChildRunFailed->value,
+        ], $timeline->pluck('type')->all());
+
+        $this->assertCount(2, $lineage);
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $lineage->pluck('status')->all());
+        $this->assertSame(['completed', 'failed'], $lineage->pluck('closed_reason')->all());
+
+        $this->assertSame(0, $retrievedHistoryEvents);
+        $this->assertNotEmpty($retrievedRuns);
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('childLinks'));
+            $this->assertFalse($retrievedRun->relationLoaded('lineageEntries'));
+        }
+        $this->assertCount(0, $historyQueries);
+    }
+
+    public function testChildResolutionClaimBoundedlyPreservesReplayBlockedLiveness(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test-greeting-workflow',
+            'arguments' => Serializer::serialize(['child-arg']),
+        ]]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+        $blockedReason = 'Workflow replay remains blocked by an unresolved failure.';
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+            'available_at' => now()->subMinute(),
+            'payload' => [
+                'replay_blocked' => true,
+                'replay_blocked_reason' => 'failure_resolution',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_error' => $blockedReason,
+        ]);
+
+        $blockedSummary = (new DefaultHistoryProjectionRole())->projectRun(
+            WorkflowRun::query()->findOrFail($parentRun->id),
+        );
+
+        $this->assertSame('workflow_replay_blocked', $blockedSummary->liveness_state);
+        $this->assertSame($blockedReason, $blockedSummary->liveness_reason);
+        $this->assertNull($blockedSummary->repair_blocked_reason);
+        $this->assertFalse($blockedSummary->repair_attention);
+
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+        $completed = $this->bridge->complete($childTask->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize(['child_result' => 'ok']),
+        ]]);
+
+        $this->assertTrue($completed['completed']);
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $resolutionSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+
+        $this->assertSame($resumeTask->id, $resolutionSummary->next_task_id);
+        $this->assertSame(TaskStatus::Ready->value, $resolutionSummary->next_task_status);
+        $this->assertSame('workflow_replay_blocked', $resolutionSummary->liveness_state);
+        $this->assertSame($blockedReason, $resolutionSummary->liveness_reason);
+        $this->assertNull($resolutionSummary->repair_blocked_reason);
+        $this->assertFalse($resolutionSummary->repair_attention);
+        $this->assertTrue($resolutionSummary->task_problem);
+
+        $retrievedHistoryEvents = 0;
+        $retrievedTasks = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowTask::class,
+            static function () use (&$retrievedTasks): void {
+                $retrievedTasks++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $claimed = $this->bridge->claimStatus($resumeTask->id, 'parent-worker');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $claimedSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $historyQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'))
+            ->values();
+        $taskSelects = collect($queries)
+            ->filter(static function (array $query): bool {
+                $sql = strtolower($query['query']);
+
+                return str_starts_with(ltrim($sql), 'select')
+                    && str_contains($sql, 'workflow_tasks');
+            })
+            ->values();
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertSame($resumeTask->id, $claimedSummary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $claimedSummary->next_task_status);
+        $this->assertSame('workflow_replay_blocked', $claimedSummary->liveness_state);
+        $this->assertSame($blockedReason, $claimedSummary->liveness_reason);
+        $this->assertNull($claimedSummary->repair_blocked_reason);
+        $this->assertFalse($claimedSummary->repair_attention);
+        $this->assertTrue($claimedSummary->task_problem);
+
+        $this->assertSame(1, $retrievedHistoryEvents);
+        $this->assertSame(2, $retrievedTasks);
+        $this->assertNotEmpty($retrievedRuns);
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('childLinks'));
+            $this->assertFalse($retrievedRun->relationLoaded('failures'));
+        }
+
+        $this->assertCount(1, $historyQueries);
+        $this->assertStringContainsString('limit 1', strtolower($historyQueries->first()['query']));
+        $this->assertCount(2, $taskSelects);
+        $this->assertTrue($taskSelects->every(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 1'),
+        ));
     }
 
     public function testClaimStatusRejectsNonExistentTask(): void
@@ -3845,7 +4844,25 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(
             1,
             substr_count($workflowBridgeSource, 'historyProjectionRole()->projectRun('),
-            'Only the projectRun() helper may dispatch into HistoryProjectionRole::projectRun().',
+            'Standard projections must dispatch through the projectRun() helper.',
+        );
+
+        $this->assertSame(
+            2,
+            substr_count($workflowBridgeSource, '$role->projectRun($run)'),
+            'Bounded claims and child outcomes must dispatch through scoped custom-role entry points.',
+        );
+
+        $this->assertStringContainsString(
+            'WorkflowTaskClaimProjectionContext::run(',
+            $workflowBridgeSource,
+            'Successful claim projection must scope the bounded hint around the configured role call.',
+        );
+
+        $this->assertStringContainsString(
+            'ChildResolutionProjectionContext::run(',
+            $workflowBridgeSource,
+            'Recorded child outcomes must scope bounded projection around the configured role call.',
         );
 
         $this->assertDoesNotMatchRegularExpression(
@@ -5718,6 +6735,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'open_wait_id' => sprintf('child:%s', $link->id),
             'resume_source_kind' => 'child_workflow_run',
             'resume_source_id' => $link->child_workflow_run_id,
+            'workflow_history_event_id' => $childCompleted->id,
             'child_call_id' => $link->id,
             'child_workflow_run_id' => $link->child_workflow_run_id,
             'workflow_sequence' => 1,
@@ -5837,6 +6855,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'open_wait_id' => sprintf('child:%s', $link->id),
             'resume_source_kind' => 'child_workflow_run',
             'resume_source_id' => $link->child_workflow_run_id,
+            'workflow_history_event_id' => $childCompleted->id,
             'child_call_id' => $link->id,
             'workflow_sequence' => 1,
             'workflow_event_type' => HistoryEventType::ChildRunCompleted->value,
@@ -6800,6 +7819,87 @@ SQL);
         ])->save();
 
         return $run;
+    }
+
+    /**
+     * @return array{
+     *     history_event_count: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     pressure: string,
+     *     pressure_dimensions: list<string>
+     * }
+     */
+    private function recordClaimHistory(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $eventCount,
+    ): array {
+        for ($sequence = 1; $sequence <= $eventCount; $sequence++) {
+            if ($sequence === 1) {
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+                    'sequence' => $sequence,
+                    'activity_type' => 'bounded-claim-activity',
+                    'parallel_group_id' => 'bounded-claim-group',
+                    'parallel_group_kind' => 'all',
+                    'parallel_group_base_sequence' => 1,
+                    'parallel_group_size' => 17,
+                    'parallel_group_index' => 0,
+                ], $task);
+
+                continue;
+            }
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+                'sequence' => $sequence,
+                'result' => "bounded-claim-value-{$sequence}",
+            ], $task);
+        }
+
+        $budget = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+
+        return $budget;
+    }
+
+    private function createClaimProjectionCardinality(WorkflowRun $run, int $cardinality): void
+    {
+        for ($index = 1; $index <= $cardinality; $index++) {
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Completed->value,
+                'available_at' => now()->subMinute(),
+                'payload' => [],
+                'connection' => 'redis',
+                'queue' => 'default',
+                'compatibility' => 'build-a',
+            ]);
+
+            ActivityExecution::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $index,
+                'activity_class' => 'BoundedClaimActivity',
+                'activity_type' => 'bounded-claim-activity',
+                'status' => ActivityStatus::Completed->value,
+                'started_at' => now()->subMinutes(2),
+                'closed_at' => now()->subMinute(),
+            ]);
+
+            WorkflowFailure::query()->create([
+                'workflow_run_id' => $run->id,
+                'source_kind' => 'activity_execution',
+                'source_id' => sprintf('claim-activity-%d', $index),
+                'propagation_kind' => 'activity',
+                'failure_category' => FailureCategory::Activity->value,
+                'handled' => true,
+                'exception_class' => RuntimeException::class,
+                'message' => sprintf('Handled claim projection failure %d', $index),
+                'file' => __FILE__,
+                'line' => __LINE__,
+            ]);
+        }
     }
 
     private function createHistoryBudgetSummary(

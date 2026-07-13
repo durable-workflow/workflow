@@ -62,6 +62,7 @@ final class WorkflowTaskPayload
             'open_wait_id' => $openWaitId,
             'resume_source_kind' => 'child_workflow_run',
             'resume_source_id' => $childRunId,
+            'workflow_history_event_id' => $event->id,
             'child_call_id' => $childCallId,
             'child_workflow_run_id' => $childRunId,
             'workflow_sequence' => $sequence,

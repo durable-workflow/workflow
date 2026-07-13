@@ -117,6 +117,19 @@ final class FailureSnapshots
         return $snapshots;
     }
 
+    /**
+     * Build the authoritative failure snapshot carried by one typed history
+     * event without reading any other event or mutable failure row.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function forSelfDescribingEvent(WorkflowHistoryEvent $event): ?array
+    {
+        return self::supportsEvent($event)
+            ? self::snapshotFromEvent($event, null)
+            : null;
+    }
+
     private static function supportsEvent(WorkflowHistoryEvent $event): bool
     {
         return in_array($event->event_type, [

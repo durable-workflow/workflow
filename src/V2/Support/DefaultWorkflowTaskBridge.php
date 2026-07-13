@@ -335,7 +335,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            self::projectWorkflowTaskClaim($run, $task);
 
             return [
                 'claimed' => true,
@@ -3554,6 +3554,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
             $sequence = is_int($parentLink->sequence) ? $parentLink->sequence : null;
             $parentTaskPayload = [];
+            $resolutionEvent = null;
 
             if ($sequence !== null) {
                 $parentRun->loadMissing([
@@ -3595,20 +3596,29 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->first();
 
             if ($existingTask !== null) {
-                continue;
+                $parentTask = $existingTask;
+            } else {
+                /** @var WorkflowTask $parentTask */
+                $parentTask = WorkflowTask::query()->create([
+                    'workflow_run_id' => $parentRun->id,
+                    'namespace' => $parentRun->namespace,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => now(),
+                    'payload' => $parentTaskPayload,
+                    'connection' => $parentRun->connection,
+                    'queue' => $parentRun->queue,
+                    'compatibility' => $parentRun->compatibility,
+                ]);
             }
 
-            WorkflowTask::query()->create([
-                'workflow_run_id' => $parentRun->id,
-                'namespace' => $parentRun->namespace,
-                'task_type' => TaskType::Workflow->value,
-                'status' => TaskStatus::Ready->value,
-                'available_at' => now(),
-                'payload' => $parentTaskPayload,
-                'connection' => $parentRun->connection,
-                'queue' => $parentRun->queue,
-                'compatibility' => $parentRun->compatibility,
-            ]);
+            if ($resolutionEvent instanceof WorkflowHistoryEvent) {
+                $parentRun->unsetRelation('historyEvents');
+                $parentRun->unsetRelation('childLinks');
+                $parentRun->unsetRelation('tasks');
+                $parentRun->unsetRelation('failures');
+                self::projectChildResolutionBestEffort($parentRun, $parentTask, $resolutionEvent);
+            }
         }
     }
 
@@ -4814,10 +4824,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     /**
      * Hydrate the relations the projection needs and dispatch into the
      * {@see HistoryProjectionRole} contract. Every projection emitted by the
-     * workflow bridge flows through this helper so the role contract is the
-     * single entry point — no call site reaches into `RunSummaryProjector`
-     * directly, and the relation-hydration shape lives in one of the
-     * `PROJECTION_RUN_RELATIONS*` constants rather than at each call site.
+     * standard workflow bridge projections through the role contract. Scoped
+     * bounded claim and child-resolution projections use their adjacent
+     * helpers, and no call site reaches into `RunSummaryProjector` directly.
+     * Relation-hydration shapes live in the `PROJECTION_RUN_RELATIONS*`
+     * constants rather than at each call site.
      *
      * @param list<string> $with
      */
@@ -4828,6 +4839,55 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         self::historyProjectionRole()->projectRun($run);
+    }
+
+    /**
+     * Dispatch successful claims through the configured projection role while
+     * scoping the bounded-claim hint consumed by the default projector. The
+     * role still receives projectRun(), including when an application binds a
+     * custom implementation that delegates to the default role.
+     */
+    private static function projectWorkflowTaskClaim(
+        WorkflowRun $run,
+        WorkflowTask $task,
+    ): void {
+        $role = self::historyProjectionRole();
+
+        WorkflowTaskClaimProjectionContext::run(
+            $run,
+            $task,
+            static fn () => $role->projectRun($run),
+        );
+    }
+
+    /**
+     * Project each newly recorded child resolution through the configured role
+     * before another resolution can be coalesced onto the same open task.
+     */
+    private static function projectChildResolutionBestEffort(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowHistoryEvent $event,
+    ): void {
+        try {
+            $role = self::historyProjectionRole();
+
+            ChildResolutionProjectionContext::run(
+                $run,
+                $task,
+                $event,
+                static fn () => $role->projectRun($run),
+            );
+        } catch (Throwable $exception) {
+            Log::warning('Workflow child-resolution projection failed after durable history was recorded.', [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_history_event_id' => $event->id,
+                'workflow_task_id' => $task->id,
+                'exception_class' => get_class($exception),
+                'exception_message' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**

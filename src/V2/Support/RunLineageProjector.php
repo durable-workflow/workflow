@@ -10,6 +10,9 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 
@@ -46,6 +49,119 @@ final class RunLineageProjector
         $run->unsetRelation('lineageEntries');
 
         return array_values(array_filter($projected));
+    }
+
+    /**
+     * Incrementally apply one terminal child outcome to its projected lineage
+     * row. The resolution event snapshots every mutable outcome field, while
+     * the existing row retains scheduling metadata such as position, link
+     * time, and parent-close policy. This keeps claim-time catch-up bounded to
+     * one lineage row without rebuilding the run's growing child relations.
+     */
+    public static function projectChildResolutionEvent(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+    ): WorkflowRunLineageEntry {
+        if (
+            $event->workflow_run_id !== $run->id
+            || ! in_array($event->event_type, ChildRunHistory::resolutionEventTypes(), true)
+        ) {
+            throw new \LogicException('Lineage event must be a child resolution on the projected workflow run.');
+        }
+
+        $eventPayload = is_array($event->payload) ? $event->payload : [];
+        $sequence = self::intValue($eventPayload['sequence'] ?? null);
+        $childCallId = self::stringValue($eventPayload['child_call_id'] ?? null)
+            ?? self::stringValue($eventPayload['workflow_link_id'] ?? null);
+        $childRunId = self::stringValue($eventPayload['child_workflow_run_id'] ?? null);
+        $lineageModel = self::lineageModel();
+        $existingQuery = $lineageModel::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('direction', 'child');
+
+        if ($childCallId !== null) {
+            $existingQuery->where(static function ($identity) use ($childCallId): void {
+                $identity->where('lineage_id', $childCallId)
+                    ->orWhere('child_call_id', $childCallId);
+            });
+        } elseif ($sequence !== null) {
+            $existingQuery->where('sequence', $sequence);
+        } elseif ($childRunId !== null) {
+            $existingQuery->where('related_workflow_run_id', $childRunId);
+        } else {
+            throw new \LogicException('Child-resolution lineage projection requires a bounded child locator.');
+        }
+
+        /** @var WorkflowRunLineageEntry|null $existing */
+        $existing = $existingQuery->limit(1)->first();
+        $existingPayload = $existing?->toLineagePayload() ?? [];
+        $lineageId = $childCallId
+            ?? self::stringValue($existingPayload['id'] ?? null)
+            ?? sprintf('child_workflow:%s:%s', $sequence ?? 'unknown', $childRunId ?? 'unknown');
+        $status = self::stringValue($eventPayload['child_status'] ?? null)
+            ?? match ($event->event_type) {
+                HistoryEventType::ChildRunCompleted => RunStatus::Completed->value,
+                HistoryEventType::ChildRunFailed => RunStatus::Failed->value,
+                HistoryEventType::ChildRunCancelled => RunStatus::Cancelled->value,
+                HistoryEventType::ChildRunTerminated => RunStatus::Terminated->value,
+                default => throw new \LogicException('Unsupported child-resolution lineage event.'),
+            };
+        $statusBucket = RunStatus::tryFrom($status)?->statusBucket()->value
+            ?? self::stringValue($existingPayload['status_bucket'] ?? null);
+        $closedReason = self::stringValue($eventPayload['closed_reason'] ?? null) ?? $status;
+        $childInstanceId = self::stringValue($eventPayload['child_workflow_instance_id'] ?? null)
+            ?? self::stringValue($existingPayload['workflow_instance_id'] ?? null);
+        $childRunId ??= self::stringValue($existingPayload['workflow_run_id'] ?? null);
+        $entry = array_merge($existingPayload, array_filter([
+            'id' => $lineageId,
+            'link_type' => 'child_workflow',
+            'child_call_id' => $childCallId
+                ?? self::stringValue($existingPayload['child_call_id'] ?? null),
+            'sequence' => $sequence ?? self::intValue($existingPayload['sequence'] ?? null),
+            'is_primary_parent' => $existing === null
+                ? true
+                : (bool) $existing->is_primary_parent,
+            'child_workflow_id' => $childInstanceId,
+            'child_workflow_run_id' => $childRunId,
+            'workflow_instance_id' => $childInstanceId,
+            'workflow_run_id' => $childRunId,
+            'run_number' => self::intValue($eventPayload['child_run_number'] ?? null)
+                ?? self::intValue($existingPayload['run_number'] ?? null),
+            'workflow_type' => self::stringValue($eventPayload['child_workflow_type'] ?? null)
+                ?? self::stringValue($existingPayload['workflow_type'] ?? null),
+            'class' => self::stringValue($eventPayload['child_workflow_class'] ?? null)
+                ?? self::stringValue($existingPayload['class'] ?? null),
+            'status' => $status,
+            'status_bucket' => $statusBucket,
+            'closed_reason' => $closedReason,
+            'created_at' => $existingPayload['created_at']
+                ?? $event->recorded_at
+                ?? $event->created_at,
+            'history_authority' => ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            'diagnostic_only' => false,
+        ], static fn (mixed $value): bool => $value !== null));
+        $position = $existing?->position
+            ?? $lineageModel::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('direction', 'child')
+                ->count();
+        $seen = [];
+        $projected = self::projectEntry(
+            $lineageModel,
+            $run,
+            $entry,
+            'child',
+            (int) $position,
+            $seen,
+        );
+
+        if (! $projected instanceof WorkflowRunLineageEntry) {
+            throw new \LogicException('Child-resolution lineage projection requires a lineage identity.');
+        }
+
+        $run->unsetRelation('lineageEntries');
+
+        return $projected;
     }
 
     private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole

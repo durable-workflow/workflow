@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\App;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
@@ -34,36 +35,7 @@ final class RunTimelineProjector
 
             $projectionId = self::projectionId($run->id, $historyEventId);
             $seen[] = $projectionId;
-
-            /** @var WorkflowTimelineEntry $row */
-            $row = IdempotentProjectionUpsert::upsert(
-                $entryModel,
-                [
-                    'id' => $projectionId,
-                ],
-                [
-                    'workflow_run_id' => $run->id,
-                    'workflow_instance_id' => $run->workflow_instance_id,
-                    'history_event_id' => $historyEventId,
-                    'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
-                    'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
-                    'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
-                    'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
-                    'source_kind' => self::stringValue($entry['source_kind'] ?? null),
-                    'source_id' => self::stringValue($entry['source_id'] ?? null),
-                    'summary' => self::stringValue($entry['summary'] ?? null),
-                    'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
-                    'command_id' => self::stringValue($entry['command_id'] ?? null),
-                    'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
-                    'task_id' => self::stringValue($entry['task_id'] ?? null),
-                    'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
-                    'timer_id' => self::stringValue($entry['timer_id'] ?? null),
-                    'failure_id' => self::stringValue($entry['failure_id'] ?? null),
-                    'payload' => self::normalizedPayload($entry),
-                ],
-            );
-
-            $projected[] = $row;
+            $projected[] = self::upsertEntry($run, $entryModel, $projectionId, $historyEventId, $entry);
         }
 
         self::historyProjectionMaintenanceRole()
@@ -72,6 +44,74 @@ final class RunTimelineProjector
         $run->unsetRelation('timelineEntries');
 
         return $projected;
+    }
+
+    /**
+     * Incrementally project a single history event whose payload contains its
+     * timeline metadata. Unlike project(), this does not prune or inspect any
+     * other event in the run.
+     */
+    public static function projectChildResolutionEvent(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+    ): WorkflowTimelineEntry {
+        if ($event->workflow_run_id !== $run->id) {
+            throw new \LogicException('Timeline event must belong to the projected workflow run.');
+        }
+
+        $historyEventId = (string) $event->id;
+        $entry = HistoryTimeline::fromChildResolutionEvent($event);
+        $row = self::upsertEntry(
+            $run,
+            self::entryModel(),
+            self::projectionId($run->id, $historyEventId),
+            $historyEventId,
+            $entry,
+        );
+
+        $run->unsetRelation('timelineEntries');
+
+        return $row;
+    }
+
+    /**
+     * @param class-string<WorkflowTimelineEntry> $entryModel
+     * @param array<string, mixed> $entry
+     */
+    private static function upsertEntry(
+        WorkflowRun $run,
+        string $entryModel,
+        string $projectionId,
+        string $historyEventId,
+        array $entry,
+    ): WorkflowTimelineEntry {
+        /** @var WorkflowTimelineEntry $row */
+        $row = IdempotentProjectionUpsert::upsert(
+            $entryModel,
+            ['id' => $projectionId],
+            [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'history_event_id' => $historyEventId,
+                'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
+                'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
+                'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
+                'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
+                'source_kind' => self::stringValue($entry['source_kind'] ?? null),
+                'source_id' => self::stringValue($entry['source_id'] ?? null),
+                'summary' => self::stringValue($entry['summary'] ?? null),
+                'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
+                'command_id' => self::stringValue($entry['command_id'] ?? null),
+                'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
+                'task_id' => self::stringValue($entry['task_id'] ?? null),
+                'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
+                'timer_id' => self::stringValue($entry['timer_id'] ?? null),
+                'failure_id' => self::stringValue($entry['failure_id'] ?? null),
+                'payload' => self::normalizedPayload($entry),
+            ],
+        );
+
+        return $row;
     }
 
     private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole

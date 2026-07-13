@@ -7,9 +7,13 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -28,6 +32,22 @@ final class RunSummaryProjector
 
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
+        $claimedTask = WorkflowTaskClaimProjectionContext::taskFor($run);
+
+        if ($claimedTask instanceof WorkflowTask) {
+            return self::projectWorkflowTaskClaim($run, $claimedTask);
+        }
+
+        $childResolution = ChildResolutionProjectionContext::projectionFor($run);
+
+        if ($childResolution !== null) {
+            return self::projectOpenWorkflowTask(
+                $run,
+                $childResolution['task'],
+                [$childResolution['event']],
+            );
+        }
+
         $fastSummary = self::projectFreshWorkflowTaskRun($run);
 
         if ($fastSummary instanceof WorkflowRunSummary) {
@@ -381,6 +401,490 @@ final class RunSummaryProjector
         RunLineageProjector::project($run);
 
         return $summary;
+    }
+
+    /**
+     * Project the state transition made by a successful workflow-task claim
+     * without rebuilding history-derived views. A child-resume payload from an
+     * older release can also identify one resolution that still needs bounded
+     * catch-up. The canonical history budget is resolved through counters or
+     * its single aggregate fallback in both cases.
+     */
+    private static function projectWorkflowTaskClaim(
+        WorkflowRun $run,
+        WorkflowTask $task,
+    ): WorkflowRunSummary {
+        $childResolutionEvent = self::claimChildResolutionEvent($run, $task);
+
+        return self::projectOpenWorkflowTask(
+            $run,
+            $task,
+            $childResolutionEvent instanceof WorkflowHistoryEvent ? [$childResolutionEvent] : [],
+        );
+    }
+
+    /**
+     * Apply one open workflow task and the bounded child resolutions assigned
+     * to it. Resolution effects are idempotent and are normally projected as
+     * each event is recorded; the task-payload lookup preserves upgrade
+     * compatibility for work queued by older releases.
+     *
+     * @param list<WorkflowHistoryEvent> $childResolutionEvents
+     */
+    private static function projectOpenWorkflowTask(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $childResolutionEvents,
+    ): WorkflowRunSummary {
+        if (
+            $run->status->isTerminal()
+            || $task->workflow_run_id !== $run->id
+            || $task->task_type !== TaskType::Workflow
+            || ! in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+        ) {
+            throw new \LogicException('Bounded workflow-task projection requires an open task on an open run.');
+        }
+
+        $historyBudget = HistoryBudget::forRunBounded($run);
+        $summaryModel = self::summaryModel();
+
+        /** @var WorkflowRunSummary|null $existingSummary */
+        $existingSummary = $summaryModel::query()->find($run->id);
+        $replayBlockedTask = self::claimReplayBlockedTask($run);
+        $hasChildResolution = $childResolutionEvents !== [];
+        $hasPendingChildResolution = $hasChildResolution
+            || RunWaitProjector::hasPendingChildResolutionForTask($run, $task);
+        [$taskLivenessState, $taskLivenessReason] = self::taskLiveness(
+            $task,
+            $run,
+            self::claimTaskLabel($existingSummary, $task),
+        );
+        $projectTaskLiveness = $replayBlockedTask instanceof WorkflowTask
+            || $hasChildResolution
+            || self::claimOwnsProjectedLiveness($existingSummary)
+            || $existingSummary?->liveness_state === 'timer_scheduled';
+        $livenessState = $projectTaskLiveness
+            ? $taskLivenessState
+            : $existingSummary?->liveness_state;
+        $livenessReason = $projectTaskLiveness
+            ? $taskLivenessReason
+            : $existingSummary?->liveness_reason;
+
+        if ($replayBlockedTask instanceof WorkflowTask) {
+            [$livenessState, $livenessReason] = self::replayBlockedLiveness($replayBlockedTask);
+        } elseif ($existingSummary?->liveness_state === 'timer_scheduled') {
+            $livenessState = 'timer_task_leased';
+            $livenessReason = sprintf('Timer task %s is leased to a worker.', $task->id);
+        }
+
+        $isCurrentRun = $existingSummary instanceof WorkflowRunSummary
+            ? (bool) $existingSummary->is_current_run
+            : self::claimIsCurrentRun($run);
+        $repairBlockedReason = $projectTaskLiveness || ! $existingSummary instanceof WorkflowRunSummary
+            ? RepairBlockedReason::forRun(
+                $run,
+                $isCurrentRun,
+                is_string($livenessState) ? $livenessState : null,
+                $replayBlockedTask instanceof WorkflowTask,
+            )
+            : $existingSummary->repair_blocked_reason;
+        $values = [
+            'is_current_run' => $isCurrentRun,
+            'liveness_state' => $livenessState,
+            'liveness_reason' => $livenessReason,
+            'next_task_at' => $task->available_at,
+            'next_task_id' => $task->id,
+            'next_task_type' => $task->task_type->value,
+            'next_task_status' => $task->status->value,
+            'next_task_lease_expires_at' => $task->lease_expires_at,
+            'repair_blocked_reason' => $repairBlockedReason,
+            'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
+            'task_problem' => $replayBlockedTask instanceof WorkflowTask
+                || $hasPendingChildResolution
+                || self::claimHasWorkflowTaskProblem($run)
+                || ($existingSummary?->task_problem === true && $existingSummary->wait_kind === 'child'),
+            'exception_count' => self::claimExceptionCount(
+                $run,
+                $existingSummary,
+                $childResolutionEvents,
+            ),
+            'history_event_count' => $historyBudget['history_event_count'],
+            'history_size_bytes' => $historyBudget['history_size_bytes'],
+            'history_fan_out' => $historyBudget['history_fan_out'],
+            'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
+            'history_budget_pressure' => $historyBudget['pressure'],
+            'updated_at' => $run->last_progress_at ?? $run->updated_at,
+        ];
+
+        if (! $existingSummary instanceof WorkflowRunSummary) {
+            $values = array_merge(self::claimSummaryIdentity($run), $values);
+        }
+
+        if (
+            self::claimProjectsWorkflowTaskWait($task)
+            || ! $existingSummary instanceof WorkflowRunSummary
+            || $existingSummary->wait_kind === null
+            || $existingSummary->wait_kind === 'workflow-task'
+        ) {
+            $values = array_merge($values, [
+                'wait_kind' => 'workflow-task',
+                'wait_reason' => $task->status === TaskStatus::Leased
+                    ? 'Workflow task leased to worker'
+                    : 'Workflow task ready',
+                'wait_started_at' => $task->leased_at ?? $task->available_at,
+                'wait_deadline_at' => $task->lease_expires_at,
+                'open_wait_id' => sprintf('workflow-task:%s', $task->id),
+                'resume_source_kind' => 'workflow_task',
+                'resume_source_id' => $task->id,
+            ]);
+        }
+
+        /** @var WorkflowRunSummary $summary */
+        $summary = IdempotentProjectionUpsert::upsert(
+            $summaryModel,
+            ['id' => $run->id],
+            $values,
+        );
+
+        foreach ($childResolutionEvents as $childResolutionEvent) {
+            RunWaitProjector::projectChildResolutionEvent($run, $task, $childResolutionEvent);
+            RunTimelineProjector::projectChildResolutionEvent($run, $childResolutionEvent);
+            RunLineageProjector::projectChildResolutionEvent($run, $childResolutionEvent);
+        }
+
+        RunWaitProjector::projectWorkflowTaskClaim(
+            $run,
+            $task,
+            self::claimWaitId($existingSummary, $task),
+        );
+
+        return $summary;
+    }
+
+    private static function claimChildResolutionEvent(
+        WorkflowRun $run,
+        WorkflowTask $task,
+    ): ?WorkflowHistoryEvent {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+
+        if (($taskPayload['workflow_wait_kind'] ?? null) !== 'child') {
+            return null;
+        }
+
+        $eventTypeValue = self::nonEmptyString($taskPayload['workflow_event_type'] ?? null);
+        $eventType = $eventTypeValue === null ? null : HistoryEventType::tryFrom($eventTypeValue);
+
+        if ($eventType === null || ! in_array($eventType, ChildRunHistory::resolutionEventTypes(), true)) {
+            return null;
+        }
+
+        $eventId = self::nonEmptyString($taskPayload['workflow_history_event_id'] ?? null);
+        $workflowSequence = self::intValue($taskPayload['workflow_sequence'] ?? null);
+        $childCallId = self::nonEmptyString($taskPayload['child_call_id'] ?? null);
+        $childRunId = self::nonEmptyString($taskPayload['child_workflow_run_id'] ?? null)
+            ?? self::nonEmptyString($taskPayload['resume_source_id'] ?? null);
+        $query = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', $eventType->value);
+
+        if ($eventId !== null) {
+            $query->whereKey($eventId);
+        } else {
+            if ($workflowSequence === null) {
+                return null;
+            }
+
+            $query->where('payload->sequence', $workflowSequence);
+
+            if ($childCallId !== null) {
+                $query->where('payload->child_call_id', $childCallId);
+            }
+
+            if ($childRunId !== null) {
+                $query->where('payload->child_workflow_run_id', $childRunId);
+            }
+        }
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $query
+            ->orderByDesc('sequence')
+            ->first();
+
+        if (! $event instanceof WorkflowHistoryEvent) {
+            return null;
+        }
+
+        $eventPayload = is_array($event->payload) ? $event->payload : [];
+
+        if (
+            ($workflowSequence !== null && self::intValue($eventPayload['sequence'] ?? null) !== $workflowSequence)
+            || ($childCallId !== null && self::nonEmptyString($eventPayload['child_call_id'] ?? null) !== $childCallId)
+            || ($childRunId !== null && self::nonEmptyString(
+                $eventPayload['child_workflow_run_id'] ?? null
+            ) !== $childRunId)
+        ) {
+            return null;
+        }
+
+        return $event;
+    }
+
+    /**
+     * @param list<WorkflowHistoryEvent> $childResolutionEvents
+     */
+    private static function claimExceptionCount(
+        WorkflowRun $run,
+        ?WorkflowRunSummary $summary,
+        array $childResolutionEvents,
+    ): int {
+        $count = (int) ($summary?->exception_count
+            ?? ConfiguredV2Models::query('failure_model', WorkflowFailure::class)
+                ->where('workflow_run_id', $run->id)
+                ->count());
+
+        $summaryHistoryCount = max(0, (int) ($summary?->history_event_count ?? 0));
+
+        foreach ($childResolutionEvents as $childResolutionEvent) {
+            $eventPayload = is_array($childResolutionEvent->payload) ? $childResolutionEvent->payload : [];
+            $failureId = self::nonEmptyString($eventPayload['failure_id'] ?? null);
+
+            if ($failureId !== null && $summaryHistoryCount < (int) $childResolutionEvent->sequence) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function claimSummaryIdentity(WorkflowRun $run): array
+    {
+        /** @var WorkflowInstance|null $instance */
+        $instance = $run->instance()->first();
+        $commandContract = self::freshRunCommandContract($run);
+        $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
+
+        return [
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'run_number' => $run->run_number,
+            'engine_source' => self::engineSource($run),
+            'projection_schema_version' => self::SCHEMA_VERSION,
+            'class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'namespace' => $run->namespace ?? $instance?->namespace,
+            'business_key' => $run->business_key ?? $instance?->business_key,
+            'visibility_labels' => $run->visibility_labels ?? $instance?->visibility_labels,
+            'compatibility' => $run->compatibility,
+            'declared_entry_mode' => $commandContract['entry_mode'],
+            'declared_contract_source' => $commandContract['source'],
+            'status' => $run->status->value,
+            'status_bucket' => $run->status->statusBucket()->value,
+            'closed_reason' => $run->closed_reason,
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'started_at' => $run->started_at,
+            'sort_timestamp' => $sortTimestamp,
+            'sort_key' => RunSummarySortKey::key(
+                $run->started_at,
+                $run->created_at,
+                $run->updated_at,
+                $run->id,
+            ),
+            'closed_at' => $run->closed_at,
+            'archived_at' => $run->archived_at,
+            'archive_command_id' => $run->archive_command_id,
+            'archive_reason' => $run->archive_reason,
+            'duration_ms' => null,
+            'created_at' => $run->created_at,
+        ];
+    }
+
+    private static function claimIsCurrentRun(WorkflowRun $run): bool
+    {
+        return ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
+            ->whereKey($run->workflow_instance_id)
+            ->where('current_run_id', $run->id)
+            ->exists();
+    }
+
+    private static function claimReplayBlockedTask(WorkflowRun $run): ?WorkflowTask
+    {
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->whereJsonContains('payload->replay_blocked', true)
+            ->orderByDesc('updated_at')
+            ->orderByDesc('created_at')
+            ->limit(1)
+            ->first();
+
+        return $task;
+    }
+
+    private static function claimHasWorkflowTaskProblem(WorkflowRun $run): bool
+    {
+        $now = now();
+        $redispatchCutoff = $now->copy()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
+
+        return ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where(static function ($problem) use ($now, $redispatchCutoff): void {
+                $problem->where('repair_count', '>', 0)
+                    ->orWhereJsonContains('payload->replay_blocked', true)
+                    ->orWhere(static function ($leased) use ($now): void {
+                        $leased->where('status', TaskStatus::Leased->value)
+                            ->whereNotNull('lease_expires_at')
+                            ->where('lease_expires_at', '<=', $now);
+                    })
+                    ->orWhere(static function ($ready) use ($now, $redispatchCutoff): void {
+                        $ready->where('status', TaskStatus::Ready->value)
+                            ->where(static function ($readyProblem) use ($now, $redispatchCutoff): void {
+                                $readyProblem
+                                    ->where(static function ($claimFailed): void {
+                                        $claimFailed->whereNotNull('last_claim_failed_at')
+                                            ->whereNotNull('last_claim_error')
+                                            ->where('last_claim_error', '!=', '');
+                                    })
+                                    ->orWhere(static function ($dispatchFailed): void {
+                                        $dispatchFailed->whereNotNull('last_dispatch_attempt_at')
+                                            ->whereNotNull('last_dispatch_error')
+                                            ->where('last_dispatch_error', '!=', '')
+                                            ->where(static function ($latestDispatch): void {
+                                                $latestDispatch->whereNull('last_dispatched_at')
+                                                    ->orWhereColumn(
+                                                        'last_dispatch_attempt_at',
+                                                        '>',
+                                                        'last_dispatched_at',
+                                                    );
+                                            });
+                                    })
+                                    ->orWhere(static function ($dispatchOverdue) use (
+                                        $now,
+                                        $redispatchCutoff,
+                                    ): void {
+                                        $dispatchOverdue
+                                            ->where(static function ($available) use ($now): void {
+                                                $available->whereNull('available_at')
+                                                    ->orWhere('available_at', '<=', $now);
+                                            })
+                                            ->where(static function ($dispatchHealthy): void {
+                                                $dispatchHealthy->whereNull('last_dispatch_attempt_at')
+                                                    ->orWhereNull('last_dispatch_error')
+                                                    ->orWhere('last_dispatch_error', '')
+                                                    ->orWhere(static function ($successfulDispatch): void {
+                                                        $successfulDispatch->whereNotNull('last_dispatched_at')
+                                                            ->whereColumn(
+                                                                'last_dispatch_attempt_at',
+                                                                '<=',
+                                                                'last_dispatched_at',
+                                                            );
+                                                    });
+                                            })
+                                            ->where(static function ($claimHealthy): void {
+                                                $claimHealthy->whereNull('last_claim_failed_at')
+                                                    ->orWhereNull('last_claim_error')
+                                                    ->orWhere('last_claim_error', '');
+                                            })
+                                            ->where(static function ($dispatch) use ($redispatchCutoff): void {
+                                                $dispatch->where(static function ($sent) use ($redispatchCutoff): void {
+                                                    $sent->whereNotNull('last_dispatched_at')
+                                                        ->where('last_dispatched_at', '<=', $redispatchCutoff);
+                                                })->orWhere(static function ($neverSent) use ($redispatchCutoff): void {
+                                                    $neverSent->whereNull('last_dispatched_at')
+                                                        ->where('created_at', '<=', $redispatchCutoff);
+                                                });
+                                            });
+                                    });
+                            });
+                    });
+            })
+            ->exists();
+    }
+
+    private static function claimWaitId(
+        ?WorkflowRunSummary $summary,
+        WorkflowTask $task,
+    ): ?string {
+        $payloadWaitId = is_array($task->payload)
+            ? self::nonEmptyString($task->payload['open_wait_id'] ?? null)
+            : null;
+
+        if ($payloadWaitId !== null) {
+            return $payloadWaitId;
+        }
+
+        if ($summary?->next_task_id !== $task->id) {
+            return null;
+        }
+
+        return self::nonEmptyString($summary->open_wait_id);
+    }
+
+    private static function claimOwnsProjectedLiveness(?WorkflowRunSummary $summary): bool
+    {
+        if (! $summary instanceof WorkflowRunSummary) {
+            return true;
+        }
+
+        if ($summary->wait_kind === null || $summary->wait_kind === 'workflow-task') {
+            return true;
+        }
+
+        return is_string($summary->liveness_state)
+            && (
+                str_starts_with($summary->liveness_state, 'workflow_task_')
+                || $summary->liveness_state === 'repair_needed'
+            );
+    }
+
+    private static function claimTaskLabel(?WorkflowRunSummary $summary, WorkflowTask $task): string
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $payloadLabel = match (self::nonEmptyString($taskPayload['workflow_wait_kind'] ?? null)) {
+            'update' => 'Update',
+            'signal' => 'Signal',
+            'condition' => 'Condition timeout',
+            'timer' => 'Timer',
+            default => null,
+        };
+
+        if ($payloadLabel !== null) {
+            return $payloadLabel;
+        }
+
+        $livenessReason = $summary?->liveness_reason;
+
+        if (! $summary instanceof WorkflowRunSummary || ! is_string($livenessReason)) {
+            return 'Workflow';
+        }
+
+        $nextTaskId = $summary->next_task_id;
+        $taskId = is_string($nextTaskId) && $nextTaskId !== ''
+            ? $nextTaskId
+            : (string) $task->id;
+        $separator = sprintf(' task %s ', $taskId);
+        $separatorPosition = strpos($livenessReason, $separator);
+
+        if ($separatorPosition === false) {
+            return 'Workflow';
+        }
+
+        $label = trim(substr($livenessReason, 0, $separatorPosition));
+
+        return $label === '' ? 'Workflow' : $label;
+    }
+
+    private static function claimProjectsWorkflowTaskWait(WorkflowTask $task): bool
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $waitKind = self::nonEmptyString($taskPayload['workflow_wait_kind'] ?? null);
+
+        return $waitKind === null || $waitKind === 'child';
     }
 
     private static function projectFreshWorkflowTaskRun(WorkflowRun $run): ?WorkflowRunSummary
