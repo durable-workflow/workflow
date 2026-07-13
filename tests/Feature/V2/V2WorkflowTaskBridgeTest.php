@@ -5303,6 +5303,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompleteContinuesAsNew(): void
     {
         $run = $this->createWaitingRun();
+        $now = now();
+        $executionDeadline = $now->copy()->addMinutes(10);
+        $run->forceFill([
+            'run_timeout_seconds' => 90,
+            'execution_deadline_at' => $executionDeadline,
+            'run_deadline_at' => $now->copy()->addSeconds(15),
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -5311,6 +5318,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             [
                 'type' => 'continue_as_new',
                 'arguments' => Serializer::serialize(['new-args']),
+                'workflow_type' => 'next-workflow-type',
+                'queue' => 'next-workers',
             ],
         ]);
 
@@ -5336,6 +5345,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(RunStatus::Pending, $continuedRun->status);
         $this->assertSame($run->run_number + 1, $continuedRun->run_number);
         $this->assertSame($run->workflow_instance_id, $continuedRun->workflow_instance_id);
+        $this->assertSame('next-workflow-type', $continuedRun->workflow_type);
+        $this->assertSame('next-workers', $continuedRun->queue);
+        $this->assertSame(90, $continuedRun->run_timeout_seconds);
+        $this->assertTrue($continuedRun->execution_deadline_at->equalTo($executionDeadline));
+        $this->assertTrue($continuedRun->run_deadline_at->greaterThan($run->run_deadline_at));
 
         $continuedTask = WorkflowTask::query()
             ->where('workflow_run_id', $continuedRun->id)

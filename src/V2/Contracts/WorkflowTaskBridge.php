@@ -336,7 +336,7 @@ interface WorkflowTaskBridge
      * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string, exception?: array<string, mixed>}
      *   Marks the workflow run as failed with a failure record.
      *
-     * - continue_as_new: {type: 'continue_as_new', arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null}
+     * - continue_as_new: {type: 'continue_as_new', arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null, queue?: string|null}
      *   Closes the current run as continued and starts a new run in the same instance.
      *   workflow_type defaults to the current run's type if omitted.
      *   payload_codec applies only when arguments supplies a replacement payload.

@@ -3074,7 +3074,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null} $command
+     * @param array{type: string, arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null, queue?: string|null} $command
      * @param list<string> $createdTaskIds
      */
     private function applyContinueAsNew(
@@ -3103,6 +3103,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             : null;
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
         $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
+        $runTimeoutSeconds = is_int($run->run_timeout_seconds) ? $run->run_timeout_seconds : null;
+        $executionDeadlineAt = $run->execution_deadline_at;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $now->copy()->addSeconds($runTimeoutSeconds)
+            : null;
 
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
@@ -3122,6 +3127,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'compatibility' => $run->compatibility,
             'payload_codec' => $commandPayloadCodec ?? $run->payload_codec,
             'arguments' => $arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
             'connection' => $run->connection,
             'queue' => $queue,
             'started_at' => $now,

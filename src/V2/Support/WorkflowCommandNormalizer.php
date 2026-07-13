@@ -431,6 +431,7 @@ final class WorkflowCommandNormalizer
 
             if ($type === 'continue_as_new') {
                 $workflowType = self::optionalCommandString($command, 'workflow_type', $index, $errors);
+                $queue = self::optionalCommandString($command, 'queue', $index, $errors);
                 $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
                 $explicitPayloadCodec = self::optionalPayloadCodec($command, $index, $errors);
 
@@ -453,6 +454,7 @@ final class WorkflowCommandNormalizer
                     'arguments' => $arguments['payload'],
                     'payload_codec' => $payloadCodec,
                     'workflow_type' => $workflowType,
+                    'queue' => $queue,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;

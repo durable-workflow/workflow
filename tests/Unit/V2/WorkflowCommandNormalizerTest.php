@@ -384,18 +384,20 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]);
     }
 
-    public function testContinueAsNewPassesThroughOptionalWorkflowType(): void
+    public function testContinueAsNewPassesThroughOptionalWorkflowTypeAndQueue(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
             [
                 'type' => 'continue_as_new',
                 'workflow_type' => 'NextWorkflow',
+                'queue' => 'next-workers',
             ],
         ]);
 
         $this->assertSame([[
             'type' => 'continue_as_new',
             'workflow_type' => 'NextWorkflow',
+            'queue' => 'next-workers',
         ]], $out);
     }
 
