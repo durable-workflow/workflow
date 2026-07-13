@@ -219,6 +219,15 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_lineage_entries'));
+        $this->assertTrue(Schema::hasTable('workflow_child_projection_repairs'));
+        $this->assertTrue(Schema::hasColumn(
+            'workflow_child_projection_repairs',
+            'failed_child_counted_at',
+        ));
+        $this->assertTrue(Schema::hasColumn(
+            'workflow_child_projection_repairs',
+            'failure_id',
+        ));
         $this->assertTrue(Schema::hasTable('workflow_service_endpoints'));
         $this->assertTrue(Schema::hasTable('workflow_services'));
         $this->assertTrue(Schema::hasTable('workflow_service_operations'));
@@ -270,6 +279,14 @@ final class MigrationsTest extends TestCase
         $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_type_sort_idx');
         $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_status_sort_idx');
         $this->assertIndexExists('workflow_tasks', 'workflow_tasks_namespace_queue_status_idx');
+        $this->assertIndexExists(
+            'workflow_child_projection_repairs',
+            'workflow_child_projection_repairs_drain_idx',
+        );
+        $this->assertIndexExists(
+            'workflow_child_projection_repairs',
+            'workflow_child_projection_repairs_failure_idx',
+        );
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',
@@ -289,6 +306,7 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_lineage_entries'));
+        $this->assertFalse(Schema::hasTable('workflow_child_projection_repairs'));
         $this->assertFalse(Schema::hasTable('workflow_service_endpoints'));
         $this->assertFalse(Schema::hasTable('workflow_services'));
         $this->assertFalse(Schema::hasTable('workflow_service_operations'));
@@ -558,6 +576,7 @@ final class MigrationsTest extends TestCase
             'workflow_memos',
             'workflow_search_attributes',
             'workflow_child_calls',
+            'workflow_child_projection_repairs',
             'workflow_schedule_history_events',
             'workflow_service_endpoints',
             'workflow_services',

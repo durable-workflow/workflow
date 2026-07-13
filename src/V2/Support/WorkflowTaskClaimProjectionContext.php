@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -14,39 +15,65 @@ use Workflow\V2\Models\WorkflowTask;
  */
 final class WorkflowTaskClaimProjectionContext
 {
-    /** @var array<string, list<WorkflowTask>> */
-    private static array $tasksByRunId = [];
+    /**
+     * @var array<string, list<array{
+     *     task: WorkflowTask,
+     *     child_resolution_events: list<WorkflowHistoryEvent>
+     * }>>
+     */
+    private static array $projectionsByRunId = [];
 
     /**
      * @template TResult
      * @param callable(): TResult $project
+     * @param list<WorkflowHistoryEvent> $childResolutionEvents
      * @return TResult
      */
     public static function run(
         WorkflowRun $run,
         WorkflowTask $task,
         callable $project,
+        array $childResolutionEvents = [],
     ): mixed {
         $runId = (string) $run->getKey();
-        self::$tasksByRunId[$runId] ??= [];
-        self::$tasksByRunId[$runId][] = $task;
+        self::$projectionsByRunId[$runId] ??= [];
+        self::$projectionsByRunId[$runId][] = [
+            'task' => $task,
+            'child_resolution_events' => $childResolutionEvents,
+        ];
 
         try {
             return $project();
         } finally {
-            array_pop(self::$tasksByRunId[$runId]);
+            array_pop(self::$projectionsByRunId[$runId]);
 
-            if (self::$tasksByRunId[$runId] === []) {
-                unset(self::$tasksByRunId[$runId]);
+            if (self::$projectionsByRunId[$runId] === []) {
+                unset(self::$projectionsByRunId[$runId]);
             }
         }
     }
 
     public static function taskFor(WorkflowRun $run): ?WorkflowTask
     {
-        $tasks = self::$tasksByRunId[(string) $run->getKey()] ?? [];
-        $task = end($tasks);
+        $projections = self::$projectionsByRunId[(string) $run->getKey()] ?? [];
+        $projection = end($projections);
+        $task = is_array($projection) ? ($projection['task'] ?? null) : null;
 
         return $task instanceof WorkflowTask ? $task : null;
+    }
+
+    /**
+     * @return list<WorkflowHistoryEvent>
+     */
+    public static function childResolutionEventsFor(WorkflowRun $run): array
+    {
+        $projections = self::$projectionsByRunId[(string) $run->getKey()] ?? [];
+        $projection = end($projections);
+        $events = is_array($projection) ? ($projection['child_resolution_events'] ?? []) : [];
+
+        return array_values(array_filter(
+            $events,
+            static fn (mixed $event): bool => $event instanceof WorkflowHistoryEvent,
+        ));
     }
 }

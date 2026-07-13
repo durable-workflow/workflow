@@ -4843,32 +4843,44 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * Dispatch successful claims through the configured projection role while
-     * scoping the bounded-claim hint consumed by the default projector. The
-     * role still receives projectRun(), including when an application binds a
-     * custom implementation that delegates to the default role.
+     * scoping the bounded-claim hint and every indexed pending child repair
+     * consumed by the default projector. Repairs owned by an earlier terminal
+     * task are also eligible so a resolution recorded during that task's lease
+     * cannot be stranded after it completes. The role still receives
+     * projectRun(), including when an application binds a custom implementation
+     * that delegates to the default role. Repairs are acknowledged only after
+     * it returns successfully.
      */
     private static function projectWorkflowTaskClaim(
         WorkflowRun $run,
         WorkflowTask $task,
     ): void {
+        $pendingRepairs = ChildProjectionRepairStore::pendingFor($run, $task);
         $role = self::historyProjectionRole();
 
         WorkflowTaskClaimProjectionContext::run(
             $run,
             $task,
             static fn () => $role->projectRun($run),
+            $pendingRepairs['events'],
         );
+
+        ChildProjectionRepairStore::acknowledge($pendingRepairs['repairs']);
     }
 
     /**
-     * Project each newly recorded child resolution through the configured role
-     * before another resolution can be coalesced onto the same open task.
+     * Persist and project each newly recorded child resolution through the
+     * configured role before another resolution can be coalesced onto the same
+     * open task. A failed projection or acknowledgement leaves the bounded
+     * repair identity available to the task's next successful claim.
      */
     private static function projectChildResolutionBestEffort(
         WorkflowRun $run,
         WorkflowTask $task,
         WorkflowHistoryEvent $event,
     ): void {
+        $repair = ChildProjectionRepairStore::remember($run, $task, $event);
+
         try {
             $role = self::historyProjectionRole();
 
@@ -4878,8 +4890,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 $event,
                 static fn () => $role->projectRun($run),
             );
+
+            ChildProjectionRepairStore::acknowledge([$repair]);
         } catch (Throwable $exception) {
-            Log::warning('Workflow child-resolution projection failed after durable history was recorded.', [
+            Log::warning('Workflow child-resolution projection repair remains pending.', [
                 'workflow_run_id' => $run->id,
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'workflow_history_event_id' => $event->id,

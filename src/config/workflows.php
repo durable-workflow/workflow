@@ -42,6 +42,7 @@ return [
         'run_model' => Workflow\V2\Models\WorkflowRun::class,
         'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,
         'task_model' => Workflow\V2\Models\WorkflowTask::class,
+        'child_projection_repair_model' => Workflow\V2\Models\WorkflowChildProjectionRepair::class,
         'command_model' => Workflow\V2\Models\WorkflowCommand::class,
         'link_model' => Workflow\V2\Models\WorkflowLink::class,
         'activity_execution_model' => Workflow\V2\Models\ActivityExecution::class,

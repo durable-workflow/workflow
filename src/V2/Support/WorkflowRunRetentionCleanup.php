@@ -12,6 +12,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowChildProjectionRepair;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -45,6 +46,7 @@ final class WorkflowRunRetentionCleanup
      *     activity_attempts_deleted: int,
      *     activity_executions_deleted: int,
      *     child_calls_deleted: int,
+     *     child_projection_repairs_deleted: int,
      *     commands_deleted: int,
      *     failures_deleted: int,
      *     history_events_deleted: int,
@@ -113,6 +115,13 @@ final class WorkflowRunRetentionCleanup
                 ConfiguredV2Models::query('failure_model', WorkflowFailure::class),
                 $runId,
             );
+            $report['child_projection_repairs_deleted'] = self::deleteByRun(
+                ConfiguredV2Models::query(
+                    'child_projection_repair_model',
+                    WorkflowChildProjectionRepair::class,
+                ),
+                $runId,
+            );
             $report['run_waits_deleted'] = self::deleteByRun(
                 ConfiguredV2Models::query('run_wait_model', WorkflowRunWait::class),
                 $runId,
@@ -177,6 +186,7 @@ final class WorkflowRunRetentionCleanup
      *     activity_attempts_deleted: int,
      *     activity_executions_deleted: int,
      *     child_calls_deleted: int,
+     *     child_projection_repairs_deleted: int,
      *     commands_deleted: int,
      *     failures_deleted: int,
      *     history_events_deleted: int,
@@ -202,6 +212,7 @@ final class WorkflowRunRetentionCleanup
             'activity_attempts_deleted' => 0,
             'activity_executions_deleted' => 0,
             'child_calls_deleted' => 0,
+            'child_projection_repairs_deleted' => 0,
             'commands_deleted' => 0,
             'failures_deleted' => 0,
             'history_events_deleted' => 0,

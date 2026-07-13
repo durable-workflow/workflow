@@ -324,17 +324,23 @@ final class RunSummaryProjector
             $waitKind,
             $livenessState,
         );
+        $failureSnapshots = FailureSnapshots::forRun($run);
+        /** @var list<string> $failureIds */
+        $failureIds = array_values(array_filter(array_map(
+            static fn (array $failure): mixed => $failure['id'] ?? null,
+            $failureSnapshots,
+        ), static fn (mixed $failureId): bool => is_string($failureId) && $failureId !== ''));
 
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
         $summaryModel = self::summaryModel();
         $selectedNextTask = $openUpdateWait !== null ? $openUpdateTask : $nextTask;
 
-        /** @var WorkflowRunSummary $summary */
-        $summary = IdempotentProjectionUpsert::upsert(
+        // Full projection and bounded repair share one durable per-event
+        // failed-child application marker. Commit it with the authoritative
+        // summary count so a later repair cannot count the same event twice.
+        $summary = self::upsertFullSummary(
             $summaryModel,
-            [
-                'id' => $run->id,
-            ],
+            $run,
             [
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'run_number' => $run->run_number,
@@ -384,7 +390,7 @@ final class RunSummaryProjector
                 'repair_blocked_reason' => $repairBlockedReason,
                 'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
                 'task_problem' => $taskProblem,
-                'exception_count' => count(FailureSnapshots::forRun($run)),
+                'exception_count' => count($failureSnapshots),
                 'history_event_count' => $historyBudget['history_event_count'],
                 'history_size_bytes' => $historyBudget['history_size_bytes'],
                 'history_fan_out' => $historyBudget['history_fan_out'],
@@ -393,6 +399,7 @@ final class RunSummaryProjector
                 'created_at' => $run->created_at,
                 'updated_at' => $run->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             ],
+            $failureIds,
         );
 
         RunWaitProjector::project($run);
@@ -404,22 +411,71 @@ final class RunSummaryProjector
     }
 
     /**
+     * @param class-string<WorkflowRunSummary> $summaryModel
+     * @param array<string, mixed> $values
+     * @param list<string> $failureIds
+     */
+    private static function upsertFullSummary(
+        string $summaryModel,
+        WorkflowRun $run,
+        array $values,
+        array $failureIds,
+    ): WorkflowRunSummary {
+        return $run->getConnection()->transaction(static function () use (
+            $summaryModel,
+            $run,
+            $values,
+            $failureIds,
+        ): WorkflowRunSummary {
+            /** @var WorkflowRunSummary $summary */
+            $summary = IdempotentProjectionUpsert::upsert(
+                $summaryModel,
+                ['id' => $run->id],
+                $values,
+            );
+
+            ChildProjectionRepairStore::markSnapshotFailuresCounted($run, $failureIds);
+
+            return $summary;
+        });
+    }
+
+    /**
      * Project the state transition made by a successful workflow-task claim
-     * without rebuilding history-derived views. A child-resume payload from an
-     * older release can also identify one resolution that still needs bounded
-     * catch-up. The canonical history budget is resolved through counters or
-     * its single aggregate fallback in both cases.
+     * without rebuilding history-derived views. Indexed repair rows identify
+     * every deferred child outcome, while a child-resume payload from an older
+     * release can still identify one resolution that needs bounded catch-up.
+     * The canonical history budget is resolved through counters or its single
+     * aggregate fallback in both cases.
      */
     private static function projectWorkflowTaskClaim(
         WorkflowRun $run,
         WorkflowTask $task,
     ): WorkflowRunSummary {
-        $childResolutionEvent = self::claimChildResolutionEvent($run, $task);
+        $childResolutionEvents = WorkflowTaskClaimProjectionContext::childResolutionEventsFor($run);
+        $knownEventIds = array_map(
+            static fn (WorkflowHistoryEvent $event): string => (string) $event->getKey(),
+            $childResolutionEvents,
+        );
+        $compatibilityEvent = self::claimChildResolutionEvent($run, $task, $knownEventIds);
+
+        if (
+            $compatibilityEvent instanceof WorkflowHistoryEvent
+            && ! in_array((string) $compatibilityEvent->getKey(), $knownEventIds, true)
+        ) {
+            $childResolutionEvents[] = $compatibilityEvent;
+        }
+
+        usort(
+            $childResolutionEvents,
+            static fn (WorkflowHistoryEvent $left, WorkflowHistoryEvent $right): int =>
+                (int) $left->sequence <=> (int) $right->sequence,
+        );
 
         return self::projectOpenWorkflowTask(
             $run,
             $task,
-            $childResolutionEvent instanceof WorkflowHistoryEvent ? [$childResolutionEvent] : [],
+            $childResolutionEvents,
         );
     }
 
@@ -503,11 +559,6 @@ final class RunSummaryProjector
                 || $hasPendingChildResolution
                 || self::claimHasWorkflowTaskProblem($run)
                 || ($existingSummary?->task_problem === true && $existingSummary->wait_kind === 'child'),
-            'exception_count' => self::claimExceptionCount(
-                $run,
-                $existingSummary,
-                $childResolutionEvents,
-            ),
             'history_event_count' => $historyBudget['history_event_count'],
             'history_size_bytes' => $historyBudget['history_size_bytes'],
             'history_fan_out' => $historyBudget['history_fan_out'],
@@ -515,6 +566,12 @@ final class RunSummaryProjector
             'history_budget_pressure' => $historyBudget['pressure'],
             'updated_at' => $run->last_progress_at ?? $run->updated_at,
         ];
+        $exceptionCount = self::claimExceptionCount(
+            $run,
+            $existingSummary,
+            $childResolutionEvents,
+        );
+        $values['exception_count'] = $exceptionCount['count'];
 
         if (! $existingSummary instanceof WorkflowRunSummary) {
             $values = array_merge(self::claimSummaryIdentity($run), $values);
@@ -539,12 +596,39 @@ final class RunSummaryProjector
             ]);
         }
 
-        /** @var WorkflowRunSummary $summary */
-        $summary = IdempotentProjectionUpsert::upsert(
-            $summaryModel,
-            ['id' => $run->id],
-            $values,
-        );
+        if ($exceptionCount['event_ids'] === []) {
+            /** @var WorkflowRunSummary $summary */
+            $summary = IdempotentProjectionUpsert::upsert(
+                $summaryModel,
+                ['id' => $run->id],
+                $values,
+            );
+        } else {
+            // Best-effort child projection may catch a later projection error.
+            // Keep the count and its event marker in one transaction so neither
+            // half can survive alone before the repair is retried.
+            /** @var WorkflowRunSummary $summary */
+            $summary = $run->getConnection()->transaction(static function () use (
+                $summaryModel,
+                $run,
+                $values,
+                $exceptionCount,
+            ): WorkflowRunSummary {
+                /** @var WorkflowRunSummary $summary */
+                $summary = IdempotentProjectionUpsert::upsert(
+                    $summaryModel,
+                    ['id' => $run->id],
+                    $values,
+                );
+
+                ChildProjectionRepairStore::markFailedChildrenCounted(
+                    $run,
+                    $exceptionCount['event_ids'],
+                );
+
+                return $summary;
+            });
+        }
 
         foreach ($childResolutionEvents as $childResolutionEvent) {
             RunWaitProjector::projectChildResolutionEvent($run, $task, $childResolutionEvent);
@@ -561,9 +645,13 @@ final class RunSummaryProjector
         return $summary;
     }
 
+    /**
+     * @param list<string> $knownEventIds
+     */
     private static function claimChildResolutionEvent(
         WorkflowRun $run,
         WorkflowTask $task,
+        array $knownEventIds = [],
     ): ?WorkflowHistoryEvent {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
 
@@ -579,6 +667,11 @@ final class RunSummaryProjector
         }
 
         $eventId = self::nonEmptyString($taskPayload['workflow_history_event_id'] ?? null);
+
+        if ($eventId !== null && in_array($eventId, $knownEventIds, true)) {
+            return null;
+        }
+
         $workflowSequence = self::intValue($taskPayload['workflow_sequence'] ?? null);
         $childCallId = self::nonEmptyString($taskPayload['child_call_id'] ?? null);
         $childRunId = self::nonEmptyString($taskPayload['child_workflow_run_id'] ?? null)
@@ -631,29 +724,52 @@ final class RunSummaryProjector
 
     /**
      * @param list<WorkflowHistoryEvent> $childResolutionEvents
+     * @return array{count: int, event_ids: list<string>}
      */
     private static function claimExceptionCount(
         WorkflowRun $run,
         ?WorkflowRunSummary $summary,
         array $childResolutionEvents,
-    ): int {
+    ): array {
         $count = (int) ($summary?->exception_count
             ?? ConfiguredV2Models::query('failure_model', WorkflowFailure::class)
                 ->where('workflow_run_id', $run->id)
                 ->count());
 
         $summaryHistoryCount = max(0, (int) ($summary?->history_event_count ?? 0));
+        $applications = ChildProjectionRepairStore::failedChildCountApplications(
+            $run,
+            $childResolutionEvents,
+        );
+        $eventIds = [];
 
         foreach ($childResolutionEvents as $childResolutionEvent) {
             $eventPayload = is_array($childResolutionEvent->payload) ? $childResolutionEvent->payload : [];
             $failureId = self::nonEmptyString($eventPayload['failure_id'] ?? null);
+            $eventId = (string) $childResolutionEvent->getKey();
 
-            if ($failureId !== null && $summaryHistoryCount < (int) $childResolutionEvent->sequence) {
+            if (
+                $failureId !== null
+                && array_key_exists($eventId, $applications)
+                && ! $applications[$eventId]
+            ) {
+                $count++;
+                $eventIds[] = $eventId;
+            } elseif (
+                $failureId !== null
+                && ! array_key_exists($eventId, $applications)
+                && $summaryHistoryCount < (int) $childResolutionEvent->sequence
+            ) {
+                // Tasks created before durable repair identities still use the
+                // summary history count as their one-event compatibility path.
                 $count++;
             }
         }
 
-        return $count;
+        return [
+            'count' => $count,
+            'event_ids' => $eventIds,
+        ];
     }
 
     /**

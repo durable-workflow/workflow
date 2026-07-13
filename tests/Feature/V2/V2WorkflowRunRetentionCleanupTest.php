@@ -25,6 +25,7 @@ use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowChildProjectionRepair;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -60,6 +61,7 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         $this->assertSame(1, $report['activity_attempts_deleted']);
         $this->assertSame(1, $report['activity_executions_deleted']);
         $this->assertSame(1, $report['child_calls_deleted']);
+        $this->assertSame(1, $report['child_projection_repairs_deleted']);
         $this->assertSame(1, $report['commands_deleted']);
         $this->assertSame(1, $report['failures_deleted']);
         $this->assertSame(1, $report['history_events_deleted']);
@@ -255,7 +257,7 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
                 ->subMinutes(47),
         ]);
 
-        WorkflowHistoryEvent::query()->create([
+        $historyEvent = WorkflowHistoryEvent::query()->create([
             'id' => (string) Str::ulid(),
             'workflow_run_id' => $run->id,
             'sequence' => 1,
@@ -265,6 +267,12 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
             'workflow_command_id' => $command->id,
             'recorded_at' => now()
                 ->subMinute(),
+        ]);
+        WorkflowChildProjectionRepair::query()->create([
+            'workflow_history_event_id' => $historyEvent->id,
+            'workflow_run_id' => $run->id,
+            'workflow_task_id' => $task->id,
+            'history_sequence' => $historyEvent->sequence,
         ]);
 
         $execution = ActivityExecution::query()->create([

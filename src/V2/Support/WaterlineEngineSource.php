@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildProjectionRepair;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -181,6 +182,13 @@ final class WaterlineEngineSource
             [
                 'config_key' => null,
                 'model' => WorkflowUpdate::class,
+            ],
+            [
+                'config_key' => 'child_projection_repair_model',
+                'model' => ConfiguredV2Models::resolve(
+                    'child_projection_repair_model',
+                    WorkflowChildProjectionRepair::class,
+                ),
             ],
         ];
     }

@@ -31,6 +31,7 @@ use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowChildProjectionRepair;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -46,6 +47,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ChildResolutionProjectionContext;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -682,6 +684,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'history_event_id' => $resolution->id,
         ]);
+        $this->assertDatabaseCount('workflow_child_projection_repairs', 0);
 
         $preUpgradePayload = is_array($resumeTask->payload) ? $resumeTask->payload : [];
         unset($preUpgradePayload['workflow_history_event_id']);
@@ -1144,6 +1147,782 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $this->assertFalse($retrievedRun->relationLoaded('lineageEntries'));
         }
         $this->assertCount(0, $historyQueries);
+    }
+
+    public function testLaterTaskClaimDrainsEveryDeferredChildProjectionRepairFromCompletedLeaseBoundedly(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['first-child']),
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['second-child']),
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+        $childTasks = $links->map(static fn (WorkflowLink $link): WorkflowTask => WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole());
+
+        $this->assertCount(2, $links);
+        foreach ($childTasks->values() as $index => $childTask) {
+            $this->assertTrue($this->bridge->claimStatus($childTask->id, "child-worker-{$index}")['claimed']);
+        }
+        $this->assertSame(2, WorkflowTask::query()
+            ->whereKey($childTasks->pluck('id')->all())
+            ->where('status', TaskStatus::Leased->value)
+            ->count());
+
+        $signal = $this->recordReceivedSignal($parentRun, 'advance', 'deferred-child-repair-signal');
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+        $this->assertTrue($this->bridge->claimStatus($signalTask->id, 'parent-worker-one')['claimed']);
+        $signalTask->refresh();
+        $this->assertSame(TaskStatus::Leased, $signalTask->status);
+
+        $blockedReason = 'Workflow replay remains blocked by an unresolved failure.';
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+            'available_at' => now()->subMinute(),
+            'payload' => [
+                'replay_blocked' => true,
+                'replay_blocked_reason' => 'failure_resolution',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_error' => $blockedReason,
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
+        $this->app->instance(HistoryProjectionRole::class, new class implements HistoryProjectionRole {
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                if (ChildResolutionProjectionContext::projectionFor($run) !== null) {
+                    throw new RuntimeException('projection unavailable');
+                }
+
+                return WorkflowRunSummary::query()->findOrFail($run->id);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->projectRun($run);
+            }
+        });
+
+        foreach ($childTasks->values() as $index => $childTask) {
+            $completed = $this->bridge->complete($childTask->id, $index === 0
+                ? [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                ]]
+                : [[
+                    'type' => 'fail_workflow',
+                    'message' => 'second child failed',
+                    'exception_class' => RuntimeException::class,
+                ]]);
+
+            $this->assertTrue($completed['completed']);
+        }
+
+        $resolutions = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+            ])
+            ->orderBy('sequence')
+            ->get();
+        $repairs = WorkflowChildProjectionRepair::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('workflow_task_id', $signalTask->id)
+            ->orderBy('history_sequence')
+            ->get();
+
+        $this->assertCount(2, $resolutions);
+        $this->assertCount(2, $repairs);
+        $this->assertSame($resolutions->pluck('id')->all(), $repairs->pluck('workflow_history_event_id')->all());
+        $this->assertSame('signal', $signalTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame(TaskStatus::Leased, $signalTask->status);
+        $this->assertSame(0, WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->count());
+
+        $completedSignalTask = $this->bridge->complete($signalTask->id, [[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'resume-after-child-repairs',
+        ]]);
+        $this->assertTrue($completedSignalTask['completed']);
+        $this->assertSame(RunStatus::Waiting->value, $completedSignalTask['run_status']);
+        $signalTask->refresh();
+        $this->assertSame(TaskStatus::Completed, $signalTask->status);
+        $this->assertSame(2, WorkflowChildProjectionRepair::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('workflow_task_id', $signalTask->id)
+            ->count());
+        $staleSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $this->assertSame($signalTask->id, $staleSummary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $staleSummary->next_task_status);
+        $this->assertSame(0, $staleSummary->exception_count);
+        $this->assertSame(0, WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->where('status', 'resolved')
+            ->count());
+        $this->assertSame(0, WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->count());
+        $this->assertSame(0, WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->whereIn('lineage_id', $links->pluck('id')->all())
+            ->whereIn('status', [RunStatus::Completed->value, RunStatus::Failed->value])
+            ->count());
+
+        $openedSignalWait = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->sole();
+        $openedSignalWaitId = (string) ($openedSignalWait->payload['signal_wait_id'] ?? '');
+        $this->assertNotSame('', $openedSignalWaitId);
+
+        $laterSignal = $this->recordReceivedSignal(
+            $parentRun->fresh() ?? $parentRun,
+            'resume-after-child-repairs',
+            $openedSignalWaitId,
+        );
+        /** @var WorkflowTask $laterSignalTask */
+        $laterSignalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($laterSignal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $recoveringRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+        $this->app->instance(HistoryProjectionRole::class, $recoveringRole);
+
+        $expectedBudget = HistoryBudget::forRunBounded(WorkflowRun::query()->findOrFail($parentRun->id));
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $claimed = $this->bridge->claimStatus($laterSignalTask->id, 'parent-worker-two');
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $summary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $waits = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->orderBy('sequence')
+            ->get();
+        $timeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->orderBy('sequence')
+            ->get();
+        $lineage = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->whereIn('lineage_id', $links->pluck('id')->all())
+            ->orderBy('sequence')
+            ->get();
+        $historyQueries = collect($queries)
+            ->filter(static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'))
+            ->values();
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertSame([['projectRun', $parentRun->id]], $recoveringRole->calls);
+        $this->assertSame(0, WorkflowChildProjectionRepair::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->count());
+        $this->assertSame($laterSignalTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertSame('workflow_replay_blocked', $summary->liveness_state);
+        $this->assertSame($blockedReason, $summary->liveness_reason);
+        $this->assertNull($summary->repair_blocked_reason);
+        $this->assertFalse($summary->repair_attention);
+        $this->assertTrue($summary->task_problem);
+        $this->assertSame(1, $summary->exception_count);
+        $this->assertSame($expectedBudget['history_event_count'], $summary->history_event_count);
+        $this->assertSame($expectedBudget['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($expectedBudget['history_fan_out'], $summary->history_fan_out);
+
+        $this->assertCount(2, $waits);
+        $this->assertSame(['resolved', 'resolved'], $waits->pluck('status')->all());
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $waits->pluck('source_status')->all());
+        foreach ($waits as $wait) {
+            $this->assertSame($laterSignalTask->id, $wait->task_id);
+            $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
+        }
+
+        $this->assertSame($resolutions->pluck('id')->all(), $timeline->pluck('history_event_id')->all());
+        $this->assertSame([
+            HistoryEventType::ChildRunCompleted->value,
+            HistoryEventType::ChildRunFailed->value,
+        ], $timeline->pluck('type')->all());
+        $this->assertSame([
+            RunStatus::Completed->value,
+            RunStatus::Failed->value,
+        ], $lineage->pluck('status')->all());
+        $this->assertSame(['completed', 'failed'], $lineage->pluck('closed_reason')->all());
+
+        $this->assertSame(2, $retrievedHistoryEvents);
+        $this->assertNotEmpty($retrievedRuns);
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+            $this->assertFalse($retrievedRun->relationLoaded('tasks'));
+            $this->assertFalse($retrievedRun->relationLoaded('childLinks'));
+            $this->assertFalse($retrievedRun->relationLoaded('failures'));
+        }
+        $this->assertCount(3, $historyQueries);
+        $this->assertCount(2, $historyQueries->filter(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 1'),
+        ));
+        $this->assertCount(1, $historyQueries->filter(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
+        ));
+    }
+
+    public function testPendingFailedChildRepairCountsAfterLaterResolutionAdvancesSummary(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['first-child']),
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['second-child']),
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+        $childTasks = $links->map(static fn (WorkflowLink $link): WorkflowTask => WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole());
+
+        $this->assertCount(2, $childTasks);
+        foreach ($childTasks->values() as $index => $childTask) {
+            $this->assertTrue($this->bridge->claimStatus($childTask->id, "child-worker-{$index}")['claimed']);
+        }
+
+        $signal = $this->recordReceivedSignal($parentRun, 'advance', 'ordered-child-repair-signal');
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
+        $projectionRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            private bool $deferNextChildResolution = true;
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                if (ChildResolutionProjectionContext::projectionFor($run) !== null) {
+                    if ($this->deferNextChildResolution) {
+                        $this->deferNextChildResolution = false;
+
+                        throw new RuntimeException('projection unavailable');
+                    }
+
+                    return $this->delegate->projectRun($run);
+                }
+
+                return WorkflowRunSummary::query()->findOrFail($run->id);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+        $this->app->instance(HistoryProjectionRole::class, $projectionRole);
+
+        /** @var WorkflowTask $failedChildTask */
+        $failedChildTask = $childTasks->first();
+        $failed = $this->bridge->complete($failedChildTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'first child failed',
+            'exception_class' => RuntimeException::class,
+        ]]);
+        /** @var WorkflowTask $completedChildTask */
+        $completedChildTask = $childTasks->last();
+        $completed = $this->bridge->complete($completedChildTask->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize(['child_result' => 'ok']),
+        ]]);
+
+        $this->assertTrue($failed['completed']);
+        $this->assertTrue($completed['completed']);
+
+        $resolutions = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildRunFailed->value,
+                HistoryEventType::ChildRunCompleted->value,
+            ])
+            ->orderBy('sequence')
+            ->get();
+        /** @var WorkflowHistoryEvent $failedResolution */
+        $failedResolution = $resolutions->first();
+        /** @var WorkflowHistoryEvent $completedResolution */
+        $completedResolution = $resolutions->last();
+        $pendingRepair = WorkflowChildProjectionRepair::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->sole();
+        $staleSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+
+        $this->assertCount(2, $resolutions);
+        $this->assertSame(HistoryEventType::ChildRunFailed, $failedResolution->event_type);
+        $this->assertSame(HistoryEventType::ChildRunCompleted, $completedResolution->event_type);
+        $this->assertSame($failedResolution->id, $pendingRepair->workflow_history_event_id);
+        $this->assertSame($signalTask->id, $pendingRepair->workflow_task_id);
+        $this->assertNull($pendingRepair->failed_child_counted_at);
+        $this->assertSame(0, $staleSummary->exception_count);
+        $this->assertGreaterThan((int) $failedResolution->sequence, $staleSummary->history_event_count);
+        $this->assertSame([$completedResolution->id], WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->pluck('history_event_id')
+            ->all());
+
+        $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+        $claimed = $this->bridge->claimStatus($signalTask->id, 'parent-worker');
+        $summary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertDatabaseMissing('workflow_child_projection_repairs', [
+            'workflow_history_event_id' => $failedResolution->id,
+        ]);
+        $this->assertSame(1, $summary->exception_count);
+        $this->assertSame($signalTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertSame($resolutions->pluck('id')->all(), WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('history_event_id', $resolutions->pluck('id')->all())
+            ->orderBy('sequence')
+            ->pluck('history_event_id')
+            ->all());
+        $this->assertSame([
+            RunStatus::Failed->value,
+            RunStatus::Completed->value,
+        ], WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->orderBy('sequence')
+            ->pluck('source_status')
+            ->all());
+        $this->assertSame([
+            RunStatus::Failed->value,
+            RunStatus::Completed->value,
+        ], WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->whereIn('lineage_id', $links->pluck('id')->all())
+            ->orderBy('sequence')
+            ->pluck('status')
+            ->all());
+    }
+
+    public function testFullProjectionAndLaterRepairShareFailedChildApplicationIdentity(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test-greeting-workflow',
+            'arguments' => Serializer::serialize(['child-arg']),
+        ]]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+
+        $signal = $this->recordReceivedSignal($parentRun, 'advance', 'full-projection-repair-signal');
+        /** @var WorkflowTask $owningTask */
+        $owningTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+        $this->assertTrue($this->bridge->claimStatus($owningTask->id, 'parent-worker-one')['claimed']);
+        $owningTask->refresh();
+        $this->assertSame(TaskStatus::Leased, $owningTask->status);
+
+        $blockedReason = 'Workflow replay remains blocked by an unresolved failure.';
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+            'available_at' => now()->subMinute(),
+            'payload' => [
+                'replay_blocked' => true,
+                'replay_blocked_reason' => 'failure_resolution',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_error' => $blockedReason,
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
+        $this->app->instance(HistoryProjectionRole::class, new class implements HistoryProjectionRole {
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                if (ChildResolutionProjectionContext::projectionFor($run) !== null) {
+                    throw new RuntimeException('projection unavailable');
+                }
+
+                return WorkflowRunSummary::query()->findOrFail($run->id);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->projectRun($run);
+            }
+        });
+
+        $failed = $this->bridge->complete($childTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'child failed before the owning task completed',
+            'exception_class' => RuntimeException::class,
+        ]]);
+
+        $this->assertTrue($failed['completed']);
+        $resolution = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunFailed->value)
+            ->sole();
+        $repair = WorkflowChildProjectionRepair::query()->findOrFail($resolution->id);
+        $this->assertSame($owningTask->id, $repair->workflow_task_id);
+        $this->assertSame($resolution->payload['failure_id'], $repair->failure_id);
+        $this->assertNull($repair->failed_child_counted_at);
+        $this->assertSame(0, WorkflowRunSummary::query()->findOrFail($parentRun->id)->exception_count);
+
+        // The role recovers before the owning task completes. markRunWaiting()
+        // performs its normal full projection but leaves repair acknowledgement
+        // to a later successful claim because this task is now terminal.
+        $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+        $completedOwningTask = $this->bridge->complete($owningTask->id, [[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'resume-after-full-projection',
+        ]]);
+
+        $this->assertTrue($completedOwningTask['completed']);
+        $owningTask->refresh();
+        $repair->refresh();
+        $fullyProjectedSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+        $this->assertSame(TaskStatus::Completed, $owningTask->status);
+        $this->assertNotNull($repair->failed_child_counted_at);
+        $this->assertSame(1, $fullyProjectedSummary->exception_count);
+        $this->assertSame('workflow_replay_blocked', $fullyProjectedSummary->liveness_state);
+        $this->assertSame($blockedReason, $fullyProjectedSummary->liveness_reason);
+        $this->assertNull($fullyProjectedSummary->repair_blocked_reason);
+        $this->assertFalse($fullyProjectedSummary->repair_attention);
+        $this->assertTrue($fullyProjectedSummary->task_problem);
+        $projectedTimeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('history_event_id', $resolution->id)
+            ->sole();
+        $this->assertSame(HistoryEventType::ChildRunFailed->value, $projectedTimeline->type);
+        $projectedWait = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->sole();
+        $this->assertSame('resolved', $projectedWait->status);
+        $this->assertSame(RunStatus::Failed->value, $projectedWait->source_status);
+        $projectedLineage = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->where('lineage_id', $link->id)
+            ->sole();
+        $this->assertSame(RunStatus::Failed->value, $projectedLineage->status);
+        $this->assertSame('failed', $projectedLineage->closed_reason);
+
+        $openedSignalWait = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->sole();
+        $laterSignal = $this->recordReceivedSignal(
+            $parentRun->fresh() ?? $parentRun,
+            'resume-after-full-projection',
+            (string) $openedSignalWait->payload['signal_wait_id'],
+        );
+        /** @var WorkflowTask $laterTask */
+        $laterTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($laterSignal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $claimed = $this->bridge->claimStatus($laterTask->id, 'parent-worker-two');
+        $repairedSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertDatabaseMissing('workflow_child_projection_repairs', [
+            'workflow_history_event_id' => $resolution->id,
+        ]);
+        $this->assertSame(1, $repairedSummary->exception_count);
+        $this->assertSame($laterTask->id, $repairedSummary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $repairedSummary->next_task_status);
+        $this->assertSame('workflow_replay_blocked', $repairedSummary->liveness_state);
+        $this->assertSame($blockedReason, $repairedSummary->liveness_reason);
+        $this->assertNull($repairedSummary->repair_blocked_reason);
+        $this->assertFalse($repairedSummary->repair_attention);
+        $this->assertTrue($repairedSummary->task_problem);
+        $repairedTimeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('history_event_id', $resolution->id)
+            ->sole();
+        $this->assertSame(HistoryEventType::ChildRunFailed->value, $repairedTimeline->type);
+        $repairedWait = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->sole();
+        $this->assertSame('resolved', $repairedWait->status);
+        $this->assertSame(RunStatus::Failed->value, $repairedWait->source_status);
+        $this->assertSame($laterTask->id, $repairedWait->task_id);
+        $this->assertSame(TaskStatus::Leased->value, $repairedWait->task_status);
+        $repairedLineage = WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->where('lineage_id', $link->id)
+            ->sole();
+        $this->assertSame(RunStatus::Failed->value, $repairedLineage->status);
+        $this->assertSame('failed', $repairedLineage->closed_reason);
+    }
+
+    public function testChildProjectionRepairRetriesIdempotentlyWhenAcknowledgementFails(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentTask = $this->createLeasedTask($parentRun);
+
+        $started = $this->bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test-greeting-workflow',
+            'arguments' => Serializer::serialize(['child-arg']),
+        ]]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+        $signal = $this->recordReceivedSignal($parentRun, 'advance', 'child-repair-ack-signal');
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+
+        $failAcknowledgement = true;
+        WorkflowChildProjectionRepair::deleting(static function () use (&$failAcknowledgement): void {
+            if ($failAcknowledgement) {
+                $failAcknowledgement = false;
+
+                throw new RuntimeException('repair acknowledgement unavailable');
+            }
+        });
+
+        $completed = $this->bridge->complete($childTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'child failed before repair acknowledgement',
+            'exception_class' => RuntimeException::class,
+        ]]);
+
+        $this->assertTrue($completed['completed']);
+        $resolution = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunFailed->value)
+            ->sole();
+        $this->assertDatabaseHas('workflow_child_projection_repairs', [
+            'workflow_history_event_id' => $resolution->id,
+            'workflow_run_id' => $parentRun->id,
+            'workflow_task_id' => $signalTask->id,
+        ]);
+        $pendingRepair = WorkflowChildProjectionRepair::query()->findOrFail($resolution->id);
+        $this->assertNotNull($pendingRepair->failed_child_counted_at);
+        $this->assertSame(1, WorkflowRunSummary::query()
+            ->findOrFail($parentRun->id)
+            ->exception_count);
+        $this->assertSame(1, WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('history_event_id', $resolution->id)
+            ->count());
+
+        $claimed = $this->bridge->claimStatus($signalTask->id, 'parent-worker');
+
+        $this->assertTrue($claimed['claimed']);
+        $this->assertDatabaseMissing('workflow_child_projection_repairs', [
+            'workflow_history_event_id' => $resolution->id,
+        ]);
+        $this->assertSame(1, WorkflowRunSummary::query()
+            ->findOrFail($parentRun->id)
+            ->exception_count);
+        $this->assertSame(1, WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('history_event_id', $resolution->id)
+            ->count());
+        $this->assertSame(1, WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('direction', 'child')
+            ->where('lineage_id', $link->id)
+            ->count());
+        $wait = WorkflowRunWait::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('kind', 'child')
+            ->sole();
+        $this->assertSame('resolved', $wait->status);
+        $this->assertSame(RunStatus::Failed->value, $wait->source_status);
+        $this->assertSame($signalTask->id, $wait->task_id);
+        $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
     }
 
     public function testChildResolutionClaimBoundedlyPreservesReplayBlockedLiveness(): void

@@ -13,6 +13,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildProjectionRepair;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -338,6 +339,24 @@ final class ConfiguredV2ObservabilityTest extends TestCase
                 'signalRecord',
                 'signal_model',
                 ConfiguredWorkflowSignal::class,
+            ],
+            'child projection repair run' => [
+                WorkflowChildProjectionRepair::class,
+                'run',
+                'run_model',
+                ConfiguredWorkflowRun::class,
+            ],
+            'child projection repair task' => [
+                WorkflowChildProjectionRepair::class,
+                'task',
+                'task_model',
+                ConfiguredWorkflowTask::class,
+            ],
+            'child projection repair history event' => [
+                WorkflowChildProjectionRepair::class,
+                'historyEvent',
+                'history_event_model',
+                ConfiguredWorkflowHistoryEvent::class,
             ],
             'failure run' => [WorkflowFailure::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'history event run' => [WorkflowHistoryEvent::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
