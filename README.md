@@ -97,6 +97,16 @@ The schema/database is governed by the connection's own configuration — use
 `search_path` for PostgreSQL or `database` for MySQL on that connection. There is no
 separate schema option.
 
+## Embedded and Polyglot Usage
+
+This package provides the application-embedded version of Durable Workflow for Laravel.
+
+Use it when your workflows and activities run within a Laravel application and you do not need workers written in other languages.
+
+For polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and connect PHP applications and workers using the [PHP SDK](https://github.com/durable-workflow/sdk-php) instead of this embedded package.
+
+The standalone server allows PHP, Python, Rust, and other supported SDKs to participate in the same workflow system.
+
 ## Sponsors
 
 The Durable Workflow package is sustained by the community via sponsors and volunteers.
