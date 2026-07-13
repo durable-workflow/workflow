@@ -359,6 +359,36 @@ final class HistoryBudgetTest extends TestCase
         $this->assertSame(0, $budget['history_fan_out']);
     }
 
+    public function testBoundedFanOutUsesFirstNumericSizeForEachParallelGroup(): void
+    {
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
+        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+
+        $run = $this->createRun();
+
+        foreach (['not-numeric', 12, 99] as $index => $groupSize) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+                'sequence' => $index + 1,
+                'activity_type' => 'fan.out',
+                'parallel_group_id' => 'group-a',
+                'parallel_group_kind' => 'all',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => $groupSize,
+                'parallel_group_index' => $index,
+            ]);
+        }
+
+        $canonical = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+        $bounded = HistoryBudget::forRunBounded($run);
+
+        $this->assertSame(12, $canonical['history_fan_out']);
+        $this->assertSame($canonical, $bounded);
+        $this->assertTrue($bounded['continue_as_new_recommended']);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+    }
+
     // ---------------------------------------------------------------
     //  fromCounters
     // ---------------------------------------------------------------

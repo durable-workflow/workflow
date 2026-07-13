@@ -38,7 +38,6 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
@@ -486,7 +485,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $historyEvents = $historyEvents->take($pageSize);
         }
 
-        $historyBudget = self::paginatedHistoryBudget($run);
+        $historyBudget = HistoryBudget::forRunBounded($run);
 
         $lastEventSequence = $historyEvents->isNotEmpty()
             ? (int) $historyEvents->last()->sequence
@@ -530,113 +529,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'recorded_at' => $event->recorded_at?->toJSON(),
             ])->values()
                 ->all(),
-        ];
-    }
-
-    /**
-     * Resolve history-budget counters without hydrating the run's history
-     * relation. The run summary is the authoritative fast path. A projection
-     * whose event count trails the run cursor cannot describe the complete
-     * history, so a single database aggregate provides a bounded fallback.
-     *
-     * @return array{
-     *     history_event_count: int,
-     *     history_size_bytes: int,
-     *     history_fan_out: int,
-     *     continue_as_new_recommended: bool,
-     *     pressure: string,
-     *     pressure_dimensions: list<string>
-     * }
-     */
-    private static function paginatedHistoryBudget(WorkflowRun $run): array
-    {
-        /** @var WorkflowRunSummary|null $summary */
-        $summary = ConfiguredV2Models::query('run_summary_model', WorkflowRunSummary::class)
-            ->select([
-                'id',
-                'history_event_count',
-                'history_size_bytes',
-                'history_fan_out',
-            ])
-            ->find($run->id);
-
-        $lastHistorySequence = max(0, (int) ($run->last_history_sequence ?? 0));
-
-        if (
-            $summary instanceof WorkflowRunSummary
-            && (int) $summary->history_event_count >= $lastHistorySequence
-        ) {
-            return HistoryBudget::fromCounters(
-                (int) $summary->history_event_count,
-                (int) $summary->history_size_bytes,
-                (int) $summary->history_fan_out,
-            );
-        }
-
-        $counters = self::aggregateHistoryBudgetCounters($run);
-
-        return HistoryBudget::fromCounters(
-            $counters['history_event_count'],
-            $counters['history_size_bytes'],
-            $counters['history_fan_out'],
-        );
-    }
-
-    /**
-     * @return array{
-     *     history_event_count: int,
-     *     history_size_bytes: int,
-     *     history_fan_out: int
-     * }
-     */
-    private static function aggregateHistoryBudgetCounters(WorkflowRun $run): array
-    {
-        $query = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
-            ->where('workflow_run_id', $run->id);
-        $model = $query->getModel();
-        $connection = $model->getConnection();
-        $grammar = $connection->getQueryGrammar();
-        $eventType = $grammar->wrap($model->qualifyColumn('event_type'));
-        $payload = $grammar->wrap($model->qualifyColumn('payload'));
-
-        [$sizeExpression, $fanOutExpression] = match ($connection->getDriverName()) {
-            'mysql' => [
-                "OCTET_LENGTH({$eventType}) + OCTET_LENGTH(COALESCE(CAST({$payload} AS CHAR CHARACTER SET utf8mb4), '[]'))",
-                "CASE WHEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT({$payload}, '$.parallel_group_id')), '') <> '' AND JSON_TYPE(JSON_EXTRACT({$payload}, '$.parallel_group_size')) IN ('INTEGER', 'DOUBLE', 'STRING') THEN CAST(JSON_UNQUOTE(JSON_EXTRACT({$payload}, '$.parallel_group_size')) AS SIGNED) ELSE 0 END",
-            ],
-            'pgsql' => [
-                "OCTET_LENGTH({$eventType}::text) + OCTET_LENGTH(COALESCE({$payload}::text, '[]'))",
-                "CASE WHEN COALESCE({$payload}->>'parallel_group_id', '') <> '' AND COALESCE({$payload}->>'parallel_group_size', '') ~ '^[+-]?[0-9]+([.][0-9]+)?$' THEN TRUNC(({$payload}->>'parallel_group_size')::numeric)::bigint ELSE 0 END",
-            ],
-            'sqlsrv' => [
-                "CONVERT(bigint, LEN({$eventType})) + CONVERT(bigint, LEN(COALESCE({$payload}, '[]')))",
-                "CASE WHEN COALESCE(JSON_VALUE({$payload}, '$.parallel_group_id'), '') <> '' THEN COALESCE(TRY_CONVERT(bigint, JSON_VALUE({$payload}, '$.parallel_group_size')), 0) ELSE 0 END",
-            ],
-            default => [
-                "LENGTH({$eventType}) + LENGTH(COALESCE({$payload}, '[]'))",
-                "CASE WHEN json_valid({$payload}) AND COALESCE(json_extract({$payload}, '$.parallel_group_id'), '') <> '' AND json_type({$payload}, '$.parallel_group_size') IN ('integer', 'real', 'text') THEN CAST(json_extract({$payload}, '$.parallel_group_size') AS INTEGER) ELSE 0 END",
-            ],
-        };
-
-        /**
-         * @var object{
-         *     history_event_count: int|string,
-         *     history_size_bytes: int|string,
-         *     history_fan_out: int|string
-         * }|null $aggregates
-         */
-        $aggregates = $query->toBase()
-            ->selectRaw(sprintf(
-                'COUNT(*) AS history_event_count, COALESCE(SUM(%s), 0) AS history_size_bytes, COALESCE(MAX(%s), 0) AS history_fan_out',
-                $sizeExpression,
-                $fanOutExpression,
-            ))
-            ->first();
-
-        return [
-            'history_event_count' => max(0, (int) ($aggregates->history_event_count ?? 0)),
-            'history_size_bytes' => max(0, (int) ($aggregates->history_size_bytes ?? 0)),
-            'history_fan_out' => max(0, (int) ($aggregates->history_fan_out ?? 0)),
         ];
     }
 

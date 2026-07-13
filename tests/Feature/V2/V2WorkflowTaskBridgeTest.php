@@ -1085,9 +1085,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
     public function testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory(): void
     {
-        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 20);
         config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 100);
 
         $run = $this->createWaitingRun();
 
@@ -1110,7 +1110,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ], $task);
         }
 
-        $this->createHistoryBudgetSummary($run, 25, 654321, 12);
+        $expected = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+        $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            $expected['history_size_bytes'],
+            $expected['history_fan_out'],
+        );
         ConfiguredBridgeWorkflowRunSummary::$retrievedCount = 0;
         config()->set(
             'workflows.v2.run_summary_model',
@@ -1141,8 +1148,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($result);
         $this->assertCount(3, $result['history_events']);
-        $this->assertSame(25, $result['total_history_events']);
-        $this->assertSame(654321, $result['history_size_bytes']);
+        $this->assertSame($expected['history_event_count'], $result['total_history_events']);
+        $this->assertSame($expected['history_size_bytes'], $result['history_size_bytes']);
         $this->assertTrue($result['continue_as_new_recommended']);
         $this->assertSame(
             HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
@@ -1188,20 +1195,45 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
             'sequence' => 1,
-            'activity_type' => 'bounded-fallback',
+            'activity_type' => "bounded/fallback-é-東京-🧭-\u{2028}",
+            'parallel_group_id' => 'fallback-group',
+            'parallel_group_kind' => 'all',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 'not-numeric',
+            'parallel_group_index' => 0,
+        ], $task);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'sequence' => 2,
+            'activity_type' => "bounded/fallback-é-東京-🧭-\u{2028}",
             'parallel_group_id' => 'fallback-group',
             'parallel_group_kind' => 'all',
             'parallel_group_base_sequence' => 1,
             'parallel_group_size' => 12,
-            'parallel_group_index' => 0,
+            'parallel_group_index' => 1,
         ], $task);
 
-        for ($sequence = 2; $sequence <= 25; $sequence++) {
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'sequence' => 3,
+            'activity_type' => "bounded/fallback-é-東京-🧭-\u{2028}",
+            'parallel_group_id' => 'fallback-group',
+            'parallel_group_kind' => 'all',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 99,
+            'parallel_group_index' => 2,
+        ], $task);
+
+        for ($sequence = 4; $sequence <= 25; $sequence++) {
             WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
                 'sequence' => $sequence,
-                'result' => "value-{$sequence}",
+                'result' => "value-{$sequence}-literal-\\u00e9-/-é-東京-🧭",
             ], $task);
         }
+
+        $expected = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+
+        $this->assertSame(12, $expected['history_fan_out']);
 
         $retrievedHistoryEvents = 0;
         /** @var list<WorkflowRun> $retrievedRuns */
@@ -1224,11 +1256,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $result = $this->bridge->historyPayloadPaginated($task->id, 0, 2);
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
+        $boundedBudget = HistoryBudget::forRunBounded($run);
 
         $this->assertNotNull($result);
         $this->assertCount(2, $result['history_events']);
-        $this->assertSame(25, $result['total_history_events']);
-        $this->assertGreaterThan(0, $result['history_size_bytes']);
+        $this->assertSame($expected['history_event_count'], $result['total_history_events']);
+        $this->assertSame($expected['history_size_bytes'], $result['history_size_bytes']);
+        $this->assertSame($expected, $boundedBudget);
         $this->assertTrue($result['continue_as_new_recommended']);
         $this->assertSame(
             HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
@@ -1255,7 +1289,39 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 3'),
         ));
 
-        $this->createHistoryBudgetSummary($run, 1, 1, 1);
+        $incompleteSummary = $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            0,
+            0,
+        );
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $incompleteSummaryResult = $this->bridge->historyPayloadPaginated($task->id, 23, 2);
+        $incompleteSummaryQueries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertNotNull($incompleteSummaryResult);
+        $this->assertCount(2, $incompleteSummaryResult['history_events']);
+        $this->assertSame(
+            $expected['history_event_count'],
+            $incompleteSummaryResult['total_history_events'],
+        );
+        $this->assertSame(
+            $expected['history_size_bytes'],
+            $incompleteSummaryResult['history_size_bytes'],
+        );
+        $this->assertTrue($incompleteSummaryResult['continue_as_new_recommended']);
+        $this->assertSame($expected, HistoryBudget::forRunBounded($run));
+        $this->assertTrue(collect($incompleteSummaryQueries)->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
+        ));
+
+        $incompleteSummary->forceFill([
+            'history_event_count' => 1,
+            'history_size_bytes' => 1,
+            'history_fan_out' => 1,
+        ])->save();
         DB::flushQueryLog();
         DB::enableQueryLog();
         $staleSummaryResult = $this->bridge->historyPayloadPaginated($task->id, 23, 2);
@@ -1263,13 +1329,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertNotNull($staleSummaryResult);
-        $this->assertCount(2, $staleSummaryResult['history_events']);
-        $this->assertSame(25, $staleSummaryResult['total_history_events']);
-        $this->assertGreaterThan(1, $staleSummaryResult['history_size_bytes']);
-        $this->assertTrue($staleSummaryResult['continue_as_new_recommended']);
+        $this->assertSame(
+            $expected['history_event_count'],
+            $staleSummaryResult['total_history_events'],
+        );
+        $this->assertSame($expected['history_size_bytes'], $staleSummaryResult['history_size_bytes']);
         $this->assertTrue(collect($staleSummaryQueries)->contains(
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
         ));
+        $this->assertFalse($run->relationLoaded('historyEvents'));
     }
 
     public function testHistoryPayloadPaginatedReturnsFirstPage(): void
