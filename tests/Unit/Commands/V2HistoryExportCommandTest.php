@@ -112,6 +112,7 @@ final class V2HistoryExportCommandTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['order-123']),
             'output' => Serializer::serialize([
                 'ok' => true,

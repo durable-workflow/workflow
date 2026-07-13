@@ -589,12 +589,22 @@ final class ChildRunHistory
             $payload = self::outputPayloadForChildRun($childRun);
         }
 
-        return self::unserializeOutputPayload($payload, $childRun);
+        return self::unserializeOutputPayload(
+            $payload,
+            $childRun,
+            self::stringValue($resolutionEvent->payload['payload_codec'] ?? null),
+        );
     }
 
     public static function outputForChildRun(?WorkflowRun $childRun): mixed
     {
-        return self::unserializeOutputPayload(self::outputPayloadForChildRun($childRun), $childRun);
+        $terminalEvent = self::terminalEventForRun($childRun);
+
+        return self::unserializeOutputPayload(
+            self::outputPayloadForChildRun($childRun),
+            $childRun,
+            self::stringValue($terminalEvent?->payload['payload_codec'] ?? null),
+        );
     }
 
     public static function exceptionForResolution(
@@ -769,9 +779,17 @@ final class ChildRunHistory
         return $terminalOutput ?? self::stringValue($childRun->output);
     }
 
-    private static function unserializeOutputPayload(mixed $payload, ?WorkflowRun $childRun): mixed
+    private static function unserializeOutputPayload(
+        mixed $payload,
+        ?WorkflowRun $childRun,
+        ?string $payloadCodec = null,
+    ): mixed
     {
-        $codec = self::outputPayloadCodec($payload, $childRun);
+        if ($payload === null) {
+            return null;
+        }
+
+        $codec = self::outputPayloadCodec($payload, $childRun, $payloadCodec);
         $serialized = ExternalPayloads::payloadBlob(
             $payload,
             $codec,
@@ -787,8 +805,16 @@ final class ChildRunHistory
             : Serializer::unserialize($serialized);
     }
 
-    private static function outputPayloadCodec(mixed $payload, ?WorkflowRun $childRun): ?string
+    private static function outputPayloadCodec(
+        mixed $payload,
+        ?WorkflowRun $childRun,
+        ?string $payloadCodec = null,
+    ): ?string
     {
+        if ($payloadCodec !== null && $payloadCodec !== '') {
+            return $payloadCodec;
+        }
+
         if (is_array($payload) && is_string($payload['codec'] ?? null) && $payload['codec'] !== '') {
             return $payload['codec'];
         }
@@ -799,9 +825,7 @@ final class ChildRunHistory
             return self::stringValue($envelope['codec'] ?? null);
         }
 
-        return is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
-            ? $childRun->payload_codec
-            : null;
+        return $childRun?->outputPayloadCodec();
     }
 
     /**

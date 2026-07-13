@@ -4519,6 +4519,16 @@ final class WorkflowStub
         $failure = $childRun->failures->first();
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+            ? $childTerminalEvent->payload['output'] ?? $childRun->output
+            : null;
+        $terminalOutputCodec = is_string($childTerminalEvent?->payload['payload_codec'] ?? null)
+            && $childTerminalEvent->payload['payload_codec'] !== ''
+                ? $childTerminalEvent->payload['payload_codec']
+                : null;
+        $childOutputCodec = $childOutput !== null
+            ? $terminalOutputCodec ?? $childRun->outputPayloadCodec()
+            : null;
 
         return WorkflowHistoryEvent::record($parentRun, $eventType, array_filter([
             'sequence' => $sequence,
@@ -4532,9 +4542,9 @@ final class WorkflowStub
             'child_status' => $childRun->status->value,
             'closed_reason' => $childRun->closed_reason,
             'closed_at' => $childRun->closed_at?->toJSON(),
-            'output' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
-                ? $childTerminalEvent->payload['output'] ?? $childRun->output
-                : null,
+            'output' => $childOutput,
+            'result' => $childOutput,
+            'payload_codec' => $childOutputCodec,
             'failure_id' => $failure?->id,
             'failure_category' => match ($eventType) {
                 HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,

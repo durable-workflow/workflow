@@ -181,6 +181,7 @@ final class RunDetailView
                 : null,
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+            'output_payload_codec' => $run->output !== null ? $run->outputPayloadCodec() : null,
             'output' => self::workflowOutput($run),
             'status' => $run->status->value,
             'is_terminal' => $run->status->isTerminal(),
@@ -441,11 +442,7 @@ final class RunDetailView
             return ExternalPayloads::storedEnvelope($run->output);
         }
 
-        try {
-            return $run->workflowOutput();
-        } catch (Throwable) {
-            return null;
-        }
+        return $run->workflowOutput();
     }
 
     private static function commandTargetName(WorkflowCommand $command): ?string

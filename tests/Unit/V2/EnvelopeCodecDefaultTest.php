@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Orchestra\Testbench\TestCase;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
 
 /**
- * Null-codec v2 envelopes must resolve through CodecRegistry::defaultCodec().
- * Final v2 treats missing payload_codec as Avro-only release data, not as a
- * development-era hook for changing new-run codecs through config.
+ * Run input envelopes may use the final v2 default, but workflow output must
+ * carry its own codec because a completion command can encode it differently.
  */
 final class EnvelopeCodecDefaultTest extends TestCase
 {
@@ -77,7 +77,7 @@ final class EnvelopeCodecDefaultTest extends TestCase
         $this->assertSame('avro', $run->argumentsEnvelope()['codec']);
     }
 
-    public function testWorkflowRunOutputEnvelopeFallsBackToAvroWhenJsonIsConfigured(): void
+    public function testWorkflowRunOutputEnvelopeFailsWhenOutputCodecIsUnavailable(): void
     {
         config([
             'workflows.serializer' => 'json',
@@ -86,15 +86,14 @@ final class EnvelopeCodecDefaultTest extends TestCase
         $run = new WorkflowRun();
         $run->payload_codec = null;
         $run->output = 'output-bytes';
-        $expected = [
-            'codec' => 'avro',
-            'blob' => 'output-bytes',
-        ];
 
-        $this->assertSame($expected, $run->outputEnvelope());
+        $this->expectException(WorkflowOutputCodecUnavailableException::class);
+        $this->expectExceptionMessage('Workflow output codec is unavailable');
+
+        $run->outputEnvelope();
     }
 
-    public function testWorkflowRunOutputEnvelopePrefersExplicitPayloadCodec(): void
+    public function testWorkflowRunOutputEnvelopeDoesNotGuessFromInputPayloadCodec(): void
     {
         config([
             'workflows.serializer' => 'json',
@@ -104,8 +103,22 @@ final class EnvelopeCodecDefaultTest extends TestCase
         $run->payload_codec = 'avro';
         $run->output = 'avro-bytes';
 
-        // When the row explicitly pins a codec, the row wins over config.
-        $this->assertSame('avro', $run->outputEnvelope()['codec']);
+        $this->expectException(WorkflowOutputCodecUnavailableException::class);
+
+        $run->outputEnvelope();
+    }
+
+    public function testWorkflowRunOutputEnvelopePrefersDedicatedOutputPayloadCodec(): void
+    {
+        $run = new WorkflowRun();
+        $run->payload_codec = 'avro';
+        $run->output_payload_codec = 'workflow-serializer-y';
+        $run->output = 'y-bytes';
+
+        $this->assertSame([
+            'codec' => 'workflow-serializer-y',
+            'blob' => 'y-bytes',
+        ], $run->outputEnvelope());
     }
 
     public function testWorkflowUpdateResultEnvelopeFallsBackToAvroWhenJsonIsConfigured(): void

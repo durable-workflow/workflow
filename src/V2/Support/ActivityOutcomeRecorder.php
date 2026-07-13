@@ -440,17 +440,23 @@ final class ActivityOutcomeRecorder
         $now = now();
 
         if ($throwable === null) {
+            $outputCodec = is_string($execution->payload_codec) && $execution->payload_codec !== ''
+                ? $execution->payload_codec
+                : (is_string($run->payload_codec) && $run->payload_codec !== ''
+                    ? $run->payload_codec
+                    : CodecRegistry::defaultCodec());
             $run->forceFill([
                 'status' => RunStatus::Completed,
                 'closed_reason' => 'completed',
                 'output' => $execution->result,
-                'payload_codec' => $execution->payload_codec ?? $run->payload_codec,
+                'output_payload_codec' => $outputCodec,
                 'closed_at' => $now,
                 'last_progress_at' => $now,
             ])->save();
 
             WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
                 'output' => $execution->result,
+                'payload_codec' => $outputCodec,
             ]);
 
             LifecycleEventDispatcher::workflowCompleted($run);

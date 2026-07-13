@@ -80,6 +80,7 @@ final class HistoryExportTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize([]),
             'output' => Serializer::serialize([
                 'ok' => true,
@@ -146,6 +147,7 @@ final class HistoryExportTest extends TestCase
             'closed_reason' => 'completed',
             'compatibility' => 'build-export',
             'payload_codec' => 'workflow-serializer',
+            'output_payload_codec' => 'workflow-serializer',
             'arguments' => Serializer::serialize(['order-123']),
             'output' => Serializer::serialize([
                 'ok' => true,
@@ -758,6 +760,7 @@ final class HistoryExportTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize([]),
             'output' => Serializer::serialize([
                 'ok' => true,
@@ -1628,6 +1631,7 @@ final class HistoryExportTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => 'workflow-serializer',
+            'output_payload_codec' => 'workflow-serializer',
             'arguments' => Serializer::serialize(['secret-order']),
             'output' => Serializer::serialize([
                 'secret' => true,
@@ -2047,6 +2051,7 @@ final class HistoryExportTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['signed']),
             'output' => Serializer::serialize([
                 'ok' => true,

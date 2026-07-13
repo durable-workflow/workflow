@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -55,6 +56,11 @@ final class WorkflowReplayer
         $arguments = self::arrayValue($payloads['arguments'] ?? null);
         $output = self::arrayValue($payloads['output'] ?? null);
         $codec = self::stringValue($payloads['codec'] ?? null) ?? CodecRegistry::defaultCodec();
+        $outputCodec = ($output['available'] ?? false) === true
+            ? self::stringValue($output['codec'] ?? null)
+                ?? self::payloadEnvelopeCodec($output['data'] ?? null)
+                ?? self::workflowOutputCodec($historyExport)
+            : null;
         $runId = self::requiredString($workflow, 'run_id');
         $instanceId = self::requiredString($workflow, 'instance_id');
 
@@ -81,6 +87,7 @@ final class WorkflowReplayer
                 ? self::requiredPayloadRowValue($output, 'data', 'payloads.output.data')
                 : null,
             'payload_codec' => $codec,
+            'output_payload_codec' => $outputCodec,
             'started_at' => self::timestamp($workflow['started_at'] ?? null),
             'closed_at' => self::timestamp($workflow['closed_at'] ?? null),
             'archived_at' => self::timestamp($workflow['archived_at'] ?? null),
@@ -414,6 +421,34 @@ final class WorkflowReplayer
     {
         return is_string($value) && $value !== ''
             ? $value
+            : null;
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     */
+    private static function workflowOutputCodec(array $historyExport): ?string
+    {
+        $events = array_reverse(self::arrayValue($historyExport['history_events'] ?? null));
+
+        foreach ($events as $event) {
+            if (! is_array($event)
+                || ($event['type'] ?? null) !== HistoryEventType::WorkflowCompleted->value
+                || ! is_array($event['payload'] ?? null)
+            ) {
+                continue;
+            }
+
+            return self::stringValue($event['payload']['payload_codec'] ?? null);
+        }
+
+        return null;
+    }
+
+    private static function payloadEnvelopeCodec(mixed $payload): ?string
+    {
+        return is_array($payload)
+            ? self::stringValue($payload['codec'] ?? null)
             : null;
     }
 

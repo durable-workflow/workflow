@@ -1087,6 +1087,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
             'output' => $result,
+            'output_payload_codec' => $outputCodec,
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
@@ -3771,8 +3772,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             : null;
         $childOutputCodec = $childOutput !== null
             ? self::nonEmptyString($childTerminalEvent?->payload['payload_codec'] ?? null)
-                ?? self::nonEmptyString($childRun->payload_codec)
-                ?? CodecRegistry::defaultCodec()
+                ?? $childRun->outputPayloadCodec()
             : null;
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([

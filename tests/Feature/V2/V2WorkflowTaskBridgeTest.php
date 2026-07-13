@@ -26,6 +26,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -41,12 +42,13 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
-use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
@@ -2118,6 +2120,271 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
     }
 
+    public function testInlineWorkflowAndChildCompletionPreserveCommandResultCodecAcrossSurfaces(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentRun->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $parentTask */
+        $parentTask = $this->createLeasedTask($parentRun);
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serializeWithCodec('avro', ['child-arg']),
+                'payload_codec' => 'avro',
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $this->assertSame('avro', $childRun->payload_codec);
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+        $this->bridge->claimStatus($childTask->id, 'external-child-worker');
+
+        $codec = 'workflow-serializer-y';
+        $expected = ['child_result' => 'inline'];
+        $payload = Serializer::serializeWithCodec($codec, $expected);
+        $completed = $this->bridge->complete($childTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => $payload,
+                'payload_codec' => $codec,
+            ],
+        ]);
+
+        $this->assertTrue($completed['completed']);
+
+        $childRun->refresh();
+        $this->assertSame('avro', $childRun->payload_codec);
+        $this->assertSame($codec, $childRun->output_payload_codec);
+        $storedOutput = $childRun->output;
+        $this->assertIsString($storedOutput);
+        $this->assertSame($payload, $storedOutput);
+        $this->assertFalse(ExternalPayloads::isStoredReference($storedOutput));
+        $this->assertSame(['codec' => $codec, 'blob' => $payload], $childRun->outputEnvelope());
+        $this->assertSame($expected, $childRun->workflowOutput());
+
+        $detail = RunDetailView::forRun($childRun->fresh());
+        $this->assertSame($codec, $detail['output_payload_codec']);
+        $this->assertSame($expected, $detail['output']);
+
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->firstOrFail();
+        $this->assertSame($codec, $childCompleted->payload['payload_codec'] ?? null);
+        $this->assertSame($payload, $childCompleted->payload['output'] ?? null);
+        $this->assertSame($payload, $childCompleted->payload['result'] ?? null);
+        $this->assertSame($expected, ChildRunHistory::outputForResolution($childCompleted, $childRun));
+
+        $childExport = HistoryExport::forRun($childRun->fresh());
+        $this->assertSame('avro', $childExport['payloads']['codec']);
+        $this->assertSame($codec, $childExport['payloads']['output']['codec']);
+        $this->assertSame(
+            $codec,
+            collect($childExport['payload_manifest']['entries'])
+                ->firstWhere('path', 'payloads.output.data')['codec'] ?? null,
+        );
+        $workflowCompletedIndex = collect($childExport['history_events'])
+            ->search(
+                static fn (array $event): bool => ($event['type'] ?? null)
+                    === HistoryEventType::WorkflowCompleted->value
+            );
+        $this->assertIsInt($workflowCompletedIndex);
+        $this->assertSame(
+            $codec,
+            collect($childExport['payload_manifest']['entries'])
+                ->firstWhere('path', "history_events.{$workflowCompletedIndex}.payload.output")['codec'] ?? null,
+        );
+
+        $replayedChild = (new WorkflowReplayer())->runFromHistoryExport($childExport);
+        $this->assertSame($codec, $replayedChild->output_payload_codec);
+        $this->assertSame($codec, $replayedChild->outputEnvelope()['codec']);
+        $this->assertSame($expected, $replayedChild->workflowOutput());
+        $legacyChildExport = $childExport;
+        unset($legacyChildExport['payloads']['output']['codec']);
+        $legacyReplayedChild = (new WorkflowReplayer())->runFromHistoryExport($legacyChildExport);
+        $this->assertSame($codec, $legacyReplayedChild->output_payload_codec);
+        $this->assertSame($expected, $legacyReplayedChild->workflowOutput());
+
+        $parentExport = HistoryExport::forRun($parentRun->fresh());
+        $childCompletedIndex = collect($parentExport['history_events'])
+            ->search(
+                static fn (array $event): bool => ($event['type'] ?? null)
+                    === HistoryEventType::ChildRunCompleted->value
+            );
+        $this->assertIsInt($childCompletedIndex);
+        foreach (['output', 'result'] as $field) {
+            $entry = collect($parentExport['payload_manifest']['entries'])
+                ->firstWhere('path', "history_events.{$childCompletedIndex}.payload.{$field}");
+            $this->assertIsArray($entry);
+            $this->assertSame($codec, $entry['codec']);
+        }
+
+        $replayedParent = (new WorkflowReplayer())->runFromHistoryExport($parentExport);
+        /** @var WorkflowHistoryEvent $replayedResolution */
+        $replayedResolution = $replayedParent->historyEvents
+            ->firstWhere('event_type', HistoryEventType::ChildRunCompleted);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $replayedResolution);
+        $this->assertSame($expected, ChildRunHistory::outputForResolution($replayedResolution));
+    }
+
+    public function testResultlessChildCompletionDoesNotRequireAnOutputCodecForLiveOrExportedReplay(): void
+    {
+        $parentRun = $this->createWaitingRun();
+        $parentRun->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $parentTask */
+        $parentTask = $this->createLeasedTask($parentRun);
+        $started = $this->bridge->complete($parentTask->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serializeWithCodec('avro', ['child-arg']),
+                'payload_codec' => 'avro',
+            ],
+        ]);
+
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+        $this->bridge->claimStatus($childTask->id, 'external-child-worker');
+
+        $completed = $this->bridge->complete($childTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => null,
+            ],
+        ]);
+
+        $this->assertTrue($completed['completed']);
+
+        /** @var WorkflowHistoryEvent $workflowCompleted */
+        $workflowCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->firstOrFail();
+        $workflowCompletedPayload = $workflowCompleted->payload;
+        unset($workflowCompletedPayload['payload_codec']);
+        $workflowCompleted->forceFill(['payload' => $workflowCompletedPayload])->save();
+
+        $childRun->forceFill(['output_payload_codec' => null])->save();
+        /** @var WorkflowRun $childRun */
+        $childRun = $childRun->fresh(['historyEvents']);
+
+        $this->assertNull($childRun->output);
+        $this->assertNull($childRun->output_payload_codec);
+
+        /** @var WorkflowHistoryEvent $resolution */
+        $resolution = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->firstOrFail();
+        $this->assertArrayNotHasKey('output', $resolution->payload);
+        $this->assertArrayNotHasKey('result', $resolution->payload);
+        $this->assertArrayNotHasKey('payload_codec', $resolution->payload);
+        $this->assertNull(ChildRunHistory::outputForResolution($resolution, $childRun));
+        $this->assertNull(ChildRunHistory::outputForChildRun($childRun));
+
+        $parentExport = HistoryExport::forRun($parentRun->fresh());
+        $childExport = HistoryExport::forRun($childRun);
+        $this->assertFalse($childExport['payloads']['output']['available']);
+        $this->assertNull($childExport['payloads']['output']['codec']);
+
+        $replayedParent = (new WorkflowReplayer())->runFromHistoryExport($parentExport);
+        $replayedChild = (new WorkflowReplayer())->runFromHistoryExport($childExport);
+        /** @var WorkflowHistoryEvent $replayedResolution */
+        $replayedResolution = $replayedParent->historyEvents
+            ->firstWhere('event_type', HistoryEventType::ChildRunCompleted);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $replayedResolution);
+        $this->assertNull(ChildRunHistory::outputForResolution($replayedResolution, $replayedChild));
+        $this->assertNull(ChildRunHistory::outputForChildRun($replayedChild));
+    }
+
+    public function testLegacyInlineWorkflowOutputWithoutProjectedCodecFailsExplicitly(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $payload = Serializer::serializeWithCodec('workflow-serializer-y', ['legacy' => true]);
+
+        $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => $payload,
+                'payload_codec' => 'workflow-serializer-y',
+            ],
+        ]);
+
+        /** @var WorkflowHistoryEvent $completion */
+        $completion = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->firstOrFail();
+        $legacyPayload = $completion->payload;
+        unset($legacyPayload['payload_codec']);
+        $completion->forceFill(['payload' => $legacyPayload])->save();
+
+        $run->refresh();
+        $run->forceFill(['output_payload_codec' => null])->save();
+        $run->refresh();
+
+        foreach ([
+            static fn (): string => $run->outputPayloadCodec(),
+            static fn (): ?array => $run->outputEnvelope(),
+            static fn (): mixed => $run->workflowOutput(),
+        ] as $read) {
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $error = null;
+
+            try {
+                $read();
+            } catch (WorkflowOutputCodecUnavailableException $exception) {
+                $error = $exception;
+            } finally {
+                $queries = DB::getQueryLog();
+                DB::disableQueryLog();
+            }
+
+            $this->assertInstanceOf(WorkflowOutputCodecUnavailableException::class, $error);
+            $this->assertStringContainsString($run->id, $error->getMessage());
+            $this->assertSame([], $queries, 'Terminal output reads must not query completion history.');
+        }
+
+        $this->expectException(WorkflowOutputCodecUnavailableException::class);
+
+        RunDetailView::forRun($run);
+    }
+
     public function testCompleteWithWorkflowCompletionPreservesExternalResultPayloadCodec(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
@@ -2149,6 +2416,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $run->refresh();
         $this->assertIsString($run->output);
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $run->output);
+        $this->assertSame($codec, $run->output_payload_codec);
+        $this->assertSame($codec, $run->outputEnvelope()['codec']);
         $this->assertSame($expected, $run->workflowOutput());
 
         $completionEvent = WorkflowHistoryEvent::query()

@@ -211,6 +211,7 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_timers'));
         $this->assertTrue(Schema::hasTable('workflow_exceptions'));
         $this->assertTrue(Schema::hasTable('workflow_relationships'));
+        $this->assertTrue(Schema::hasColumn('workflow_runs', 'output_payload_codec'));
         $this->assertTrue(Schema::hasTable('workflow_commands'));
         $this->assertTrue(Schema::hasTable('workflow_links'));
         $this->assertTrue(Schema::hasTable('activity_attempts'));
@@ -360,6 +361,94 @@ final class MigrationsTest extends TestCase
 
         $this->assertSame(WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION, $entry->refresh()->schema_version);
         $this->assertTrue($entry->usesCurrentSchema());
+    }
+
+    public function testOutputPayloadCodecMigrationBackfillsCompletionHistory(): void
+    {
+        $now = now();
+        $knownRunId = '01J00000000000000000000001';
+        $unknownRunId = '01J00000000000000000000002';
+
+        DB::table('workflow_instances')->insert([
+            [
+                'id' => 'migration-output-codec-known',
+                'workflow_class' => 'Tests\\Fixtures\\MigrationWorkflow',
+                'workflow_type' => 'migration.output-codec',
+                'run_count' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'id' => 'migration-output-codec-unknown',
+                'workflow_class' => 'Tests\\Fixtures\\MigrationWorkflow',
+                'workflow_type' => 'migration.output-codec',
+                'run_count' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        foreach ([
+            [$knownRunId, 'migration-output-codec-known'],
+            [$unknownRunId, 'migration-output-codec-unknown'],
+        ] as [$runId, $instanceId]) {
+            DB::table('workflow_runs')->insert([
+                'id' => $runId,
+                'workflow_instance_id' => $instanceId,
+                'run_number' => 1,
+                'workflow_class' => 'Tests\\Fixtures\\MigrationWorkflow',
+                'workflow_type' => 'migration.output-codec',
+                'status' => 'completed',
+                'closed_reason' => 'completed',
+                'payload_codec' => 'avro',
+                'output' => 'inline-output',
+                'output_payload_codec' => null,
+                'last_history_sequence' => 1,
+                'last_command_sequence' => 0,
+                'message_cursor_position' => 0,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        DB::table('workflow_history_events')->insert([
+            [
+                'id' => '01J00000000000000000000011',
+                'workflow_run_id' => $knownRunId,
+                'sequence' => 1,
+                'event_type' => 'WorkflowCompleted',
+                'payload' => json_encode([
+                    'output' => 'inline-output',
+                    'payload_codec' => 'workflow-serializer-y',
+                ], JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'id' => '01J00000000000000000000012',
+                'workflow_run_id' => $unknownRunId,
+                'sequence' => 1,
+                'event_type' => 'WorkflowCompleted',
+                'payload' => json_encode(['output' => 'inline-output'], JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $migration = require dirname(__DIR__, 3)
+            . '/src/migrations/2026_07_13_000100_add_output_payload_codec_to_workflow_runs.php';
+        $migration->down();
+        $this->assertFalse(Schema::hasColumn('workflow_runs', 'output_payload_codec'));
+
+        $migration->up();
+
+        $this->assertSame(
+            'workflow-serializer-y',
+            DB::table('workflow_runs')->where('id', $knownRunId)->value('output_payload_codec'),
+        );
+        $this->assertNull(
+            DB::table('workflow_runs')->where('id', $unknownRunId)->value('output_payload_codec'),
+        );
     }
 
     public function testRunSummaryWorkflowInstanceIdSupportsServerWorkflowIds(): void

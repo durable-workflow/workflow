@@ -868,6 +868,7 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_type' => 'workflow.parent',
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize([]),
             'output' => Serializer::serialize([
                 'ok' => true,
@@ -937,6 +938,7 @@ final class V2RunDetailViewTest extends TestCase
             'child_run_number' => 1,
             'child_status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
+            'payload_codec' => config('workflows.serializer'),
             'output' => Serializer::serialize([
                 'ok' => true,
             ]),
@@ -2482,6 +2484,7 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_type' => 'workflow.child',
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize([]),
             'output' => Serializer::serialize([
                 'child' => 'corrupted-terminal-row',

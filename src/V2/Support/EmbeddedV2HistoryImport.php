@@ -158,6 +158,12 @@ final class EmbeddedV2HistoryImport
         $messageCursor = self::maxSequence(self::listValue($bundle['commands'] ?? null), 'message_sequence');
         $payloads = self::arrayValue($bundle['payloads'] ?? null);
         $payloadCodec = self::stringValue($payloads['codec'] ?? null) ?? CodecRegistry::defaultCodec();
+        $outputPayload = self::arrayValue($payloads['output'] ?? null);
+        $outputPayloadCodec = ($outputPayload['available'] ?? false) === true
+            ? self::stringValue($outputPayload['codec'] ?? null)
+                ?? self::payloadEnvelopeCodec($outputPayload['data'] ?? null)
+                ?? self::workflowOutputCodec($bundle)
+            : null;
 
         /** @var WorkflowInstance|null $instance */
         $instance = WorkflowInstance::query()
@@ -198,6 +204,7 @@ final class EmbeddedV2HistoryImport
             'closed_reason' => self::stringValue($workflow['closed_reason'] ?? null),
             'compatibility' => self::stringValue($workflow['compatibility'] ?? null),
             'payload_codec' => $payloadCodec,
+            'output_payload_codec' => $outputPayloadCodec,
             'arguments' => self::payloadData($payloads, 'arguments'),
             'output' => self::payloadData($payloads, 'output'),
             'connection' => self::stringValue($workflow['connection'] ?? null),
@@ -1024,6 +1031,33 @@ final class EmbeddedV2HistoryImport
     private static function arrayValue(mixed $value): ?array
     {
         return is_array($value) ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     */
+    private static function workflowOutputCodec(array $bundle): ?string
+    {
+        $events = array_reverse(self::listValue($bundle['history_events'] ?? null));
+
+        foreach ($events as $event) {
+            if (($event['type'] ?? null) !== HistoryEventType::WorkflowCompleted->value
+                || ! is_array($event['payload'] ?? null)
+            ) {
+                continue;
+            }
+
+            return self::stringValue($event['payload']['payload_codec'] ?? null);
+        }
+
+        return null;
+    }
+
+    private static function payloadEnvelopeCodec(mixed $payload): ?string
+    {
+        return is_array($payload)
+            ? self::stringValue($payload['codec'] ?? null)
+            : null;
     }
 
     /**

@@ -36,6 +36,8 @@ return new class() extends WorkflowMigration {
                 ->nullable();
             $table->longText('output')
                 ->nullable();
+            $table->string('output_payload_codec')
+                ->nullable();
             $table->string('connection')
                 ->nullable();
             $table->string('queue')

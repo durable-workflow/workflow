@@ -129,6 +129,7 @@ final class HistoryExport
                 ],
                 'output' => [
                     'available' => $run->output !== null,
+                    'codec' => $run->output !== null ? $run->outputPayloadCodec() : null,
                     'data' => self::payloadValue($run->output),
                 ],
             ],
@@ -239,6 +240,7 @@ final class HistoryExport
         $entries = [];
         $redactedPaths = self::redactionPaths($bundle);
         $runCodec = self::stringValue($bundle['payloads']['codec'] ?? null) ?? CodecRegistry::defaultCodec();
+        $outputCodec = self::stringValue($bundle['payloads']['output']['codec'] ?? null) ?? $runCodec;
 
         self::addPayloadManifestEntry(
             $entries,
@@ -251,11 +253,44 @@ final class HistoryExport
         self::addPayloadManifestEntry(
             $entries,
             'payloads.output.data',
-            $runCodec,
+            $outputCodec,
             $bundle['payloads']['output']['data'] ?? null,
             (bool) ($bundle['payloads']['output']['available'] ?? false),
             $redactedPaths,
         );
+
+        foreach (self::arrayValue($bundle['history_events'] ?? null) as $index => $event) {
+            if (! is_array($event) || ! is_array($event['payload'] ?? null)) {
+                continue;
+            }
+
+            $eventType = self::stringValue($event['type'] ?? null);
+
+            if (! in_array($eventType, [
+                HistoryEventType::WorkflowCompleted->value,
+                HistoryEventType::ChildRunCompleted->value,
+            ], true)) {
+                continue;
+            }
+
+            $payload = $event['payload'];
+            $codec = self::stringValue($payload['payload_codec'] ?? null)
+                ?? ($eventType === HistoryEventType::WorkflowCompleted->value ? $outputCodec : null);
+            $fields = $eventType === HistoryEventType::ChildRunCompleted->value
+                ? ['output', 'result']
+                : ['output'];
+
+            foreach ($fields as $field) {
+                self::addPayloadManifestEntry(
+                    $entries,
+                    "history_events.{$index}.payload.{$field}",
+                    $codec,
+                    $payload[$field] ?? null,
+                    self::payloadAvailable($payload[$field] ?? null),
+                    $redactedPaths,
+                );
+            }
+        }
 
         foreach (self::arrayValue($bundle['commands'] ?? null) as $index => $command) {
             if (! is_array($command)) {
@@ -344,7 +379,15 @@ final class HistoryExport
         array $redactedPaths,
     ): void {
         $codec = self::stringValue($codec) ?? CodecRegistry::defaultCodec();
-        $redacted = in_array($path, $redactedPaths, true);
+        $redacted = false;
+
+        foreach ($redactedPaths as $redactedPath) {
+            if ($path === $redactedPath || str_starts_with($path, $redactedPath . '.')) {
+                $redacted = true;
+
+                break;
+            }
+        }
         $entry = [
             'path' => $path,
             'codec' => $codec,
@@ -525,6 +568,19 @@ final class HistoryExport
         $payloadsCodec = $bundle['payloads']['codec'] ?? null;
         if ($payloadsCodec === $codec) {
             return true;
+        }
+
+        if (($bundle['payloads']['output']['codec'] ?? null) === $codec) {
+            return true;
+        }
+
+        foreach (self::arrayValue($bundle['history_events'] ?? null) as $event) {
+            if (is_array($event)
+                && is_array($event['payload'] ?? null)
+                && ($event['payload']['payload_codec'] ?? null) === $codec
+            ) {
+                return true;
+            }
         }
 
         foreach (['commands', 'updates', 'signals', 'tasks', 'activities'] as $section) {

@@ -13,6 +13,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 
@@ -303,8 +304,35 @@ class WorkflowRun extends Model
 
         return ExternalPayloads::wireEnvelope(
             $this->output,
-            $this->payload_codec ?? CodecRegistry::defaultCodec(),
+            $this->outputPayloadCodec(),
             is_string($this->namespace) ? $this->namespace : null,
+        );
+    }
+
+    /**
+     * Resolve the workflow result codec from the bounded run projection or a
+     * self-describing external payload. Inline output must never guess from
+     * the run input codec because command results may use a different codec.
+     */
+    public function outputPayloadCodec(): string
+    {
+        if (is_string($this->output_payload_codec) && trim($this->output_payload_codec) !== '') {
+            return trim($this->output_payload_codec);
+        }
+
+        $storedEnvelope = is_string($this->output)
+            ? ExternalPayloads::storedEnvelope($this->output)
+            : null;
+
+        if (is_array($storedEnvelope)
+            && is_string($storedEnvelope['codec'] ?? null)
+            && $storedEnvelope['codec'] !== ''
+        ) {
+            return $storedEnvelope['codec'];
+        }
+
+        throw new WorkflowOutputCodecUnavailableException(
+            is_string($this->id) ? $this->id : null,
         );
     }
 
@@ -378,15 +406,11 @@ class WorkflowRun extends Model
 
     /**
      * Workflow results may be produced by a worker command whose codec differs
-     * from the run input codec. Stored external envelopes carry that output
-     * codec with the reference, so prefer it when present.
+     * from the run input codec, so resolve them through the output codec.
      */
     private function unserializeOutputPayload(string $blob): mixed
     {
-        $storedEnvelope = ExternalPayloads::storedEnvelope($blob);
-        $codec = is_array($storedEnvelope) && is_string($storedEnvelope['codec'] ?? null)
-            ? $storedEnvelope['codec']
-            : (is_string($this->payload_codec) ? $this->payload_codec : null);
+        $codec = $this->outputPayloadCodec();
 
         $blob = ExternalPayloads::resolveStoredPayload(
             $blob,
@@ -394,10 +418,6 @@ class WorkflowRun extends Model
             is_string($this->namespace) ? $this->namespace : null,
         );
 
-        if (is_string($codec) && $codec !== '') {
-            return Serializer::unserializeWithCodec($codec, $blob);
-        }
-
-        return Serializer::unserialize($blob);
+        return Serializer::unserializeWithCodec($codec, $blob);
     }
 }

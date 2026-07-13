@@ -2385,6 +2385,13 @@ final class WorkflowExecutor
         $failure = $childRun->failures->first();
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+            ? $childTerminalEvent->payload['output'] ?? $childRun->output
+            : null;
+        $childOutputCodec = $childOutput !== null
+            ? self::nonEmptyString($childTerminalEvent?->payload['payload_codec'] ?? null)
+                ?? $childRun->outputPayloadCodec()
+            : null;
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
@@ -2398,9 +2405,9 @@ final class WorkflowExecutor
             'child_status' => $childRun->status->value,
             'closed_reason' => $childRun->closed_reason,
             'closed_at' => $childRun->closed_at?->toJSON(),
-            'output' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
-                ? $childTerminalEvent->payload['output'] ?? $childRun->output
-                : null,
+            'output' => $childOutput,
+            'result' => $childOutput,
+            'payload_codec' => $childOutputCodec,
             'failure_id' => $failure?->id,
             'failure_category' => match ($eventType) {
                 HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,
@@ -2960,7 +2967,10 @@ final class WorkflowExecutor
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
     {
-        $serializedOutput = Serializer::serializeWithCodec($run->payload_codec, $result);
+        $outputCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $serializedOutput = Serializer::serializeWithCodec($outputCodec, $result);
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedOutput),
             $run,
@@ -2970,7 +2980,7 @@ final class WorkflowExecutor
         );
         $storedOutput = ExternalPayloads::externalizeForNamespace(
             $serializedOutput,
-            is_string($run->payload_codec) ? $run->payload_codec : CodecRegistry::defaultCodec(),
+            $outputCodec,
             is_string($run->namespace) ? $run->namespace : null,
         );
         StructuralLimits::guardPayloadSize($storedOutput);
@@ -2979,6 +2989,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
             'output' => $storedOutput,
+            'output_payload_codec' => $outputCodec,
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
@@ -2986,9 +2997,10 @@ final class WorkflowExecutor
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
             'output' => ExternalPayloads::historyValue(
                 $run->output,
-                is_string($run->payload_codec) ? $run->payload_codec : CodecRegistry::defaultCodec(),
+                $outputCodec,
                 is_string($run->namespace) ? $run->namespace : null,
             ),
+            'payload_codec' => $outputCodec,
         ], $task);
 
         $task->forceFill([
