@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkerProtocolVersionTest extends TestCase
@@ -109,6 +110,10 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::workerCapabilities(), $summary['worker_capabilities']);
         $this->assertSame(WorkerProtocolVersion::nonTerminalCommandTypes(), $summary['non_terminal_command_types']);
         $this->assertSame(WorkerProtocolVersion::terminalCommandTypes(), $summary['terminal_command_types']);
+        $this->assertSame(
+            WorkerHistoryPayloadContract::manifest(),
+            $summary['workflow_history_budget'],
+        );
         $this->assertSame(
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
             $summary['history_pagination']['default_page_size']
@@ -299,6 +304,11 @@ final class WorkerProtocolVersionTest extends TestCase
             'historyPayloadPaginated',
         ))->getParameters()[2];
 
+        $facade = (new \ReflectionMethod(
+            \Workflow\V2\WorkflowTaskBridge::class,
+            'historyPayloadPaginated',
+        ))->getParameters()[2];
+
         $this->assertSame(
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
             $contract->getDefaultValue(),
@@ -308,6 +318,11 @@ final class WorkerProtocolVersionTest extends TestCase
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
             $bridge->getDefaultValue(),
             'DefaultWorkflowTaskBridge::historyPayloadPaginated default must use the protocol constant.',
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            $facade->getDefaultValue(),
+            'WorkflowTaskBridge facade historyPayloadPaginated default must use the protocol constant.',
         );
     }
 

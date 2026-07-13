@@ -292,6 +292,7 @@ final class WorkerProtocolVersion
      *     worker_capabilities: list<string>,
      *     non_terminal_command_types: list<string>,
      *     terminal_command_types: list<string>,
+     *     workflow_history_budget: array<string, mixed>,
      *     history_pagination: array{default_page_size: int, max_page_size: int},
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     long_poll: array{default_timeout_seconds: int, min_timeout_seconds: int, max_timeout_seconds: int},
@@ -317,6 +318,7 @@ final class WorkerProtocolVersion
             'worker_capabilities' => self::workerCapabilities(),
             'non_terminal_command_types' => self::nonTerminalCommandTypes(),
             'terminal_command_types' => self::terminalCommandTypes(),
+            'workflow_history_budget' => WorkerHistoryPayloadContract::manifest(),
             'history_pagination' => [
                 'default_page_size' => self::DEFAULT_HISTORY_PAGE_SIZE,
                 'max_page_size' => self::MAX_HISTORY_PAGE_SIZE,

@@ -6,6 +6,7 @@ namespace Workflow\V2;
 
 use Throwable;
 use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
  * Static convenience facade for the WorkflowTaskBridge contract.
@@ -101,7 +102,16 @@ final class WorkflowTaskBridge
      *     arguments: string|null,
      *     arguments_envelope: array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null,
      *     run_status: string,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
      *     last_history_sequence: int,
+     *     total_history_events: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     history_budget_pressure: string,
+     *     history_budget_pressure_dimensions: list<string>,
      *     history_events: list<array{
      *         id: string,
      *         sequence: int,
@@ -117,6 +127,52 @@ final class WorkflowTaskBridge
     public static function historyPayload(string $taskId): ?array
     {
         return self::resolve()->historyPayload($taskId);
+    }
+
+    /**
+     * @return array{
+     *     task_id: string,
+     *     workflow_run_id: string,
+     *     workflow_instance_id: string,
+     *     namespace: string|null,
+     *     workflow_type: string|null,
+     *     workflow_class: string|null,
+     *     payload_codec: string,
+     *     arguments: string|null,
+     *     arguments_envelope: array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null,
+     *     run_status: string,
+     *     last_history_sequence: int,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
+     *     total_history_events: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     history_budget_pressure: string,
+     *     history_budget_pressure_dimensions: list<string>,
+     *     after_sequence: int,
+     *     page_size: int,
+     *     has_more: bool,
+     *     next_after_sequence: int|null,
+     *     history_events: list<array{
+     *         id: string,
+     *         sequence: int,
+     *         event_type: string,
+     *         namespace: string|null,
+     *         payload: array<string, mixed>,
+     *         workflow_task_id: string|null,
+     *         workflow_command_id: string|null,
+     *         recorded_at: string|null,
+     *     }>,
+     * }|null
+     */
+    public static function historyPayloadPaginated(
+        string $taskId,
+        int $afterSequence = 0,
+        int $pageSize = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+    ): ?array {
+        return self::resolve()->historyPayloadPaginated($taskId, $afterSequence, $pageSize);
     }
 
     /**

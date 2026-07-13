@@ -30,8 +30,8 @@ Each run has a derived `history_budget_pressure` value with three states:
 - `approaching` — at least one dimension is at or above its soft threshold,
   but no dimension has crossed its hard threshold.
 - `continue_as_new_recommended` — at least one dimension is at or above its
-  hard threshold. `continue_as_new_recommended=true` is also surfaced as a
-  boolean for backward compatibility.
+  hard threshold. `continue_as_new_recommended=true` also provides the direct
+  boolean recommendation used by workers and workflow code.
 
 The pressure value is computed from the same counters that drive
 `continue_as_new_recommended`, so operators see the same authoritative signal
@@ -53,6 +53,17 @@ across waterline, the run detail view, and operator metrics.
   list of dimensions that triggered the current pressure
   (`history_budget_pressure_dimensions`) so operators can explain *why* a run
   is approaching the boundary.
+- Full and paginated `WorkflowTaskBridge` history responses carry the complete
+  canonical budget as `total_history_events`, `history_size_bytes`,
+  `history_fan_out`, `continue_as_new_recommended`,
+  `history_budget_pressure`, and `history_budget_pressure_dimensions`.
+  `WorkerHistoryPayloadContract` publishes the required current response
+  schema under `WorkerProtocolVersion::describe().workflow_history_budget`,
+  and the paginated bridge resolves it through the bounded canonical budget
+  path without hydrating the run's history collection.
+  Custom bridge implementations must return every required field in that
+  schema for both response kinds; omitted fields are not a supported response
+  variant.
 - `OperatorMetrics::history` reports
   `continue_as_new_recommended_runs`, `approaching_budget_runs`,
   `max_event_count`, `max_size_bytes`, `max_fan_out`, and the configured

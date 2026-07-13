@@ -62,6 +62,7 @@ use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Worker\WorkflowFiberRunner;
@@ -2813,52 +2814,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNull($result);
     }
 
-    public function testHistoryPayloadPublishesAuthoritativeRunBudget(): void
+    public function testHistoryPayloadPublishesExactEventCountPressureBudget(): void
     {
-        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 1);
+        $this->assertHistoryBudgetPressureResponses(HistoryBudget::DIMENSION_EVENT_COUNT);
+    }
 
-        $run = $this->createWaitingRun();
+    public function testHistoryPayloadPublishesExactByteSizePressureBudget(): void
+    {
+        $this->assertHistoryBudgetPressureResponses(HistoryBudget::DIMENSION_SIZE_BYTES);
+    }
 
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'task_type' => TaskType::Workflow->value,
-            'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
-            'payload' => [],
-            'connection' => 'redis',
-            'queue' => 'default',
-            'compatibility' => 'build-a',
-        ]);
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
-            'workflow_class' => TestGreetingWorkflow::class,
-            'workflow_type' => 'test-greeting-workflow',
-        ], $task);
-
-        $expected = HistoryBudget::forRun($run);
-        $this->createHistoryBudgetSummary(
-            $run,
-            $expected['history_event_count'],
-            $expected['history_size_bytes'],
-            $expected['history_fan_out'],
-        );
-
-        $payloads = [
-            $this->bridge->historyPayload($task->id),
-            $this->bridge->historyPayloadPaginated($task->id),
-        ];
-
-        foreach ($payloads as $payload) {
-            $this->assertIsArray($payload);
-            $this->assertSame($expected['history_event_count'], $payload['total_history_events']);
-            $this->assertSame($expected['history_size_bytes'], $payload['history_size_bytes']);
-            $this->assertTrue($payload['continue_as_new_recommended']);
-            $this->assertSame(
-                HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
-                $payload['history_budget_pressure'],
-            );
-        }
+    public function testHistoryPayloadPublishesExactFanOutPressureBudget(): void
+    {
+        $this->assertHistoryBudgetPressureResponses(HistoryBudget::DIMENSION_FAN_OUT);
     }
 
     public function testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory(): void
@@ -2925,13 +2893,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertNotNull($result);
+        $this->assertHistoryBudgetResponseMatches($expected, $result);
         $this->assertCount(3, $result['history_events']);
         $this->assertSame($expected['history_event_count'], $result['total_history_events']);
         $this->assertSame($expected['history_size_bytes'], $result['history_size_bytes']);
+        $this->assertSame($expected['history_fan_out'], $result['history_fan_out']);
         $this->assertTrue($result['continue_as_new_recommended']);
         $this->assertSame(
             HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
             $result['history_budget_pressure'],
+        );
+        $this->assertSame(
+            $expected['pressure_dimensions'],
+            $result['history_budget_pressure_dimensions'],
         );
         $this->assertSame(4, $retrievedHistoryEvents);
         $this->assertSame(1, ConfiguredBridgeWorkflowRunSummary::$retrievedCount);
@@ -3037,14 +3011,20 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $boundedBudget = HistoryBudget::forRunBounded($run);
 
         $this->assertNotNull($result);
+        $this->assertHistoryBudgetResponseMatches($expected, $result);
         $this->assertCount(2, $result['history_events']);
         $this->assertSame($expected['history_event_count'], $result['total_history_events']);
         $this->assertSame($expected['history_size_bytes'], $result['history_size_bytes']);
+        $this->assertSame($expected['history_fan_out'], $result['history_fan_out']);
         $this->assertSame($expected, $boundedBudget);
         $this->assertTrue($result['continue_as_new_recommended']);
         $this->assertSame(
             HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
             $result['history_budget_pressure'],
+        );
+        $this->assertSame(
+            $expected['pressure_dimensions'],
+            $result['history_budget_pressure_dimensions'],
         );
         $this->assertSame(3, $retrievedHistoryEvents);
         $this->assertNotEmpty($retrievedRuns);
@@ -3080,6 +3060,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertNotNull($incompleteSummaryResult);
+        $this->assertHistoryBudgetResponseMatches($expected, $incompleteSummaryResult);
         $this->assertCount(2, $incompleteSummaryResult['history_events']);
         $this->assertSame(
             $expected['history_event_count'],
@@ -3089,7 +3070,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $expected['history_size_bytes'],
             $incompleteSummaryResult['history_size_bytes'],
         );
+        $this->assertSame(
+            $expected['history_fan_out'],
+            $incompleteSummaryResult['history_fan_out'],
+        );
         $this->assertTrue($incompleteSummaryResult['continue_as_new_recommended']);
+        $this->assertSame(
+            $expected['pressure_dimensions'],
+            $incompleteSummaryResult['history_budget_pressure_dimensions'],
+        );
         $this->assertSame($expected, HistoryBudget::forRunBounded($run));
         $this->assertTrue(collect($incompleteSummaryQueries)->contains(
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
@@ -3107,11 +3096,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertNotNull($staleSummaryResult);
+        $this->assertHistoryBudgetResponseMatches($expected, $staleSummaryResult);
         $this->assertSame(
             $expected['history_event_count'],
             $staleSummaryResult['total_history_events'],
         );
         $this->assertSame($expected['history_size_bytes'], $staleSummaryResult['history_size_bytes']);
+        $this->assertSame($expected['history_fan_out'], $staleSummaryResult['history_fan_out']);
+        $this->assertSame(
+            $expected['pressure_dimensions'],
+            $staleSummaryResult['history_budget_pressure_dimensions'],
+        );
         $this->assertTrue(collect($staleSummaryQueries)->contains(
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
         ));
@@ -8598,6 +8593,120 @@ SQL);
         ])->save();
 
         return $run;
+    }
+
+    private function assertHistoryBudgetPressureResponses(string $dimension): void
+    {
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 1_000_000);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1_000_000_000);
+        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 1_000_000);
+
+        match ($dimension) {
+            HistoryBudget::DIMENSION_EVENT_COUNT => config()->set(
+                'workflows.v2.history_budget.continue_as_new_event_threshold',
+                1,
+            ),
+            HistoryBudget::DIMENSION_SIZE_BYTES => config()->set(
+                'workflows.v2.history_budget.continue_as_new_size_bytes_threshold',
+                1,
+            ),
+            HistoryBudget::DIMENSION_FAN_OUT => config()->set(
+                'workflows.v2.history_budget.continue_as_new_fan_out_threshold',
+                10,
+            ),
+            default => throw new RuntimeException("Unknown history budget dimension [{$dimension}]."),
+        };
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $payload = [
+            'sequence' => 1,
+            'result' => str_repeat('history-budget-byte-pressure-', 4),
+        ];
+        $eventType = HistoryEventType::SideEffectRecorded;
+
+        if ($dimension === HistoryBudget::DIMENSION_FAN_OUT) {
+            $eventType = HistoryEventType::ActivityScheduled;
+            $payload = [
+                'sequence' => 1,
+                'activity_type' => 'history-budget-fan-out',
+                'parallel_group_id' => 'history-budget-group',
+                'parallel_group_kind' => 'all',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 12,
+                'parallel_group_index' => 0,
+            ];
+        }
+
+        WorkflowHistoryEvent::record($run, $eventType, $payload, $task);
+
+        $expected = HistoryBudget::forRun($run);
+        $this->assertSame(1, $expected['history_event_count']);
+        $this->assertGreaterThan(0, $expected['history_size_bytes']);
+        $this->assertSame(
+            $dimension === HistoryBudget::DIMENSION_FAN_OUT ? 12 : 0,
+            $expected['history_fan_out'],
+        );
+        $this->assertTrue($expected['continue_as_new_recommended']);
+        $this->assertSame(
+            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
+            $expected['pressure'],
+        );
+        $this->assertSame([$dimension], $expected['pressure_dimensions']);
+
+        $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            $expected['history_size_bytes'],
+            $expected['history_fan_out'],
+        );
+
+        $fullResponse = $this->bridge->historyPayload($task->id);
+        $paginatedResponse = $this->bridge->historyPayloadPaginated($task->id);
+
+        $this->assertIsArray($fullResponse);
+        $this->assertIsArray($paginatedResponse);
+        $this->assertSame(
+            WorkerHistoryPayloadContract::FULL_RESPONSE_REQUIRED_FIELDS,
+            array_keys($fullResponse),
+        );
+        $this->assertSame(
+            WorkerHistoryPayloadContract::PAGINATED_RESPONSE_REQUIRED_FIELDS,
+            array_keys($paginatedResponse),
+        );
+        $this->assertHistoryBudgetResponseMatches($expected, $fullResponse);
+        $this->assertHistoryBudgetResponseMatches($expected, $paginatedResponse);
+    }
+
+    /**
+     * @param array{
+     *     history_event_count: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     pressure: string,
+     *     pressure_dimensions: list<string>
+     * } $expected
+     * @param array<string, mixed> $response
+     */
+    private function assertHistoryBudgetResponseMatches(array $expected, array $response): void
+    {
+        foreach (WorkerHistoryPayloadContract::fromBudget($expected) as $field => $value) {
+            $this->assertArrayHasKey($field, $response);
+            $this->assertSame($value, $response[$field]);
+        }
     }
 
     /**
