@@ -29,10 +29,14 @@ final class SdkNeutralityContractTest extends TestCase
         $manifest = SdkNeutralityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.sdk-neutrality.contract', $manifest['schema']);
-        $this->assertSame(2, $manifest['version']);
+        $this->assertSame(3, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md',
             $manifest['authority_doc'],
+        );
+        $this->assertSame(
+            'https://durable-workflow.github.io/sdk-neutrality-contract.json',
+            $manifest['authority_url'],
         );
     }
 
@@ -110,18 +114,25 @@ final class SdkNeutralityContractTest extends TestCase
             $this->assertArrayHasKey('rationale', $rule, "rule $name needs rationale");
             $this->assertArrayHasKey('authority', $rule, "rule $name needs authority pointer");
             $this->assertArrayHasKey('how_to_apply', $rule, "rule $name needs how_to_apply");
+            $this->assertNotEmpty($rule['authority'], "rule $name needs public authority references");
+
+            foreach ($rule['authority'] as $reference) {
+                $this->assertContains($reference['kind'], ['catalog', 'protocol_spec', 'scenario_catalog']);
+                $this->assertStringStartsWith('durable-workflow.', $reference['id']);
+                $this->assertStringStartsWith('https://durable-workflow.github.io/', $reference['url']);
+            }
         }
     }
 
-    public function testCodecNeutralityRuleNamesUniversalCodecAuthority(): void
+    public function testCodecNeutralityRuleNamesPublishedWorkerProtocolAuthority(): void
     {
         $manifest = SdkNeutralityContract::manifest();
 
         $codecRule = $manifest['neutrality_rules']['codec_neutrality'];
-        $this->assertStringContainsString(
-            'CodecRegistry::universal()',
-            $codecRule['authority'],
-            'codec neutrality must point at the universal codec authority',
+        $this->assertContains(
+            'durable-workflow.v2.worker-protocol-api',
+            array_column($codecRule['authority'], 'id'),
+            'codec neutrality must point at the published worker protocol authority',
         );
         $this->assertStringContainsString(
             'universal codec',
@@ -145,6 +156,40 @@ final class SdkNeutralityContractTest extends TestCase
             $rule['requirement'],
             'replay fixtures must validate against the replay-bundle schema',
         );
+        $this->assertContains(
+            'durable-workflow.v2.history-event-payloads',
+            array_column($rule['authority'], 'id'),
+        );
+        $this->assertContains(
+            'durable-workflow.v2.replay-bundle',
+            array_column($rule['authority'], 'id'),
+        );
+        $scenarioAuthorities = array_values(array_filter(
+            $rule['authority'],
+            static fn (array $authority): bool => $authority['kind'] === 'scenario_catalog',
+        ));
+        $this->assertCount(1, $scenarioAuthorities);
+        $this->assertSame('history_replay_bundles', $scenarioAuthorities[0]['category']);
+        $this->assertSame(SdkNeutralityContract::REPLAY_SCENARIOS_URL, $scenarioAuthorities[0]['url']);
+    }
+
+    public function testPublicAuthorityReferencesContainNoRepositoryImplementationDetails(): void
+    {
+        $manifest = SdkNeutralityContract::manifest();
+
+        $publicReferences = [];
+        foreach ($manifest['neutrality_rules'] as $rule) {
+            array_push($publicReferences, ...$rule['authority']);
+        }
+        foreach ($manifest['sdk_breadth_policy']['first_party'] as $sdk) {
+            $publicReferences[] = $sdk['conformance'];
+        }
+        $publicReferences[] = $manifest['release_gates']['enforcement']['machine_authority'];
+
+        $encoded = json_encode($publicReferences, JSON_THROW_ON_ERROR);
+        foreach (['tests/', '.php', '::', '\\'] as $repoLocalMarker) {
+            $this->assertStringNotContainsString($repoLocalMarker, $encoded);
+        }
     }
 
     public function testAuditChecklistEnumeratesEveryNeutralityRule(): void
@@ -223,6 +268,31 @@ final class SdkNeutralityContractTest extends TestCase
             $policy['first_party']['rust_sdk']['posture'],
         );
 
+        foreach ($policy['first_party'] as $sdk) {
+            $this->assertStringStartsWith('https://', $sdk['package_url']);
+            $this->assertSame(
+                'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                $sdk['conformance']['scenario_catalog_schema'],
+            );
+            $this->assertStringStartsWith(
+                'https://durable-workflow.github.io/platform-conformance/',
+                $sdk['conformance']['scenario_catalog_url'],
+            );
+            $this->assertNotEmpty($sdk['conformance']['actor_ids']);
+            $this->assertNotEmpty($sdk['conformance']['scenario_ids']);
+        }
+
+        $rustConformance = $policy['first_party']['rust_sdk']['conformance'];
+        $this->assertSame('signal_query_runtime_contract', $rustConformance['category']);
+        $this->assertSame(
+            SdkNeutralityContract::SIGNAL_QUERY_SCENARIOS_URL,
+            $rustConformance['scenario_catalog_url'],
+        );
+        $this->assertContains(
+            'rust_replayed_instance_state_query_after_cold_restart',
+            $rustConformance['scenario_ids'],
+        );
+
         $expectedDemandDriven = ['typescript_sdk', 'go_sdk', 'java_sdk', 'dotnet_sdk'];
         $this->assertSame($expectedDemandDriven, array_keys($policy['demand_driven']));
 
@@ -260,10 +330,14 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertArrayHasKey('discovery_entry_present', $gates);
 
         $enforcement = $manifest['release_gates']['enforcement'];
+        $this->assertSame(
+            SdkNeutralityContract::PUBLIC_CONTRACT_URL,
+            $enforcement['machine_authority'],
+        );
         $this->assertStringContainsString(
-            'SdkNeutralityContractTest.php',
+            'conformance scenario ID',
             $enforcement['machine'],
-            'machine enforcement names the pinning test',
+            'machine enforcement resolves public conformance scenario identifiers',
         );
         $this->assertStringContainsString(
             'thought experiment',

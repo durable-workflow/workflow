@@ -1,12 +1,15 @@
 # SDK Neutrality Contract
 
-This document is the human-readable authority for the SDK neutrality
-contract enforced by `Workflow\V2\Support\SdkNeutralityContract`. It
-sits downstream of the platform compatibility authority
-(`SurfaceStabilityContract`) and the platform protocol-spec catalog
-(`PlatformProtocolSpecs`). Where this document and one of those
-authorities disagree, the upstream authority wins and this document
-is the bug.
+This document is the human-readable upstream authority for the SDK neutrality
+contract. Its consumable form is the public
+[`durable-workflow.v2.sdk-neutrality.contract`](https://durable-workflow.github.io/sdk-neutrality-contract.json)
+manifest. It sits downstream of the public
+[`durable-workflow.v2.surface-stability.contract`](https://durable-workflow.github.io/compatibility-contract.json),
+[`durable-workflow.v2.platform-protocol-specs.catalog`](https://durable-workflow.github.io/platform-protocol-specs.json),
+and
+[`durable-workflow.v2.platform-conformance.suite`](https://durable-workflow.github.io/platform-conformance-contract.json)
+authorities. Where this document and one of those authorities disagree, the
+published machine-readable authority wins and this document is the bug.
 
 ## Why this exists
 
@@ -44,8 +47,8 @@ This contract is the standing rule that protects that property.
   language's standard HTTP and JSON tooling and the published spec
   catalog.
 
-The `SdkNeutralityContract` class enumerates these as `posture` values
-on each language entry and on the `expansion_criteria` map.
+The machine-readable contract enumerates these as `posture` values on each
+language entry and on the `expansion_criteria` map.
 
 ## Neutrality rules
 
@@ -63,8 +66,10 @@ exact field shapes; the summary below is for reviewers.
 | `discovery_neutrality` | Every public surface is reachable from `GET /api/cluster/info` and the `platform_protocol_specs` catalog. |
 | `documentation_neutrality` | Public-contract docs describe shapes in schema, route, and field semantics. PHP and Python class behaviour appears as SDK examples, not as the normative contract. |
 
-The full rationale, authority pointer, and "how to apply" for each rule
-is on the matching `neutrality_rules` entry of the class manifest.
+The full rationale, public authority references, and "how to apply" guidance
+for each rule is on the matching `neutrality_rules` entry of the published
+manifest. Each authority reference has a stable schema or catalog ID and an
+absolute public URL.
 
 ## Standing audit checklist
 
@@ -94,14 +99,19 @@ The `sdk_breadth_policy` map on the manifest is the source of truth for
 the official-SDK roster:
 
 - `first_party.php_workflow_package`: posture `priority`. Reference
-  workflow authoring SDK and embedded host.
+  workflow authoring SDK and embedded host. Its replay coverage is enumerated
+  by scenario ID in the public
+  [`history_replay_bundles` catalog](https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json).
 - `first_party.python_sdk`: posture `priority`. Highest-value non-PHP
   SDK; used to validate that the worker protocol, control plane, and
-  replay fixtures behave the same way outside PHP.
+  replay fixtures behave the same way outside PHP. Its replay coverage is
+  enumerated in the same public `history_replay_bundles` catalog.
 - `first_party.rust_sdk`: posture `priority`. First-party deterministic
   workflow, activity, worker-service, and control-plane SDK; used to
   validate replay, lifecycle, and codec interoperability outside PHP
-  and Python.
+  and Python. Its worker, client, failure, and cold-restart replay coverage is
+  enumerated by scenario ID in the public
+  [`signal_query_runtime_contract` catalog](https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json).
 - `demand_driven.typescript_sdk`, `go_sdk`, `java_sdk`, `dotnet_sdk`:
   posture `demand_driven`. No first-party SDK exists. Public contracts
   must remain implementable in those languages without protocol
@@ -124,19 +134,20 @@ without inspecting any first-party SDK source. These are the
 load-bearing inputs for any SDK outside the current PHP, Python, and
 Rust roster:
 
-- **Protocol**: the `control_plane_api`, `worker_protocol_api`, and
-  `worker_protocol_stream` spec entries in the
-  `PlatformProtocolSpecs` catalog.
-- **Codecs**: the universal codec set advertised by
-  `Workflow\Serializers\CodecRegistry::universal()` and surfaced on
-  the `worker_protocol` cluster_info manifest.
-- **Error shape**: the `external_task_result_contract` failure
-  envelope and the `repair_actionability_objects` schemas.
-- **Replay fixtures**: the `history_event_payloads` and
-  `replay_bundle` JSON Schemas plus the `history_replay_bundles`
-  fixture category in the `PlatformConformanceSuite`.
-- **Discovery**: the `cluster_info_envelope` schema and the
-  `platform_protocol_specs` catalog itself.
+- **Protocol**: the `durable-workflow.v2.control-plane-api`,
+  `durable-workflow.v2.worker-protocol-api`, and
+  `durable-workflow.v2.worker-protocol-stream` entries in the public
+  [protocol catalog](https://durable-workflow.github.io/platform-protocol-specs.json).
+- **Codecs**: the universal codec set documented by
+  `durable-workflow.v2.worker-protocol-api` and advertised through the
+  `durable-workflow.v2.cluster-info-envelope` discovery schema.
+- **Error shape**: the worker-protocol failure envelope and
+  `durable-workflow.v2.repair-actionability-objects` schema.
+- **Replay inputs**: the `durable-workflow.v2.history-event-payloads` and
+  `durable-workflow.v2.replay-bundle` JSON Schemas plus scenario IDs in the
+  public `history_replay_bundles` catalog.
+- **Discovery**: the `durable-workflow.v2.cluster-info-envelope` schema and
+  `durable-workflow.v2.platform-protocol-specs.catalog` itself.
 
 If any of those surfaces is not reachable for a candidate SDK in a
 given language, building the SDK requires protocol changes and the
@@ -144,16 +155,15 @@ language-agnosticism guarantee is not being honored.
 
 ## Release gates
 
-A release that introduces a new public surface family or promotes an
-existing surface from `prerelease` or `experimental` to `stable` must
-record the audit outcome on the release PR. The `release_gates.gates`
-map enumerates the specific checks. Enforcement is a mix of:
+A release that introduces a new public surface family or promotes an existing
+surface from `prerelease` or `experimental` to `stable` must record the audit
+outcome on the release PR. The `release_gates.gates` map enumerates the
+specific checks. Enforcement is a mix of:
 
-- **Machine**: tests under `tests/Unit/V2/SdkNeutralityContractTest.php`
-  pin the manifest, the docs site CI cross-references the audit scope
-  against the surface stability families, and the conformance harness
-  rejects fixtures that do not validate against the published JSON
-  Schemas.
+- **Machine**: release CI resolves every authority URL, protocol/schema ID,
+  and conformance scenario ID in the public manifest, cross-references the
+  audit scope against the surface stability families, and rejects replay
+  inputs that do not validate against the published JSON Schemas.
 - **Human**: release reviewers tick the SDK-neutrality audit on every
   release PR that adds or promotes a public surface. The reviewer is
   responsible for the future-SDK thought experiment.
@@ -162,10 +172,9 @@ map enumerates the specific checks. Enforcement is a mix of:
 
 Adding a neutrality rule, tightening an existing rule, adding a
 required audit step, adding a surface family to the audit scope, or
-changing the official-SDK breadth policy is a contract change. Bump
-`SdkNeutralityContract::VERSION`, update this document, the static
-JSON mirror at `static/sdk-neutrality-contract.json` on the
-`durable-workflow.github.io` docs site (the public mirror page is
-`docs/sdk-neutrality.md`), and the per-package stability documents in
-the same change. Removing a neutrality rule or audit step is a major
-change.
+changing the official-SDK breadth policy is a contract change. Bump the
+manifest version, update this document, the
+[public JSON contract](https://durable-workflow.github.io/sdk-neutrality-contract.json),
+the [public SDK-neutrality guide](https://durable-workflow.github.io/docs/2.0/sdk-neutrality),
+and the per-package stability documents in the same change. Removing a
+neutrality rule or audit step is a major change.

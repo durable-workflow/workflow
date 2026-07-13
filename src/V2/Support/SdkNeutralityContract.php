@@ -43,9 +43,19 @@ final class SdkNeutralityContract
 {
     public const SCHEMA = 'durable-workflow.v2.sdk-neutrality.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md';
+
+    public const PUBLIC_CONTRACT_URL = 'https://durable-workflow.github.io/sdk-neutrality-contract.json';
+
+    public const PROTOCOL_CATALOG_URL = 'https://durable-workflow.github.io/platform-protocol-specs.json';
+
+    public const CONFORMANCE_SUITE_URL = 'https://durable-workflow.github.io/platform-conformance-contract.json';
+
+    public const REPLAY_SCENARIOS_URL = 'https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json';
+
+    public const SIGNAL_QUERY_SCENARIOS_URL = 'https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json';
 
     public const POSTURE_PRIORITY = 'priority';
 
@@ -92,6 +102,7 @@ final class SdkNeutralityContract
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'authority_doc' => self::AUTHORITY_DOC,
+            'authority_url' => self::PUBLIC_CONTRACT_URL,
             'surface_stability_authority' => SurfaceStabilityContract::SCHEMA,
             'protocol_specs_authority' => PlatformProtocolSpecs::SCHEMA,
             'conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
@@ -143,21 +154,86 @@ final class SdkNeutralityContract
             'first_party' => [
                 'php_workflow_package' => [
                     'package' => 'durable-workflow/workflow',
+                    'package_url' => 'https://packagist.org/packages/durable-workflow/workflow',
                     'language' => 'php',
                     'posture' => self::POSTURE_PRIORITY,
                     'role' => 'Reference workflow authoring SDK and embedded host. Workflow authoring semantics are validated against this SDK first.',
+                    'conformance' => [
+                        'scenario_catalog_schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                        'scenario_catalog_url' => self::REPLAY_SCENARIOS_URL,
+                        'category' => 'history_replay_bundles',
+                        'actor_ids' => ['workflow_php_runtime'],
+                        'scenario_ids' => [
+                            'published_artifact_install_only',
+                            'php_completed_history_activity_replay',
+                            'php_completed_history_signal_update_replay',
+                            'php_completed_history_wait_condition_replay',
+                            'php_completed_history_version_marker_replay',
+                            'php_completed_history_saga_compensation_replay',
+                            'php_worker_restart_completed_query',
+                            'php_worker_restart_activity_state',
+                            'php_worker_restart_signal_update_state',
+                            'php_worker_restart_wait_condition_state',
+                            'php_worker_restart_version_marker_state',
+                            'php_worker_restart_saga_compensation_state',
+                            'php_code_divergence_refusal',
+                            'server_history_mutation_refusal',
+                            'malformed_history_refusal',
+                            'php_in_flight_signal_restart_timing',
+                        ],
+                    ],
                 ],
                 'python_sdk' => [
                     'package' => 'durable_workflow',
+                    'package_url' => 'https://pypi.org/project/durable-workflow/',
                     'language' => 'python',
                     'posture' => self::POSTURE_PRIORITY,
                     'role' => 'Highest-value non-PHP SDK. Used to validate that the worker protocol, control plane, and replay fixtures behave the same way outside PHP.',
+                    'conformance' => [
+                        'scenario_catalog_schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                        'scenario_catalog_url' => self::REPLAY_SCENARIOS_URL,
+                        'category' => 'history_replay_bundles',
+                        'actor_ids' => ['python_sdk_runtime'],
+                        'scenario_ids' => [
+                            'published_artifact_install_only',
+                            'python_completed_history_activity_replay',
+                            'python_completed_history_signal_update_replay',
+                            'python_completed_history_wait_condition_replay',
+                            'python_completed_history_version_marker_replay',
+                            'python_completed_history_saga_compensation_replay',
+                            'python_worker_restart_completed_query',
+                            'python_worker_restart_activity_state',
+                            'python_worker_restart_signal_update_state',
+                            'python_worker_restart_wait_condition_state',
+                            'python_worker_restart_version_marker_state',
+                            'python_worker_restart_saga_compensation_state',
+                            'python_code_divergence_refusal',
+                            'server_history_mutation_refusal',
+                            'malformed_history_refusal',
+                            'python_in_flight_signal_restart_timing',
+                        ],
+                    ],
                 ],
                 'rust_sdk' => [
                     'package' => 'durable-workflow',
+                    'package_url' => 'https://crates.io/crates/durable-workflow',
                     'language' => 'rust',
                     'posture' => self::POSTURE_PRIORITY,
                     'role' => 'First-party deterministic workflow, activity, worker-service, and control-plane SDK. Used to validate replay, lifecycle, and codec interoperability outside PHP and Python.',
+                    'conformance' => [
+                        'scenario_catalog_schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                        'scenario_catalog_url' => self::SIGNAL_QUERY_SCENARIOS_URL,
+                        'category' => 'signal_query_runtime_contract',
+                        'actor_ids' => ['rust_sdk', 'rust_worker', 'rust_sdk_client'],
+                        'scenario_ids' => [
+                            'published_artifact_install_only',
+                            'rust_worker_rust_php_python_clients',
+                            'python_worker_rust_client',
+                            'php_worker_rust_client',
+                            'rust_query_error_and_immutability',
+                            'rust_replayed_instance_state_query_after_cold_restart',
+                        ],
+                    ],
                 ],
             ],
             'demand_driven' => [
@@ -199,43 +275,66 @@ final class SdkNeutralityContract
             self::RULE_PROTOCOL => [
                 'requirement' => 'Public RPC and event surfaces use HTTP+JSON or AsyncAPI shapes that any HTTP-capable runtime can produce and consume. No language-specific RPC framing, no PHP-only or Python-only headers, and no transport that requires an existing first-party SDK to be parseable.',
                 'rationale' => 'A future TypeScript, Go, Java, or .NET SDK must be able to drive the worker protocol and control plane using only the language\'s standard HTTP and JSON tools.',
-                'authority' => 'PlatformProtocolSpecs entries with format=openapi or format=asyncapi.',
+                'authority' => [
+                    self::protocolSpecReference('durable-workflow.v2.control-plane-api', 'control-plane-api.openapi.yaml'),
+                    self::protocolSpecReference('durable-workflow.v2.worker-protocol-api', 'worker-protocol-api.openapi.yaml'),
+                    self::protocolSpecReference('durable-workflow.v2.worker-protocol-stream', 'worker-protocol-stream.asyncapi.yaml'),
+                ],
                 'how_to_apply' => 'Every public route documented in the protocol-spec catalog must validate against the published OpenAPI document. Any field that requires a first-party serialization library is either internal or covered by an explicit codec entry under `codec_neutrality`.',
             ],
             self::RULE_CODEC => [
                 'requirement' => 'Every payload that crosses a public boundary advertises a codec name. At least one universal codec (a codec that any language can implement using only schema tooling, with no language-specific serializer dependency) is always offered alongside any engine-specific codec.',
                 'rationale' => 'PHP-specific codecs (`workflow-serializer-y`, `workflow-serializer-base64`) and Python `pickle`-style codecs cannot be safely consumed across languages. Universal codecs (Avro, raw JSON) are reachable from any language.',
-                'authority' => 'Workflow\\Serializers\\CodecRegistry::universal() and the worker_protocol cluster_info manifest.',
+                'authority' => [
+                    self::protocolSpecReference('durable-workflow.v2.worker-protocol-api', 'worker-protocol-api.openapi.yaml'),
+                    self::protocolSpecReference('durable-workflow.v2.cluster-info-envelope', 'cluster-info-envelope.schema.json'),
+                ],
                 'how_to_apply' => 'Worker protocol negotiation must always include a universal codec in the advertised set. New persisted payload shapes that require a custom codec must register the codec name and ship a JSON Schema or Avro schema alongside the serializer.',
             ],
             self::RULE_ERROR_SHAPE => [
                 'requirement' => 'Public failure objects use a structured envelope of (`code`, `message`, optional `details`) where `code` is a stable string identifier. Language-specific exception class names, stack traces, or framework-internal error types are diagnostic only and must not be required for consumers to branch on.',
                 'rationale' => 'A non-PHP, non-Python SDK has no way to map a PHP `Throwable` FQCN or a Python exception class to a meaningful failure category. Stable string codes allow every SDK to translate the failure into the language\'s native error type.',
-                'authority' => 'docs/contracts/external-task-result.md (server) and the failure_repair_actionability fixture category.',
+                'authority' => [
+                    self::protocolSpecReference('durable-workflow.v2.worker-protocol-api', 'worker-protocol-api.openapi.yaml'),
+                    self::protocolSpecReference('durable-workflow.v2.repair-actionability-objects', 'repair-actionability-objects.schema.json'),
+                ],
                 'how_to_apply' => 'New public failure shapes must declare the `code` vocabulary and mark exception class names, file paths, and line numbers as diagnostic-only under the field-visibility rule.',
             ],
             self::RULE_TYPE_IDENTITY => [
                 'requirement' => 'Workflow types, activity types, child workflow types, and exception types are identified by stable string names in every public contract. PHP class fully-qualified names and Python module paths are accepted as inputs from their respective SDKs but are normalized to a string identity before crossing a public surface.',
                 'rationale' => 'A TypeScript SDK has no PHP autoloader and no Python module path. Type identity must be portable across runtimes; class names are an SDK-specific convenience, not a contract.',
-                'authority' => 'docs/architecture/authoring-definition-boundary.md and Workflow\\V2\\Support\\WorkflowTypeRegistry-style registries.',
+                'authority' => [
+                    self::protocolSpecReference('durable-workflow.v2.history-event-payloads', 'history-event-payloads.schema.json'),
+                    self::protocolSpecReference('durable-workflow.v2.worker-protocol-api', 'worker-protocol-api.openapi.yaml'),
+                ],
                 'how_to_apply' => 'New surface areas that emit or accept a workflow/activity/exception identifier must use the registered type name. Any field that leaks a class FQCN must be marked diagnostic-only.',
             ],
             self::RULE_REPLAY_FIXTURE => [
                 'requirement' => 'Replay fixtures and golden history bundles are stored as language-neutral JSON conforming to the `history_event_payloads` and `replay_bundle` JSON Schemas. No serialized PHP objects, no Python pickles, no language-specific binary state in fixtures that any conforming SDK must replay.',
                 'rationale' => 'A future SDK proves conformance by replaying the fixture catalog. If a fixture only round-trips through PHP `unserialize` or Python `pickle`, no other language can claim conformance against it.',
-                'authority' => 'PlatformConformanceSuite history_replay_bundles category and the `history_event_payloads` and `replay_bundle` spec entries.',
-                'how_to_apply' => 'Every fixture under `tests/Fixtures/V2/GoldenHistory/` and `sdk-python/tests/fixtures/golden_history/` must validate against the published JSON Schemas. Adding a fixture that depends on a language-specific serializer is a contract violation.',
+                'authority' => [
+                    self::protocolSpecReference('durable-workflow.v2.history-event-payloads', 'history-event-payloads.schema.json'),
+                    self::protocolSpecReference('durable-workflow.v2.replay-bundle', 'replay-bundle.schema.json'),
+                    self::scenarioCatalogReference('history_replay_bundles', self::REPLAY_SCENARIOS_URL),
+                ],
+                'how_to_apply' => 'Every replay input exercised by the published `history_replay_bundles` scenario catalog must validate against the `durable-workflow.v2.history-event-payloads` and `durable-workflow.v2.replay-bundle` schemas. A fixture that depends on a language-specific serializer is a contract violation.',
             ],
             self::RULE_DISCOVERY => [
                 'requirement' => 'Every public surface family is reachable from `GET /api/cluster/info` and the `platform_protocol_specs` catalog. SDK authors must not have to read PHP source, Python source, CLI help text, or this repository\'s tests to discover a public contract.',
                 'rationale' => 'Discovery is the entry point for any SDK author. If a contract is only discoverable by reading PHP code, building it in Go is harder than it needs to be.',
-                'authority' => 'PlatformProtocolSpecs and the cluster_info_envelope spec entry.',
+                'authority' => [
+                    self::catalogReference(PlatformProtocolSpecs::SCHEMA, self::PROTOCOL_CATALOG_URL),
+                    self::protocolSpecReference('durable-workflow.v2.cluster-info-envelope', 'cluster-info-envelope.schema.json'),
+                ],
                 'how_to_apply' => 'New public surfaces must add a catalog entry (status `published`, `in_progress`, or `planned`) and a discovery endpoint reference before the surface ships in a stable release.',
             ],
             self::RULE_DOCUMENTATION => [
                 'requirement' => 'Public-contract documentation describes shapes in language-neutral terms. Code samples may use PHP and Python, but the normative description must read as schema, route, and field semantics, not as PHP class behavior or Python type behavior.',
                 'rationale' => 'A documentation page that says "the response is a `WorkflowRunDescription` object" is unhelpful to a TypeScript developer. The same page that says "the response is the JSON object documented at `cluster_info_envelope` with fields X, Y, Z" is portable.',
-                'authority' => 'durable-workflow.github.io docs/2.0 pages and the per-package stability docs.',
+                'authority' => [
+                    self::catalogReference(PlatformProtocolSpecs::SCHEMA, self::PROTOCOL_CATALOG_URL),
+                    self::catalogReference(PlatformConformanceSuite::SCHEMA, self::CONFORMANCE_SUITE_URL),
+                ],
                 'how_to_apply' => 'New public-contract docs link to the protocol-spec catalog entry, name the discovery endpoint, and describe field-level semantics. PHP class names and Python type names appear only as SDK-specific examples.',
             ],
         ];
@@ -310,14 +409,52 @@ final class SdkNeutralityContract
             'gates' => [
                 'audit_recorded' => 'The release PR description (or a linked design note) states which audit steps were applied and links the protocol-spec catalog entry, the conformance fixture, and the discovery entry for the new surface.',
                 'no_php_or_python_only_required_fields' => 'No guaranteed field on a `stable` surface requires the `workflow-serializer-y`, `workflow-serializer-base64`, PHP `serialize`, or Python `pickle` codec.',
-                'universal_codec_advertised' => 'Worker protocol negotiation continues to advertise at least one entry from `Workflow\\Serializers\\CodecRegistry::universal()` in its codec set.',
-                'fixture_schema_validated' => 'New replay fixtures or golden history bundles validate against the published JSON Schemas in `static/platform-protocol-specs/`.',
+                'universal_codec_advertised' => 'Worker protocol negotiation continues to advertise at least one universal codec documented by `durable-workflow.v2.worker-protocol-api`.',
+                'fixture_schema_validated' => 'New replay inputs validate against the published `durable-workflow.v2.history-event-payloads` and `durable-workflow.v2.replay-bundle` schemas.',
                 'discovery_entry_present' => 'New public surfaces have a `platform_protocol_specs` catalog entry with a non-empty `surface_family`, `owner_repo`, and `format`.',
             ],
             'enforcement' => [
-                'machine' => 'Tests under `tests/Unit/V2/SdkNeutralityContractTest.php` pin this manifest. Docs site CI cross-references the audit scope against the surface stability families. The conformance harness rejects fixtures that do not validate against the published JSON Schemas.',
+                'machine_authority' => self::PUBLIC_CONTRACT_URL,
+                'machine' => 'Release CI resolves every authority URL, protocol/schema ID, and conformance scenario ID in the public contract. It also cross-references the audit scope against the surface stability families and rejects replay inputs that do not validate against the published JSON Schemas.',
                 'human' => 'Release reviewers tick the SDK-neutrality audit on every release PR that adds or promotes a public surface. The reviewer is responsible for the future-SDK thought experiment.',
             ],
+        ];
+    }
+
+    /**
+     * @return array{kind: string, id: string, url: string}
+     */
+    private static function catalogReference(string $id, string $url): array
+    {
+        return [
+            'kind' => 'catalog',
+            'id' => $id,
+            'url' => $url,
+        ];
+    }
+
+    /**
+     * @return array{kind: string, id: string, url: string}
+     */
+    private static function protocolSpecReference(string $id, string $filename): array
+    {
+        return [
+            'kind' => 'protocol_spec',
+            'id' => $id,
+            'url' => 'https://durable-workflow.github.io/platform-protocol-specs/' . $filename,
+        ];
+    }
+
+    /**
+     * @return array{kind: string, id: string, category: string, url: string}
+     */
+    private static function scenarioCatalogReference(string $category, string $url): array
+    {
+        return [
+            'kind' => 'scenario_catalog',
+            'id' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+            'category' => $category,
+            'url' => $url,
         ];
     }
 }
