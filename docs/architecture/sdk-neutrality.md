@@ -1,15 +1,18 @@
 # SDK Neutrality Contract
 
-This document is the human-readable upstream authority for the SDK neutrality
-contract. Its consumable form is the public
+This document is the human-readable guide to the SDK neutrality contract. The
+authority for exact field shapes is the machine-readable
 [`durable-workflow.v2.sdk-neutrality.contract`](https://durable-workflow.github.io/sdk-neutrality-contract.json)
-manifest. It sits downstream of the public
+manifest. The Workflow package ships the same bytes at
+`resources/sdk-neutrality-contract.json`, so release tools and third-party
+consumers do not need to inspect a PHP implementation class. The contract sits
+downstream of the public
 [`durable-workflow.v2.surface-stability.contract`](https://durable-workflow.github.io/compatibility-contract.json),
 [`durable-workflow.v2.platform-protocol-specs.catalog`](https://durable-workflow.github.io/platform-protocol-specs.json),
 and
 [`durable-workflow.v2.platform-conformance.suite`](https://durable-workflow.github.io/platform-conformance-contract.json)
-authorities. Where this document and one of those authorities disagree, the
-published machine-readable authority wins and this document is the bug.
+authorities. Where this guide and a published machine-readable authority
+disagree, the machine-readable authority wins and this guide is the bug.
 
 ## Why this exists
 
@@ -52,9 +55,9 @@ language entry and on the `expansion_criteria` map.
 
 ## Neutrality rules
 
-The contract defines seven minimum neutrality rules. Every public
-contract must satisfy each of them. The class is the authority for the
-exact field shapes; the summary below is for reviewers.
+The contract defines seven minimum neutrality rules. Every public contract
+must satisfy each of them. The packaged and publicly mirrored JSON contract is
+the authority for the exact field shapes; the summary below is for reviewers.
 
 | Rule | Requirement |
 | --- | --- |
@@ -173,8 +176,9 @@ specific checks. Enforcement is a mix of:
 Adding a neutrality rule, tightening an existing rule, adding a
 required audit step, adding a surface family to the audit scope, or
 changing the official-SDK breadth policy is a contract change. Bump the
-manifest version, update this document, the
-[public JSON contract](https://durable-workflow.github.io/sdk-neutrality-contract.json),
+manifest version, update this guide, the packaged
+`resources/sdk-neutrality-contract.json` authority, its byte-equivalent
+[public JSON mirror](https://durable-workflow.github.io/sdk-neutrality-contract.json),
 the [public SDK-neutrality guide](https://durable-workflow.github.io/docs/2.0/sdk-neutrality),
 and the per-package stability documents in the same change. Removing a
 neutrality rule or audit step is a major change.

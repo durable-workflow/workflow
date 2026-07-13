@@ -11,19 +11,35 @@ use Workflow\V2\Support\SdkNeutralityContract;
 use Workflow\V2\Support\SurfaceStabilityContract;
 
 /**
- * Pins the SDK neutrality contract mirrored by
- * `Workflow\V2\Support\SdkNeutralityContract`. The authority is
- * `docs/architecture/sdk-neutrality.md`.
+ * Pins the SDK neutrality contract loaded by
+ * `Workflow\V2\Support\SdkNeutralityContract`. The exact-shape authority is
+ * `resources/sdk-neutrality-contract.json`.
  *
  * Adding a neutrality rule, tightening an existing rule, adding a
  * required audit step, adding a surface family to the audit scope, or
  * changing the official-SDK breadth policy is a contract change.
- * Update the architecture doc, the static JSON mirror at
- * `static/sdk-neutrality-contract.json` on the docs site, and bump
- * `SdkNeutralityContract::VERSION` in the same change.
+ * Update the packaged authority, architecture guide, public docs mirror, and
+ * `SdkNeutralityContract::VERSION` and `MIRROR_SHA256` in the same change.
  */
 final class SdkNeutralityContractTest extends TestCase
 {
+    public function testManifestExactlyMatchesPackagedAuthority(): void
+    {
+        $path = dirname(__DIR__, 3) . '/' . SdkNeutralityContract::PACKAGE_CONTRACT_PATH;
+        $json = file_get_contents($path);
+
+        $this->assertIsString($json);
+        $this->assertSame(
+            SdkNeutralityContract::MIRROR_SHA256,
+            hash('sha256', $json),
+            'Changing any contract semantics requires a new reviewed authority digest.',
+        );
+        $this->assertSame(
+            json_decode($json, true, 512, JSON_THROW_ON_ERROR),
+            SdkNeutralityContract::manifest(),
+        );
+    }
+
     public function testManifestAdvertisesAuthorityIdentity(): void
     {
         $manifest = SdkNeutralityContract::manifest();
