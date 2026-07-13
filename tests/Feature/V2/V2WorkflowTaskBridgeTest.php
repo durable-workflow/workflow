@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -1056,6 +1057,12 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ], $task);
 
         $expected = HistoryBudget::forRun($run);
+        $this->createHistoryBudgetSummary(
+            $run,
+            $expected['history_event_count'],
+            $expected['history_size_bytes'],
+            $expected['history_fan_out'],
+        );
 
         $payloads = [
             $this->bridge->historyPayload($task->id),
@@ -1072,6 +1079,195 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                 $payload['history_budget_pressure'],
             );
         }
+    }
+
+    public function testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory(): void
+    {
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
+        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        for ($sequence = 1; $sequence <= 25; $sequence++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+                'sequence' => $sequence,
+                'result' => "value-{$sequence}",
+            ], $task);
+        }
+
+        $this->createHistoryBudgetSummary($run, 25, 654321, 12);
+        ConfiguredBridgeWorkflowRunSummary::$retrievedCount = 0;
+        config()->set(
+            'workflows.v2.run_summary_model',
+            ConfiguredBridgeWorkflowRunSummary::class,
+        );
+
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->bridge->historyPayloadPaginated($task->id, 0, 3);
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertNotNull($result);
+        $this->assertCount(3, $result['history_events']);
+        $this->assertSame(25, $result['total_history_events']);
+        $this->assertSame(654321, $result['history_size_bytes']);
+        $this->assertTrue($result['continue_as_new_recommended']);
+        $this->assertSame(
+            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
+            $result['history_budget_pressure'],
+        );
+        $this->assertSame(4, $retrievedHistoryEvents);
+        $this->assertSame(1, ConfiguredBridgeWorkflowRunSummary::$retrievedCount);
+        $this->assertNotEmpty($retrievedRuns);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+        }
+
+        $historyQueries = array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        ));
+
+        $this->assertCount(1, $historyQueries);
+        $this->assertStringContainsString('limit 4', strtolower($historyQueries[0]['query']));
+    }
+
+    public function testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale(): void
+    {
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
+        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'sequence' => 1,
+            'activity_type' => 'bounded-fallback',
+            'parallel_group_id' => 'fallback-group',
+            'parallel_group_kind' => 'all',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 12,
+            'parallel_group_index' => 0,
+        ], $task);
+
+        for ($sequence = 2; $sequence <= 25; $sequence++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+                'sequence' => $sequence,
+                'result' => "value-{$sequence}",
+            ], $task);
+        }
+
+        $retrievedHistoryEvents = 0;
+        /** @var list<WorkflowRun> $retrievedRuns */
+        $retrievedRuns = [];
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowRun::class,
+            static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
+                $retrievedRuns[] = $retrievedRun;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $this->bridge->historyPayloadPaginated($task->id, 0, 2);
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertNotNull($result);
+        $this->assertCount(2, $result['history_events']);
+        $this->assertSame(25, $result['total_history_events']);
+        $this->assertGreaterThan(0, $result['history_size_bytes']);
+        $this->assertTrue($result['continue_as_new_recommended']);
+        $this->assertSame(
+            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
+            $result['history_budget_pressure'],
+        );
+        $this->assertSame(3, $retrievedHistoryEvents);
+        $this->assertNotEmpty($retrievedRuns);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+
+        foreach ($retrievedRuns as $retrievedRun) {
+            $this->assertFalse($retrievedRun->relationLoaded('historyEvents'));
+        }
+
+        $historyQueries = array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        ));
+
+        $this->assertCount(2, $historyQueries);
+        $this->assertTrue(collect($historyQueries)->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
+        ));
+        $this->assertTrue(collect($historyQueries)->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 3'),
+        ));
+
+        $this->createHistoryBudgetSummary($run, 1, 1, 1);
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $staleSummaryResult = $this->bridge->historyPayloadPaginated($task->id, 23, 2);
+        $staleSummaryQueries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertNotNull($staleSummaryResult);
+        $this->assertCount(2, $staleSummaryResult['history_events']);
+        $this->assertSame(25, $staleSummaryResult['total_history_events']);
+        $this->assertGreaterThan(1, $staleSummaryResult['history_size_bytes']);
+        $this->assertTrue($staleSummaryResult['continue_as_new_recommended']);
+        $this->assertTrue(collect($staleSummaryQueries)->contains(
+            static fn (array $query): bool => str_contains(strtolower($query['query']), 'count(*)'),
+        ));
     }
 
     public function testHistoryPayloadPaginatedReturnsFirstPage(): void
@@ -6269,6 +6465,31 @@ SQL);
         return $run;
     }
 
+    private function createHistoryBudgetSummary(
+        WorkflowRun $run,
+        int $historyEventCount,
+        int $historySizeBytes,
+        int $historyFanOut,
+    ): WorkflowRunSummary {
+        /** @var WorkflowRunSummary $summary */
+        $summary = WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'run_number' => $run->run_number,
+            'is_current_run' => true,
+            'class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'namespace' => $run->namespace,
+            'status' => $run->status->value,
+            'status_bucket' => $run->status->statusBucket()->value,
+            'history_event_count' => $historyEventCount,
+            'history_size_bytes' => $historySizeBytes,
+            'history_fan_out' => $historyFanOut,
+        ]);
+
+        return $summary;
+    }
+
     private function makeStorageRoot(): string
     {
         $this->storageRoot = sys_get_temp_dir().'/dw-workflow-task-bridge-'.bin2hex(random_bytes(6));
@@ -6316,6 +6537,18 @@ SQL);
         $attribute->upserted_at_sequence = 0;
         $attribute->inherited_from_parent = false;
         $attribute->save();
+    }
+}
+
+final class ConfiguredBridgeWorkflowRunSummary extends WorkflowRunSummary
+{
+    public static int $retrievedCount = 0;
+
+    protected static function booted(): void
+    {
+        static::retrieved(static function (): void {
+            self::$retrievedCount++;
+        });
     }
 }
 
