@@ -409,6 +409,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ->where('workflow_run_id', $run->id)
             ->orderBy('sequence')
             ->get();
+        $run->setRelation('historyEvents', $historyEvents);
+        $historyBudget = HistoryBudget::forRun($run);
 
         return [
             'task_id' => $task->id,
@@ -429,6 +431,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'sticky_until' => $task->sticky_until?->toJSON(),
             'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'total_history_events' => $historyBudget['history_event_count'],
+            'history_size_bytes' => $historyBudget['history_size_bytes'],
+            'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
+            'history_budget_pressure' => $historyBudget['pressure'],
             'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
                 'id' => $event->id,
                 'sequence' => (int) $event->sequence,
@@ -479,6 +485,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $historyEvents = $historyEvents->take($pageSize);
         }
 
+        $historyBudget = HistoryBudget::forRun($run);
+
         $lastEventSequence = $historyEvents->isNotEmpty()
             ? (int) $historyEvents->last()
 ->sequence
@@ -503,6 +511,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
             'sticky_until' => $task->sticky_until?->toJSON(),
             'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
+            'total_history_events' => $historyBudget['history_event_count'],
+            'history_size_bytes' => $historyBudget['history_size_bytes'],
+            'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
+            'history_budget_pressure' => $historyBudget['pressure'],
             'after_sequence' => $afterSequence,
             'page_size' => $pageSize,
             'has_more' => $hasMore,

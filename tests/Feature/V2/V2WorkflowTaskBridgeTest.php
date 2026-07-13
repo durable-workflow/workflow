@@ -46,6 +46,7 @@ use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
@@ -1029,6 +1030,48 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $result = $this->bridge->historyPayload('nonexistent');
 
         $this->assertNull($result);
+    }
+
+    public function testHistoryPayloadPublishesAuthoritativeRunBudget(): void
+    {
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 1);
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+        ], $task);
+
+        $expected = HistoryBudget::forRun($run);
+
+        $payloads = [
+            $this->bridge->historyPayload($task->id),
+            $this->bridge->historyPayloadPaginated($task->id),
+        ];
+
+        foreach ($payloads as $payload) {
+            $this->assertIsArray($payload);
+            $this->assertSame($expected['history_event_count'], $payload['total_history_events']);
+            $this->assertSame($expected['history_size_bytes'], $payload['history_size_bytes']);
+            $this->assertTrue($payload['continue_as_new_recommended']);
+            $this->assertSame(
+                HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
+                $payload['history_budget_pressure'],
+            );
+        }
     }
 
     public function testHistoryPayloadPaginatedReturnsFirstPage(): void
