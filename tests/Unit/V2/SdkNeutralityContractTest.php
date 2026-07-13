@@ -29,7 +29,7 @@ final class SdkNeutralityContractTest extends TestCase
         $manifest = SdkNeutralityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.sdk-neutrality.contract', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(2, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md',
             $manifest['authority_doc'],
@@ -201,13 +201,14 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertContains('mcp_discovery_results', $manifest['audit_scope_surface_families']);
     }
 
-    public function testSdkBreadthPolicyMarksPhpAndPythonAsPriorityAndOthersAsDemandDriven(): void
+    public function testSdkBreadthPolicyMarksPhpPythonAndRustAsPriorityAndOthersAsDemandDriven(): void
     {
         $manifest = SdkNeutralityContract::manifest();
 
         $policy = $manifest['sdk_breadth_policy'];
         $this->assertArrayHasKey('php_workflow_package', $policy['first_party']);
         $this->assertArrayHasKey('python_sdk', $policy['first_party']);
+        $this->assertArrayHasKey('rust_sdk', $policy['first_party']);
 
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
@@ -216,6 +217,10 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
             $policy['first_party']['python_sdk']['posture'],
+        );
+        $this->assertSame(
+            SdkNeutralityContract::POSTURE_PRIORITY,
+            $policy['first_party']['rust_sdk']['posture'],
         );
 
         $expectedDemandDriven = ['typescript_sdk', 'go_sdk', 'java_sdk', 'dotnet_sdk'];

@@ -10,21 +10,21 @@ is the bug.
 
 ## Why this exists
 
-Durable ships two first-party SDKs: the PHP `durable-workflow/workflow`
-package and the Python `durable_workflow` package. There is no plan to
-ship a broad official SDK portfolio in the v2 release, and there is no
-reserved release slot for a TypeScript, Go, Java, or .NET SDK.
+Durable ships three first-party SDKs: the PHP
+`durable-workflow/workflow` package, Python `durable_workflow` package,
+and Rust `durable-workflow` crate. There is no plan to ship a broad
+official SDK portfolio in the v2 release, and there is no reserved
+release slot for a TypeScript, Go, Java, or .NET SDK.
 
 That choice is intentional. The maintenance cost of a wide first-party
 SDK roster is high and the demand for SDKs in those ecosystems has not
 yet been demonstrated.
 
 What we do not want, however, is for the public contracts under those
-SDKs to quietly hard-code PHP-only or Python-only assumptions. If a
+SDKs to quietly hard-code language-specific assumptions. If a
 future TypeScript or Go SDK becomes worth building, the work should be
 "write a new client against the published wire protocol", not
-"redesign the protocol so a non-PHP, non-Python language can speak it
-at all".
+"redesign the protocol so another language can speak it at all".
 
 This contract is the standing rule that protects that property.
 
@@ -98,6 +98,10 @@ the official-SDK roster:
 - `first_party.python_sdk`: posture `priority`. Highest-value non-PHP
   SDK; used to validate that the worker protocol, control plane, and
   replay fixtures behave the same way outside PHP.
+- `first_party.rust_sdk`: posture `priority`. First-party deterministic
+  workflow, activity, worker-service, and control-plane SDK; used to
+  validate replay, lifecycle, and codec interoperability outside PHP
+  and Python.
 - `demand_driven.typescript_sdk`, `go_sdk`, `java_sdk`, `dotnet_sdk`:
   posture `demand_driven`. No first-party SDK exists. Public contracts
   must remain implementable in those languages without protocol
@@ -117,7 +121,8 @@ A new first-party SDK is added only when:
 
 The contract identifies the surfaces a future SDK must be able to read
 without inspecting any first-party SDK source. These are the
-load-bearing inputs for any non-PHP, non-Python SDK:
+load-bearing inputs for any SDK outside the current PHP, Python, and
+Rust roster:
 
 - **Protocol**: the `control_plane_api`, `worker_protocol_api`, and
   `worker_protocol_stream` spec entries in the

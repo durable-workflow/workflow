@@ -9,10 +9,11 @@ namespace Workflow\V2\Support;
  * neutrality contract.
  *
  * The platform ships a deliberately narrow set of first-party SDKs
- * (PHP `durable-workflow/workflow` and Python `durable_workflow`).
+ * (PHP `durable-workflow/workflow`, Python `durable_workflow`, and Rust
+ * `durable-workflow`).
  * Building or maintaining additional first-party SDKs is not a release
  * goal. But the public contracts that those SDKs sit on top of must not
- * quietly hard-code PHP-only or Python-only assumptions, because doing
+ * quietly hard-code language-specific assumptions, because doing
  * so would make a future TypeScript, Go, Java, or .NET SDK impossible
  * without redesigning the protocol.
  *
@@ -23,8 +24,8 @@ namespace Workflow\V2\Support;
  * *which* surfaces are public and *how* they may change) and of
  * `PlatformProtocolSpecs` (which says *where* the normative spec for
  * each surface lives). This contract says *what shape* those specs are
- * allowed to take so that a future non-PHP, non-Python SDK can target
- * them without requiring a protocol redesign.
+ * allowed to take so that a future SDK outside the current PHP, Python,
+ * and Rust roster can target them without requiring a protocol redesign.
  *
  * The standalone `workflow-server` re-exports this manifest from
  * `GET /api/cluster/info` under `sdk_neutrality_contract`.
@@ -42,7 +43,7 @@ final class SdkNeutralityContract
 {
     public const SCHEMA = 'durable-workflow.v2.sdk-neutrality.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md';
 
@@ -151,6 +152,12 @@ final class SdkNeutralityContract
                     'language' => 'python',
                     'posture' => self::POSTURE_PRIORITY,
                     'role' => 'Highest-value non-PHP SDK. Used to validate that the worker protocol, control plane, and replay fixtures behave the same way outside PHP.',
+                ],
+                'rust_sdk' => [
+                    'package' => 'durable-workflow',
+                    'language' => 'rust',
+                    'posture' => self::POSTURE_PRIORITY,
+                    'role' => 'First-party deterministic workflow, activity, worker-service, and control-plane SDK. Used to validate replay, lifecycle, and codec interoperability outside PHP and Python.',
                 ],
             ],
             'demand_driven' => [
