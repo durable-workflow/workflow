@@ -210,7 +210,46 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertStringContainsString(
             'check-compatibility-authority.js',
             $check['enforcement']['machine'],
-            'docs CI script enforces alignment between the JSON contract and the doc page',
+            'docs CI must identify the machine compatibility checker',
+        );
+        $this->assertStringNotContainsString(
+            'walks docs/compatibility.md',
+            $check['enforcement']['machine'],
+            'machine enforcement must not claim prose-coupled compatibility checks',
+        );
+        $this->assertSame(
+            [
+                'node scripts/check-compatibility-authority.js',
+                'node scripts/check-compatibility-authority.test.js',
+            ],
+            $check['enforcement']['machine_commands'],
+        );
+        $this->assertSame(
+            [
+                'contract_shape_and_identity',
+                'composer_prerelease_artifact_tuple',
+                'rust_sdk_artifact_release_line',
+                'rust_sdk_published_crate_metadata_when_available',
+                'worker_protocol_negotiation_contract',
+                'worker_protocol_openapi',
+                'worker_protocol_asyncapi',
+                'rust_sdk_published_crate_workflow_contract',
+                'compatibility_page_successor_tuple_rendering',
+            ],
+            $check['enforcement']['machine_checks'],
+        );
+        $this->assertSame(
+            ['docs/compatibility.md#component-versions (artifact tokens only)'],
+            $check['enforcement']['markdown_sources_checked'],
+        );
+        $this->assertSame(
+            [
+                'docs_authority_aligned',
+                'install_docs_aligned',
+                'package_metadata_aligned',
+                'version_history_aligned',
+            ],
+            $check['enforcement']['human_checks'],
         );
     }
 }

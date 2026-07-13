@@ -286,17 +286,41 @@ final class SurfaceStabilityContract
     private static function releaseCheck(): array
     {
         return [
-            'description' => 'Release reviewers must confirm the compatibility-authority check before publish.',
+            'description' => 'Docs CI runs the machine compatibility checks; release reviewers confirm editorial alignment before publish.',
             'gates' => [
-                'docs_authority_aligned' => 'docs/compatibility.md (in durable-workflow.github.io) lists every surface family in this manifest with the same stability level.',
-                'install_docs_aligned' => 'docs/installation.md and any package install snippets do not claim a stability level different from the one this manifest assigns to the relevant SDK.',
-                'package_metadata_aligned' => 'composer.json / pyproject.toml / package.json prerelease tags match the `stability_level` for the SDK family they belong to.',
-                'rust_sdk_protocol_authority_aligned' => 'The released Rust crate metadata, Rust guide, compatibility matrix, and worker-protocol OpenAPI agree with the server negotiation contract.',
-                'version_history_aligned' => 'The version-history table in docs/compatibility.md does not introduce stability claims that contradict this manifest.',
+                'docs_authority_aligned' => 'Release reviewers confirm docs/compatibility.md lists every surface family in this manifest with the same stability level.',
+                'install_docs_aligned' => 'Release reviewers confirm docs/installation.md and package install snippets do not claim a stability level different from the one this manifest assigns to the relevant SDK.',
+                'package_metadata_aligned' => 'Release reviewers confirm package prerelease tags match the `stability_level` for the SDK family they belong to.',
+                'rust_sdk_protocol_authority_aligned' => 'Docs CI verifies the current Rust artifact release line, released crate metadata when available, server negotiation contract, worker-protocol OpenAPI and AsyncAPI, and published-crate validation workflow contract agree.',
+                'version_history_aligned' => 'Release reviewers confirm the dated version-history snapshots do not introduce stability claims that contradict this manifest.',
             ],
             'enforcement' => [
-                'machine' => 'docs site CI runs scripts/check-compatibility-authority.js, which loads static/compatibility-contract.json (a copy of this manifest), checks the released Rust crate metadata and worker-protocol OpenAPI, and walks docs/compatibility.md, docs/polyglot/rust.md, docs/installation.md, and the version-history table.',
-                'human' => 'Release reviewers tick the compatibility-authority check on every release PR before tagging.',
+                'machine' => 'Docs site CI runs scripts/check-compatibility-authority.js for the JSON, prerelease tuple, Rust, and worker-protocol contracts, then check-compatibility-authority.test.js for negotiation drift and successor-tuple token rendering. It does not treat editorial Markdown as machine contract data.',
+                'human' => 'Release reviewers confirm docs_authority_aligned, install_docs_aligned, package_metadata_aligned, and version_history_aligned before tagging; those editorial checks are not performed by scripts/check-compatibility-authority.js.',
+                'machine_commands' => [
+                    'node scripts/check-compatibility-authority.js',
+                    'node scripts/check-compatibility-authority.test.js',
+                ],
+                'machine_checks' => [
+                    'contract_shape_and_identity',
+                    'composer_prerelease_artifact_tuple',
+                    'rust_sdk_artifact_release_line',
+                    'rust_sdk_published_crate_metadata_when_available',
+                    'worker_protocol_negotiation_contract',
+                    'worker_protocol_openapi',
+                    'worker_protocol_asyncapi',
+                    'rust_sdk_published_crate_workflow_contract',
+                    'compatibility_page_successor_tuple_rendering',
+                ],
+                'markdown_sources_checked' => [
+                    'docs/compatibility.md#component-versions (artifact tokens only)',
+                ],
+                'human_checks' => [
+                    'docs_authority_aligned',
+                    'install_docs_aligned',
+                    'package_metadata_aligned',
+                    'version_history_aligned',
+                ],
             ],
         ];
     }
