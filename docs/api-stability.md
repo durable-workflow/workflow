@@ -16,12 +16,12 @@ and release-authority page:
 
 The companion platform-wide normative protocol-spec catalog — *which*
 surface has *which* machine-readable spec, *what format* the spec uses,
-*who owns* it, and *which conformance test* pins it — is published at:
+*who owns* it, and *where consumers resolve it* — is published at:
 
 - <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>
 - machine-readable mirror: `platform_protocol_specs` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.platform-protocol-specs.catalog`, version `14`.
+  `durable-workflow.v2.platform-protocol-specs.catalog`, version `15`.
 - in-process source: `Workflow\V2\Support\PlatformProtocolSpecs`, which
   the standalone server re-exports verbatim.
 

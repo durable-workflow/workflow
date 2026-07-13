@@ -1,0 +1,530 @@
+{
+  "schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "version": 15,
+  "catalog_url": "https://durable-workflow.github.io/platform-protocol-specs.json",
+  "authority_url": "https://durable-workflow.github.io/docs/2.0/platform-protocol-specs",
+  "formats": {
+    "openapi": {
+      "meaning": "OpenAPI 3.1 specification document. Used for HTTP+JSON request/response surfaces where method, path, status code, and body shape are part of the contract.",
+      "file_extensions": "yaml or json"
+    },
+    "json_schema": {
+      "meaning": "JSON Schema (Draft 2020-12) document for a single object family or a small set of related object families. Used for response bodies, persisted record shapes, event payloads, and tool-result envelopes that are produced or consumed across protocol boundaries.",
+      "file_extensions": "json"
+    },
+    "asyncapi": {
+      "meaning": "AsyncAPI 2.6+ specification document. Used for event-stream and long-poll semantics where ordering, delivery, ack, and channel topology are part of the contract.",
+      "file_extensions": "yaml or json"
+    }
+  },
+  "owner_repos": [
+    "durable-workflow/workflow",
+    "durable-workflow/server",
+    "durable-workflow/waterline",
+    "durable-workflow/durable-workflow.github.io",
+    "durable-workflow/cli",
+    "durable-workflow/sdk-python"
+  ],
+  "status_levels": {
+    "published": "A normative machine-readable specification is available at the entry spec_url. SDK authors and tooling can consume that public artifact directly.",
+    "in_progress": "A public machine-readable specification is available at spec_url, but its coverage is partial. Listed fields and routes are normative; unlisted surfaces remain governed by the named discovery manifest and compatibility policy.",
+    "planned": "The specification has a stable catalog identity but is not yet published. Consumers must not treat the entry as a usable machine-readable authority until its status becomes published or in_progress."
+  },
+  "evolution_rules": {
+    "additive_minor_breaking_major": {
+      "meaning": "Additive changes (new endpoints, new optional fields, new enum cases that consumers may safely ignore) advance the spec in a minor version. Removals, renames, type narrowings, or semantic changes require a major version, ship behind a parallel route or field where feasible, and are announced one minor in advance under the public compatibility policy.",
+      "applies_to_formats": [
+        "openapi",
+        "asyncapi",
+        "json_schema"
+      ]
+    },
+    "parallel_primitive_only": {
+      "meaning": "The spec describes a frozen wire format. The only allowed breaking change is to introduce a parallel primitive (a new event type, command type, or schema id) alongside the existing one. The original shape stays decodable indefinitely.",
+      "applies_to_formats": [
+        "json_schema"
+      ]
+    },
+    "experimental_any_release": {
+      "meaning": "Spec entries marked experimental may change in any release. Consumers must opt in by reading the experimental flag on the spec.",
+      "applies_to_formats": [
+        "openapi",
+        "asyncapi",
+        "json_schema"
+      ]
+    }
+  },
+  "specs": {
+    "control_plane_api": {
+      "description": "OpenAPI specification for the standalone Durable Workflow server control-plane HTTP+JSON API: namespace, schedule, command, run, history, search, worker-session visibility, and system routes that the CLI, Python SDK, cloud control plane, and operator scripts call.",
+      "format": "openapi",
+      "spec_id": "durable-workflow.v2.control-plane-api",
+      "surface_family": "server_api",
+      "authority_manifest": "control_plane",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "control_plane_request_contract",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "control_plane_response_envelope",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "control_plane_operation_contract",
+          "owner_repo": "durable-workflow/server"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> control_plane",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/control-plane-api.openapi.yaml"
+    },
+    "worker_protocol_api": {
+      "description": "OpenAPI specification for the worker-plane HTTP+JSON API: register, poll, heartbeat, worker-session lifecycle, complete, and fail for workflow, activity, and query tasks. Query-task routes are lease-fenced request/response work and are advertised through the `query_tasks` worker capability. The companion AsyncAPI document `worker_protocol_stream` describes the long-poll and lease-renewal semantics.",
+      "format": "openapi",
+      "spec_id": "durable-workflow.v2.worker-protocol-api",
+      "surface_family": "worker_protocol",
+      "authority_manifest": "worker_protocol",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "worker_registration_request",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_task_poll_request",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_task_result",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_query_task_poll_request",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_query_task_result",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "external_task_input_contract",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "external_task_result_contract",
+          "owner_repo": "durable-workflow/server"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> worker_protocol",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/worker-protocol-api.openapi.yaml"
+    },
+    "worker_protocol_stream": {
+      "description": "AsyncAPI specification for the worker poll/heartbeat/complete/fail event-stream semantics: long-poll cancellation, lease renewal, queue routing precedence, build-id rollout drains, and graceful disconnect.",
+      "format": "asyncapi",
+      "spec_id": "durable-workflow.v2.worker-protocol-stream",
+      "surface_family": "worker_protocol",
+      "authority_manifest": "worker_protocol",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "worker_poll_stream",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_task_lease",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_task_heartbeat",
+          "owner_repo": "durable-workflow/server"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> worker_protocol",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml"
+    },
+    "worker_sessions_runtime": {
+      "description": "JSON Schema for the worker-session runtime contract: the worker_protocol.server_capabilities.worker_sessions manifest, schedule_activity worker_session command options, explicit lifecycle request/result envelopes, activity task affinity snapshots, and operator visibility envelopes.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.worker-sessions-runtime",
+      "surface_family": "worker_protocol",
+      "authority_manifest": "worker_protocol",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "worker_session_runtime_contract",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "worker_session_options",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "worker_session_lifecycle",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "worker_session_visibility",
+          "owner_repo": "durable-workflow/server"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> worker_protocol.server_capabilities.worker_sessions",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/worker-sessions-runtime.schema.json"
+    },
+    "local_activity_runtime": {
+      "description": "JSON Schema for the local activity runtime contract: the worker_protocol.server_capabilities.local_activities manifest, LocalActivityOptions snapshots, same-process execution markers, workflow-task lease heartbeats, cold-replay retry semantics, and operator visibility markers.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.local-activity-runtime",
+      "surface_family": "worker_protocol",
+      "authority_manifest": "worker_protocol",
+      "owner_repo": "durable-workflow/workflow",
+      "object_families": [
+        {
+          "name": "local_activity_runtime_contract",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "local_activity_options",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "local_activity_history_markers",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "local_activity_visibility",
+          "owner_repo": "durable-workflow/workflow"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> worker_protocol.server_capabilities.local_activities",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/local-activity-runtime.schema.json"
+    },
+    "history_event_payloads": {
+      "description": "JSON Schema set for every published `workflow_history_events` and `workflow_schedule_history_events` payload. Once a workflow writes an event, every future SDK that replays it must decode the same field set; the only allowed breaking change is a parallel primitive with a new event type name.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.history-event-payloads",
+      "surface_family": "history_event_wire_formats",
+      "authority_manifest": "history_event_payload_contract",
+      "owner_repo": "durable-workflow/workflow",
+      "object_families": [
+        {
+          "name": "workflow_history_events",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "workflow_schedule_history_events",
+          "owner_repo": "durable-workflow/workflow"
+        }
+      ],
+      "evolution_rule": "parallel_primitive_only",
+      "breaking_change_release": "parallel_primitive_only",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/history-event-payloads.schema.json"
+    },
+    "history_export_bundle": {
+      "description": "JSON Schema for the history-export bundle that the server emits and that replay tooling consumes: ordered history events, payload references, payload codec metadata, lineage edges, and bundle manifest. The schema is defined once for the v2 release; the schema id `durable-workflow.v2.history-export` is the canonical version anchor and the only allowed breaking change is a parallel primitive (a new schema id alongside the existing one).",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.history-export-bundle",
+      "surface_family": "history_event_wire_formats",
+      "authority_manifest": "history_event_payload_contract",
+      "owner_repo": "durable-workflow/workflow",
+      "object_families": [
+        {
+          "name": "history_export_bundle",
+          "owner_repo": "durable-workflow/workflow"
+        }
+      ],
+      "evolution_rule": "parallel_primitive_only",
+      "breaking_change_release": "parallel_primitive_only",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/history-export-bundle.schema.json"
+    },
+    "replay_bundle": {
+      "description": "JSON Schema for the deterministic replay bundle: workflow definition fingerprint, decoded history, side-effect projections, and replay-verification metadata. Consumed by replay tooling, debugging UIs, and the replay-verification contract.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.replay-bundle",
+      "surface_family": "history_event_wire_formats",
+      "authority_manifest": "replay_verification_contract",
+      "owner_repo": "durable-workflow/workflow",
+      "object_families": [
+        {
+          "name": "replay_bundle",
+          "owner_repo": "durable-workflow/workflow"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/replay-bundle.schema.json"
+    },
+    "waterline_read_api": {
+      "description": "OpenAPI specification for the Waterline observability read API at `/waterline/api/v2/*`: workflow lookup, run timeline, signal/update views, schedule audit, and dashboard JSON shapes.",
+      "format": "openapi",
+      "spec_id": "durable-workflow.v2.waterline-read-api",
+      "surface_family": "waterline_api",
+      "authority_manifest": "waterline_operator_api",
+      "owner_repo": "durable-workflow/waterline",
+      "object_families": [
+        {
+          "name": "waterline_read_envelope",
+          "owner_repo": "durable-workflow/waterline"
+        },
+        {
+          "name": "waterline_operator_action_envelope",
+          "owner_repo": "durable-workflow/waterline"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/waterline-read-api.openapi.yaml"
+    },
+    "waterline_diagnostic_objects": {
+      "description": "JSON Schema for the diagnostic object families Waterline emits: timeline rows, lineage edges, operator hints, queue depth snapshots, and engine-source attribution. These are the diagnostic shapes that operator dashboards and external observability adapters parse.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.waterline-diagnostic-objects",
+      "surface_family": "waterline_api",
+      "authority_manifest": "waterline_operator_api",
+      "owner_repo": "durable-workflow/waterline",
+      "object_families": [
+        {
+          "name": "waterline_run_detail",
+          "owner_repo": "durable-workflow/waterline"
+        },
+        {
+          "name": "waterline_health_diagnostics",
+          "owner_repo": "durable-workflow/waterline"
+        },
+        {
+          "name": "waterline_timeline_rows",
+          "owner_repo": "durable-workflow/waterline"
+        },
+        {
+          "name": "waterline_lineage_edges",
+          "owner_repo": "durable-workflow/waterline"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/waterline-diagnostic-objects.schema.json"
+    },
+    "repair_actionability_objects": {
+      "description": "JSON Schema for the repair and actionability object families: task-repair candidates, repair policies, actionability hints, operator-queue visibility entries, and the structured failure shapes that drive operator-led recovery.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.repair-actionability-objects",
+      "surface_family": "server_api",
+      "authority_manifest": "control_plane",
+      "owner_repo": "durable-workflow/workflow",
+      "object_families": [
+        {
+          "name": "task_repair_policy",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "task_repair_candidates",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "operator_queue_visibility",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "actionability",
+          "owner_repo": "durable-workflow/waterline"
+        },
+        {
+          "name": "agent_root_cause",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "agent_remediation",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "safe_mutation",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/repair-actionability-objects.schema.json"
+    },
+    "cli_json_envelopes": {
+      "description": "JSON Schema index for the `dw` CLI machine-readable output contract: the published output-schema manifest and the per-command JSON / JSONL envelope schemas that automation, agents, and operator scripts consume.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.cli-json-envelopes",
+      "surface_family": "cli_json",
+      "authority_manifest": "cli_reference",
+      "owner_repo": "durable-workflow/cli",
+      "object_families": [
+        {
+          "name": "cli_output_schema_manifest",
+          "owner_repo": "durable-workflow/cli"
+        },
+        {
+          "name": "cli_command_output_schema",
+          "owner_repo": "durable-workflow/cli"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/cli-json-envelopes.schema.json"
+    },
+    "mcp_discovery": {
+      "description": "JSON Schema for the Model Context Protocol discovery surface at `/mcp/*` and the `llms.txt` / `llms-2.0.txt` discovery files: tool list shape, parameter schema shape, and discovery hints.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.mcp-discovery",
+      "surface_family": "mcp_discovery_results",
+      "authority_manifest": "mcp_workflows",
+      "owner_repo": "durable-workflow/durable-workflow.github.io",
+      "object_families": [
+        {
+          "name": "mcp_tool_discovery",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "llms_txt_discovery",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/mcp-discovery.schema.json"
+    },
+    "mcp_tool_results": {
+      "description": "JSON Schema for MCP tool-result envelopes: result object shape, payload-preview limits, error envelope, and the `payload_preview_limit_bytes` semantics. Tool descriptions and discovery hints are diagnostic, not contract.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.mcp-tool-results",
+      "surface_family": "mcp_discovery_results",
+      "authority_manifest": "mcp_workflows",
+      "owner_repo": "durable-workflow/durable-workflow.github.io",
+      "object_families": [
+        {
+          "name": "mcp_tool_result_envelope",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "agent_root_cause",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "agent_remediation",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        },
+        {
+          "name": "safe_mutation",
+          "owner_repo": "durable-workflow/durable-workflow.github.io"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/mcp-tool-results.schema.json"
+    },
+    "cluster_info_envelope": {
+      "description": "JSON Schema for the `GET /api/cluster/info` envelope: identity, capability, topology, coordination-health, and the nested protocol manifests (`client_compatibility`, `control_plane`, `worker_protocol`, `surface_stability_contract`, `platform_protocol_specs`, `platform_conformance_suite`, `sdk_neutrality_contract`, `auth_composition_contract`, `bridge_adapter_outcome_contract`, `replay_verification_contract`). The envelope is the discovery surface that every other catalog entry can be reached from.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.cluster-info-envelope",
+      "surface_family": "cluster_info_manifests",
+      "authority_manifest": "cluster_info",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "cluster_info_envelope",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "client_compatibility_manifest",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "surface_stability_contract",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "platform_protocol_specs_catalog",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "platform_conformance_suite_manifest",
+          "owner_repo": "durable-workflow/workflow"
+        },
+        {
+          "name": "sdk_neutrality_contract",
+          "owner_repo": "durable-workflow/workflow"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info",
+      "status": "published",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/cluster-info-envelope.schema.json"
+    },
+    "invocable_carrier_execution": {
+      "description": "JSON Schema for the invocable HTTP carrier execution surface: the activity-only HTTP carrier contract, external task input and result envelopes, the external execution surface boundary, and the handler-mapping config contract that routes activity tasks to carrier endpoints. These wire-protocol terms define what an external activity handler must implement to receive and complete tasks through the invocable carrier.",
+      "format": "json_schema",
+      "spec_id": "durable-workflow.v2.invocable-carrier-execution",
+      "surface_family": "worker_protocol",
+      "authority_manifest": "worker_protocol",
+      "owner_repo": "durable-workflow/server",
+      "object_families": [
+        {
+          "name": "invocable_carrier_contract",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "external_execution_surface_contract",
+          "owner_repo": "durable-workflow/server"
+        },
+        {
+          "name": "external_executor_config_contract",
+          "owner_repo": "durable-workflow/server"
+        }
+      ],
+      "evolution_rule": "additive_minor_breaking_major",
+      "breaking_change_release": "major",
+      "discovery_endpoint": "GET /api/cluster/info -> worker_protocol.invocable_carrier_contract",
+      "status": "in_progress",
+      "spec_url": "https://durable-workflow.github.io/platform-protocol-specs/invocable-carrier-execution.schema.json"
+    }
+  },
+  "release_check": {
+    "description": "Release CI validates that the consumer-facing protocol catalog and its published specification artifacts remain aligned.",
+    "gates": {
+      "catalog_aligned_with_surface_families": "Every entry references a surface family declared by the public compatibility contract.",
+      "owner_repo_known": "Every entry and object family names a repository from the catalog owner vocabulary.",
+      "format_known": "Every entry uses OpenAPI, JSON Schema, or AsyncAPI and its published artifact parses as that format.",
+      "public_spec_references_resolve": "Every spec_url is an HTTPS URL under the public protocol-spec namespace and resolves to a shipped static artifact. Published artifacts carry an identity matching spec_id.",
+      "repository_local_authority_fields_rejected": "Catalog entries reject repository-local paths, implementation symbols, test references, and the legacy authority fields that exposed them to consumers.",
+      "workflow_package_mirror_aligned": "When the workflow package checkout is available, the public catalog is byte-equivalent to the packaged catalog loaded by the runtime manifest.",
+      "server_owned_spec_mirrors_aligned": "When a server-owned specification mirror is available, it is byte-equivalent to the public artifact.",
+      "diagnostic_provenance_complete": "Non-published validation data retains implementation and test provenance for every entry and object family without making it consumer authority.",
+      "object_family_metadata_declared": "Every entry declares a non-empty object-family list, and published artifacts carry matching family names and owners. Embedded agent-tooling schema identifiers are also checked for matching family rows and equivalent definitions.",
+      "breaking_change_release_consistent_with_evolution_rule": "Every breaking-change release value matches its declared evolution rule.",
+      "deliverable_specs_published": "Every required platform protocol surface is published with a parseable specification artifact."
+    },
+    "enforcement": {
+      "machine": "Docs-site CI loads the public JSON catalog, validates its vocabulary and consumer-safe references, parses each shipped specification, checks object-family and embedded-schema metadata, and compares package mirrors when their checkouts are available.",
+      "human": "Release reviewers confirm the protocol-catalog CI check before tagging."
+    }
+  }
+}

@@ -376,12 +376,9 @@ final class SdkNeutralityContractTest extends TestCase
                     'sdk_neutrality_contract is owned by the workflow repo',
                 );
                 $this->assertSame(
-                    'Workflow\\V2\\Support\\SdkNeutralityContract::SCHEMA',
-                    $family['schema_authority'],
-                );
-                $this->assertSame(
-                    'Workflow\\V2\\Support\\SdkNeutralityContract::VERSION',
-                    $family['version_authority'],
+                    ['name', 'owner_repo'],
+                    array_keys($family),
+                    'consumer object-family metadata must not expose implementation symbols',
                 );
             }
         }

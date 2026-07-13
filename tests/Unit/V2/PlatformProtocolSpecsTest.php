@@ -9,30 +9,33 @@ use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SurfaceStabilityContract;
 
 /**
- * Pins the platform-wide normative protocol-spec catalog mirrored by
- * `Workflow\V2\Support\PlatformProtocolSpecs`. The authority is
- * published at
- * https://durable-workflow.github.io/docs/2.0/platform-protocol-specs
- * and the standalone `workflow-server` re-exports the same manifest from
- * `GET /api/cluster/info` under `platform_protocol_specs`.
- *
- * Adding, removing, or changing a spec entry is a contract change.
- * Update the docs page, the `static/platform-protocol-specs.json`
- * mirror in `durable-workflow.github.io`, and bump
- * `PlatformProtocolSpecs::VERSION` in the same change.
+ * Pins the packaged consumer-facing protocol catalog. The same JSON document
+ * is published at https://durable-workflow.github.io/platform-protocol-specs.json
+ * and re-exported by the standalone server under `platform_protocol_specs`.
  */
 final class PlatformProtocolSpecsTest extends TestCase
 {
+    public function testPackagedCatalogIsTheDigestedRuntimeAuthority(): void
+    {
+        $path = dirname(__DIR__, 3) . '/' . PlatformProtocolSpecs::PACKAGE_CONTRACT_PATH;
+        $json = file_get_contents($path);
+
+        $this->assertIsString($json);
+        $this->assertSame(PlatformProtocolSpecs::MIRROR_SHA256, hash('sha256', $json));
+        $this->assertSame(
+            json_decode($json, true, 512, JSON_THROW_ON_ERROR),
+            PlatformProtocolSpecs::manifest(),
+        );
+    }
+
     public function testManifestAdvertisesAuthorityIdentity(): void
     {
         $manifest = PlatformProtocolSpecs::manifest();
 
-        $this->assertSame('durable-workflow.v2.platform-protocol-specs.catalog', $manifest['schema']);
-        $this->assertSame(14, $manifest['version']);
-        $this->assertSame(
-            'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs',
-            $manifest['authority_url'],
-        );
+        $this->assertSame(PlatformProtocolSpecs::SCHEMA, $manifest['schema']);
+        $this->assertSame(15, $manifest['version']);
+        $this->assertSame(PlatformProtocolSpecs::CATALOG_URL, $manifest['catalog_url']);
+        $this->assertSame(PlatformProtocolSpecs::AUTHORITY_URL, $manifest['authority_url']);
     }
 
     public function testManifestEnumeratesFormatsOpenApiJsonSchemaAsyncApi(): void
@@ -89,7 +92,7 @@ final class PlatformProtocolSpecsTest extends TestCase
                 $this->assertContains(
                     $format,
                     PlatformProtocolSpecs::formatValues(),
-                    "evolution rule $rule applies_to_formats must be drawn from the format vocabulary",
+                    "evolution rule $rule applies_to_formats must use the format vocabulary",
                 );
             }
         }
@@ -97,45 +100,41 @@ final class PlatformProtocolSpecsTest extends TestCase
         $this->assertSame(
             ['json_schema'],
             $manifest['evolution_rules']['parallel_primitive_only']['applies_to_formats'],
-            'parallel_primitive_only is the rule that pins frozen wire formats',
         );
     }
 
     public function testCatalogCoversTheDeliverableSurfaceSet(): void
     {
-        $manifest = PlatformProtocolSpecs::manifest();
-
-        $expectedSpecs = [
-            'control_plane_api',
-            'worker_protocol_api',
-            'worker_protocol_stream',
-            'worker_sessions_runtime',
-            'local_activity_runtime',
-            'history_event_payloads',
-            'history_export_bundle',
-            'replay_bundle',
-            'waterline_read_api',
-            'waterline_diagnostic_objects',
-            'repair_actionability_objects',
-            'cli_json_envelopes',
-            'mcp_discovery',
-            'mcp_tool_results',
-            'cluster_info_envelope',
-            'invocable_carrier_execution',
-        ];
-
-        $this->assertSame($expectedSpecs, array_keys($manifest['specs']));
+        $this->assertSame(
+            [
+                'control_plane_api',
+                'worker_protocol_api',
+                'worker_protocol_stream',
+                'worker_sessions_runtime',
+                'local_activity_runtime',
+                'history_event_payloads',
+                'history_export_bundle',
+                'replay_bundle',
+                'waterline_read_api',
+                'waterline_diagnostic_objects',
+                'repair_actionability_objects',
+                'cli_json_envelopes',
+                'mcp_discovery',
+                'mcp_tool_results',
+                'cluster_info_envelope',
+                'invocable_carrier_execution',
+            ],
+            PlatformProtocolSpecs::specNames(),
+        );
     }
 
-    public function testEverySpecEntryIsWellFormed(): void
+    public function testEverySpecEntryHasAConsumablePublicReference(): void
     {
         $manifest = PlatformProtocolSpecs::manifest();
-
         $allowedFormats = PlatformProtocolSpecs::formatValues();
         $allowedStatuses = PlatformProtocolSpecs::statusValues();
         $allowedOwners = PlatformProtocolSpecs::ownerRepoValues();
         $surfaceFamilies = array_keys(SurfaceStabilityContract::manifest()['surface_families']);
-
         $requiredFields = [
             'description',
             'format',
@@ -143,154 +142,113 @@ final class PlatformProtocolSpecsTest extends TestCase
             'surface_family',
             'authority_manifest',
             'owner_repo',
-            'owner_symbol',
             'object_families',
             'evolution_rule',
             'breaking_change_release',
-            'conformance_test',
             'status',
-            'spec_path',
         ];
 
         foreach ($manifest['specs'] as $name => $spec) {
             foreach ($requiredFields as $field) {
-                $this->assertArrayHasKey(
-                    $field,
-                    $spec,
-                    "spec $name is missing required field $field",
-                );
+                $this->assertArrayHasKey($field, $spec, "spec $name is missing $field");
             }
 
-            $this->assertContains(
-                $spec['format'],
-                $allowedFormats,
-                "spec $name format must be one of " . implode(', ', $allowedFormats),
-            );
-            $this->assertContains(
-                $spec['status'],
-                $allowedStatuses,
-                "spec $name status must be one of " . implode(', ', $allowedStatuses),
-            );
-            $this->assertContains(
-                $spec['owner_repo'],
-                $allowedOwners,
-                "spec $name owner_repo must be one of " . implode(', ', $allowedOwners),
-            );
-            $this->assertContains(
-                $spec['surface_family'],
-                $surfaceFamilies,
-                "spec $name surface_family must be one of the SurfaceStabilityContract families",
-            );
-
-            $this->assertStringStartsWith(
-                'durable-workflow.v2.',
-                $spec['spec_id'],
-                "spec $name spec_id must live in the durable-workflow.v2.* namespace",
-            );
-            $this->assertStringStartsWith(
-                'static/platform-protocol-specs/',
-                $spec['spec_path'],
-                "spec $name spec_path must live under static/platform-protocol-specs/ in the docs site",
-            );
-
-            $this->assertIsArray($spec['object_families'], "spec $name object_families must be an array");
-            $this->assertNotEmpty($spec['object_families'], "spec $name must declare at least one object family");
-            foreach ($spec['object_families'] as $family) {
-                $this->assertArrayHasKey('name', $family, "spec $name object family is missing name");
-                $this->assertArrayHasKey('owner_repo', $family, "spec $name object family is missing owner_repo");
-                $this->assertArrayHasKey('schema_authority', $family, "spec $name object family is missing schema_authority");
-                $this->assertArrayHasKey('version_authority', $family, "spec $name object family is missing version_authority");
-                $this->assertContains(
-                    $family['owner_repo'],
-                    $allowedOwners,
-                    "spec $name object family owner_repo must be one of the known fleet repos",
+            $this->assertContains($spec['format'], $allowedFormats);
+            $this->assertContains($spec['status'], $allowedStatuses);
+            $this->assertContains($spec['owner_repo'], $allowedOwners);
+            $this->assertContains($spec['surface_family'], $surfaceFamilies);
+            $this->assertStringStartsWith('durable-workflow.v2.', $spec['spec_id']);
+            if ($spec['status'] === 'planned') {
+                $this->assertArrayNotHasKey('spec_url', $spec);
+            } else {
+                $this->assertArrayHasKey('spec_url', $spec);
+                $this->assertStringStartsWith(
+                    'https://durable-workflow.github.io/platform-protocol-specs/',
+                    $spec['spec_url'],
+                    "spec $name must expose a public HTTPS reference",
                 );
+                $this->assertSame('https', parse_url($spec['spec_url'], PHP_URL_SCHEME));
+                $this->assertSame('durable-workflow.github.io', parse_url($spec['spec_url'], PHP_URL_HOST));
+            }
+
+            $this->assertNotEmpty($spec['object_families']);
+            foreach ($spec['object_families'] as $family) {
+                $this->assertSame(['name', 'owner_repo'], array_keys($family));
+                $this->assertContains($family['owner_repo'], $allowedOwners);
             }
         }
     }
 
-    public function testHistoryEventPayloadsAreFrozenViaParallelPrimitiveRule(): void
+    public function testCatalogDoesNotExposeRepositoryLocalAuthority(): void
     {
-        $manifest = PlatformProtocolSpecs::manifest();
+        $json = json_encode(PlatformProtocolSpecs::manifest(), JSON_THROW_ON_ERROR);
 
-        $entry = $manifest['specs']['history_event_payloads'];
-        $this->assertSame(
-            'parallel_primitive_only',
-            $entry['evolution_rule'],
-            'history-event payload schemas are frozen wire formats; the only allowed break is a new event type alongside the old one',
-        );
-        $this->assertSame(
-            'parallel_primitive_only',
-            $entry['breaking_change_release'],
-        );
+        foreach ([
+            '"spec_path"',
+            '"owner_symbol"',
+            '"conformance_test"',
+            '"schema_authority"',
+            '"version_authority"',
+            'tests/',
+            'scripts/',
+            'static/',
+            '::',
+            '\\\\',
+        ] as $repositoryLocalReference) {
+            $this->assertStringNotContainsString(
+                $repositoryLocalReference,
+                $json,
+                "public catalog must not expose $repositoryLocalReference",
+            );
+        }
     }
 
     public function testWorkerProtocolApiCatalogCoversQueryTasks(): void
     {
-        $manifest = PlatformProtocolSpecs::manifest();
+        $entry = PlatformProtocolSpecs::manifest()['specs']['worker_protocol_api'];
 
-        $entry = $manifest['specs']['worker_protocol_api'];
         $this->assertStringContainsString('query tasks', $entry['description']);
         $this->assertStringContainsString('query_tasks', $entry['description']);
-        $this->assertStringContainsString(
-            'WorkflowQueryTaskBrokerTest.php',
-            $entry['conformance_test'],
-        );
-        $this->assertStringContainsString(
-            'StandaloneWorkflowWorkerTest.php',
-            $entry['conformance_test'],
-        );
-        $this->assertStringContainsString(
-            'WorkflowQueryTaskExecutorTest.php',
-            $entry['conformance_test'],
-        );
-
         $families = array_column($entry['object_families'], 'name');
         $this->assertContains('worker_query_task_poll_request', $families);
         $this->assertContains('worker_query_task_result', $families);
     }
 
-    public function testHistoryExportBundleIsFrozenViaParallelPrimitiveRule(): void
+    public function testFrozenBundlesUseTheParallelPrimitiveRule(): void
     {
-        $manifest = PlatformProtocolSpecs::manifest();
-
-        $entry = $manifest['specs']['history_export_bundle'];
-        $this->assertSame(
-            'parallel_primitive_only',
-            $entry['evolution_rule'],
-            'the v2 history-export bundle is defined once for v2; a breaking shape change must take the parallel-primitive route, not bump a schema_version ladder within v2',
-        );
-        $this->assertSame(
-            'parallel_primitive_only',
-            $entry['breaking_change_release'],
-        );
-        $this->assertSame(
-            'durable-workflow.v2.history-export',
-            $entry['object_families'][0]['version_authority'],
-            'the schema id is the canonical version anchor for the v2 history-export bundle; there is no separate schema_version ladder authority within v2',
-        );
+        foreach (['history_event_payloads', 'history_export_bundle'] as $name) {
+            $entry = PlatformProtocolSpecs::manifest()['specs'][$name];
+            $this->assertSame('parallel_primitive_only', $entry['evolution_rule']);
+            $this->assertSame('parallel_primitive_only', $entry['breaking_change_release']);
+        }
     }
 
-    public function testReleaseCheckNamesEnforcementGates(): void
+    public function testReleaseCheckDescribesTheMachineChecksThatRun(): void
     {
-        $manifest = PlatformProtocolSpecs::manifest();
+        $check = PlatformProtocolSpecs::manifest()['release_check'];
 
-        $check = $manifest['release_check'];
-        $this->assertArrayHasKey('catalog_aligned_with_surface_families', $check['gates']);
-        $this->assertArrayHasKey('owner_repo_known', $check['gates']);
-        $this->assertArrayHasKey('format_known', $check['gates']);
-        $this->assertArrayHasKey('docs_authority_aligned', $check['gates']);
-        $this->assertArrayHasKey('json_mirror_aligned', $check['gates']);
-        $this->assertArrayHasKey('spec_path_published_when_status_published', $check['gates']);
-        $this->assertArrayHasKey('object_family_authority_declared', $check['gates']);
-        $this->assertArrayHasKey('breaking_change_release_consistent_with_evolution_rule', $check['gates']);
-        $this->assertArrayHasKey('deliverable_specs_published', $check['gates']);
+        foreach ([
+            'catalog_aligned_with_surface_families',
+            'owner_repo_known',
+            'format_known',
+            'public_spec_references_resolve',
+            'repository_local_authority_fields_rejected',
+            'workflow_package_mirror_aligned',
+            'server_owned_spec_mirrors_aligned',
+            'diagnostic_provenance_complete',
+            'object_family_metadata_declared',
+            'breaking_change_release_consistent_with_evolution_rule',
+            'deliverable_specs_published',
+        ] as $gate) {
+            $this->assertArrayHasKey($gate, $check['gates']);
+        }
 
-        $this->assertStringContainsString(
-            'check-platform-protocol-specs.js',
+        $this->assertArrayNotHasKey('docs_authority_aligned', $check['gates']);
+        $this->assertStringNotContainsString(
+            'docs/platform-protocol-specs.md',
             $check['enforcement']['machine'],
-            'docs CI script enforces alignment between the JSON catalog and the doc page',
         );
+        $this->assertStringNotContainsString('walks', $check['enforcement']['machine']);
     }
 
     public function testOwnerRepoVocabularyMatchesTheFleet(): void
@@ -317,11 +275,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         }
 
         foreach (array_keys($referenced) as $family) {
-            $this->assertContains(
-                $family,
-                $surfaceFamilies,
-                "platform-protocol-specs catalog references surface_family $family which is not declared by SurfaceStabilityContract",
-            );
+            $this->assertContains($family, $surfaceFamilies);
         }
     }
 }
