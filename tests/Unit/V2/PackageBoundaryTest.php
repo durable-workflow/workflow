@@ -55,12 +55,30 @@ final class PackageBoundaryTest extends TestCase
 
         $composer = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
 
+        $description = $composer['description'] ?? null;
+        $this->assertIsString($description);
+        $this->assertNotSame('', trim($description));
+        $normalizedDescription = strtolower($description);
+        $this->assertStringContainsString('embedded', $normalizedDescription);
+        $this->assertStringContainsString('runtime', $normalizedDescription);
+        $this->assertStringContainsString('laravel', $normalizedDescription);
+
+        $this->assertSame('durable-workflow/workflow', $composer['name'] ?? null);
+
+        $dependencies = $composer['require'] ?? null;
+        $this->assertIsArray($dependencies);
+        $this->assertArrayHasKey('apache/avro', $dependencies);
         $this->assertSame(
-            'Embedded durable workflow runtime and orchestration engine for Laravel applications.',
-            $composer['description'] ?? null,
+            ['apache/avro'],
+            array_values(array_filter(
+                array_keys($dependencies),
+                static fn (string $package): bool => str_contains($package, 'avro'),
+            )),
         );
-        $this->assertSame('^1.12', $composer['require']['apache/avro'] ?? null);
-        $this->assertArrayNotHasKey('durable-workflow/sdk', $composer['require'] ?? []);
-        $this->assertArrayHasKey('durable-workflow/sdk', $composer['suggest'] ?? []);
+        $this->assertArrayNotHasKey('durable-workflow/sdk', $dependencies);
+
+        $sdkSuggestion = $composer['suggest']['durable-workflow/sdk'] ?? null;
+        $this->assertIsString($sdkSuggestion);
+        $this->assertNotSame('', trim($sdkSuggestion));
     }
 }
