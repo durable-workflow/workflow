@@ -1070,7 +1070,7 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $detail['commands'][1]['validation_errors']);
     }
 
-    public function testAttemptUpdateRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void
+    public function testAcceptedUpdateQueuesBehindEarlierSignalAndReplaysInCommandOrder(): void
     {
         Queue::fake();
 
@@ -1089,21 +1089,21 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $this->assertSame('workflow-task', $pendingDetail['wait_kind']);
         $this->assertSame('workflow_task_ready', $pendingDetail['liveness_state']);
-        $this->assertFalse($pendingDetail['can_update']);
-        $this->assertSame('earlier_signal_pending', $pendingDetail['update_blocked_reason']);
+        $this->assertTrue($pendingDetail['can_update']);
+        $this->assertNull($pendingDetail['update_blocked_reason']);
         $this->assertIsArray($pendingTask);
         $this->assertSame('signal', $pendingTask['workflow_wait_kind']);
         $this->assertSame('workflow_signal', $pendingTask['workflow_resume_source_kind']);
         $this->assertIsString($pendingTask['workflow_signal_id']);
         $this->assertSame($signal->commandId(), $pendingTask['workflow_command_id']);
 
-        $result = $workflow->attemptUpdate('approve', true, 'api');
+        $result = $workflow->submitUpdate('approve', true, 'api');
 
         $this->assertTrue($signal->accepted());
-        $this->assertTrue($result->rejected());
-        $this->assertTrue($result->rejectedPendingSignal());
-        $this->assertSame('rejected_pending_signal', $result->outcome());
-        $this->assertSame('earlier_signal_pending', $result->rejectionReason());
+        $this->assertTrue($result->accepted());
+        $this->assertFalse($result->completed());
+        $this->assertNull($result->outcome());
+        $this->assertNull($result->rejectionReason());
         $this->assertSame(3, $result->commandSequence());
         $this->assertNull($result->result());
         $this->assertSame([
@@ -1118,9 +1118,9 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_instance_id' => 'order-update-linearized',
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
-            'status' => 'rejected',
-            'outcome' => 'rejected_pending_signal',
-            'rejection_reason' => 'earlier_signal_pending',
+            'status' => 'accepted',
+            'outcome' => null,
+            'rejection_reason' => null,
         ]);
 
         $this->assertSame([
@@ -1128,22 +1128,13 @@ final class V2UpdateWorkflowTest extends TestCase
             'WorkflowStarted',
             'SignalWaitOpened',
             'SignalReceived',
-            'UpdateRejected',
+            'UpdateAccepted',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
-
-        $timeline = HistoryTimeline::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
-        $this->assertSame([
-            'StartAccepted',
-            'WorkflowStarted',
-            'SignalWaitOpened',
-            'SignalReceived',
-            'UpdateRejected',
-        ], array_column($timeline, 'type'));
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
@@ -1157,15 +1148,60 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('workflow_task_ready', $detail['liveness_state']);
         $this->assertTrue($detail['can_signal']);
         $this->assertNull($detail['signal_blocked_reason']);
-        $this->assertFalse($detail['can_update']);
-        $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+        $this->assertTrue($detail['can_update']);
+        $this->assertNull($detail['update_blocked_reason']);
         $this->assertSame('approve', $detail['commands'][2]['target_name']);
+        $this->assertSame('queued', $detail['commands'][2]['update_ordering_state']);
+        $this->assertSame('queued', $detail['commands'][2]['update_admission_ordering_state']);
+        $this->assertSame($signal->commandId(), $detail['commands'][2]['update_queued_behind_command_id']);
+        $this->assertSame(2, $detail['commands'][2]['update_queued_behind_command_sequence']);
+        $this->assertSame('queued', $detail['updates'][0]['ordering_state']);
         $this->assertIsArray($signalWait);
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('received', $signalWait['source_status']);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame([
+            'stage' => 'waiting-for-finish',
+            'name' => 'Taylor',
+            'approved' => true,
+            'events' => ['started', 'signal:Taylor', 'approved:yes:api'],
+        ], $workflow->currentState());
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $result->updateId(),
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'workflow_sequence' => 2,
+        ]);
+
+        $orderedEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->whereIn('event_type', ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'])
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertSame(
+            ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'],
+            $orderedEvents->pluck('event_type')->map(static fn ($type) => $type->value)->all(),
+        );
+        $this->assertSame($signal->commandId(), $orderedEvents[0]->workflow_command_id);
+        $this->assertSame($result->commandId(), $orderedEvents[1]->workflow_command_id);
+
+        $eventCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->count();
+        $this->assertSame('waiting-for-finish', $workflow->currentState()['stage']);
+        $this->assertSame($eventCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateAccepted')
+            ->count());
     }
 
-    public function testAttemptUpdateDoesNotInlineDrainASignalThatWouldCloseTheRun(): void
+    public function testSignalThatClosesRunFailsQueuedUpdateWithoutOrphaningIt(): void
     {
         Queue::fake();
 
@@ -1175,13 +1211,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->runReadyWorkflowTask($workflow->runId());
 
         $signal = $workflow->signal('name-provided', 'Taylor');
-        $result = $workflow->attemptUpdate('approve', true, 'api');
+        $result = $workflow->submitUpdate('approve', true, 'api');
 
         $this->assertTrue($signal->accepted());
-        $this->assertTrue($result->rejected());
-        $this->assertTrue($result->rejectedPendingSignal());
-        $this->assertSame('rejected_pending_signal', $result->outcome());
-        $this->assertSame('earlier_signal_pending', $result->rejectionReason());
+        $this->assertTrue($result->accepted());
+        $this->assertFalse($result->completed());
+        $this->assertNull($result->outcome());
         $this->assertSame(3, $result->commandSequence());
         $this->assertSame('waiting', $workflow->refresh()->status());
         $this->assertSame([
@@ -1195,12 +1230,11 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_instance_id' => 'order-update-blocked',
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
-            'status' => 'rejected',
-            'outcome' => 'rejected_pending_signal',
-            'rejection_reason' => 'earlier_signal_pending',
+            'status' => 'accepted',
+            'outcome' => null,
         ]);
 
-        $this->assertSame(0, WorkflowHistoryEvent::query()
+        $this->assertSame(1, WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->where('event_type', 'UpdateAccepted')
             ->count());
@@ -1210,26 +1244,13 @@ final class V2UpdateWorkflowTest extends TestCase
             'WorkflowStarted',
             'SignalWaitOpened',
             'SignalReceived',
-            'UpdateRejected',
+            'UpdateAccepted',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
-
-        $timeline = HistoryTimeline::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
-        $rejectedUpdate = collect($timeline)
-            ->firstWhere('type', 'UpdateRejected');
-
-        $this->assertIsArray($rejectedUpdate);
-        $this->assertSame('workflow_command', $rejectedUpdate['source_kind']);
-        $this->assertSame($result->commandId(), $rejectedUpdate['source_id']);
-        $this->assertSame('command', $rejectedUpdate['kind']);
-        $this->assertSame('approve', $rejectedUpdate['update_name']);
-        $this->assertSame('rejected', $rejectedUpdate['command_status']);
-        $this->assertSame('rejected_pending_signal', $rejectedUpdate['command_outcome']);
-        $this->assertSame('Rejected update approve: earlier_signal_pending.', $rejectedUpdate['summary']);
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
@@ -1238,9 +1259,41 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('waiting', $detail['status']);
         $this->assertTrue($detail['can_signal']);
         $this->assertNull($detail['signal_blocked_reason']);
-        $this->assertFalse($detail['can_update']);
-        $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+        $this->assertTrue($detail['can_update']);
+        $this->assertNull($detail['update_blocked_reason']);
         $this->assertSame('approve', $detail['commands'][2]['target_name']);
+        $this->assertSame('queued', $detail['updates'][0]['ordering_state']);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'approved' => false,
+            'events' => ['started', 'signal:Taylor'],
+            'workflow_id' => 'order-update-blocked',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $result->updateId(),
+            'status' => 'failed',
+            'outcome' => 'update_failed',
+        ]);
+        $this->assertDatabaseMissing('workflow_updates', [
+            'id' => $result->updateId(),
+            'status' => 'accepted',
+        ]);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->whereIn('status', ['ready', 'leased'])
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateApplied')
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateCompleted')
+            ->count());
     }
 
     public function testLegacyRunsBackfillCommandSequenceBeforeRecordingLaterCommands(): void
@@ -1265,12 +1318,12 @@ final class V2UpdateWorkflowTest extends TestCase
             ]);
 
         $signal = $workflow->signal('name-provided', 'Taylor');
-        $update = $workflow->attemptUpdate('approve', true, 'api');
+        $update = $workflow->submitUpdate('approve', true, 'api');
 
         $this->assertSame(2, $signal->commandSequence());
         $this->assertSame(3, $update->commandSequence());
-        $this->assertTrue($update->rejected());
-        $this->assertSame('rejected_pending_signal', $update->outcome());
+        $this->assertTrue($update->accepted());
+        $this->assertNull($update->outcome());
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
@@ -1299,23 +1352,24 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame([1, 2, 3], array_column($detail['commands'], 'sequence'));
         $this->assertTrue($detail['can_signal']);
         $this->assertNull($detail['signal_blocked_reason']);
-        $this->assertFalse($detail['can_update']);
-        $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+        $this->assertTrue($detail['can_update']);
+        $this->assertNull($detail['update_blocked_reason']);
+        $this->assertSame('queued', $detail['updates'][0]['ordering_state']);
 
         $timeline = HistoryTimeline::forRun($run->fresh());
         $startAccepted = collect($timeline)
             ->firstWhere('type', 'StartAccepted');
         $signalReceived = collect($timeline)
             ->firstWhere('type', 'SignalReceived');
-        $updateRejected = collect($timeline)
-            ->firstWhere('type', 'UpdateRejected');
+        $updateAccepted = collect($timeline)
+            ->firstWhere('type', 'UpdateAccepted');
 
         $this->assertIsArray($startAccepted);
         $this->assertIsArray($signalReceived);
-        $this->assertIsArray($updateRejected);
+        $this->assertIsArray($updateAccepted);
         $this->assertSame(1, $startAccepted['command_sequence']);
         $this->assertSame(2, $signalReceived['command_sequence']);
-        $this->assertSame(3, $updateRejected['command_sequence']);
+        $this->assertSame(3, $updateAccepted['command_sequence']);
     }
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void

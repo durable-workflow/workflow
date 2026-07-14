@@ -33,6 +33,8 @@ return new class() extends WorkflowMigration {
                 ->index();
             $table->json('context')
                 ->nullable();
+            $table->string('request_id', 191)
+                ->nullable();
             $table->string('status')
                 ->index();
             $table->string('outcome')
@@ -59,6 +61,10 @@ return new class() extends WorkflowMigration {
             $table->timestamp('rejected_at', 6)
                 ->nullable();
             $table->timestamps(6);
+            $table->unique(
+                ['workflow_instance_id', 'command_type', 'request_id'],
+                'workflow_commands_request_lookup',
+            );
         });
     }
 

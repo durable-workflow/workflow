@@ -4830,6 +4830,178 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($resultPayload, $events[1]->payload['result']);
     }
 
+    public function testSignalTaskDispatchesLaterAcceptedUpdateInCommandOrder(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $signalWaitId = 'signal-wait-before-update';
+
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'signal',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'advance',
+                'arguments' => ['Taylor'],
+            ]),
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'run',
+            'signal_name' => 'advance',
+            'signal_wait_id' => $signalWaitId,
+            'status' => 'received',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'received_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, [
+            'signal_name' => 'advance',
+            'signal_wait_id' => $signalWaitId,
+            'sequence' => 1,
+            'timeout_seconds' => null,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+            'workflow_command_id' => $signalCommand->id,
+            'signal_id' => $signal->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'signal_name' => 'advance',
+            'signal_wait_id' => $signalWaitId,
+        ], null, $signalCommand);
+
+        $updateCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [true],
+            ]),
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $updateCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'run',
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [true]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $updateCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $updateCommand->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'arguments' => $update->arguments,
+            'ordering_state' => 'queued',
+            'queued_behind_command_id' => $signalCommand->id,
+            'queued_behind_command_sequence' => $signalCommand->command_sequence,
+            'queued_behind_command_type' => 'signal',
+        ], null, $updateCommand);
+
+        $signalTask = $this->createLeasedTask($run);
+        $signalTask->forceFill([
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+        ])->save();
+
+        $signalCompletion = $this->bridge->complete($signalTask->id, []);
+
+        $this->assertTrue($signalCompletion['completed']);
+        $this->assertCount(1, $signalCompletion['created_task_ids']);
+        $signal->refresh();
+        $this->assertSame('applied', $signal->status->value);
+
+        /** @var WorkflowTask $updateTask */
+        $updateTask = WorkflowTask::query()->findOrFail($signalCompletion['created_task_ids'][0]);
+        $this->assertSame(TaskStatus::Ready, $updateTask->status);
+        $this->assertSame('update', $updateTask->payload['workflow_wait_kind']);
+        $this->assertSame($update->id, $updateTask->payload['workflow_update_id']);
+
+        $claim = $this->bridge->claimStatus($updateTask->id, 'ordered-update-worker');
+        $this->assertTrue($claim['claimed']);
+
+        $updateCompletion = $this->bridge->complete($updateTask->id, [[
+            'type' => 'complete_update',
+            'update_id' => $update->id,
+            'result' => Serializer::serializeWithCodec('avro', ['approved' => true]),
+        ]]);
+
+        $this->assertTrue($updateCompletion['completed']);
+        $this->assertSame(
+            ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('event_type', ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'])
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($type) => $type->value)
+                ->all(),
+        );
+
+        $replayedCompletion = $this->bridge->complete($updateTask->id, [[
+            'type' => 'complete_update',
+            'update_id' => $update->id,
+            'result' => Serializer::serializeWithCodec('avro', ['approved' => true]),
+        ]]);
+
+        $this->assertFalse($replayedCompletion['completed']);
+        $this->assertSame('task_not_leased', $replayedCompletion['reason']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->count());
+    }
+
+    public function testRequestIdIdempotencyColumnIsReservedForUpdateCommands(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $commandTypes = ['start', 'signal', 'repair', 'cancel', 'terminate', 'archive'];
+
+        foreach ($commandTypes as $commandType) {
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                $command = WorkflowCommand::record($instance, $run, [
+                    'command_type' => $commandType,
+                    'target_scope' => 'instance',
+                    'status' => 'accepted',
+                    'context' => [
+                        'request' => [
+                            'request_id' => 'shared-' . $commandType . '-request',
+                        ],
+                    ],
+                    'accepted_at' => now(),
+                ]);
+
+                $this->assertNull($command->getAttribute('request_id'));
+                $this->assertSame('shared-' . $commandType . '-request', $command->requestId());
+            }
+        }
+
+        $this->assertSame(12, WorkflowCommand::query()
+            ->where('workflow_instance_id', $instance->id)
+            ->whereIn('command_type', $commandTypes)
+            ->count());
+    }
+
     public function testCompleteUpdateCommandExternalizesLargeResultPayload(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
@@ -7735,6 +7907,106 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($continuedEvent);
         $this->assertSame($continuedRun->id, $continuedEvent->payload['continued_to_run_id']);
+    }
+
+    public function testContinueAsNewTransfersInstanceUpdatesAndFailsOnlyRunUpdates(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        $recordUpdate = static function (string $scope, string $name) use ($run, $instance): array {
+            $command = WorkflowCommand::record($instance, $run, [
+                'command_type' => 'update',
+                'target_scope' => $scope,
+                'status' => 'accepted',
+                'payload_codec' => 'avro',
+                'payload' => Serializer::serializeWithCodec('avro', [
+                    'name' => $name,
+                    'arguments' => [true],
+                ]),
+                'accepted_at' => now(),
+            ]);
+
+            /** @var WorkflowUpdate $update */
+            $update = WorkflowUpdate::query()->create([
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'target_scope' => $scope,
+                'requested_workflow_run_id' => $command->requestedRunId(),
+                'resolved_workflow_run_id' => $command->resolvedRunId(),
+                'update_name' => $name,
+                'status' => 'accepted',
+                'arguments' => Serializer::serializeWithCodec('avro', [true]),
+                'payload_codec' => 'avro',
+                'command_sequence' => $command->command_sequence,
+                'accepted_at' => now(),
+            ]);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+                'workflow_command_id' => $command->id,
+                'update_id' => $update->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'update_name' => $name,
+                'arguments' => $update->arguments,
+            ], null, $command);
+
+            return [$command, $update];
+        };
+
+        [$instanceCommand, $instanceUpdate] = $recordUpdate('instance', 'instance-update');
+        [$runCommand, $runUpdate] = $recordUpdate('run', 'run-update');
+
+        $task = $this->createLeasedTask($run);
+        $result = $this->bridge->complete($task->id, [[
+            'type' => 'continue_as_new',
+        ]]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->firstOrFail();
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $instanceUpdate->refresh();
+        $instanceCommand->refresh();
+        $runUpdate->refresh();
+        $runCommand->refresh();
+
+        $this->assertSame($continuedRun->id, $instanceUpdate->workflow_run_id);
+        $this->assertSame($continuedRun->id, $instanceUpdate->resolved_workflow_run_id);
+        $this->assertSame('accepted', $instanceUpdate->status->value);
+        $this->assertNull($instanceUpdate->failure_id);
+        $this->assertSame($continuedRun->id, $instanceCommand->workflow_run_id);
+        $this->assertSame($continuedRun->id, $instanceCommand->resolved_workflow_run_id);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('event_type', HistoryEventType::UpdateAccepted->value)
+            ->where('workflow_command_id', $instanceCommand->id)
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->where('workflow_command_id', $instanceCommand->id)
+            ->count());
+
+        $this->assertSame($run->id, $runUpdate->workflow_run_id);
+        $this->assertSame('failed', $runUpdate->status->value);
+        $this->assertSame('update_failed', $runUpdate->outcome->value);
+        $this->assertNotNull($runUpdate->failure_id);
+        $this->assertSame($run->id, $runCommand->workflow_run_id);
+        $this->assertSame('update_failed', $runCommand->outcome->value);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->where('workflow_command_id', $runCommand->id)
+            ->where('payload->terminal_reason', 'continued')
+            ->count());
     }
 
     public function testCompleteContinueAsNewIgnoresPayloadCodecWhenArgumentsAreInherited(): void

@@ -54,6 +54,22 @@ class WorkflowCommand extends Model
      */
     public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
     {
+        $commandType = $attributes['command_type'] ?? null;
+        $isUpdate = $commandType === CommandType::Update
+            || $commandType === CommandType::Update->value;
+
+        if ($isUpdate) {
+            $request = is_array($attributes['context']['request'] ?? null)
+                ? $attributes['context']['request']
+                : [];
+
+            if (is_string($request['request_id'] ?? null) && $request['request_id'] !== '') {
+                $attributes['request_id'] ??= $request['request_id'];
+            }
+        } else {
+            unset($attributes['request_id']);
+        }
+
         if ($run !== null) {
             $attributes['command_sequence'] ??= CommandSequence::reserveNext($run);
         }
@@ -357,6 +373,10 @@ class WorkflowCommand extends Model
 
     public function requestId(): ?string
     {
+        if (is_string($this->request_id ?? null) && $this->request_id !== '') {
+            return $this->request_id;
+        }
+
         $request = $this->commandContext()['request'] ?? null;
 
         return is_array($request) && is_string($request['request_id'] ?? null)

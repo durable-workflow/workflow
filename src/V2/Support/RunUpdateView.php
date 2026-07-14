@@ -124,7 +124,10 @@ final class RunUpdateView
             return (string) ($left['command_id'] ?? $left['id'] ?? '') <=> (string) ($right['command_id'] ?? $right['id'] ?? '');
         });
 
-        return array_values($rows);
+        return array_values(array_map(
+            static fn (array $row): array => self::withCurrentOrderingState($row, $run),
+            $rows,
+        ));
     }
 
     /**
@@ -164,6 +167,16 @@ final class RunUpdateView
                 ?? self::stringValue($commandSnapshot['resolved_run_id'] ?? null),
             'status' => self::eventBackedStatus($update, $command, $rejected, $completed),
             'outcome' => self::eventBackedOutcome($update, $command, $rejected, $completed),
+            'admission_ordering_state' => self::stringValue($accepted?->payload['ordering_state'] ?? null),
+            'queued_behind_command_id' => self::stringValue(
+                $accepted?->payload['queued_behind_command_id'] ?? null
+            ),
+            'queued_behind_command_sequence' => self::intValue(
+                $accepted?->payload['queued_behind_command_sequence'] ?? null
+            ),
+            'queued_behind_command_type' => self::stringValue(
+                $accepted?->payload['queued_behind_command_type'] ?? null
+            ),
             'source' => $command?->source ?? self::stringValue($commandSnapshot['source'] ?? null),
             'rejection_reason' => self::stringValue($rejected?->payload['rejection_reason'] ?? null)
                 ?? $update->rejection_reason,
@@ -229,6 +242,16 @@ final class RunUpdateView
             'outcome' => $completed instanceof WorkflowHistoryEvent
                 ? ($failureId === null ? CommandOutcome::UpdateCompleted->value : CommandOutcome::UpdateFailed->value)
                 : $command->outcome?->value,
+            'admission_ordering_state' => self::stringValue($accepted?->payload['ordering_state'] ?? null),
+            'queued_behind_command_id' => self::stringValue(
+                $accepted?->payload['queued_behind_command_id'] ?? null
+            ),
+            'queued_behind_command_sequence' => self::intValue(
+                $accepted?->payload['queued_behind_command_sequence'] ?? null
+            ),
+            'queued_behind_command_type' => self::stringValue(
+                $accepted?->payload['queued_behind_command_type'] ?? null
+            ),
             'source' => $command->source,
             'rejection_reason' => $command->rejection_reason,
             'validation_errors' => self::commandValidationErrors($command),
@@ -293,6 +316,16 @@ final class RunUpdateView
                 : ($rejected instanceof WorkflowHistoryEvent ? self::stringValue(
                     $commandSnapshot['outcome'] ?? null
                 ) : null),
+            'admission_ordering_state' => self::stringValue($accepted?->payload['ordering_state'] ?? null),
+            'queued_behind_command_id' => self::stringValue(
+                $accepted?->payload['queued_behind_command_id'] ?? null
+            ),
+            'queued_behind_command_sequence' => self::intValue(
+                $accepted?->payload['queued_behind_command_sequence'] ?? null
+            ),
+            'queued_behind_command_type' => self::stringValue(
+                $accepted?->payload['queued_behind_command_type'] ?? null
+            ),
             'source' => self::stringValue($commandSnapshot['source'] ?? null),
             'rejection_reason' => self::stringValue($rejected?->payload['rejection_reason'] ?? null),
             'validation_errors' => self::validationErrors($rejected),
@@ -331,6 +364,40 @@ final class RunUpdateView
         }
 
         return null;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private static function withCurrentOrderingState(array $row, WorkflowRun $run): array
+    {
+        $status = self::stringValue($row['status'] ?? null);
+
+        if ($status !== UpdateStatus::Accepted->value) {
+            $row['ordering_state'] = match ($status) {
+                UpdateStatus::Completed->value => 'applied',
+                UpdateStatus::Failed->value => 'failed',
+                UpdateStatus::Rejected->value => 'rejected',
+                default => 'closed',
+            };
+
+            return $row;
+        }
+
+        $commandSequence = self::intValue($row['command_sequence'] ?? null);
+        $blockingSignal = UpdateCommandGate::blockingSignal($run, $commandSequence);
+
+        $row['ordering_state'] = $blockingSignal instanceof WorkflowCommand ? 'queued' : 'ready';
+        $row['admission_ordering_state'] ??= $row['ordering_state'];
+
+        if ($blockingSignal instanceof WorkflowCommand) {
+            $row['queued_behind_command_id'] ??= $blockingSignal->id;
+            $row['queued_behind_command_sequence'] ??= $blockingSignal->command_sequence;
+            $row['queued_behind_command_type'] ??= $blockingSignal->command_type->value;
+        }
+
+        return $row;
     }
 
     private static function updateName(

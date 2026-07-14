@@ -125,6 +125,10 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'workflow_run_id',
             'update_name',
             'arguments',
+            'ordering_state',
+            'queued_behind_command_id',
+            'queued_behind_command_sequence',
+            'queued_behind_command_type',
         ],
         'UpdateApplied' => [
             'workflow_command_id',

@@ -342,6 +342,11 @@ final class RunDetailView
                         'signal_wait_id' => $signal['signal_wait_id'] ?? null,
                         'update_id' => $update['id'] ?? null,
                         'update_status' => $update['status'] ?? null,
+                        'update_ordering_state' => $update['ordering_state'] ?? null,
+                        'update_admission_ordering_state' => $update['admission_ordering_state'] ?? null,
+                        'update_queued_behind_command_id' => $update['queued_behind_command_id'] ?? null,
+                        'update_queued_behind_command_sequence' => $update['queued_behind_command_sequence'] ?? null,
+                        'update_queued_behind_command_type' => $update['queued_behind_command_type'] ?? null,
                         'result_available' => $update['result_available'] ?? false,
                         'result' => $update['result'] ?? null,
                         'failure_id' => $update['failure_id'] ?? null,
@@ -635,12 +640,6 @@ final class RunDetailView
     private static function updateBlockedReason(WorkflowRun $run, bool $isCurrentRun): ?string
     {
         $blockedReason = self::actionBlockedReason($run, $isCurrentRun);
-
-        if ($blockedReason !== null) {
-            return $blockedReason;
-        }
-
-        $blockedReason = UpdateCommandGate::blockedReason($run);
 
         if ($blockedReason !== null) {
             return $blockedReason;

@@ -314,6 +314,10 @@ final class HistoryEventPayloadContract
             'workflow_run_id',
             'update_name',
             'arguments',
+            'ordering_state',
+            'queued_behind_command_id',
+            'queued_behind_command_sequence',
+            'queued_behind_command_type',
         ],
         'UpdateRejected' => [
             'workflow_command_id',
@@ -349,6 +353,7 @@ final class HistoryEventPayloadContract
             'message',
             'code',
             'exception',
+            'terminal_reason',
         ],
         'ConditionWaitOpened' => [
             'condition_wait_id',

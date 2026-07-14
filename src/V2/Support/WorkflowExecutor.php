@@ -2456,9 +2456,7 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        $signalTask = $signalsCanAdvance
-            ? $this->createPendingSignalResumeTask($run, self::workflowSignalIdForTask($task))
-            : null;
+        $signalTask = PendingMessageTask::createForRun($run, self::workflowSignalIdForTask($task));
 
         if ($signalTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($signalTask);
@@ -2707,7 +2705,7 @@ final class WorkflowExecutor
             $now,
             $childCallId,
         );
-        $this->transferAcceptedUpdatesToContinuedRun($run, $continuedRun);
+        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
@@ -2819,6 +2817,8 @@ final class WorkflowExecutor
             'closed_reason' => 'continued',
         ], $task);
 
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
         $continuedMemo = $continuedRun->typedMemos();
@@ -2917,54 +2917,6 @@ final class WorkflowExecutor
         return $continuedTask;
     }
 
-    private function transferAcceptedUpdatesToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
-    {
-        $updates = WorkflowUpdate::query()
-            ->where('workflow_run_id', $closingRun->id)
-            ->where('target_scope', 'instance')
-            ->where('status', UpdateStatus::Accepted->value)
-            ->whereNull('workflow_sequence')
-            ->lockForUpdate()
-            ->get();
-
-        foreach ($updates as $update) {
-            if (! $update instanceof WorkflowUpdate) {
-                continue;
-            }
-
-            /** @var WorkflowCommand|null $command */
-            $command = $update->workflow_command_id === null
-                ? null
-                : WorkflowCommand::query()
-                    ->lockForUpdate()
-                    ->find($update->workflow_command_id);
-
-            $update->forceFill([
-                'workflow_run_id' => $continuedRun->id,
-                'resolved_workflow_run_id' => $continuedRun->id,
-            ])->save();
-
-            if ($command instanceof WorkflowCommand
-                && $command->command_type === CommandType::Update
-                && $command->status === CommandStatus::Accepted
-            ) {
-                $command->forceFill([
-                    'workflow_run_id' => $continuedRun->id,
-                    'resolved_workflow_run_id' => $continuedRun->id,
-                ])->save();
-            }
-
-            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::UpdateAccepted, [
-                'workflow_command_id' => $command?->id,
-                'update_id' => $update->id,
-                'workflow_instance_id' => $continuedRun->workflow_instance_id,
-                'workflow_run_id' => $continuedRun->id,
-                'update_name' => $update->update_name,
-                'arguments' => $update->arguments,
-            ], null, $command);
-        }
-    }
-
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
     {
         $outputCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -3002,6 +2954,8 @@ final class WorkflowExecutor
             ),
             'payload_codec' => $outputCodec,
         ], $task);
+
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
 
         $task->forceFill([
             'status' => TaskStatus::Completed,
@@ -3220,6 +3174,8 @@ final class WorkflowExecutor
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
         ], $task);
 
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
         // Mark current task completed.
         $task->forceFill([
             'status' => TaskStatus::Completed,
@@ -3323,6 +3279,8 @@ final class WorkflowExecutor
         }
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failedEventPayload, $task);
+
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
 
         $task->forceFill([
             'status' => TaskStatus::Failed,
@@ -5039,6 +4997,10 @@ final class WorkflowExecutor
 
         foreach ($updates as $update) {
             if (! $update instanceof WorkflowUpdate) {
+                continue;
+            }
+
+            if (UpdateCommandGate::blockingSignal($run, $update->command_sequence) instanceof WorkflowCommand) {
                 continue;
             }
 

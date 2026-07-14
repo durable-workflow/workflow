@@ -144,7 +144,6 @@ Waterline banners deterministically.
 | `rejected_run_not_closed`                   | `archive` targeted a run that is not yet terminal.                                                   |
 | `rejected_not_current`                      | A non-current run was targeted by a command that requires the current run.                           |
 | `rejected_compatibility_blocked`            | Routing layer refused to admit the command under the current compatibility envelope.                 |
-| `rejected_pending_signal`                   | Signal-with-start admitted a duplicate while a signal was already pending.                           |
 | `rejected_workflow_definition_unavailable`  | Local workflow class is required but cannot be resolved (e.g. for `query`).                          |
 
 Webhook validation failures (missing required fields, bad types) emit

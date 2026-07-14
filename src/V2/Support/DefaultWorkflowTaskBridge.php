@@ -989,6 +989,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'payload_codec' => $outputCodec,
         ], $task);
 
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
         $task->forceFill([
             'status' => TaskStatus::Completed,
             'lease_expires_at' => null,
@@ -1080,6 +1082,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ], $structuredException),
         ], $task);
 
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
         $task->forceFill([
             'status' => TaskStatus::Failed,
             'lease_expires_at' => null,
@@ -1126,8 +1130,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'lease_expires_at' => null,
         ])->save();
 
-        if ($this->waitingRunCanAdvanceFromSignal($run, $nonTerminalCommands)) {
-            $this->createPendingSignalResumeTask($run, $createdTaskIds, self::workflowSignalIdForTask($task));
+        $nextMessageTask = PendingMessageTask::createForRun($run, self::workflowSignalIdForTask($task));
+
+        if ($nextMessageTask instanceof WorkflowTask) {
+            $createdTaskIds[] = $nextMessageTask->id;
         }
 
         if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
@@ -1495,6 +1501,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
         $taskUpdateId = self::nonEmptyString($taskPayload['workflow_update_id'] ?? null);
+        $taskCommandId = self::nonEmptyString($taskPayload['workflow_command_id'] ?? null);
         $seen = [];
 
         foreach ($commands as $command) {
@@ -1520,6 +1527,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->first();
 
             if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
+                return 'invalid_commands';
+            }
+
+            if (UpdateCommandGate::blockingSignal(
+                $run,
+                $update->command_sequence,
+                $taskCommandId,
+            ) instanceof WorkflowCommand) {
                 return 'invalid_commands';
             }
 
@@ -3259,6 +3274,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_link_id' => $link->id,
             'closed_reason' => 'continued',
         ], $task);
+
+        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
 
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 

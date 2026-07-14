@@ -55,6 +55,8 @@ use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ParentClosePolicyEnforcer;
+use Workflow\V2\Support\PendingMessageTask;
+use Workflow\V2\Support\PendingUpdateCloser;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
@@ -1401,7 +1403,7 @@ final class WorkflowStub
             );
         }
 
-        if ($this->shouldInlineAcceptedUpdateCompletion()) {
+        if ($this->shouldInlineAcceptedUpdateCompletion($update)) {
             $this->processAcceptedUpdateInline($command->workflow_run_id, $update->id);
         }
 
@@ -1814,6 +1816,15 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
+            [$existingCommand, $existingUpdate] = $this->existingUpdateForRequest($instance);
+
+            if ($existingCommand instanceof WorkflowCommand) {
+                $command = $existingCommand;
+                $update = $existingUpdate;
+
+                return;
+            }
+
             $currentRun = $this->currentRunForInstance($instance, true);
 
             if (! $currentRun instanceof WorkflowRun) {
@@ -1918,20 +1929,6 @@ final class WorkflowStub
                 return;
             }
 
-            if (UpdateCommandGate::blockedReason($run) !== null) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL,
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
             $arguments = $validatedArguments['arguments'];
             $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
 
@@ -2021,6 +2018,8 @@ final class WorkflowStub
                 'accepted_at' => $command->accepted_at,
             ]);
 
+            $predecessor = UpdateCommandGate::blockingSignal($run, $command->command_sequence);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
                 'workflow_command_id' => $command->id,
                 'update_id' => $update->id,
@@ -2028,30 +2027,16 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'update_name' => $updateName,
                 'arguments' => $serializedUpdateArguments,
+                'ordering_state' => $predecessor instanceof WorkflowCommand ? 'queued' : 'ready',
+                'queued_behind_command_id' => $predecessor?->id,
+                'queued_behind_command_sequence' => $predecessor?->command_sequence,
+                'queued_behind_command_type' => $predecessor?->command_type?->value,
             ], null, $command);
 
             $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
 
-            if ($resumeTask instanceof WorkflowTask) {
-                $resumeTask = $this->mergeWorkflowTaskPayload(
-                    $resumeTask,
-                    WorkflowTaskPayload::forUpdate($update),
-                );
-            }
-
             if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
-                /** @var WorkflowTask $resumeTask */
-                $resumeTask = self::taskQuery()->create([
-                    'workflow_run_id' => $run->id,
-                    'namespace' => $run->namespace,
-                    'task_type' => TaskType::Workflow->value,
-                    'status' => TaskStatus::Ready->value,
-                    'available_at' => now(),
-                    'payload' => WorkflowTaskPayload::forUpdate($update),
-                    'connection' => $run->connection,
-                    'queue' => $run->queue,
-                    'compatibility' => $run->compatibility,
-                ]);
+                $resumeTask = PendingMessageTask::createForRun($run);
             }
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
@@ -2060,9 +2045,54 @@ final class WorkflowStub
         return [$command, $update, $resumeTask];
     }
 
-    private function shouldInlineAcceptedUpdateCompletion(): bool
+    private function shouldInlineAcceptedUpdateCompletion(WorkflowUpdate $update): bool
     {
-        return Queue::getFacadeRoot() instanceof QueueFake;
+        if (! Queue::getFacadeRoot() instanceof QueueFake) {
+            return false;
+        }
+
+        $run = ConfiguredV2Models::workflowRunQuery()->find($update->workflow_run_id);
+
+        return ! $run instanceof WorkflowRun
+            || ! (UpdateCommandGate::blockingSignal($run, $update->command_sequence) instanceof WorkflowCommand);
+    }
+
+    /**
+     * @return array{0: WorkflowCommand|null, 1: WorkflowUpdate|null}
+     */
+    private function existingUpdateForRequest(WorkflowInstance $instance): array
+    {
+        $context = $this->resolvedCommandContext()->attributes()['context'] ?? [];
+        $request = is_array($context['request'] ?? null) ? $context['request'] : [];
+        $requestId = is_string($request['request_id'] ?? null) && $request['request_id'] !== ''
+            ? $request['request_id']
+            : null;
+
+        if ($requestId === null) {
+            return [null, null];
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->where('workflow_instance_id', $instance->id)
+            ->where('command_type', CommandType::Update->value)
+            ->where('request_id', $requestId)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->first();
+
+        if (! $command instanceof WorkflowCommand) {
+            return [null, null];
+        }
+
+        /** @var WorkflowUpdate|null $update */
+        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->where('workflow_command_id', $command->id)
+            ->lockForUpdate()
+            ->first();
+
+        return [$command, $update];
     }
 
     private function processAcceptedUpdateInline(?string $runId, string $updateId): void
@@ -2395,18 +2425,7 @@ final class WorkflowStub
             ], static fn (mixed $value): bool => $value !== null), null, $command);
 
             if (! $this->hasOpenWorkflowTask($run->id)) {
-                /** @var WorkflowTask $task */
-                $task = self::taskQuery()->create([
-                    'workflow_run_id' => $run->id,
-                    'namespace' => $run->namespace,
-                    'task_type' => TaskType::Workflow->value,
-                    'status' => TaskStatus::Ready->value,
-                    'available_at' => now(),
-                    'payload' => WorkflowTaskPayload::forSignal($signal),
-                    'connection' => $run->connection,
-                    'queue' => $run->queue,
-                    'compatibility' => $run->compatibility,
-                ]);
+                $task = PendingMessageTask::createForRun($run);
             }
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
@@ -2603,18 +2622,7 @@ final class WorkflowStub
                 ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
 
                 if (! $this->hasOpenWorkflowTask($run->id)) {
-                    /** @var WorkflowTask $task */
-                    $task = self::taskQuery()->create([
-                        'workflow_run_id' => $run->id,
-                        'namespace' => $run->namespace,
-                        'task_type' => TaskType::Workflow->value,
-                        'status' => TaskStatus::Ready->value,
-                        'available_at' => now(),
-                        'payload' => WorkflowTaskPayload::forSignal($signal),
-                        'connection' => $run->connection,
-                        'queue' => $run->queue,
-                        'compatibility' => $run->compatibility,
-                    ]);
+                    $task = PendingMessageTask::createForRun($run);
                 }
 
                 self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
@@ -3140,6 +3148,8 @@ final class WorkflowStub
 
             WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);
 
+            PendingUpdateCloser::closeForTerminalRun($run);
+
             $command->forceFill([
                 'applied_at' => now(),
             ])->save();
@@ -3396,7 +3406,6 @@ final class WorkflowStub
             'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
             'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
             WorkflowStartGate::BLOCKED_COMPATIBILITY => CommandOutcome::RejectedCompatibilityBlocked->value,
-            UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
             WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
             default => null,
         };

@@ -133,11 +133,6 @@ class CommandResult
         return $this->command->outcome === CommandOutcome::RejectedNotCurrent;
     }
 
-    public function rejectedPendingSignal(): bool
-    {
-        return $this->command->outcome === CommandOutcome::RejectedPendingSignal;
-    }
-
     public function rejectedInvalidArguments(): bool
     {
         return $this->command->outcome === CommandOutcome::RejectedInvalidArguments;

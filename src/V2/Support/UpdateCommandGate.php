@@ -11,43 +11,32 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class UpdateCommandGate
 {
-    public const BLOCKED_BY_PENDING_SIGNAL = 'earlier_signal_pending';
-
-    public static function blockedReason(WorkflowRun $run): ?string
+    public static function blockingSignal(
+        WorkflowRun $run,
+        ?int $beforeCommandSequence = null,
+        ?string $ignoredCommandId = null,
+    ): ?WorkflowCommand
     {
-        return self::blockingSignal($run) instanceof WorkflowCommand
-            ? self::BLOCKED_BY_PENDING_SIGNAL
-            : null;
-    }
-
-    public static function blockingSignal(WorkflowRun $run): ?WorkflowCommand
-    {
-        $run->loadMissing('commands');
-
         /** @var WorkflowCommand|null $command */
-        $command = $run->commands
-            ->filter(
-                static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
-                    && $command->status === CommandStatus::Accepted
-                    && $command->applied_at === null
-            )
-            ->sort(static function (WorkflowCommand $left, WorkflowCommand $right): int {
-                $leftSequence = $left->command_sequence ?? PHP_INT_MAX;
-                $rightSequence = $right->command_sequence ?? PHP_INT_MAX;
+        $query = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Signal->value)
+            ->where('status', CommandStatus::Accepted->value)
+            ->whereNull('applied_at');
 
-                if ($leftSequence !== $rightSequence) {
-                    return $leftSequence <=> $rightSequence;
-                }
+        if ($beforeCommandSequence !== null) {
+            $query->where('command_sequence', '<', $beforeCommandSequence);
+        }
 
-                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MAX;
-                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MAX;
+        if ($ignoredCommandId !== null) {
+            $query->where('id', '!=', $ignoredCommandId);
+        }
 
-                if ($leftCreatedAt !== $rightCreatedAt) {
-                    return $leftCreatedAt <=> $rightCreatedAt;
-                }
-
-                return $left->id <=> $right->id;
-            })
+        $command = $query
+            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('command_sequence')
+            ->orderBy('created_at')
+            ->orderBy('id')
             ->first();
 
         return $command;
