@@ -2,31 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Workflow\V2\Worker;
+namespace Workflow\V2\Support;
 
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\YieldedCommand;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
-use Workflow\V2\Support\ActivityCall;
-use Workflow\V2\Support\ActivityOptions;
-use Workflow\V2\Support\AwaitCall;
-use Workflow\V2\Support\AwaitWithTimeoutCall;
-use Workflow\V2\Support\ChildWorkflowCall;
-use Workflow\V2\Support\ChildWorkflowOptions;
-use Workflow\V2\Support\ContinueAsNewCall;
-use Workflow\V2\Support\SideEffectCall;
-use Workflow\V2\Support\ServiceOperationCall;
-use Workflow\V2\Support\ServiceOperationOptions;
-use Workflow\V2\Support\SignalCall;
-use Workflow\V2\Support\TimerCall;
-use Workflow\V2\Support\UpsertSearchAttributesCall;
-use Workflow\V2\Support\VersionCall;
-use Workflow\V2\Support\WorkerSessionOptions;
 
 /**
- * Outcome of a single worker-protocol workflow Fiber step.
+ * Internal outcome of a single embedded-engine workflow Fiber step.
  *
- * @api Stable v2 worker protocol API.
+ * @internal
  */
 final class WorkflowStep
 {
@@ -164,7 +149,7 @@ final class WorkflowStep
             $yielded instanceof ChildWorkflowCall => self::childWorkflowCommand($yielded, $payloadCodec),
             $yielded instanceof ServiceOperationCall => self::serviceOperationCommand($yielded, $payloadCodec),
             $yielded instanceof SideEffectCall => throw new UnsupportedWorkflowYieldException(
-                'Worker protocol side effects require WorkflowFiberRunner history resolution before command emission.',
+                'Workflow engine side effects require WorkflowFiberRunner history resolution before command emission.',
             ),
             $yielded instanceof VersionCall => [
                 'type' => 'record_version_marker',
@@ -183,7 +168,7 @@ final class WorkflowStep
                 'payload_codec' => $payloadCodec,
             ],
             default => throw new UnsupportedWorkflowYieldException(sprintf(
-                'Worker protocol runner received an unsupported workflow suspension of type %s.',
+                'Workflow engine runner received an unsupported workflow suspension of type %s.',
                 get_debug_type($yielded),
             )),
         };

@@ -312,7 +312,7 @@ final class QueryAndLiveDebugDocumentationTest extends TestCase
                 'rejected_unknown_query',
                 'invalid_query_arguments',
                 'query_rejected',
-                'StandaloneWorkflowWorker',
+                'DurableWorkflow\\Worker',
                 'WorkerProtocolVersion::VERSION',
             ] as $term
         ) {

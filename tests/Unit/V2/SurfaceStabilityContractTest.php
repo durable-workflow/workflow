@@ -29,7 +29,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $manifest = SurfaceStabilityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.surface-stability.contract', $manifest['schema']);
-        $this->assertSame(2, $manifest['version']);
+        $this->assertSame(3, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/compatibility',
             $manifest['authority_url'],
@@ -175,10 +175,25 @@ final class SurfaceStabilityContractTest extends TestCase
         );
     }
 
-    public function testOfficialSdkContractIncludesRustPackageAuthority(): void
+    public function testOfficialSdkContractIncludesPhpAndRustPackageAuthorities(): void
     {
         $manifest = SurfaceStabilityContract::manifest();
         $officialSdks = $manifest['surface_families']['official_sdks'];
+
+        $this->assertSame(
+            'README.md and composer metadata in `durable-workflow/sdk-php`',
+            $officialSdks['per_package_contracts']['php_sdk'],
+        );
+        $this->assertSame(
+            [
+                'package' => 'durable-workflow/sdk',
+                'release_line' => '0.1.x',
+                'supported_server_versions' => '>=0.2,<0.3',
+                'worker_protocol_version' => '1.13',
+                'control_plane_version' => '2',
+            ],
+            $officialSdks['package_compatibility']['php_sdk'],
+        );
 
         $this->assertSame(
             'README.md and `[package.metadata.durable-workflow]` in `durable-workflow/sdk-rust`',

@@ -24,8 +24,8 @@ use Workflow\V2\Support\ServiceOperationCall;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkflowDefinition;
-use Workflow\V2\Worker\WorkflowFiberRunner;
-use Workflow\V2\Worker\WorkflowStep;
+use Workflow\V2\Support\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 

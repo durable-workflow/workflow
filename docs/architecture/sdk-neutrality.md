@@ -16,11 +16,12 @@ disagree, the machine-readable authority wins and this guide is the bug.
 
 ## Why this exists
 
-Durable ships three first-party SDKs: the PHP
-`durable-workflow/workflow` package, Python `durable_workflow` package,
-and Rust `durable-workflow` crate. There is no plan to ship a broad
-official SDK portfolio in the v2 release, and there is no reserved
-release slot for a TypeScript, Go, Java, or .NET SDK.
+Durable ships three first-party SDKs: the framework-neutral PHP
+`durable-workflow/sdk` package, Python `durable_workflow` package, and Rust
+`durable-workflow` crate. The `durable-workflow/workflow` package remains the
+embedded Laravel engine and replay owner; it is not the standalone PHP SDK.
+There is no plan to ship a broad official SDK portfolio in the v2 release,
+and there is no reserved release slot for a TypeScript, Go, Java, or .NET SDK.
 
 That choice is intentional. The maintenance cost of a wide first-party
 SDK roster is high and the demand for SDKs in those ecosystems has not
@@ -101,10 +102,10 @@ neutrality gap is recorded as a known limitation before promotion.
 The `sdk_breadth_policy` map on the manifest is the source of truth for
 the official-SDK roster:
 
-- `first_party.php_workflow_package`: posture `priority`. Reference
-  workflow authoring SDK and embedded host. Its replay coverage is enumerated
+- `first_party.php_sdk`: posture `priority`. Framework-neutral standalone PHP
+  client and remote-worker SDK. Its live client/worker coverage is enumerated
   by scenario ID in the public
-  [`history_replay_bundles` catalog](https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json).
+  [`signal_query_runtime_contract` catalog](https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json).
 - `first_party.python_sdk`: posture `priority`. Highest-value non-PHP
   SDK; used to validate that the worker protocol, control plane, and
   replay fixtures behave the same way outside PHP. Its replay coverage is
@@ -119,6 +120,13 @@ the official-SDK roster:
   posture `demand_driven`. No first-party SDK exists. Public contracts
   must remain implementable in those languages without protocol
   redesign.
+
+The separate `embedded_engines.php_workflow_engine` entry records
+`durable-workflow/workflow` as the Laravel engine and replay owner. Its replay
+coverage remains enumerated by scenario ID in the public
+[`history_replay_bundles` catalog](https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json).
+Keeping this entry outside `first_party` prevents the embedded package from
+being mistaken for the framework-neutral PHP SDK.
 
 A new first-party SDK is added only when:
 

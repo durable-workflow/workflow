@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.suite",
-  "version": 29,
+  "version": 30,
   "authority_doc": "docs/platform-conformance.md",
   "authority_url": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
   "surface_stability_authority": "durable-workflow.v2.surface-stability.contract",
@@ -37,8 +37,17 @@
         "failure_repair_actionability"
       ]
     },
+    "embedded_engine": {
+      "description": "Application-embedded Workflow engine: Laravel integration, durable state, queue execution, replay persistence, and frozen history semantics.",
+      "required_surface_families": [
+        "history_event_wire_formats"
+      ],
+      "required_fixture_categories": [
+        "history_replay_bundles"
+      ]
+    },
     "official_sdk": {
-      "description": "First-party SDK distributed by the project (PHP workflow package, Python SDK, and Rust SDK). Must drive the worker plane, replay frozen history, and round-trip the control plane.",
+      "description": "First-party framework-neutral SDK distributed by the project (PHP SDK, Python SDK, and Rust SDK). Must drive the worker plane, replay frozen history, and round-trip the control plane.",
       "required_surface_families": [
         "official_sdks",
         "worker_protocol",
@@ -238,7 +247,7 @@
           "query_state_model": "snapshot_derived_transport_state",
           "caller_paths": [
             "sdk-rust",
-            "workflow-php-sdk",
+            "sdk-php",
             "sdk-python"
           ]
         },
@@ -256,7 +265,7 @@
           ]
         },
         "php_worker_rust_client": {
-          "worker_runtime": "workflow-php",
+          "worker_runtime": "sdk-php",
           "artifact": {
             "package": "durable-workflow",
             "version": "0.1.2",
@@ -311,7 +320,7 @@
           ],
           "caller_paths": [
             "sdk-rust",
-            "workflow-php-sdk",
+            "sdk-php",
             "sdk-python"
           ],
           "required_assertions": [
@@ -806,6 +815,12 @@
         "artifact": "GitHub release attaches the harness result document."
       },
       "durable-workflow/workflow": {
+        "required_targets": [
+          "embedded_engine"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "durable-workflow/sdk": {
         "required_targets": [
           "official_sdk",
           "worker_protocol_implementation"

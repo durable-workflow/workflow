@@ -751,12 +751,9 @@ do not introduce new durable truth.
   specific redaction policy never has to fork the bundle format.
 - Replay-debug bundles, archive bundles, and import bundles share one
   bundle format and one verifier. `workflow:v2:replay-simulate`,
-  `workflow:v2:replay-verify`, `workflow:v2:replay-conformance`,
-  `workflow:v2:namespace-conformance`,
-  `workflow:v2:search-attributes-conformance`, and
-  `workflow:v2:schedule-conformance` are the supported tools for
-  offline replay and conformance evidence; production correctness is
-  never debugged in-band.
+  `workflow:v2:replay-verify`, and `workflow:v2:replay-conformance` are
+  the supported embedded-engine tools for offline replay and conformance
+  evidence; production correctness is never debugged in-band.
 
 ### Export, archive, verification, health, monitoring, and HA-behavior guidance
 
@@ -774,37 +771,11 @@ do not introduce new durable truth.
   and inferred Composer metadata cannot satisfy the published-artifact
   scenario. The shard is merged with server and Python evidence before a
   full conformance run can pass.
-- `php artisan workflow:v2:namespace-conformance` emits the Workflow PHP
-  runtime's namespace conformance evidence shard for host harnesses. The
-  shard runs against a standalone server through the published
-  `WorkflowClient`, `ControlPlaneClient`, and `WorkerProtocolClient`,
-  proving PHP namespace selection, documented default namespace behavior,
-  not-found cross-namespace workflow lookup, and same-queue PHP worker
-  delivery isolation. As with replay conformance, host harnesses must supply
-  explicit published-artifact version and source entries; the shard is
-  merged with the server, CLI, Python, Waterline, cleanup, and Nexus
-  evidence before a full namespace conformance run can pass.
-- `php artisan workflow:v2:search-attributes-conformance` emits the
-  Workflow PHP runtime's search-attribute evidence shard for host
-  harnesses. The shard runs against a standalone server through the
-  published `ControlPlaneClient`, `WorkerProtocolClient`, and PHP
-  workflow runtime, proving PHP workflow start attributes, workflow-side
-  upserts, public visibility queries, workflow storage type names, and
-  namespace value isolation. Host harnesses must supply explicit
-  published-artifact version and source entries; the shard reports every
-  required `search_attribute_runtime_contract` scenario and marks
-  out-of-shard cells as not covered with linked findings before the full
-  server, CLI, Python, Waterline, codec, latency, and adversarial-query
-  evidence is merged.
-- `php artisan workflow:v2:schedule-conformance` emits the Workflow PHP
-  runtime's schedule conformance evidence shard for host harnesses. The
-  shard runs against a standalone server through the published
-  `ControlPlaneClient`, proving the PHP-facing schedule create/list/describe
-  path and the pause, resume, trigger, and delete controls the PHP package
-  claims. Host harnesses must supply explicit published-artifact version and
-  source entries; the shard is merged with server, CLI, Python, Waterline,
-  cadence, restart, and missed-fire evidence before a full schedules
-  conformance run can pass.
+- Standalone namespace, search-attribute, schedule, signal/query, and update
+  conformance belongs to the public-artifact harness in
+  `durable-workflow/server`, using `durable-workflow/sdk` for PHP client and
+  remote-worker cells. Workflow does not ship HTTP conformance clients or
+  remote worker loops.
 - `Workflow\V2\Support\HealthCheck::snapshot()`,
   `Workflow\V2\Support\ReadinessContract`, and
   `php artisan workflow:v2:doctor` are the boot-time and operate-time
@@ -1041,13 +1012,18 @@ actually ran in production:
 
 - The PHP package (`durable-workflow/workflow`) is the first-party
   embedded engine and the first-party in-process worker. Authoring
-  uses the `Workflow\V2` namespace.
+  uses the `Workflow\V2` namespace. It does not ship standalone-server
+  clients or remote workers.
 - The standalone server (`durable-workflow/server`) exposes the same
   durable kernel over HTTP with the same worker protocol, control-
   plane commands, matching, history, and operator projections.
   Embedded-to-server adoption is a configuration change, not a
   protocol change.
-- Future SDKs participate over the stable worker protocol named by
+- Framework-neutral PHP applications and remote workers install
+  `durable-workflow/sdk` and use the `DurableWorkflow` namespace. The SDK
+  owns authentication, transport, portable protocol types, clients, and
+  remote worker lifecycle, and it has no Laravel or Workflow dependency.
+- Other SDKs participate over the stable worker protocol named by
   the `Platform protocol specs` row of the
   [New-In-V2 Capabilities](#new-in-v2-capabilities) section. Cross-
   SDK workers cannot replay serialized PHP closures; portable

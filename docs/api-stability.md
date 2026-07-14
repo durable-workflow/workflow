@@ -12,7 +12,7 @@ and release-authority page:
 - <https://durable-workflow.github.io/docs/2.0/compatibility>
 - machine-readable mirror: `surface_stability_contract` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.surface-stability.contract`, version `2`.
+  `durable-workflow.v2.surface-stability.contract`, version `3`.
 
 The companion platform-wide normative protocol-spec catalog — *which*
 surface has *which* machine-readable spec, *what format* the spec uses,
@@ -35,14 +35,17 @@ not contradict the platform authority. When this document and the
 platform authority disagree, the platform authority wins, and the
 disagreement is a bug here.
 
-Version 2 adds the Rust SDK per-package authority and the worker-protocol
-negotiation rule: a worker request is compatible when it uses the server's
-advertised major and a minor no greater than the advertised minor. Missing,
-malformed, different-major, and future-minor headers fail closed.
+Version 2 added the Rust SDK per-package authority and the worker-protocol
+negotiation rule. Version 3 assigns the PHP SDK authority to the
+framework-neutral `durable-workflow/sdk` package and keeps Workflow as the
+embedded-engine authority. A worker request is compatible when it uses the
+server's advertised major and a minor no greater than the advertised minor.
+Missing, malformed, different-major, and future-minor headers fail closed.
 
-The platform surface families that own the contents of this document are
-`official_sdks` (for the `Workflow` PHP authoring and `Support\*` API)
-and `history_event_wire_formats` (for the frozen-event tables below).
+The `history_event_wire_formats` platform surface family owns the frozen-event
+tables below. The Laravel authoring and server-facing `Support\*` APIs are the
+Workflow package's embedded-engine surface and follow this per-package
+stability contract.
 
 ## Relationship to the platform conformance suite
 
@@ -52,9 +55,10 @@ conformance suite — specified in
 and mirrored by `Workflow\V2\Support\PlatformConformanceSuite` — defines
 *how* an implementation proves it follows the contract: the target
 matrix, the fixture catalog, the pass / fail rules, and the release
-gates. The PHP workflow package claims the `official_sdk` and
-`worker_protocol_implementation` targets; releases of this package must
-attach a passing harness result document before tag.
+gates. The PHP workflow package runs the embedded-engine replay and persistence
+fixtures. Standalone control-plane and worker-protocol conformance is owned by
+the `durable-workflow/sdk` and `durable-workflow/server` public-artifact
+harnesses, not by this Laravel package.
 
 ## Relationship to the feature mapping contract
 
@@ -178,12 +182,8 @@ propagated to the control plane and service-call history so conformance and
 observability can record caller workflow ids, SDK language, service SDK
 language, artifact tuple, and published-artifact worker execution fields.
 
-Out-of-workflow control-plane clients can use the same operation surface with:
-
-- `Workflow\V2\Client\ControlPlaneClient::startServiceOperation(...)`
-- `Workflow\V2\Client\ControlPlaneClient::executeServiceOperation(...)`
-- `Workflow\V2\Client\ControlPlaneClient::describeServiceCall(...)`
-- `Workflow\V2\Client\ControlPlaneClient::cancelServiceCall(...)`
+Out-of-workflow callers use `DurableWorkflow\Client` from
+`durable-workflow/sdk` to reach a standalone server.
 
 ## Server-facing standalone activity stability list
 
@@ -206,144 +206,23 @@ host identity. The server uses the identifier to detect runs that have no
 PHP workflow code behind them, so terminal activity outcome and timeout
 paths close the host run instead of scheduling a workflow-task resume row.
 
-## Control-plane SDK client
+## Standalone PHP SDK boundary
 
-The PHP SDK exposes a stable HTTP client for application and operator
-processes that need to drive the standalone server control plane from PHP:
+The framework-neutral PHP SDK exposes the standalone control-plane client and
+remote-worker APIs. Its public contract lives with `durable-workflow/sdk`, not
+in this package.
 
-- `Workflow\V2\Client\ControlPlaneClient`
-- `Workflow\V2\Exceptions\ControlPlaneRequestException`
+This package does not expose an HTTP client, authentication layer, transport,
+or remote-worker loop. Framework-neutral PHP applications and workers install
+`durable-workflow/sdk` and use `DurableWorkflow\Client` and
+`DurableWorkflow\Worker`.
 
-`ControlPlaneClient` covers namespace selection, namespace lifecycle
-list/create/describe/update/delete, namespace external-storage policy
-updates, workflow start, workflow list by visibility query, workflow
-describe, run describe, signal delivery, query execution, cancel,
-terminate, schedule list/create/describe/update/pause/resume/trigger/
-backfill/history/delete, search-attribute definition list/create/delete,
-and cluster-info reads
-against `POST /api/workflows`, `GET /api/workflows/{workflowId}`,
-`GET /api/workflows/{workflowId}/runs/{runId}`,
-`POST /api/workflows/{workflowId}/signal/{signalName}`,
-`POST /api/workflows/{workflowId}/query/{queryName}`,
-`POST /api/workflows/{workflowId}/cancel`,
-`POST /api/workflows/{workflowId}/terminate`,
-`GET|POST /api/schedules`, `GET|PUT|DELETE /api/schedules/{scheduleId}`,
-`POST /api/schedules/{scheduleId}/pause`,
-`POST /api/schedules/{scheduleId}/resume`,
-`POST /api/schedules/{scheduleId}/trigger`,
-`POST /api/schedules/{scheduleId}/backfill`,
-`GET /api/schedules/{scheduleId}/history`,
-`GET /api/workflows`, `GET|POST /api/search-attributes`, and
-`DELETE /api/search-attributes/{name}`,
-`GET|POST /api/namespaces`, `GET|PUT|DELETE /api/namespaces/{name}`,
-and `PUT /api/namespaces/{name}/external-storage`, plus their current-run
-targeted `/runs/{runId}` variants. It sends the
-`X-Durable-Workflow-Control-Plane-Version` and `X-Namespace` headers on
-every request, accepts raw PHP argument arrays that the server resolves
-through the normal payload-envelope boundary, and returns the raw server
-JSON envelope so conformance harnesses can deep-equal CLI, Python SDK,
-and PHP SDK results. Non-success HTTP responses raise
-`ControlPlaneRequestException` with the HTTP status, decoded response body,
-and stable `reason` helper. `namespace()` returns the selected namespace,
-and `withNamespace()` creates an equivalent client for another namespace so
-PHP harnesses can exercise tenant A/B isolation without mutating shared
-client state.
-
-## Worker protocol SDK shims
-
-The PHP SDK exposes a small stable worker-protocol surface for processes
-that host PHP workflows against the standalone server without embedding the
-Laravel queue runner:
-
-- `Workflow\V2\Worker\WorkerProtocolClient`
-- `Workflow\V2\Worker\StandaloneWorkflowWorker`
-- `Workflow\V2\Worker\WorkflowFiberRunner`
-- `Workflow\V2\Worker\WorkflowQueryTaskExecutor`
-- `Workflow\V2\Worker\WorkflowStep`
-
-These classes are covered by the same semver rules as the server-facing
-`Support\*` list above. They intentionally wrap only the worker-plane
-HTTP routes and cold-replay stepping primitives; application workers still
-own registration maps, process lifecycle, logging, and command-line UX.
-Standalone PHP workflow-worker registrations advertise the `query_tasks`
-capability by default whenever they register workflow types; pass an explicit
-empty capabilities list only for custom workers that deliberately cannot
-answer server-routed workflow queries.
-Cold PHP Fiber runners must be constructed with the bridge `history_events`
-payload so workflow start time plus recorded activity, timer, child-workflow,
-side-effect, version marker, and search-attribute outcomes can be replayed
-before new worker-protocol commands are emitted.
-Runner steps emit the complete command list for the current workflow task;
-immediate non-blocking commands such as side-effect records, version
-markers, and search-attribute upserts are combined with the next durable
-wait or terminal command. If replay reaches a wait that is already open in
-history and has no terminal outcome yet, the step contains no commands; the
-worker must wait for a later history payload instead of duplicating the
-schedule command.
-`WorkerProtocolClient` defaults to the standalone server worker API:
-registration, heartbeat, workflow-task polling/history/complete/fail,
-activity-task polling/heartbeat/complete/fail, and query-task
-polling/complete/fail all use `POST /api/worker/...` with the
-worker-protocol headers. Standalone `poll*` methods return leased tasks from
-the server's `task` envelope and use stable `poll_request_id` values to
-recover a leased task after a local HTTP timeout. Polls send
-`timeout_seconds` to bound the server-side long-poll wait. The client caches
-the returned lease fields so follow-up history, heartbeat, complete, and fail
-calls can send the required `lease_owner`, `workflow_task_attempt`,
-`activity_attempt_id`, and `query_task_attempt` values.
-`StandaloneWorkflowWorker` is the stable PHP worker driver for service-mode
-workflow workers that want the package to orchestrate the polling loop. The
-first tick gives query tasks priority; after a task is processed, the opposite
-task class receives priority on the next tick, with same-tick fallback when no
-task of the preferred class is claimable. This bounded alternating order is
-part of the public worker shim contract for workers that advertise
-`query_tasks`. Workflow tasks execute through `WorkflowFiberRunner` and
-complete or fail through `WorkerProtocolClient`.
-Long-running service workers can use `tickWithHeartbeat()` or `run()` to emit
-periodic worker heartbeat records with task-slot and process telemetry on the
-server-advertised cadence while preserving the same bounded task-processing
-order.
-`namespace()` returns the worker client's selected namespace, and
-`withNamespace()` creates a fresh worker client with the same connection
-settings for a different namespace. That clone intentionally does not carry
-cached task leases across the namespace boundary.
-`WorkflowQueryTaskExecutor` is the stable PHP worker shim for the
-`query_tasks` capability. It accepts the server-routed query task envelope,
-replays the supplied history export in query mode, validates query targets
-and arguments against the same contract as `WorkflowStub::queryWithArguments`,
-and returns either an encoded result envelope or a typed query failure for
-`WorkerProtocolClient` to complete or fail the query task. Standalone workers
-that register external workflow type keys can construct it with a
-`workflow_type => workflow_class` map; the executor uses that map to attach the
-PHP class and declared signal/query/update contract to service-mode query-task
-history before replay.
-Embedded package installs that need the `/webhooks` bridge contract must opt
-into embedded bridge mode explicitly; in that mode `poll*` methods return
-ready task opportunities as `tasks` lists and workers explicitly claim a task
-before fetching workflow history or completing/failing the work.
-The `Workflow\Serializers\Avro::envelope()` and `::decodeEnvelope()`
-helpers provide the language-neutral payload envelope used by those
-worker-protocol commands.
-
-## Control-plane SDK shims
-
-The PHP SDK exposes a stable control-plane client for automation and
-conformance scripts that need to call the standalone server without shelling
-out to the CLI:
-
-- `Workflow\V2\Client\WorkflowClient`
-- `Workflow\V2\Client\WorkflowClientException`
-
-`WorkflowClient` uses the same public HTTP routes and protocol headers as the
-CLI for workflow start, signal, and query operations. Signal and query inputs
-are encoded as language-neutral payload envelopes, and query results are
-decoded from `result_envelope` when the server returns one. Rejected requests
-raise `Workflow\V2\Client\WorkflowClientException`, which preserves the HTTP
-status code and exact decoded response body so cross-language callers can
-record typed failure evidence without parsing exception text. `namespace()`
-returns the client's selected namespace, defaulting to `default`, and
-`withNamespace()` creates a fresh workflow client with the same connection
-settings for a different namespace.
+The removed 2.0-alpha `Workflow\V2\Client\*` and
+`Workflow\V2\Worker\*` namespaces have no aliases or compatibility wrappers.
+Replace them with the SDK APIs when moving a PHP process to the standalone
+server. Engine-side Laravel models, migrations, queues, replay persistence,
+service-provider bindings, workflow/activity authoring APIs, and the internal
+contracts hosted by `durable-workflow/server` remain in this package.
 
 ## `Workflow\V2\Workflow` authoring facade
 

@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `29`. The complete
+`durable-workflow.v2.platform-conformance.suite`, version `30`. The complete
 machine-readable authority is packaged at
 `resources/platform-conformance-contract.json`; the PHP class re-exports that
 document without maintaining a second semantic model.
@@ -54,6 +54,7 @@ target (the standalone `server` claims `standalone_server` *and*
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
 | `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `workflow_update_runtime_contract`, `search_attribute_runtime_contract`, `schedules_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `principal_attribution_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `embedded_engine` | `history_event_wire_formats` | `history_replay_bundles` |
 | `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `workflow_update_runtime_contract`, `search_attribute_runtime_contract`, `schedules_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `principal_attribution_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
 | `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `workflow_update_runtime_contract`, `search_attribute_runtime_contract`, `schedules_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `history_replay_bundles` |
 | `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `workflow_update_runtime_contract`, `search_attribute_runtime_contract`, `schedules_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `principal_attribution_contract`, `cli_json_envelopes` |
@@ -189,8 +190,8 @@ Required scenarios:
   Python and PHP caller paths.
 - `php_worker_rust_client` — the Rust SDK client sends signals to and
   queries a PHP worker with the same payload and result shapes as the
-  Python and PHP caller paths. The worker runtime is `workflow-php`;
-  `workflow-php-sdk` identifies a client path, not the worker runtime.
+  Python and PHP caller paths. The standalone worker runtime and client path
+  are both supplied by `sdk-php`.
 - `rust_query_error_and_immutability` — successful and failed Rust query
   calls emit no workflow commands and append no history, and a failed
   query cannot change the answer returned by a later successful query.
@@ -520,7 +521,8 @@ artifact) before tag.
 | Release | Required claimed target(s) | Where the result is recorded |
 | --- | --- | --- |
 | `durable-workflow/server` (standalone) | `standalone_server`, `worker_protocol_implementation`, `repair_actionability_surface` | Release CI workflow attaches the result document to the GitHub release. |
-| `durable-workflow/workflow` (PHP package) | `official_sdk` (PHP), `worker_protocol_implementation` | Release CI workflow attaches the result document to the GitHub release. |
+| `durable-workflow/workflow` (embedded Laravel package) | `embedded_engine` | Release CI workflow attaches the result document to the GitHub release. |
+| `durable-workflow/sdk` (PHP SDK) | `official_sdk` (PHP), `worker_protocol_implementation` | Release CI workflow attaches the result document to the GitHub release. |
 | `durable_workflow` (Python SDK) | `official_sdk` (Python), `worker_protocol_implementation` | Release CI workflow attaches the result document to the GitHub release. |
 | `dw` (CLI) | `cli_json_client` | Release CI workflow attaches the result document to the GitHub release. |
 | `waterline` | `waterline_contract_surface` | Release CI workflow attaches the result document to the GitHub release. |
@@ -567,8 +569,9 @@ docs. It indexes them under one normative declaration so a single
   The conformance suite cites it for the `worker_protocol_implementation`
   target.
 - `docs/api-stability.md` (this repo) is the per-package stability list
-  for the PHP workflow package. The suite cites it for the
-  `official_sdks` (PHP row) target.
+  for the embedded PHP workflow engine. The suite cites it for the
+  `embedded_engine` target. The framework-neutral PHP SDK owns its
+  `official_sdk` and `worker_protocol_implementation` evidence.
 - `server/docs/contracts/*` are the per-route contract docs. The suite
   cites them for the `standalone_server` target.
 - `cli/tests/fixtures/control-plane/` and

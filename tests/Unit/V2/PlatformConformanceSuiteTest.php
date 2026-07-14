@@ -33,7 +33,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $authority = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame($authority, PlatformConformanceSuite::manifest());
-        $this->assertSame(29, $authority['version']);
+        $this->assertSame(30, $authority['version']);
         $this->assertSame(PlatformConformanceSuite::VERSION, $authority['version']);
         $this->assertSame(PlatformConformanceSuite::SCHEMA, $authority['schema']);
         $this->assertSame(SurfaceStabilityContract::SCHEMA, $authority['surface_stability_authority']);
@@ -77,6 +77,24 @@ final class PlatformConformanceSuiteTest extends TestCase
             );
             $this->assertNotEmpty($category['sources'], "{$categoryName} must declare a source.");
         }
+    }
+
+    public function testPhpSdkAndEmbeddedWorkflowReleaseGatesAreIndependent(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+
+        $this->assertSame(
+            ['embedded_engine'],
+            $manifest['release_gates']['gates']['durable-workflow/workflow']['required_targets'],
+        );
+        $this->assertSame(
+            ['official_sdk', 'worker_protocol_implementation'],
+            $manifest['release_gates']['gates']['durable-workflow/sdk']['required_targets'],
+        );
+        $this->assertSame(
+            ['history_replay_bundles'],
+            $manifest['targets']['embedded_engine']['required_fixture_categories'],
+        );
     }
 
     public function testRustSignalQueryScenariosAreRequiredByStableTargetsAndPassFailRules(): void
@@ -124,11 +142,11 @@ final class PlatformConformanceSuiteTest extends TestCase
 
         $this->assertSame('sdk-rust', $contracts['rust_worker_rust_php_python_clients']['worker_runtime']);
         $this->assertSame(
-            ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+            ['sdk-rust', 'sdk-php', 'sdk-python'],
             $contracts['rust_worker_rust_php_python_clients']['caller_paths'],
         );
         $this->assertSame('sdk-python', $contracts['python_worker_rust_client']['worker_runtime']);
-        $this->assertSame('workflow-php', $contracts['php_worker_rust_client']['worker_runtime']);
+        $this->assertSame('sdk-php', $contracts['php_worker_rust_client']['worker_runtime']);
         $this->assertSame('client', $contracts['python_worker_rust_client']['rust_role']);
         $this->assertSame('client', $contracts['php_worker_rust_client']['rust_role']);
 
@@ -174,9 +192,10 @@ final class PlatformConformanceSuiteTest extends TestCase
         $gates = PlatformConformanceSuite::manifest()['release_gates']['gates'];
 
         $this->assertArrayHasKey('durable-workflow/workflow', $gates);
+        $this->assertArrayHasKey('durable-workflow/sdk', $gates);
         $this->assertArrayHasKey('durable_workflow', $gates);
         $this->assertSame(
-            $gates['durable-workflow/workflow']['required_targets'],
+            $gates['durable-workflow/sdk']['required_targets'],
             $gates['durable_workflow']['required_targets'],
         );
     }

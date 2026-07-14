@@ -65,7 +65,7 @@ use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\V2\Support\WorkerProtocolVersion;
-use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow as V2Workflow;
 use Workflow\V2\WorkflowStub;
 

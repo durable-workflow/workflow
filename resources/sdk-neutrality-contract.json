@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.sdk-neutrality.contract",
-  "version": 3,
+  "version": 4,
   "authority_doc": "https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md",
   "authority_url": "https://durable-workflow.github.io/sdk-neutrality-contract.json",
   "surface_stability_authority": "durable-workflow.v2.surface-stability.contract",
@@ -13,38 +13,31 @@
     "future_posture": "TypeScript, Go, Java, .NET and other languages are demand-driven. They have no reserved release slot, but every public contract must be shaped so a future SDK in those languages can be written without breaking the wire protocol."
   },
   "sdk_breadth_policy": {
-    "description": "The official-SDK roster is intentionally narrow. Each entry below names a posture against this contract; new languages are added only when adoption demand justifies the maintenance commitment.",
+    "description": "The official-SDK roster is intentionally narrow. First-party and demand-driven SDK entries name a posture against this contract; embedded engines are tracked separately so they are not mistaken for framework-neutral SDKs.",
     "first_party": {
-      "php_workflow_package": {
-        "package": "durable-workflow/workflow",
-        "package_url": "https://packagist.org/packages/durable-workflow/workflow",
+      "php_sdk": {
+        "package": "durable-workflow/sdk",
+        "package_url": "https://packagist.org/packages/durable-workflow/sdk",
         "language": "php",
         "posture": "priority",
-        "role": "Reference workflow authoring SDK and embedded host. Workflow authoring semantics are validated against this SDK first.",
+        "role": "Framework-neutral standalone client and remote-worker SDK. Used to validate PHP control-plane and worker-protocol behavior across real process boundaries.",
         "conformance": {
           "scenario_catalog_schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-          "scenario_catalog_url": "https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json",
-          "category": "history_replay_bundles",
+          "scenario_catalog_url": "https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json",
+          "category": "signal_query_runtime_contract",
           "actor_ids": [
-            "workflow_php_runtime"
+            "sdk_php",
+            "php_sdk_client",
+            "php_worker"
           ],
           "scenario_ids": [
             "published_artifact_install_only",
-            "php_completed_history_activity_replay",
-            "php_completed_history_signal_update_replay",
-            "php_completed_history_wait_condition_replay",
-            "php_completed_history_version_marker_replay",
-            "php_completed_history_saga_compensation_replay",
-            "php_worker_restart_completed_query",
-            "php_worker_restart_activity_state",
-            "php_worker_restart_signal_update_state",
-            "php_worker_restart_wait_condition_state",
-            "php_worker_restart_version_marker_state",
-            "php_worker_restart_saga_compensation_state",
-            "php_code_divergence_refusal",
-            "server_history_mutation_refusal",
-            "malformed_history_refusal",
-            "php_in_flight_signal_restart_timing"
+            "php_worker_cli_and_sdk_baseline",
+            "python_worker_php_facing_and_cli_clients",
+            "php_worker_python_and_cli_clients",
+            "rust_worker_rust_php_python_clients",
+            "php_worker_rust_client",
+            "rust_replayed_instance_state_query_after_cold_restart"
           ]
         }
       },
@@ -103,6 +96,40 @@
             "php_worker_rust_client",
             "rust_query_error_and_immutability",
             "rust_replayed_instance_state_query_after_cold_restart"
+          ]
+        }
+      }
+    },
+    "embedded_engines": {
+      "php_workflow_engine": {
+        "package": "durable-workflow/workflow",
+        "package_url": "https://packagist.org/packages/durable-workflow/workflow",
+        "language": "php",
+        "role": "Embedded Laravel workflow engine and replay owner. It provides authoring, durable state, queue execution, replay persistence, and frozen history semantics without owning standalone client or remote-worker APIs.",
+        "conformance": {
+          "scenario_catalog_schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+          "scenario_catalog_url": "https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json",
+          "category": "history_replay_bundles",
+          "actor_ids": [
+            "workflow_php_runtime"
+          ],
+          "scenario_ids": [
+            "published_artifact_install_only",
+            "php_completed_history_activity_replay",
+            "php_completed_history_signal_update_replay",
+            "php_completed_history_wait_condition_replay",
+            "php_completed_history_version_marker_replay",
+            "php_completed_history_saga_compensation_replay",
+            "php_worker_restart_completed_query",
+            "php_worker_restart_activity_state",
+            "php_worker_restart_signal_update_state",
+            "php_worker_restart_wait_condition_state",
+            "php_worker_restart_version_marker_state",
+            "php_worker_restart_saga_compensation_state",
+            "php_code_divergence_refusal",
+            "server_history_mutation_refusal",
+            "malformed_history_refusal",
+            "php_in_flight_signal_restart_timing"
           ]
         }
       }

@@ -11,11 +11,13 @@ use RuntimeException;
  * Loader for the packaged, machine-readable SDK neutrality contract.
  *
  * The platform ships a deliberately narrow set of first-party SDKs
- * (PHP `durable-workflow/workflow`, Python `durable_workflow`, and Rust
- * `durable-workflow`). Building or maintaining additional first-party SDKs is
- * not a release goal. Public contracts must nevertheless avoid
- * language-specific assumptions that would require a protocol redesign for a
- * future TypeScript, Go, Java, or .NET SDK.
+ * (PHP `durable-workflow/sdk`, Python `durable_workflow`, and Rust
+ * `durable-workflow`). The `durable-workflow/workflow` package remains the
+ * embedded Laravel engine and replay owner; it is not the standalone PHP SDK.
+ * Building or maintaining additional first-party SDKs is not a release goal.
+ * Public contracts must nevertheless avoid language-specific assumptions
+ * that would require a protocol redesign for a future TypeScript, Go, Java,
+ * or .NET SDK.
  *
  * The exact field-shape authority ships at
  * `resources/sdk-neutrality-contract.json`. This class re-exports that
@@ -38,11 +40,11 @@ final class SdkNeutralityContract
 {
     public const SCHEMA = 'durable-workflow.v2.sdk-neutrality.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const PACKAGE_CONTRACT_PATH = 'resources/sdk-neutrality-contract.json';
 
-    public const MIRROR_SHA256 = 'c5db94f9284954359f2d3aa02943184095f05df3eea85fa15749ef219e71ecbf';
+    public const MIRROR_SHA256 = '93ab20aa7c69a4994affef4b3d511c0bf99d2304828d9626615b2da3f60064fd';
 
     public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md';
 

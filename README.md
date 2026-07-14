@@ -27,6 +27,17 @@ There's also a [sample application](https://github.com/durable-workflow/sample-a
 
 ## Usage
 
+Install the embedded Laravel runtime:
+
+```bash
+composer require durable-workflow/workflow:^2.0@alpha
+```
+
+This package owns Laravel service-provider integration, migrations, Eloquent
+models, queue jobs, replay persistence, and in-process workflow and activity
+authoring. It does not include a client or remote-worker runtime for the
+standalone server.
+
 **1. Create a workflow**
 ```php
 use function Workflow\V2\activity;
@@ -103,9 +114,28 @@ This package provides the application-embedded version of Durable Workflow for L
 
 Use it when your workflows and activities run within a Laravel application and you do not need workers written in other languages.
 
-For polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and connect PHP applications and workers using the [PHP SDK](https://github.com/durable-workflow/sdk-php) instead of this embedded package.
+For standalone or polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and install the [PHP SDK](https://github.com/durable-workflow/sdk-php) in framework-neutral PHP applications and remote workers:
+
+```bash
+composer require durable-workflow/sdk:^0.1.1
+```
 
 The standalone server allows PHP, Python, Rust, and other supported SDKs to participate in the same workflow system.
+
+| Deployment mode | PHP package | Runtime owner |
+| --- | --- | --- |
+| Embedded Laravel | `durable-workflow/workflow` | The Laravel application owns durable state and queue execution. |
+| Standalone server host | `durable-workflow/workflow` inside `durable-workflow/server` | The server hosts Workflow's engine contracts and persistence. |
+| Standalone PHP client or remote worker | `durable-workflow/sdk` | The SDK owns authentication, transport, protocol types, client operations, and worker polling. |
+
+### Migrating an alpha standalone worker
+
+Remove direct use of `Workflow\V2\Client\*` and `Workflow\V2\Worker\*`, then
+install `durable-workflow/sdk`. Create a `DurableWorkflow\Client` for
+standalone-server operations and a `DurableWorkflow\Worker` for remote task
+execution. The removed alpha namespaces have no aliases or compatibility
+wrappers; embedded Laravel workflow and activity classes remain supported by
+this package.
 
 ## Sponsors
 

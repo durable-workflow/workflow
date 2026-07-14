@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Workflow\V2\Worker;
+namespace Workflow\V2\Support;
 
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -17,34 +17,17 @@ use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Support\ActivityCall;
-use Workflow\V2\Support\AwaitCall;
-use Workflow\V2\Support\AwaitWithTimeoutCall;
-use Workflow\V2\Support\ChildWorkflowCall;
-use Workflow\V2\Support\ExternalPayloads;
-use Workflow\V2\Support\FailureFactory;
-use Workflow\V2\Support\SideEffectCall;
-use Workflow\V2\Support\ServiceOperationCall;
-use Workflow\V2\Support\ServiceOperationResult;
-use Workflow\V2\Support\SignalCall;
-use Workflow\V2\Support\TimerCall;
-use Workflow\V2\Support\UpsertSearchAttributesCall;
-use Workflow\V2\Support\VersionCall;
-use Workflow\V2\Support\VersionResolution;
-use Workflow\V2\Support\VersionResolver;
-use Workflow\V2\Support\WorkflowDefinition;
-use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Workflow;
 
 /**
- * Cold-replay executor for PHP-authored workflows driven by worker protocol tasks.
+ * Internal cold-replay executor for the embedded engine task bridge.
  *
  * Pass bridge `history_events` when constructing a cold runner; recorded
  * activity, timer, child-workflow, side-effect, version marker, and
  * search-attribute outcomes are replayed into the Fiber before new commands
  * are emitted.
  *
- * @api Stable v2 worker protocol API.
+ * @internal
  */
 final class WorkflowFiberRunner
 {
@@ -169,10 +152,10 @@ final class WorkflowFiberRunner
     }
 
     /**
-     * Build a runner for a workflow class registered to an external worker.
+     * Build a runner for an engine-hosted workflow class.
      *
-     * The standalone server owns the durable run row, so this helper passes
-     * a transient in-memory WorkflowRun with the protocol-assigned identity.
+     * The bridge owns the durable run row, so this helper passes a transient
+     * in-memory WorkflowRun with the engine-assigned identity.
      *
      * @param class-string<Workflow> $workflowClass
      * @param array<int, mixed> $arguments
@@ -199,7 +182,7 @@ final class WorkflowFiberRunner
 
         if (! $workflow instanceof Workflow) {
             throw new RuntimeException(sprintf(
-                'Worker protocol runner can only host Workflow\\V2\\Workflow subclasses; got %s.',
+                'Workflow engine runner can only host Workflow\\V2\\Workflow subclasses; got %s.',
                 $workflowClass,
             ));
         }

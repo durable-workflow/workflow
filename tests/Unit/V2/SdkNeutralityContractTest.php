@@ -45,7 +45,7 @@ final class SdkNeutralityContractTest extends TestCase
         $manifest = SdkNeutralityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.sdk-neutrality.contract', $manifest['schema']);
-        $this->assertSame(3, $manifest['version']);
+        $this->assertSame(4, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md',
             $manifest['authority_doc'],
@@ -200,6 +200,9 @@ final class SdkNeutralityContractTest extends TestCase
         foreach ($manifest['sdk_breadth_policy']['first_party'] as $sdk) {
             $publicReferences[] = $sdk['conformance'];
         }
+        foreach ($manifest['sdk_breadth_policy']['embedded_engines'] as $engine) {
+            $publicReferences[] = $engine['conformance'];
+        }
         $publicReferences[] = $manifest['release_gates']['enforcement']['machine_authority'];
 
         $encoded = json_encode($publicReferences, JSON_THROW_ON_ERROR);
@@ -262,18 +265,21 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertContains('mcp_discovery_results', $manifest['audit_scope_surface_families']);
     }
 
-    public function testSdkBreadthPolicyMarksPhpPythonAndRustAsPriorityAndOthersAsDemandDriven(): void
+    public function testSdkBreadthPolicySeparatesThePhpSdkFromTheEmbeddedWorkflowEngine(): void
     {
         $manifest = SdkNeutralityContract::manifest();
 
         $policy = $manifest['sdk_breadth_policy'];
-        $this->assertArrayHasKey('php_workflow_package', $policy['first_party']);
+        $this->assertSame(['php_sdk', 'python_sdk', 'rust_sdk'], array_keys($policy['first_party']));
+        $this->assertSame(['php_workflow_engine'], array_keys($policy['embedded_engines']));
+        $this->assertArrayHasKey('php_sdk', $policy['first_party']);
+        $this->assertArrayNotHasKey('php_workflow_package', $policy['first_party']);
         $this->assertArrayHasKey('python_sdk', $policy['first_party']);
         $this->assertArrayHasKey('rust_sdk', $policy['first_party']);
 
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
-            $policy['first_party']['php_workflow_package']['posture'],
+            $policy['first_party']['php_sdk']['posture'],
         );
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
@@ -297,6 +303,38 @@ final class SdkNeutralityContractTest extends TestCase
             $this->assertNotEmpty($sdk['conformance']['actor_ids']);
             $this->assertNotEmpty($sdk['conformance']['scenario_ids']);
         }
+
+        $phpSdk = $policy['first_party']['php_sdk'];
+        $this->assertSame('durable-workflow/sdk', $phpSdk['package']);
+        $this->assertSame(
+            'https://packagist.org/packages/durable-workflow/sdk',
+            $phpSdk['package_url'],
+        );
+        $this->assertStringContainsString('Framework-neutral standalone', $phpSdk['role']);
+        $this->assertSame('signal_query_runtime_contract', $phpSdk['conformance']['category']);
+        $this->assertSame(
+            SdkNeutralityContract::SIGNAL_QUERY_SCENARIOS_URL,
+            $phpSdk['conformance']['scenario_catalog_url'],
+        );
+        $this->assertSame(
+            ['sdk_php', 'php_sdk_client', 'php_worker'],
+            $phpSdk['conformance']['actor_ids'],
+        );
+
+        $workflowEngine = $policy['embedded_engines']['php_workflow_engine'];
+        $this->assertSame('durable-workflow/workflow', $workflowEngine['package']);
+        $this->assertStringContainsString('Embedded Laravel workflow engine', $workflowEngine['role']);
+        $this->assertStringContainsString('replay owner', $workflowEngine['role']);
+        $this->assertStringContainsString('without owning standalone', $workflowEngine['role']);
+        $this->assertSame('history_replay_bundles', $workflowEngine['conformance']['category']);
+        $this->assertSame(
+            SdkNeutralityContract::REPLAY_SCENARIOS_URL,
+            $workflowEngine['conformance']['scenario_catalog_url'],
+        );
+        $this->assertSame(
+            ['workflow_php_runtime'],
+            $workflowEngine['conformance']['actor_ids'],
+        );
 
         $rustConformance = $policy['first_party']['rust_sdk']['conformance'];
         $this->assertSame('signal_query_runtime_contract', $rustConformance['category']);

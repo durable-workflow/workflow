@@ -150,11 +150,10 @@ Authority:
 
 Canonical implementation surface:
 
-- Worker processes using
-  `Workflow\V2\Worker\WorkflowTaskWorker` and
-  `Workflow\V2\Worker\ActivityTaskWorker`, including the Queue
-  worker jobs `Workflow\V2\Support\Jobs\RunWorkflowTask`,
-  `RunActivityTask`, and `RunTimerTask`.
+- Embedded execution uses the Queue worker jobs
+  `Workflow\V2\Support\Jobs\RunWorkflowTask`, `RunActivityTask`, and
+  `RunTimerTask`. Framework-neutral remote PHP processes use
+  `DurableWorkflow\Worker` from `durable-workflow/sdk`.
 - The HTTP surface that workers use:
   `POST /api/worker/workflow-tasks/poll`,
   `POST /api/worker/workflow-tasks/{taskId}/complete`,

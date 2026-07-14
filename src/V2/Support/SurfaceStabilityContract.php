@@ -28,7 +28,7 @@ final class SurfaceStabilityContract
 {
     public const SCHEMA = 'durable-workflow.v2.surface-stability.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/compatibility';
 
@@ -207,19 +207,24 @@ final class SurfaceStabilityContract
                 'notes' => 'MCP tool names, parameter schemas, and `payload_preview_limit_bytes` semantics are part of the contract. Tool descriptions and discovery hints are diagnostic.',
             ],
             'official_sdks' => [
-                'description' => 'The first-party SDKs distributed by the project: PHP `durable-workflow/workflow` (workflow authoring + embedded host), `durable-workflow/server`, `dw` CLI, the `durable_workflow` Python SDK, and the `durable-workflow` Rust SDK.',
+                'description' => 'The first-party framework-neutral SDKs distributed by the project: PHP `durable-workflow/sdk`, the `durable_workflow` Python SDK, and the `durable-workflow` Rust SDK.',
                 'stability_level' => self::STABILITY_STABLE,
                 'authority_manifest' => 'client_compatibility',
                 'breaking_change_release' => 'major',
                 'notes' => 'Each SDK\'s public surface is governed by its own per-package stability document. Per-package documents must defer to this contract; disagreements are bugs in the per-package document.',
                 'per_package_contracts' => [
-                    'php_workflow_package' => 'docs/api-stability.md in `durable-workflow/workflow`',
-                    'server' => 'README.md and docs/contracts/* in `durable-workflow/server`',
-                    'cli' => 'docs/polyglot/cli-reference.md',
+                    'php_sdk' => 'README.md and composer metadata in `durable-workflow/sdk-php`',
                     'python_sdk' => 'README.md in `durable-workflow/sdk-python`',
                     'rust_sdk' => 'README.md and `[package.metadata.durable-workflow]` in `durable-workflow/sdk-rust`',
                 ],
                 'package_compatibility' => [
+                    'php_sdk' => [
+                        'package' => 'durable-workflow/sdk',
+                        'release_line' => '0.1.x',
+                        'supported_server_versions' => '>=0.2,<0.3',
+                        'worker_protocol_version' => '1.13',
+                        'control_plane_version' => '2',
+                    ],
                     'rust_sdk' => [
                         'package' => 'durable-workflow',
                         'release_line' => '0.1.x',

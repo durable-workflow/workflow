@@ -195,37 +195,17 @@ workflow task for the same run, the query-task poll returns
 the workflow task before polling the query again. Query task long-poll timeout
 semantics are the same clamped `WorkerProtocolVersion::longPollSemantics()`
 used by workflow and activity task polling.
-`WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
-default for standalone PHP workers that register workflow types, and
-`pollQueryTasks()` sends a stable `poll_request_id` for every query
-poll attempt. When the standalone server only knows an external workflow type
-key, PHP workers should pass the same `workflow_type => workflow_class` registry
-to `WorkflowQueryTaskExecutor` so query-task replay can see the class's declared
-queries before invoking the handler.
-PHP workers that use `StandaloneWorkflowWorker` inherit a bounded alternating
-tick. The first tick gives query tasks priority. After any task is processed,
-the opposite task class receives the first poll on the next tick; when that
-class has no claimable task, the worker falls back to the other class in the
-same tick. When both classes remain claimable, neither waits behind more than
-one priority turn. For a query-capable initial workflow task, the driver also
-performs one short pre-execution drain so a query already routed from the
-`WorkflowStarted` snapshot can return before the first wait is recorded. After
-an active non-terminal workflow task completes or reports
-`waiting_for_history`, the driver performs a bounded query-task drain after the
-workflow task has recorded its commands. These drains can complete at most one
-query task each, so startup can produce at most two consecutive query-task
-completions while workflow work is ready; steady-state work alternates the
-classes. The fairness drains use zero-second query-task probes. The initial
-non-terminal workflow task and a workflow poll that reports
-`query_task_pending` get more probes than steady state, but each probe yields
-immediately when no task is claimable. This lets a public query enqueued during
-start or workflow execution observe a consistent state and return before the
-next loop turn without turning the worker tick into an unbounded query loop or
-starving heartbeat or workflow progress.
-Workers that build their own loop MUST preserve the same fairness property when
-they advertise `query_tasks`; a workflow-task long poll must not starve a
-waiting public query, and a query-task poll that reports `workflow_task_pending`
-must be followed by workflow-task progress for that run.
+Remote PHP workers use `DurableWorkflow\Worker` from
+`durable-workflow/sdk`. The SDK registration advertises `query_tasks`, and
+its query poll sends a stable `poll_request_id`. Workflow owns the engine-side
+query routing, leases, history cutoffs, and non-durability rules described
+here; the framework-neutral SDK owns the remote polling loop, replay handler,
+authentication, and transport. After an active non-terminal workflow task
+completes or reports `waiting_for_history`, a remote worker may poll a routed
+query against the committed state. Workers that advertise `query_tasks` MUST
+ensure a workflow-task long poll does not starve a waiting public query, and a
+query-task poll that reports `workflow_task_pending` must be followed by
+workflow-task progress for that run.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,
@@ -235,18 +215,11 @@ to reconstruct one. The worker replays committed history with
 commands suppressed, invokes the declared query method, and then
 returns exactly one terminal query-task outcome.
 
-For active PHP-authored workflows, a registered workflow type is the
-query routing boundary. If the leased task identifies a workflow type
-that the worker registered, but the server snapshot does not yet carry
-a `WorkflowStarted` event, the PHP executor builds a replay-only start
-snapshot from the run metadata and the registered workflow class's
-declared command contract. This makes initial public `current` and
-`state` queries answer from the workflow's initial in-memory state, and
-later queries answer from replayed signal history for the same run. The
-synthetic start snapshot is never written back to durable history and
-does not relax structured rejections: an undeclared query still fails
-with `rejected_unknown_query`, and unsupported signal delivery remains
-owned by the server's command-contract validation.
+For active remotely-authored workflows, a registered workflow type is the
+query routing boundary. SDK query handlers replay only the committed snapshot
+provided by the server. An undeclared query still fails with
+`rejected_unknown_query`, and unsupported signal delivery remains owned by the
+server's command-contract validation.
 
 Completion requires `lease_owner`, `query_task_attempt`, `result`,
 and optionally `result_envelope` with `codec`, `blob`, or

@@ -341,12 +341,9 @@ final class WorkflowServiceProviderTest extends TestCase
             'make:workflow',
             'workflow:v2:doctor',
             'workflow:v2:history-export',
-            'workflow:v2:namespace-conformance',
             'workflow:v2:repair-pass',
             'workflow:v2:rebuild-projections',
             'workflow:v2:replay-conformance',
-            'workflow:v2:schedule-conformance',
-            'workflow:v2:search-attributes-conformance',
             'workflow:v2:schedule-tick',
         ];
 
@@ -358,6 +355,19 @@ final class WorkflowServiceProviderTest extends TestCase
             );
         }
 
+        foreach ([
+            'workflow:v2:namespace-conformance',
+            'workflow:v2:schedule-conformance',
+            'workflow:v2:search-attributes-conformance',
+            'workflow:v2:workflow-updates-conformance',
+        ] as $remoteConformanceCommand) {
+            $this->assertNotContains(
+                $remoteConformanceCommand,
+                $registeredCommands,
+                "Standalone conformance command [{$remoteConformanceCommand}] belongs to the SDK/server harness."
+            );
+        }
+
         $this->assertNotContains(
             'workflow:v2:backfill-parallel-group-metadata',
             $registeredCommands,
@@ -365,30 +375,9 @@ final class WorkflowServiceProviderTest extends TestCase
         );
     }
 
-    public function testConformanceCommandsRegisterRunIdAsOptionOnly(): void
+    public function testHistoryExportRegistersRunSelectorsAsOptionsOnly(): void
     {
         $commands = Artisan::all();
-
-        foreach ([
-            'workflow:v2:namespace-conformance',
-            'workflow:v2:schedule-conformance',
-            'workflow:v2:search-attributes-conformance',
-        ] as $commandName) {
-            $this->assertArrayHasKey($commandName, $commands);
-
-            $definition = $commands[$commandName]->getDefinition();
-
-            $this->assertArrayNotHasKey(
-                'run',
-                $definition->getArguments(),
-                "Command [{$commandName}] must not register a positional [run] argument."
-            );
-            $this->assertArrayHasKey(
-                'run-id',
-                $definition->getOptions(),
-                "Command [{$commandName}] must keep [--run-id] as an option."
-            );
-        }
 
         $historyExport = $commands['workflow:v2:history-export']->getDefinition();
 
