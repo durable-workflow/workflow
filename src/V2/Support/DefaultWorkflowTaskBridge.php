@@ -50,8 +50,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public const AVAILABILITY_CEILING_SECONDS = 1;
 
-    public const WORKFLOW_TASK_LEASE_SECONDS = 300;
-
     /**
      * Relations the history-projection role consumes for a workflow-bridge
      * projection. Hydrated by {@see self::projectRun()} before the role is
@@ -319,8 +317,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
-            $leaseExpiresAt = now()
-                ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS);
+            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
             $stickyReplayMode = StickyExecution::claimReplayMode($task, $resolvedLeaseOwner);
 
             $task->forceFill([
@@ -732,8 +729,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
-            $leaseExpiresAt = now()
-                ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS);
+            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
 
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
@@ -4744,8 +4740,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $taskId,
-                'lease_expires_at' => now()
-                    ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS),
+                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
                 'attempt_count' => $task->attempt_count + 1,
                 'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $taskId),
                 'sticky_claimed_at' => now(),

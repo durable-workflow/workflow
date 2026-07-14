@@ -62,8 +62,7 @@ final class LocalActivityRuntime
 
     public static function workflowTaskLeaseExpiresAt(): CarbonInterface
     {
-        return now()
-            ->addSeconds(DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS);
+        return WorkflowTaskLease::expiresAt();
     }
 
     public static function renewWorkflowTask(WorkflowTask $task): ?CarbonInterface

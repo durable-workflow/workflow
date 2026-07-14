@@ -2452,6 +2452,8 @@ final class V2OperatorMetricsTest extends TestCase
         config()->set('workflows.v2.matching_role.queue_wake_enabled', false);
         config()
             ->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 8);
 
         $snapshot = OperatorMetrics::snapshot();
 
@@ -2467,7 +2469,7 @@ final class V2OperatorMetricsTest extends TestCase
                     'poll_batch_cap' => 100,
                     'availability_ceiling_seconds' => 1,
                     'wake_signal_ttl_seconds' => 60,
-                    'workflow_task_lease_seconds' => 300,
+                    'workflow_task_lease_seconds' => 8,
                     'activity_task_lease_seconds' => 300,
                 ],
             ],

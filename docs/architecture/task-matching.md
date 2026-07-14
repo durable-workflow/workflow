@@ -264,7 +264,11 @@ worker-facing `task_not_claimable` / `backend_unavailable` codes.
 
 Lease ownership is bounded:
 
-- Workflow task leases expire 5 minutes after issue unless renewed.
+- Workflow task leases expire after the effective
+  `WorkflowTaskLease::seconds()` duration unless renewed. Embedded Laravel
+  hosts configure it with `workflows.v2.workflow_task_lease_seconds` (or
+  `DW_V2_WORKFLOW_TASK_LEASE_SECONDS` before configuration is cached); the
+  documented default is 300 seconds.
 - Activity task leases expire per
   `Workflow\V2\Support\ActivityLease::expiresAt()` and are renewed
   by `DefaultActivityTaskBridge::heartbeat()`.
@@ -411,7 +415,7 @@ an explicit per-worker quota:
   surfaces can show the planned capacity. The matching role does
   not enforce these limits at claim time today; that enforcement
   is explicitly part of the Phase 6 rollout-safety work.
-- Long lease expiry (5 minutes for workflow tasks) is the
+- The configured workflow-task lease expiry is the
   fail-stop boundary for an unresponsive worker. Operators sizing
   rollout windows MUST treat this as the upper bound on how long
   a crashed worker can hold work before redelivery.
@@ -455,8 +459,8 @@ layer healthy" without reading task rows directly:
   `backpressure_model` reports `lease_ownership`, meaning the durable
   admission boundary is lease occupancy and lease expiry rather
   than an engine-enforced per-worker quota.
-  `discovery_limits` freezes the numeric matching-role contract
-  values that the engine compiles in: `poll_batch_cap` (the
+  `discovery_limits` exposes the numeric matching-role contract
+  values effective on this process: `poll_batch_cap` (the
   100-row poll batch cap from
   `DefaultWorkflowTaskBridge::POLL_BATCH_CAP`),
   `availability_ceiling_seconds` (the one-second availability
@@ -465,14 +469,14 @@ layer healthy" without reading task rows directly:
   `wake_signal_ttl_seconds` (the default 60-second
   `CacheLongPollWakeStore` signal TTL from
   `CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS`),
-  `workflow_task_lease_seconds` (the default 300-second workflow
-  task lease from
-  `DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS`), and
+  `workflow_task_lease_seconds` (the effective workflow task lease
+  resolved by `WorkflowTaskLease::seconds()`, whose default comes from
+  `WorkflowTaskLease::DEFAULT_SECONDS`), and
   `activity_task_lease_seconds` (the default 300-second activity
-  task lease from `ActivityLease::DURATION_SECONDS`). Tightening
-  any of these values is a protocol-level change because the
-  contract elsewhere in this document depends on them; loosening
-  them would silently change worker timing assumptions. The
+  task lease from `ActivityLease::DURATION_SECONDS`). Changing the
+  published defaults is a protocol-level change because the contract
+  elsewhere in this document depends on them. Choosing a non-default
+  workflow-task lease is an explicit host configuration decision. The
   snapshot reports the configuration observed by the process
   serving the request; in mixed-shape fleets, operators read one
   snapshot per node to see the full deployment.

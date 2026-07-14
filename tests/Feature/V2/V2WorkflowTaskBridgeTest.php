@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -61,9 +62,11 @@ use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunUpdateView;
+use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkflowTaskPayload;
+use Workflow\V2\Support\WorkflowTaskOwnership;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow as V2Workflow;
@@ -243,6 +246,75 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $task->refresh();
         $this->assertSame(TaskStatus::Leased, $task->status);
         $this->assertSame('server-worker-1', $task->lease_owner);
+    }
+
+    public function testConfiguredShortLeaseDrivesClaimRenewalRecoveryAndFencing(): void
+    {
+        $claimedAt = Carbon::parse('2026-07-14 21:44:11 UTC');
+        Carbon::setTestNow($claimedAt);
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+        config()->set('workflows.v2.workflow_task_lease_seconds', 2);
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $firstClaim = $this->bridge->claimStatus($task->id, 'worker-one');
+
+        $this->assertTrue($firstClaim['claimed']);
+        $this->assertSame($claimedAt->copy()->addSeconds(2)->toJSON(), $firstClaim['lease_expires_at']);
+        $this->assertTrue($task->fresh()->lease_expires_at->equalTo($claimedAt->copy()->addSeconds(2)));
+
+        $ownership = new WorkflowTaskOwnership($this->bridge);
+        $resolveTask = static fn (string $namespace, string $taskId): ?WorkflowTask => WorkflowTask::query()
+            ->find($taskId);
+        $this->assertTrue($ownership->guard($resolveTask, 'default', $task->id, 1, 'worker-one')['valid']);
+
+        Carbon::setTestNow($claimedAt->copy()->addSecond());
+        $heartbeat = $this->bridge->heartbeat($task->id);
+
+        $this->assertTrue($heartbeat['renewed']);
+        $this->assertSame($claimedAt->copy()->addSeconds(3)->toJSON(), $heartbeat['lease_expires_at']);
+        $this->assertTrue($task->fresh()->lease_expires_at->equalTo($claimedAt->copy()->addSeconds(3)));
+
+        Carbon::setTestNow($claimedAt->copy()->addSeconds(4));
+        $expired = $ownership->guard($resolveTask, 'default', $task->id, 1, 'worker-one');
+
+        $this->assertFalse($expired['valid']);
+        $this->assertSame('lease_expired', $expired['reason']);
+
+        $recovered = TaskRepair::recoverExistingTask($task->fresh(), $run->fresh());
+
+        $this->assertInstanceOf(WorkflowTask::class, $recovered);
+        $this->assertSame(TaskStatus::Ready, $recovered->status);
+        $this->assertNull($recovered->lease_owner);
+        $this->assertNull($recovered->lease_expires_at);
+
+        $replacementClaim = $this->bridge->claimStatus($task->id, 'worker-two');
+
+        $this->assertTrue($replacementClaim['claimed']);
+        $this->assertSame(2, $task->fresh()->attempt_count);
+        $this->assertSame($claimedAt->copy()->addSeconds(6)->toJSON(), $replacementClaim['lease_expires_at']);
+
+        $staleOwner = $ownership->guard($resolveTask, 'default', $task->id, 1, 'worker-one');
+        $staleAttempt = $ownership->guard($resolveTask, 'default', $task->id, 1, 'worker-two');
+
+        $this->assertFalse($staleOwner['valid']);
+        $this->assertSame('lease_owner_mismatch', $staleOwner['reason']);
+        $this->assertFalse($staleAttempt['valid']);
+        $this->assertSame('workflow_task_attempt_mismatch', $staleAttempt['reason']);
     }
 
     public function testClaimStatusUsesHistoryProjectionRoleBinding(): void

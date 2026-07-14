@@ -74,7 +74,10 @@ When activity code calls `$this->heartbeat($progress)`, the runtime:
   projection.
 
 Long-running local activity code must call `heartbeat()` often enough to
-keep both its heartbeat timeout and the workflow task lease healthy.
+keep both its heartbeat timeout and the workflow task lease healthy. The
+workflow-task lease uses the same runtime
+`workflows.v2.workflow_task_lease_seconds` value as remote and queued workflow
+task claims; embedded Laravel hosts default to 300 seconds.
 
 ## Timeouts
 

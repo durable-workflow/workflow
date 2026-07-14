@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
+use ReflectionMethod;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -35,12 +37,95 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2TaskDispatchTest extends TestCase
 {
+    public function testQueuedTimerAndLocalWritersUseConfiguredWorkflowTaskLease(): void
+    {
+        $now = Carbon::parse('2026-07-14 22:00:00 UTC');
+        Carbon::setTestNow($now);
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.workflow_task_lease_seconds', 8);
+
+        $workflowRun = $this->createWaitingRun('01J000000000000000000LEASE');
+        /** @var WorkflowTask $workflowTask */
+        $workflowTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $workflowRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $workflowClaim = new ReflectionMethod(RunWorkflowTask::class, 'claimTask');
+        $workflowClaim->setAccessible(true);
+
+        $this->assertTrue($workflowClaim->invoke(new RunWorkflowTask($workflowTask->id)));
+        $this->assertTrue($workflowTask->fresh()->lease_expires_at->equalTo($now->copy()->addSeconds(8)));
+
+        $timerRun = $this->createWaitingRun('01J00000000000000000TIMER');
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $timerRun->id,
+            'sequence' => 1,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 1,
+            'fire_at' => now()->subSecond(),
+        ]);
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $timerRun->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => ['timer_id' => $timer->id],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $timerClaim = new ReflectionMethod(RunTimerTask::class, 'claimTask');
+        $timerClaim->setAccessible(true);
+        $timerResult = $timerClaim->invoke(new RunTimerTask($timerTask->id));
+
+        $this->assertSame([$timer->id, null], $timerResult);
+        $this->assertTrue($timerTask->fresh()->lease_expires_at->equalTo($now->copy()->addSeconds(8)));
+
+        $localRun = $this->createWaitingRun('01J00000000000000000LOCAL');
+        /** @var WorkflowTask $localTask */
+        $localTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $localRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => $localRun->id,
+        ]);
+
+        $renewedAt = LocalActivityRuntime::renewWorkflowTask($localTask);
+
+        $this->assertNotNull($renewedAt);
+        $this->assertTrue($renewedAt->equalTo($now->copy()->addSeconds(8)));
+        $this->assertTrue($localTask->fresh()->lease_expires_at->equalTo($renewedAt));
+    }
+
     public function testTaskDispatchPersistsSuccessOnlyAfterAfterCommitPublicationRuns(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');

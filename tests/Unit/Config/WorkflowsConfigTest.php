@@ -42,6 +42,7 @@ final class WorkflowsConfigTest extends TestCase
         'DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE', 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
         'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT', 'WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
         'DW_V2_TASK_DISPATCH_MODE', 'WORKFLOW_V2_TASK_DISPATCH_MODE',
+        'DW_V2_WORKFLOW_TASK_LEASE_SECONDS', 'WORKFLOW_V2_WORKFLOW_TASK_LEASE_SECONDS',
         'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 'WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
         'DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 'WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',
         'DW_V2_TASK_REPAIR_SCAN_LIMIT', 'WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT',
@@ -167,7 +168,33 @@ final class WorkflowsConfigTest extends TestCase
             // Defaults that must still be active regardless of env vars.
             $this->assertSame(30, $config['v2']['compatibility']['heartbeat_ttl_seconds']);
             $this->assertSame('queue', $config['v2']['task_dispatch_mode']);
+            $this->assertSame(300, $config['v2']['workflow_task_lease_seconds']);
             $this->assertSame('warn', $config['v2']['guardrails']['boot']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
+    public function testWorkflowTaskLeaseReadsOnlyTheNewDwEnvironmentName(): void
+    {
+        $keys = ['DW_V2_WORKFLOW_TASK_LEASE_SECONDS', 'WORKFLOW_V2_WORKFLOW_TASK_LEASE_SECONDS'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        putenv('WORKFLOW_V2_WORKFLOW_TASK_LEASE_SECONDS=17');
+        $_ENV['WORKFLOW_V2_WORKFLOW_TASK_LEASE_SECONDS'] = '17';
+        $_SERVER['WORKFLOW_V2_WORKFLOW_TASK_LEASE_SECONDS'] = '17';
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame(300, $config['v2']['workflow_task_lease_seconds']);
+
+            putenv('DW_V2_WORKFLOW_TASK_LEASE_SECONDS=8');
+            $_ENV['DW_V2_WORKFLOW_TASK_LEASE_SECONDS'] = '8';
+            $_SERVER['DW_V2_WORKFLOW_TASK_LEASE_SECONDS'] = '8';
+
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame(8, $config['v2']['workflow_task_lease_seconds']);
         } finally {
             $this->restoreEnv($previous);
         }

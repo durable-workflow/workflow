@@ -143,6 +143,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\WorkflowDefinitionVersionSelector`
 - `Workflow\V2\Support\WorkflowReplayer`
 - `Workflow\V2\Support\WorkflowRunRetentionCleanup`
+- `Workflow\V2\Support\WorkflowTaskLease`
 - `Workflow\V2\Support\WorkflowTaskOwnership`
 - `Workflow\V2\TaskWatchdog`
 

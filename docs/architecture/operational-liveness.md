@@ -273,6 +273,11 @@ Authorities:
 - `TaskRepairPolicy::leaseExpired(WorkflowTask, ?now): bool` is the
   authority on whether a workflow or activity task lease has
   expired.
+- `WorkflowTaskLease::expiresAt()` is the authority on every workflow
+  and timer task lease expiry written by remote claims, queued jobs,
+  local execution, and repair-driven redispatch. Its runtime duration
+  is `workflows.v2.workflow_task_lease_seconds`; the explicit embedded
+  Laravel default is `WorkflowTaskLease::DEFAULT_SECONDS` (300 seconds).
 - `ActivityLease::expiresAt()` is the authority on activity attempt
   lease duration. `ActivityLease::DURATION_MINUTES` is frozen at 5
   minutes; a change is a protocol change.
@@ -291,9 +296,11 @@ Rules:
   that observes `status != Leased` or a different `lease_owner`
   after its own claim MUST surrender the task; concurrent writes
   never split ownership.
-- A lease is never renewed implicitly by the repair path. The only
-  supported renewal is an activity heartbeat from the owning worker,
-  which extends `lease_expires_at` without changing `lease_owner`.
+- A lease is never renewed implicitly by the repair path. Workflow-task
+  heartbeats and local-activity heartbeats renew their owning workflow
+  task through `WorkflowTaskLease`; activity-task heartbeats renew their
+  activity attempt through `ActivityLease`. Renewal extends
+  `lease_expires_at` without changing `lease_owner`.
 - A claim that fails the Phase 2 compatibility gate records
   `last_claim_failed_at` and `last_claim_error` without taking the
   lease. The row stays `Ready` so a compatible worker can claim it.

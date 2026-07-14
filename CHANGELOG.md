@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Workflow-task claims and renewals now resolve
+  `workflows.v2.workflow_task_lease_seconds` at runtime across remote,
+  queued, timer, local-activity, and repair-driven execution paths. Embedded
+  Laravel hosts retain an explicit 300-second default and may set
+  `DW_V2_WORKFLOW_TASK_LEASE_SECONDS` before caching configuration.
+
 ## 2.0.0-alpha.179
 
 Workflow 2.0.0-alpha.179 keeps the Durable Workflow 2.0 PHP package

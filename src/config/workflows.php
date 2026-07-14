@@ -258,6 +258,15 @@ return [
         ],
         'task_dispatch_mode' => Env::dw('DW_V2_TASK_DISPATCH_MODE', 'WORKFLOW_V2_TASK_DISPATCH_MODE', 'queue'),
 
+        // How long a workflow or timer task remains owned after it is claimed.
+        // Claims and heartbeats resolve this value at runtime, so embedded hosts
+        // may override the published config before workers begin claiming work.
+        // Standalone hosts map their worker-protocol timeout to this key.
+        'workflow_task_lease_seconds' => (int) env(
+            'DW_V2_WORKFLOW_TASK_LEASE_SECONDS',
+            Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
+        ),
+
         // Matching role configuration. The matching role is defined by
         // docs/architecture/task-matching.md. By default every Laravel queue
         // worker also runs the repair / broad-poll pass on every Looping

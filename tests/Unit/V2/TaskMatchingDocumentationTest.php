@@ -318,10 +318,15 @@ final class TaskMatchingDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        $this->assertMatchesRegularExpression(
-            '/5 minutes/i',
+        $this->assertStringContainsString(
+            '`workflows.v2.workflow_task_lease_seconds`',
             $contents,
-            'Task matching contract must name the 5-minute workflow task lease duration.',
+            'Task matching contract must name the runtime workflow-task lease configuration.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/documented default is 300 seconds/i',
+            $contents,
+            'Task matching contract must name the 300-second embedded workflow-task lease default.',
         );
     }
 
@@ -482,7 +487,7 @@ final class TaskMatchingDocumentationTest extends TestCase
             'DefaultWorkflowTaskBridge::POLL_BATCH_CAP',
             'DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS',
             'CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS',
-            'DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS',
+            'WorkflowTaskLease::DEFAULT_SECONDS',
             'ActivityLease::DURATION_SECONDS',
         ] as $sourceConst) {
             $this->assertStringContainsString(
