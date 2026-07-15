@@ -7,6 +7,7 @@ namespace Tests;
 use Dotenv\Dotenv;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Database\Schema\Builder as SchemaBuilder;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -59,9 +60,15 @@ abstract class TestCase extends BaseTestCase
     private static array $workers = [];
 
     /**
-     * @var array<int, array{stdout: string, stderr: string}>
+     * @var array<int, array{
+     *     stdout: string,
+     *     stderr: string,
+     *     cache_directory: string,
+     *     services_cache: string,
+     *     packages_cache: string
+     * }>
      */
-    private static array $workerOutputFiles = [];
+    private static array $workerResources = [];
 
     public static function setUpBeforeClass(): void
     {
@@ -281,13 +288,59 @@ abstract class TestCase extends BaseTestCase
             }
         }
 
-        foreach (self::$workerOutputFiles as $files) {
-            @unlink($files['stdout']);
-            @unlink($files['stderr']);
+        foreach (self::$workerResources as $resources) {
+            self::removeWorkerResources($resources);
         }
 
         self::$workers = [];
-        self::$workerOutputFiles = [];
+        self::$workerResources = [];
+    }
+
+    protected static function restartQueueWorkers(): void
+    {
+        self::stopWorkers();
+        self::primeWatchdogThrottle();
+        self::startWorkers();
+    }
+
+    /**
+     * @return array<int, array{
+     *     worker: int,
+     *     running: bool,
+     *     exit_code: int|null,
+     *     exit_status: string|null,
+     *     stdout: string,
+     *     stderr: string,
+     *     services_cache: string,
+     *     packages_cache: string
+     * }>
+     */
+    protected static function workerDiagnostics(): array
+    {
+        $diagnostics = [];
+
+        foreach (self::$workers as $index => $worker) {
+            $running = $worker->isRunning();
+            $resources = self::$workerResources[$index] ?? [
+                'stdout' => '/dev/null',
+                'stderr' => '/dev/null',
+                'services_cache' => '[worker cache unavailable]',
+                'packages_cache' => '[worker cache unavailable]',
+            ];
+
+            $diagnostics[] = [
+                'worker' => $index,
+                'running' => $running,
+                'exit_code' => $running ? null : $worker->getExitCode(),
+                'exit_status' => $running ? null : $worker->getExitCodeText(),
+                'stdout' => self::readWorkerOutput($resources['stdout']),
+                'stderr' => self::readWorkerOutput($resources['stderr']),
+                'services_cache' => $resources['services_cache'],
+                'packages_cache' => $resources['packages_cache'],
+            ];
+        }
+
+        return $diagnostics;
     }
 
     private static function normalizeJsonObject(array $value): array
@@ -581,7 +634,7 @@ abstract class TestCase extends BaseTestCase
             return;
         }
 
-        self::$workerOutputFiles = [];
+        self::$workerResources = [];
 
         $environment = getenv();
         $workerEnv = array_merge(
@@ -592,16 +645,20 @@ abstract class TestCase extends BaseTestCase
 
         try {
             for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-                self::$workerOutputFiles[$i] = self::createWorkerOutputFiles($i);
-                $output = self::$workerOutputFiles[$i];
+                self::$workerResources[$i] = self::createWorkerResources($i);
+                $resources = self::$workerResources[$i];
+                $isolatedWorkerEnv = array_merge($workerEnv, [
+                    'APP_SERVICES_CACHE' => $resources['services_cache'],
+                    'APP_PACKAGES_CACHE' => $resources['packages_cache'],
+                ]);
                 $command = sprintf(
                     'exec %s %s queue:work --quiet >> %s 2>> %s',
                     escapeshellarg(PHP_BINARY),
                     escapeshellarg(__DIR__ . '/../vendor/bin/testbench'),
-                    escapeshellarg($output['stdout']),
-                    escapeshellarg($output['stderr']),
+                    escapeshellarg($resources['stdout']),
+                    escapeshellarg($resources['stderr']),
                 );
-                self::$workers[$i] = new Process(['/bin/sh', '-c', $command], null, $workerEnv);
+                self::$workers[$i] = new Process(['/bin/sh', '-c', $command], null, $isolatedWorkerEnv);
                 self::$workers[$i]->start();
             }
         } catch (Throwable $exception) {
@@ -612,13 +669,30 @@ abstract class TestCase extends BaseTestCase
     }
 
     /**
-     * @return array{stdout: string, stderr: string}
+     * @return array{
+     *     stdout: string,
+     *     stderr: string,
+     *     cache_directory: string,
+     *     services_cache: string,
+     *     packages_cache: string
+     * }
      */
-    private static function createWorkerOutputFiles(int $worker): array
+    private static function createWorkerResources(int $worker): array
     {
         $directory = is_dir('/dev/shm') && is_writable('/dev/shm')
             ? '/dev/shm'
             : sys_get_temp_dir();
+        $cacheDirectory = sprintf(
+            '%s/workflow-worker-%d-cache-%s',
+            rtrim($directory, DIRECTORY_SEPARATOR),
+            $worker,
+            bin2hex(random_bytes(12)),
+        );
+
+        if (! @mkdir($cacheDirectory, 0700)) {
+            throw new RuntimeException('Unable to create an isolated queue worker cache directory.');
+        }
+
         $stdout = tempnam($directory, sprintf('workflow-worker-%d-stdout-', $worker));
         $stderr = tempnam($directory, sprintf('workflow-worker-%d-stderr-', $worker));
 
@@ -631,13 +705,35 @@ abstract class TestCase extends BaseTestCase
                 @unlink($stderr);
             }
 
+            (new Filesystem())->deleteDirectory($cacheDirectory);
+
             throw new RuntimeException('Unable to create queue worker output files.');
         }
 
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
+            'cache_directory' => $cacheDirectory,
+            'services_cache' => $cacheDirectory . DIRECTORY_SEPARATOR . 'services.php',
+            'packages_cache' => $cacheDirectory . DIRECTORY_SEPARATOR . 'packages.php',
         ];
+    }
+
+    /**
+     * @param array{
+     *     stdout: string,
+     *     stderr: string,
+     *     cache_directory: string,
+     *     services_cache: string,
+     *     packages_cache: string
+     * } $resources
+     */
+    private static function removeWorkerResources(array $resources): void
+    {
+        @unlink($resources['stdout']);
+        @unlink($resources['stderr']);
+
+        (new Filesystem())->deleteDirectory($resources['cache_directory']);
     }
 
     private static function readWorkerOutput(string $path): string
@@ -662,40 +758,6 @@ abstract class TestCase extends BaseTestCase
         return $output === false
             ? '[worker output unavailable]'
             : $marker . $output;
-    }
-
-    /**
-     * @return array<int, array{
-     *     worker: int,
-     *     running: bool,
-     *     exit_code: int|null,
-     *     exit_status: string|null,
-     *     stdout: string,
-     *     stderr: string
-     * }>
-     */
-    private static function workerDiagnostics(): array
-    {
-        $diagnostics = [];
-
-        foreach (self::$workers as $index => $worker) {
-            $running = $worker->isRunning();
-            $files = self::$workerOutputFiles[$index] ?? [
-                'stdout' => '/dev/null',
-                'stderr' => '/dev/null',
-            ];
-
-            $diagnostics[] = [
-                'worker' => $index,
-                'running' => $running,
-                'exit_code' => $running ? null : $worker->getExitCode(),
-                'exit_status' => $running ? null : $worker->getExitCodeText(),
-                'stdout' => self::readWorkerOutput($files['stdout']),
-                'stderr' => self::readWorkerOutput($files['stderr']),
-            ];
-        }
-
-        return $diagnostics;
     }
 
     private static function flushRedis(): void
