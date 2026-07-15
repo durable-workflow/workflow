@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Support;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Support\Env;
 
-final class EnvTest extends TestCase
+final class EnvTest extends NonDatabaseTestCase
 {
     private const PRIMARY = 'DW_TEST_V2_EXAMPLE';
 

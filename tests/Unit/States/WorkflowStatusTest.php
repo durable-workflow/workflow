@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\States;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowContinuedStatus;
@@ -14,7 +14,7 @@ use Workflow\States\WorkflowPendingStatus;
 use Workflow\States\WorkflowRunningStatus;
 use Workflow\States\WorkflowWaitingStatus;
 
-final class WorkflowStatusTest extends TestCase
+final class WorkflowStatusTest extends NonDatabaseTestCase
 {
     public function testConfig(): void
     {

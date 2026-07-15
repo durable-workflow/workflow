@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
@@ -19,7 +19,7 @@ use Workflow\V2\Support\ServiceCallPrincipal;
  * specific fence (authz, namespace policy, circuit-break, concurrency,
  * rate-limit) rather than at "the boundary".
  */
-final class DefaultServiceBoundaryPolicyTest extends TestCase
+final class DefaultServiceBoundaryPolicyTest extends NonDatabaseTestCase
 {
     public function testDefaultRulesAllowAWellFormedCall(): void
     {

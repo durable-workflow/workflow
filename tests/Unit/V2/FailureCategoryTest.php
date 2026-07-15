@@ -8,7 +8,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Queue\MaxAttemptsExceededException;
 use PDOException;
 use RuntimeException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\V2\Enums\FailureCategory;
@@ -18,7 +18,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\FailureFactory;
 
-final class FailureCategoryTest extends TestCase
+final class FailureCategoryTest extends NonDatabaseTestCase
 {
     // ---------------------------------------------------------------
     //  FailureCategory enum values

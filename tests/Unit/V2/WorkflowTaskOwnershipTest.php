@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Mockery;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
-final class WorkflowTaskOwnershipTest extends TestCase
+final class WorkflowTaskOwnershipTest extends NonDatabaseTestCase
 {
     public function testGuardReportsRunClosedWhenTerminalRunAlreadyClosedTask(): void
     {

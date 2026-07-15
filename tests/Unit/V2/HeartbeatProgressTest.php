@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use LogicException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\HeartbeatProgress;
 
-final class HeartbeatProgressTest extends TestCase
+final class HeartbeatProgressTest extends NonDatabaseTestCase
 {
     public function testNormalizeForWriteReturnsBoundedStructuredProgress(): void
     {

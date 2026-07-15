@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\V2\TestConfiguredStorageWorkflow;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -17,7 +17,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\WorkflowStub;
 
-final class V2ConfiguredCoreModelsTest extends TestCase
+final class V2ConfiguredCoreModelsTest extends SchemaTestCase
 {
     public function testCoreRuntimeUsesConfiguredInstanceRunAndTaskModels(): void
     {

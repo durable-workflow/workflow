@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use RuntimeException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\ParallelFailureSelector;
 
-final class ParallelFailureSelectorTest extends TestCase
+final class ParallelFailureSelectorTest extends NonDatabaseTestCase
 {
     public function testItPrefersEarliestRecordedFailure(): void
     {

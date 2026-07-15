@@ -5,21 +5,39 @@ declare(strict_types=1);
 namespace Tests;
 
 use Dotenv\Dotenv;
+use Illuminate\Console\OutputStyle;
+use Illuminate\Database\Schema\Builder as SchemaBuilder;
+use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Orchestra\Testbench\Concerns\WithLaravelMigrations;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
+use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
 
 abstract class TestCase extends BaseTestCase
 {
+    use DatabaseTruncation;
+    use WithLaravelMigrations;
+
     public const NUMBER_OF_WORKERS = 2;
+
+    protected const USE_DATABASE_TRUNCATION = true;
 
     private const V1_WATCHDOG_LOOP_THROTTLE_KEY = 'workflow:watchdog:looping';
 
     private const WATCHDOG_THROTTLE_TTL_SECONDS = 600;
+
+    /**
+     * Keep this harness's traits out of Testbench's cache for tests that extend
+     * Orchestra directly in the same PHPUnit process.
+     *
+     * @var array<class-string, class-string>|null
+     */
+    protected static ?array $cachedTestCaseUses = null;
 
     private static $workers = [];
 
@@ -50,6 +68,13 @@ abstract class TestCase extends BaseTestCase
 
     protected function setUp(): void
     {
+        // DatabaseTruncation needs DBAL for Laravel 10 table discovery. Keep
+        // schema mutations on Laravel's native path so installing DBAL does not
+        // change rollback behavior exercised by migration tests.
+        if (method_exists(SchemaBuilder::class, 'useNativeSchemaOperationsIfPossible')) {
+            SchemaBuilder::useNativeSchemaOperationsIfPossible();
+        }
+
         $currentSuite = TestSuiteSubscriber::getCurrentSuite();
 
         if ($currentSuite === 'feature') {
@@ -73,7 +98,7 @@ abstract class TestCase extends BaseTestCase
         if ($currentSuite === 'feature') {
             // Block BOTH the V2 TaskWatchdog and the V1 Watchdog for the
             // duration of every feature test. The two testbench queue
-            // workers spawned after the per-test migration run both wake()s on every
+            // workers spawned after the database reset both wake()s on every
             // Looping event in separate PHP processes.
             //
             // V2: almost every V2 feature test uses Queue::fake() with
@@ -83,10 +108,9 @@ abstract class TestCase extends BaseTestCase
             // the test's next runReadyTaskForRun / waitFor lookup.
             //
             // V1: Watchdog::wake queries workflow_logs on every poll, and
-            // during migrate:fresh's DROP TABLE on PostgreSQL that read
-            // lock deadlocks against the test's exclusive-lock drop
-            // (seen on CI run 24671180438 for V2ActivityTimeoutTest).
-            // Blocking V1's 'workflow:watchdog:looping' here makes
+            // while the test process resets committed database state that
+            // query can race with the reset. Blocking V1's
+            // 'workflow:watchdog:looping' here makes
             // Watchdog::wake's Cache::add return false and short-circuit
             // before the SELECT.
             //
@@ -115,26 +139,48 @@ abstract class TestCase extends BaseTestCase
         }
     }
 
-    protected function defineDatabaseMigrations()
+    protected function setUpDatabaseTruncation(): void
     {
-        // migrate:fresh drops everything and runs migrations from registered
-        // paths (the package's service provider). loadLaravelMigrations only
-        // executes the defaults — it does not register them — so we must run
-        // it AFTER migrate:fresh or the users table gets dropped and never
-        // recreated.
-        $this->artisan('migrate:fresh');
-
-        $this->loadLaravelMigrations();
-
         // Testbench's PendingCommand binds a mocked OutputStyle while it runs
         // migrations. Remove that per-command binding so application commands
         // invoked by a test can write to the output buffer supplied by Artisan.
-        $this->app->offsetUnset(\Illuminate\Console\OutputStyle::class);
+        $this->app->offsetUnset(OutputStyle::class);
+    }
+
+    protected function setUpWithLaravelMigrations(): void
+    {
+        if (! static::USE_DATABASE_TRUNCATION) {
+            return;
+        }
+
+        $this->app->make('migrator')
+            ->path(\Orchestra\Testbench\default_migration_path());
+    }
+
+    protected function setUpTheTestEnvironmentTraitToBeIgnored(string $use): bool
+    {
+        // HandlesDatabases invokes this concern before DatabaseTruncation. Do
+        // not invoke it again during generic trait setup after the migrated
+        // flag changes, because that would schedule a per-test rollback.
+        return $use === WithLaravelMigrations::class
+            || parent::setUpTheTestEnvironmentTraitToBeIgnored($use);
+    }
+
+    /**
+     * @return array<class-string, class-string>
+     */
+    protected function setUpTraitsWithoutDatabase(): array
+    {
+        $uses = static::cachedUsesForTestCase();
+
+        unset($uses[DatabaseTruncation::class], $uses[WithLaravelMigrations::class]);
+
+        return $this->setUpTheTestEnvironmentTraits($uses);
     }
 
     protected function getPackageProviders($app)
     {
-        return [\Workflow\Providers\WorkflowServiceProvider::class];
+        return [TestDatabaseServiceProvider::class, \Workflow\Providers\WorkflowServiceProvider::class];
     }
 
     protected function assertSameJsonObject(mixed $expected, mixed $actual): void
@@ -143,6 +189,15 @@ abstract class TestCase extends BaseTestCase
         $this->assertIsArray($actual);
 
         $this->assertSame(self::normalizeJsonObject($expected), self::normalizeJsonObject($actual));
+    }
+
+    protected static function stopWorkers(): void
+    {
+        foreach (self::$workers as $worker) {
+            $worker->stop(3);
+        }
+
+        self::$workers = [];
     }
 
     private static function normalizeJsonObject(array $value): array
@@ -187,15 +242,6 @@ abstract class TestCase extends BaseTestCase
             self::$workers[$i]->disableOutput();
             self::$workers[$i]->start();
         }
-    }
-
-    private static function stopWorkers(): void
-    {
-        foreach (self::$workers as $worker) {
-            $worker->stop(3);
-        }
-
-        self::$workers = [];
     }
 
     private static function flushRedis(): void

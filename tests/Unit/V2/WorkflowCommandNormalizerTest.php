@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Validation\ValidationException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 
-final class WorkflowCommandNormalizerTest extends TestCase
+final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
 {
     public function testPayloadEnvelopeFieldContractNamesCodecBearingCommandPayloads(): void
     {

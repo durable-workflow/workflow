@@ -6,7 +6,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\V2\Activity;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Workflow;
@@ -20,7 +20,7 @@ use Workflow\V2\WorkflowStub;
  * 4. v2 workflows can be started and executed
  * 5. v1 and v2 workflows coexist in the same database
  */
-class MigrationTest extends TestCase
+class MigrationTest extends SchemaTestCase
 {
     protected function setUp(): void
     {

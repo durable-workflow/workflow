@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Base64;
 use Workflow\Serializers\Serializer;
 use Workflow\Serializers\Y;
 
-final class EncodeTest extends TestCase
+final class EncodeTest extends NonDatabaseTestCase
 {
     #[\PHPUnit\Framework\Attributes\DataProvider('dataProvider')]
     public function testYEncode(string $bytes): void

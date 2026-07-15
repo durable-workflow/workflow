@@ -40,6 +40,15 @@ use Workflow\V2\Support\RunDetailView;
 
 final class ConfiguredV2ObservabilityTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Schema::dropIfExists('configured_workflow_history_events');
+        Schema::dropIfExists('configured_workflow_run_summaries');
+        Schema::dropIfExists('configured_workflow_runs');
+
+        parent::tearDown();
+    }
+
     /**
      * @param class-string<object> $modelClass
      * @param class-string<object> $configuredClass
@@ -629,6 +638,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
     private function createConfiguredRunsTable(): void
     {
+        Schema::dropIfExists('configured_workflow_runs');
+
         Schema::create('configured_workflow_runs', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
@@ -650,6 +661,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
     private function createConfiguredSummariesTable(): void
     {
+        Schema::dropIfExists('configured_workflow_run_summaries');
+
         Schema::create('configured_workflow_run_summaries', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
@@ -699,6 +712,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
     private function createConfiguredHistoryEventsTable(): void
     {
+        Schema::dropIfExists('configured_workflow_history_events');
+
         Schema::create('configured_workflow_history_events', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();

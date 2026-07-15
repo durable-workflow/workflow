@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
@@ -25,8 +24,6 @@ use Workflow\V2\Support\UpsertMemosCall;
  */
 class MemoTest extends TestCase
 {
-    use RefreshDatabase;
-
     private MemoUpsertService $service;
 
     protected function setUp(): void

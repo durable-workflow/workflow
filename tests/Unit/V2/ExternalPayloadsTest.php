@@ -5,14 +5,14 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use InvalidArgumentException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 
-final class ExternalPayloadsTest extends TestCase
+final class ExternalPayloadsTest extends NonDatabaseTestCase
 {
     private ?string $storageRoot = null;
 

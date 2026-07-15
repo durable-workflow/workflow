@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Config;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 
-final class WorkflowsConfigTest extends TestCase
+final class WorkflowsConfigTest extends NonDatabaseTestCase
 {
     /**
      * Environment names that can influence config defaults in tests.

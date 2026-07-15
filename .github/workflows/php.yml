@@ -176,7 +176,10 @@ jobs:
         } >> "$GITHUB_ENV"
 
     - name: Create MySQL database
-      run: mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+      run: >-
+        mysql
+        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; CREATE DATABASE testbench'
+        -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
 
     - name: Run bounded MySQL smoke selection
       id: pr_mysql_suite
@@ -250,10 +253,8 @@ jobs:
         image: mysql
         env:
           MYSQL_ROOT_PASSWORD: password
-        # The feature suite runs migrate:fresh for every test case. MySQL's
-        # default overlay-backed datadir makes that repeated DDL/fsync path the
-        # CI long pole; keep test data on tmpfs because this database is
-        # disposable for each job.
+        # Keep disposable test data on tmpfs so schema setup and committed-row
+        # truncation are not gated by the container overlay's fsync latency.
         options: >-
           --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
         ports:
@@ -325,7 +326,10 @@ jobs:
         } >> "$GITHUB_ENV"
 
     - name: Create MySQL database
-      run: mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+      run: >-
+        mysql
+        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; CREATE DATABASE testbench'
+        -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
@@ -390,6 +394,7 @@ jobs:
           POSTGRES_USER: root
           POSTGRES_PASSWORD: password
           POSTGRES_DB: testbench
+          POSTGRES_INITDB_ARGS: --no-sync
         ports:
         - 5432
 
@@ -497,7 +502,7 @@ jobs:
         # ~13m) but well below the step budget, so a future regression
         # surfaces with the offending SQL in laravel.log rather than a
         # silent hang.
-        PGOPTIONS: "-c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
+        PGOPTIONS: "-c synchronous_commit=off -c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
     - name: Upload PostgreSQL feature timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
@@ -632,8 +637,11 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Create SQLite database
-      run: touch testbench.sqlite
+    - name: Create SQLite database on tmpfs
+      run: |
+        coverage_db="/dev/shm/workflow-coverage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.sqlite"
+        touch "$coverage_db"
+        echo "COVERAGE_DB_PATH=$coverage_db" >> "$GITHUB_ENV"
 
     - name: Resolve service endpoint and export coverage test defaults
       env:
@@ -665,12 +673,24 @@ jobs:
         } >> "$GITHUB_ENV"
 
     - name: Code Coverage
-      run: vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
+      run: >-
+        php scripts/ci/run-with-resource-metrics.php
+        --output=build/test-results/coverage-resource-metrics.md
+        -- php vendor/bin/phpunit --testdox
+        --coverage-clover=coverage.xml --testsuite unit
       env:
         DB_CONNECTION: sqlite
-        DB_DATABASE: testbench.sqlite
+        DB_DATABASE: ${{ env.COVERAGE_DB_PATH }}
         QUEUE_CONNECTION: sync
+        TMPDIR: /dev/shm
         XDEBUG_MODE: coverage
+
+    - name: Upload coverage resource metrics
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-resource-metrics
+        path: build/test-results/coverage-resource-metrics.md
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
@@ -678,6 +698,10 @@ jobs:
         files: ./coverage.xml
         fail_ci_if_error: false
         token: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Remove SQLite database from tmpfs
+      if: ${{ always() }}
+      run: rm -f "$COVERAGE_DB_PATH" "$COVERAGE_DB_PATH-journal" "$COVERAGE_DB_PATH-wal" "$COVERAGE_DB_PATH-shm"
 
   build:
     runs-on: ubuntu-latest

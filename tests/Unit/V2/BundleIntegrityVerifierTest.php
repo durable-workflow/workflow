@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\HistoryExport;
 
-final class BundleIntegrityVerifierTest extends TestCase
+final class BundleIntegrityVerifierTest extends NonDatabaseTestCase
 {
     public function testValidBundlePassesAllChecks(): void
     {

@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use RuntimeException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
-final class HistoryPayloadCompressionTest extends TestCase
+final class HistoryPayloadCompressionTest extends NonDatabaseTestCase
 {
     public function testCompressReturnsUnchangedWhenNoEncoding(): void
     {

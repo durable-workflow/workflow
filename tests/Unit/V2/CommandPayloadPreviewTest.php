@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\CommandPayloadPreview;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 
-final class CommandPayloadPreviewTest extends TestCase
+final class CommandPayloadPreviewTest extends NonDatabaseTestCase
 {
     public function testAvailableRejectsNonStringOrEmptyBlobs(): void
     {

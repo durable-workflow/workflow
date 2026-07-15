@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -20,8 +19,6 @@ use Workflow\V2\Support\ServiceCallPrincipal;
 
 final class ServiceBoundaryAuditRecorderTest extends TestCase
 {
-    use RefreshDatabase;
-
     public function testPersistsAnAdmittedCallWithFullPrincipalAttribution(): void
     {
         [, , $operation] = $this->seedCatalog();

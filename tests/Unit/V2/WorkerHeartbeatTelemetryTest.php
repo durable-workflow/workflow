@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\WorkerHeartbeatTelemetry;
 
-final class WorkerHeartbeatTelemetryTest extends TestCase
+final class WorkerHeartbeatTelemetryTest extends NonDatabaseTestCase
 {
     public function testTaskSlotsDerivesAvailableFromCapacityMinusInflight(): void
     {

@@ -22,6 +22,14 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2OperatorQueueVisibilityTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        self::stopWorkers();
+        Schema::dropIfExists('test_standalone_worker_registrations');
+
+        parent::tearDown();
+    }
+
     public function testForQueueSummarizesBacklogPollersLeasesAndRepairCandidates(): void
     {
         Carbon::setTestNow('2026-04-16 12:00:00');

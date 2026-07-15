@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
 
-final class StorageConnectionTest extends TestCase
+final class StorageConnectionTest extends NonDatabaseTestCase
 {
     public function testModelsResolveConfiguredStorageConnection(): void
     {

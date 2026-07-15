@@ -7,10 +7,10 @@ namespace Tests\Unit\V2;
 use Carbon\CarbonImmutable;
 use Fiber;
 use Illuminate\Support\Carbon;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\WorkflowFiberContext;
 
-final class WorkflowFiberContextTimeTest extends TestCase
+final class WorkflowFiberContextTimeTest extends NonDatabaseTestCase
 {
     public function testGetTimeFallsBackToWallClockOutsideFiber(): void
     {

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -24,8 +23,6 @@ use Workflow\V2\Support\ServiceBoundaryRequest;
 
 final class DefaultServiceControlPlaneTest extends TestCase
 {
-    use RefreshDatabase;
-
     public function testExecuteRecordsDurableResolutionFailureWhenEndpointIsMissing(): void
     {
         $controlPlane = new DefaultServiceControlPlane(

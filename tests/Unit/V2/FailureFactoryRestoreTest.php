@@ -8,13 +8,13 @@ use ArgumentCountError;
 use Error;
 use Exception;
 use RuntimeException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use TypeError;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Support\FailureFactory;
 
-final class FailureFactoryRestoreTest extends TestCase
+final class FailureFactoryRestoreTest extends NonDatabaseTestCase
 {
     /**
      * Regression for #436. PHP's Throwable interface is implemented independently

@@ -6,12 +6,12 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\RunListItemView;
 
-final class RunListItemViewTest extends TestCase
+final class RunListItemViewTest extends NonDatabaseTestCase
 {
     public function testFromSummaryReturnsExactlyTheDeclaredFields(): void
     {

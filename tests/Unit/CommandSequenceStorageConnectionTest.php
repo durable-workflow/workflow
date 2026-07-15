@@ -6,7 +6,7 @@ namespace Tests\Unit;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -14,12 +14,14 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Observers\WorkflowHistoryEventObserver;
 use Workflow\V2\Support\CommandSequence;
 
-final class CommandSequenceStorageConnectionTest extends TestCase
+final class CommandSequenceStorageConnectionTest extends SchemaTestCase
 {
     private string $secondaryDatabase = '';
 
     protected function tearDown(): void
     {
+        config()->set('workflows.storage.connection', null);
+
         parent::tearDown();
 
         if ($this->secondaryDatabase !== '' && is_file($this->secondaryDatabase)) {

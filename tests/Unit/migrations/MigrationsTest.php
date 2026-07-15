@@ -7,10 +7,10 @@ namespace Tests\Unit\Migrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 
-final class MigrationsTest extends TestCase
+final class MigrationsTest extends SchemaTestCase
 {
     public function testV2MigrationSetDoesNotShipPreviewBackfillMigrations(): void
     {

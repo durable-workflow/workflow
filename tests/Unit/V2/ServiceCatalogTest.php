@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
@@ -21,8 +20,6 @@ use Workflow\V2\Support\ServiceView;
 
 class ServiceCatalogTest extends TestCase
 {
-    use RefreshDatabase;
-
     public function testEndpointsQueryFiltersByNamespace(): void
     {
         $billing = $this->createEndpoint('billing', 'invoices');

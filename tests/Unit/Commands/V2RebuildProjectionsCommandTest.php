@@ -29,6 +29,14 @@ use Workflow\V2\Support\RunSummaryProjector;
 
 final class V2RebuildProjectionsCommandTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Schema::dropIfExists('projection_command_workflow_run_summaries');
+        Schema::dropIfExists('projection_command_workflow_runs');
+
+        parent::tearDown();
+    }
+
     public function testItUsesTheHistoryProjectionRoleBindingForRebuilds(): void
     {
         [, $run] = $this->createCompletedRun('projection-command-history-role');
@@ -828,6 +836,9 @@ final class V2RebuildProjectionsCommandTest extends TestCase
 
     private function createCustomProjectionTables(): void
     {
+        Schema::dropIfExists('projection_command_workflow_run_summaries');
+        Schema::dropIfExists('projection_command_workflow_runs');
+
         Schema::create('projection_command_workflow_runs', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();

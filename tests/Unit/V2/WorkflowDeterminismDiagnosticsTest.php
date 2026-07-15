@@ -6,10 +6,10 @@ namespace Tests\Unit\V2;
 
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestUnsafeDeterminismWorkflow;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\WorkflowDeterminismDiagnostics;
 
-final class WorkflowDeterminismDiagnosticsTest extends TestCase
+final class WorkflowDeterminismDiagnosticsTest extends NonDatabaseTestCase
 {
     public function testCleanWorkflowReturnsCleanDiagnostics(): void
     {

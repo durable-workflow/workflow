@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowMemo;
@@ -14,8 +13,6 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
 
 final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
 {
-    use RefreshDatabase;
-
     public function testTypedMethodsReturnEmptyForUnsavedRun(): void
     {
         $run = new WorkflowRun();

@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
-final class WorkerProtocolVersionTest extends TestCase
+final class WorkerProtocolVersionTest extends NonDatabaseTestCase
 {
     public function testVersionIsNonEmptyString(): void
     {

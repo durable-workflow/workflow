@@ -12,6 +12,13 @@ use Workflow\V2\Support\WaterlineEngineSource;
 
 final class WaterlineEngineSourceTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Schema::dropIfExists('configured_workflow_run_summaries');
+
+        parent::tearDown();
+    }
+
     public function testAutoResolvesToV2WhenRequiredOperatorTablesExist(): void
     {
         $this->assertTrue(WaterlineEngineSource::v2OperatorSurfaceAvailable());
@@ -91,6 +98,8 @@ final class WaterlineEngineSourceTest extends TestCase
 
     public function testAutoUsesConfiguredSummaryTableWhenItExists(): void
     {
+        Schema::dropIfExists('configured_workflow_run_summaries');
+
         Schema::create('configured_workflow_run_summaries', static function (Blueprint $table): void {
             $table->string('id')
                 ->primary();

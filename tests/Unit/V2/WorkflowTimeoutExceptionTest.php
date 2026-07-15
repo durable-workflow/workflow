@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
 
-final class WorkflowTimeoutExceptionTest extends TestCase
+final class WorkflowTimeoutExceptionTest extends NonDatabaseTestCase
 {
     public function testExecutionTimeoutFactory(): void
     {

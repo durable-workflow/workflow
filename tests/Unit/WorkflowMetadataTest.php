@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\WorkflowMetadata;
 use Workflow\WorkflowOptions;
 
-final class WorkflowMetadataTest extends TestCase
+final class WorkflowMetadataTest extends NonDatabaseTestCase
 {
     public function testFromSerializedArgumentsReturnsGivenMetadataInstance(): void
     {

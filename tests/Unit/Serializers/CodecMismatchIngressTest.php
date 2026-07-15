@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Avro;
 use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\Json;
@@ -20,7 +20,7 @@ use Workflow\Serializers\Serializer;
  *  - The exception identifies the declared codec so cross-component
  *    error reporting can surface it without re-parsing the message.
  */
-final class CodecMismatchIngressTest extends TestCase
+final class CodecMismatchIngressTest extends NonDatabaseTestCase
 {
     public function testJsonBytesUnderAvroCodecAreRejectedLoudlyWithJsonHint(): void
     {

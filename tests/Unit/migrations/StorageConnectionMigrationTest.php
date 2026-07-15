@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace Tests\Unit\Migrations;
 
 use Illuminate\Support\Facades\Schema;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 
-final class StorageConnectionMigrationTest extends TestCase
+final class StorageConnectionMigrationTest extends SchemaTestCase
 {
     private string $secondaryDatabase = '';
 
     protected function tearDown(): void
     {
+        config()->set('workflows.storage.connection', null);
+
         parent::tearDown();
 
         if ($this->secondaryDatabase !== '' && is_file($this->secondaryDatabase)) {

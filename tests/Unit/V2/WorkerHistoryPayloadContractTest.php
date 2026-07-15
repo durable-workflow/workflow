@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 
-final class WorkerHistoryPayloadContractTest extends TestCase
+final class WorkerHistoryPayloadContractTest extends NonDatabaseTestCase
 {
     public function testProjectsEveryCanonicalBudgetValueWithoutAliases(): void
     {

@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use LogicException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Activity;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Workflow;
 
-final class EntryMethodTest extends TestCase
+final class EntryMethodTest extends NonDatabaseTestCase
 {
     public function testHandleIsRequiredEntryMethod(): void
     {

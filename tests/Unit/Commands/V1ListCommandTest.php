@@ -9,10 +9,10 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Console\Output\BufferedOutput;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\Commands\V1ListCommand;
 
-final class V1ListCommandTest extends TestCase
+final class V1ListCommandTest extends SchemaTestCase
 {
     public function testItRendersIntegerIdsAndOnlyListsActiveWorkflows(): void
     {

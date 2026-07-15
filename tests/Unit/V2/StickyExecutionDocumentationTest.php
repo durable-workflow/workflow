@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 
-final class StickyExecutionDocumentationTest extends TestCase
+final class StickyExecutionDocumentationTest extends NonDatabaseTestCase
 {
     private const DOCUMENT = 'docs/architecture/sticky-execution.md';
 

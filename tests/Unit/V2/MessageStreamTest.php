@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
 use Tests\TestCase;
 use Workflow\V2\Enums\MessageChannel;
@@ -17,8 +16,6 @@ use Workflow\V2\Support\MessageService;
 
 final class MessageStreamTest extends TestCase
 {
-    use RefreshDatabase;
-
     public function testItPeeksWithoutConsumingMessages(): void
     {
         $sourceRun = $this->createRun();
