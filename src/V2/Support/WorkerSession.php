@@ -26,7 +26,8 @@ final class WorkerSession
             $options = array_shift($arguments);
         }
 
-        $options = ($options ?? new ActivityOptions())->withWorkerSession($this->options);
+        $options = ($options ?? new ActivityOptions())
+            ->withWorkerSession($this->options);
 
         return activity($activity, $options, ...$arguments);
     }

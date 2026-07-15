@@ -211,7 +211,10 @@ final class ServerlessWorkflowCompiler
             $names[$name] = true;
             $normalized[] = [
                 'name' => $name,
-                'definition' => ['name' => $name, ...$state],
+                'definition' => [
+                    'name' => $name,
+                    ...$state,
+                ],
                 'source_path' => 'states.' . $name,
             ];
         }

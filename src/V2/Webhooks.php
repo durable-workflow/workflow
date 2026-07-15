@@ -36,6 +36,10 @@ use Workflow\V2\Support\WorkflowInstanceId;
 
 final class Webhooks
 {
+    private const FAIRNESS_BUCKET_WORKFLOW_TASK = 'workflow_task';
+
+    private const FAIRNESS_BUCKET_ACTIVITY_TASK = 'activity_task';
+
     /**
      * @param array<int|string, class-string<Workflow>> $workflows
      */
@@ -1236,7 +1240,9 @@ final class Webhooks
             $class = TaskFairnessKey::classFor(
                 isset($entry['fairness_key']) && is_string($entry['fairness_key']) ? $entry['fairness_key'] : null,
             );
-            $weight = isset($entry['fairness_weight']) && is_int($entry['fairness_weight']) && $entry['fairness_weight'] >= 1
+            $weight = isset($entry['fairness_weight']) && is_int(
+                $entry['fairness_weight']
+            ) && $entry['fairness_weight'] >= 1
                 ? $entry['fairness_weight']
                 : 1;
 
@@ -1245,10 +1251,6 @@ final class Webhooks
 
         return $reordered;
     }
-
-    private const FAIRNESS_BUCKET_WORKFLOW_TASK = 'workflow_task';
-
-    private const FAIRNESS_BUCKET_ACTIVITY_TASK = 'activity_task';
 
     /**
      * Operator-facing snapshot of the priority + fairness state for a task

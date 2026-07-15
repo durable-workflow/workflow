@@ -77,12 +77,7 @@ final class HistoryBudget
     {
         /** @var WorkflowRunSummary|null $summary */
         $summary = ConfiguredV2Models::query('run_summary_model', WorkflowRunSummary::class)
-            ->select([
-                'id',
-                'history_event_count',
-                'history_size_bytes',
-                'history_fan_out',
-            ])
+            ->select(['id', 'history_event_count', 'history_size_bytes', 'history_fan_out'])
             ->find($run->id);
 
         if ($summary instanceof WorkflowRunSummary && self::summaryIsComplete($run, $summary)) {
@@ -115,16 +110,9 @@ final class HistoryBudget
      *     pressure_dimensions: list<string>
      * }
      */
-    public static function fromCounters(
-        int $historyEventCount,
-        int $historySizeBytes,
-        int $historyFanOut,
-    ): array {
-        return self::summarize(
-            max(0, $historyEventCount),
-            max(0, $historySizeBytes),
-            max(0, $historyFanOut),
-        );
+    public static function fromCounters(int $historyEventCount, int $historySizeBytes, int $historyFanOut): array
+    {
+        return self::summarize(max(0, $historyEventCount), max(0, $historySizeBytes), max(0, $historyFanOut));
     }
 
     public static function eventHardThreshold(): int
@@ -206,11 +194,8 @@ final class HistoryBudget
      *     pressure_dimensions: list<string>
      * }
      */
-    private static function summarize(
-        int $historyEventCount,
-        int $historySizeBytes,
-        int $historyFanOut,
-    ): array {
+    private static function summarize(int $historyEventCount, int $historySizeBytes, int $historyFanOut): array
+    {
         $eventHard = self::eventHardThreshold();
         $sizeHard = self::sizeBytesHardThreshold();
         $fanOutHard = self::fanOutHardThreshold();
@@ -374,15 +359,16 @@ final class HistoryBudget
         };
 
         $groupPartition = "CASE WHEN {$groupIdIsValid} AND {$groupSizeIsNumeric} "
-            ."THEN {$groupIdExpression} ELSE NULL END";
-        $perEvent = $query->toBase()->selectRaw(sprintf(
-            '%s AS history_event_size_bytes, %s AS history_event_fan_out, '
-            .'ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) AS history_group_position',
-            $sizeExpression,
-            $fanOutExpression,
-            $groupPartition,
-            $sequence,
-        ));
+            . "THEN {$groupIdExpression} ELSE NULL END";
+        $perEvent = $query->toBase()
+            ->selectRaw(sprintf(
+                '%s AS history_event_size_bytes, %s AS history_event_fan_out, '
+                . 'ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) AS history_group_position',
+                $sizeExpression,
+                $fanOutExpression,
+                $groupPartition,
+                $sequence,
+            ));
 
         /**
          * @var object{
@@ -395,9 +381,9 @@ final class HistoryBudget
             ->fromSub($perEvent, 'history_budget_events')
             ->selectRaw(
                 'COUNT(*) AS history_event_count, '
-                .'COALESCE(SUM(history_event_size_bytes), 0) AS history_size_bytes, '
-                .'COALESCE(MAX(CASE WHEN history_group_position = 1 '
-                .'THEN history_event_fan_out ELSE 0 END), 0) AS history_fan_out'
+                . 'COALESCE(SUM(history_event_size_bytes), 0) AS history_size_bytes, '
+                . 'COALESCE(MAX(CASE WHEN history_group_position = 1 '
+                . 'THEN history_event_fan_out ELSE 0 END), 0) AS history_fan_out'
             )
             ->first();
 
@@ -416,7 +402,10 @@ final class HistoryBudget
         $json = "COALESCE(CAST({$payload} AS CHAR CHARACTER SET utf8mb4), '[]')";
         $jsonWithoutStrings = "REGEXP_REPLACE({$json}, CONVERT(0x22285B5E225C5C5D7C5C5C2E292A22 USING utf8mb4), '\"\"')";
         $structuralSpaces = "((CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ':', ''))) + (CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ',', ''))))";
-        $canonicalJson = "REPLACE({$json}, CONVERT(0x5C2F USING utf8mb4), '/')";
+        $canonicalJson = "REPLACE(REPLACE(REPLACE({$json}, "
+            . "CONVERT(0x5C2F USING utf8mb4), '/'), "
+            . 'CONVERT(0xE280A8 USING utf8mb4), CONVERT(0x5C7532303238 USING utf8mb4)), '
+            . 'CONVERT(0xE280A9 USING utf8mb4), CONVERT(0x5C7532303239 USING utf8mb4))';
         $groupId = "JSON_UNQUOTE(JSON_EXTRACT({$payload}, '$.parallel_group_id'))";
         $groupIdIsValid = "JSON_TYPE(JSON_EXTRACT({$payload}, '$.parallel_group_id')) = 'STRING' AND COALESCE({$groupId}, '') <> ''";
         $groupSize = "JSON_UNQUOTE(JSON_EXTRACT({$payload}, '$.parallel_group_size'))";
@@ -446,22 +435,12 @@ final class HistoryBudget
         $canonicalJson = "JSON_COMPACT(COALESCE({$payload}, '[]'))";
 
         foreach ([
-            [
-                self::mariaDbJsonEscapePattern(
-                    'u[d][89ab][0-9a-f]{2}\\\\u[d][c-f][0-9a-f]{2}',
-                ),
-                'xxxx',
-            ],
-            [
-                self::mariaDbJsonEscapePattern(
-                    'u(?:00[89a-f][0-9a-f]|0[1-7][0-9a-f]{2})',
-                ),
-                'xx',
-            ],
+            [self::mariaDbJsonEscapePattern('u[d][89ab][0-9a-f]{2}\\\\u[d][c-f][0-9a-f]{2}'), 'xxxx'],
+            [self::mariaDbJsonEscapePattern('u(?:00[89a-f][0-9a-f]|0[1-7][0-9a-f]{2})'), 'xx'],
             [
                 self::mariaDbJsonEscapePattern(
                     'u(?!202[89])(?:0[89a-f][0-9a-f]{2}|[1-9a-c][0-9a-f]{3}'
-                    .'|d[0-7][0-9a-f]{2}|[e-f][0-9a-f]{3})',
+                    . '|d[0-7][0-9a-f]{2}|[e-f][0-9a-f]{3})',
                 ),
                 'xxx',
             ],
@@ -493,7 +472,7 @@ final class HistoryBudget
 
     private static function mariaDbJsonEscapePattern(string $suffix): string
     {
-        return '(?i)(?<!\\\\)(?:\\\\\\\\)*\K\\\\'.$suffix;
+        return '(?i)(?<!\\\\)(?:\\\\\\\\)*\K\\\\' . $suffix;
     }
 
     private static function isMariaDbConnection(Connection $connection): bool
@@ -525,7 +504,9 @@ final class HistoryBudget
         $json = "COALESCE({$payload}::jsonb::text, '[]')";
         $jsonWithoutStrings = "regexp_replace({$json}, convert_from(decode('22285B5E225C5C5D7C5C5C2E292A22', 'hex'), 'UTF8'), '\"\"', 'g')";
         $structuralSpaces = "((CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ':', ''))) + (CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ',', ''))))";
-        $canonicalJson = "REPLACE({$json}, E'\\\\/', '/')";
+        $canonicalJson = "REPLACE(REPLACE(REPLACE({$json}, E'\\\\/', '/'), "
+            . "convert_from(decode('E280A8', 'hex'), 'UTF8'), convert_from(decode('5C7532303238', 'hex'), 'UTF8')), "
+            . "convert_from(decode('E280A9', 'hex'), 'UTF8'), convert_from(decode('5C7532303239', 'hex'), 'UTF8'))";
         $groupId = "{$payload}->>'parallel_group_id'";
         $groupIdIsValid = "jsonb_typeof({$payload}::jsonb->'parallel_group_id') = 'string' AND COALESCE({$groupId}, '') <> ''";
         $groupSize = "{$payload}->>'parallel_group_size'";
@@ -569,7 +550,12 @@ final class HistoryBudget
             (SELECT COALESCE(SUM(
                 CASE
                     WHEN history_json.type IN ('object', 'array') THEN 2
-                    WHEN history_json.type = 'text' THEN LENGTH(CAST(json_quote(history_json.atom) AS BLOB))
+                    WHEN history_json.type = 'text' THEN LENGTH(CAST(
+                        REPLACE(REPLACE(
+                            json_quote(history_json.atom),
+                            CHAR(8232), '\u2028'
+                        ), CHAR(8233), '\u2029')
+                    AS BLOB))
                     WHEN history_json.type = 'null' THEN 4
                     WHEN history_json.type = 'true' THEN 4
                     WHEN history_json.type = 'false' THEN 5
@@ -577,39 +563,44 @@ final class HistoryBudget
                 END
                 + CASE WHEN history_json.parent IS NULL THEN 0 ELSE 1 END
                 + CASE WHEN typeof(history_json.key) = 'text'
-                    THEN LENGTH(CAST(json_quote(history_json.key) AS BLOB)) + 1 ELSE 0 END
+                    THEN LENGTH(CAST(
+                        REPLACE(REPLACE(
+                            json_quote(history_json.key),
+                            CHAR(8232), '\u2028'
+                        ), CHAR(8233), '\u2029')
+                    AS BLOB)) + 1 ELSE 0 END
             ), 2) - COUNT(DISTINCT history_json.parent)
             FROM json_tree(COALESCE({$payload}, '[]')) AS history_json)
             SQL;
         $groupId = "json_extract({$payload}, '$.parallel_group_id')";
         $groupIdIsValid = "json_valid({$payload}) AND json_type({$payload}, '$.parallel_group_id') = 'text' AND COALESCE({$groupId}, '') <> ''";
         $groupSize = "json_extract({$payload}, '$.parallel_group_size')";
-        $numericWhitespace = "CHAR(9) || CHAR(10) || CHAR(11) || CHAR(12) || CHAR(13) || CHAR(32)";
+        $numericWhitespace = 'CHAR(9) || CHAR(10) || CHAR(11) || CHAR(12) || CHAR(13) || CHAR(32)';
         $groupSizeText = "TRIM(CAST({$groupSize} AS TEXT), {$numericWhitespace})";
         $normalizedGroupSizeText = "REPLACE({$groupSizeText}, 'E', 'e')";
         $exponentPosition = "INSTR({$normalizedGroupSizeText}, 'e')";
         $mantissa = "CASE WHEN {$exponentPosition} > 0 "
-            ."THEN SUBSTR({$normalizedGroupSizeText}, 1, {$exponentPosition} - 1) "
-            ."ELSE {$normalizedGroupSizeText} END";
+            . "THEN SUBSTR({$normalizedGroupSizeText}, 1, {$exponentPosition} - 1) "
+            . "ELSE {$normalizedGroupSizeText} END";
         $exponent = "CASE WHEN {$exponentPosition} > 0 "
-            ."THEN SUBSTR({$normalizedGroupSizeText}, {$exponentPosition} + 1) ELSE '' END";
+            . "THEN SUBSTR({$normalizedGroupSizeText}, {$exponentPosition} + 1) ELSE '' END";
         $unsignedMantissa = "CASE WHEN SUBSTR({$mantissa}, 1, 1) IN ('+', '-') "
-            ."THEN SUBSTR({$mantissa}, 2) ELSE {$mantissa} END";
+            . "THEN SUBSTR({$mantissa}, 2) ELSE {$mantissa} END";
         $unsignedExponent = "CASE WHEN SUBSTR({$exponent}, 1, 1) IN ('+', '-') "
-            ."THEN SUBSTR({$exponent}, 2) ELSE {$exponent} END";
+            . "THEN SUBSTR({$exponent}, 2) ELSE {$exponent} END";
         $numericString = "{$groupSizeText} <> '' "
-            ."AND (LENGTH({$normalizedGroupSizeText}) - "
-            ."LENGTH(REPLACE({$normalizedGroupSizeText}, 'e', ''))) <= 1 "
-            ."AND {$unsignedMantissa} <> '' "
-            ."AND {$unsignedMantissa} NOT GLOB '*[^0-9.]*' "
-            ."AND {$unsignedMantissa} GLOB '*[0-9]*' "
-            ."AND (LENGTH({$unsignedMantissa}) - "
-            ."LENGTH(REPLACE({$unsignedMantissa}, '.', ''))) <= 1 "
-            ."AND ({$exponentPosition} = 0 OR ("
-            ."{$unsignedExponent} <> '' "
-            ."AND {$unsignedExponent} NOT GLOB '*[^0-9]*'))";
+            . "AND (LENGTH({$normalizedGroupSizeText}) - "
+            . "LENGTH(REPLACE({$normalizedGroupSizeText}, 'e', ''))) <= 1 "
+            . "AND {$unsignedMantissa} <> '' "
+            . "AND {$unsignedMantissa} NOT GLOB '*[^0-9.]*' "
+            . "AND {$unsignedMantissa} GLOB '*[0-9]*' "
+            . "AND (LENGTH({$unsignedMantissa}) - "
+            . "LENGTH(REPLACE({$unsignedMantissa}, '.', ''))) <= 1 "
+            . "AND ({$exponentPosition} = 0 OR ("
+            . "{$unsignedExponent} <> '' "
+            . "AND {$unsignedExponent} NOT GLOB '*[^0-9]*'))";
         $groupSizeIsNumeric = "(json_type({$payload}, '$.parallel_group_size') IN ('integer', 'real') "
-            ."OR (json_type({$payload}, '$.parallel_group_size') = 'text' AND {$numericString}))";
+            . "OR (json_type({$payload}, '$.parallel_group_size') = 'text' AND {$numericString}))";
 
         return [
             "LENGTH(CAST({$eventType} AS BLOB)) + {$canonicalJsonSize}",

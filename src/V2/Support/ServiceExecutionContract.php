@@ -38,11 +38,7 @@ final class ServiceExecutionContract
 
     public const AUTHORITY_DOCUMENT = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/workflow-service-calls-architecture.md';
 
-    public const ADDRESS_FIELDS = [
-        'endpoint_name',
-        'service_name',
-        'operation_name',
-    ];
+    public const ADDRESS_FIELDS = ['endpoint_name', 'service_name', 'operation_name'];
 
     public const HANDLER_BINDING_KINDS = [
         'start_workflow',

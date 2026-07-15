@@ -39,7 +39,7 @@ final class V2WorkflowVersionPinningTest extends TestCase
         Queue::fake();
     }
 
-    public function test_start_option_pins_run_and_first_task_to_supplied_build_id(): void
+    public function testStartOptionPinsRunAndFirstTaskToSuppliedBuildId(): void
     {
         // No worker context — WorkerCompatibility::current() returns null,
         // so without an explicit pin the run would stay unversioned.
@@ -67,7 +67,7 @@ final class V2WorkflowVersionPinningTest extends TestCase
         $this->assertSame('v2026.05.01-rc1', $task->compatibility);
     }
 
-    public function test_start_option_accepts_compatibility_alias(): void
+    public function testStartOptionAcceptsCompatibilityAlias(): void
     {
         $controlPlane = $this->app->make(WorkflowControlPlane::class);
 
@@ -85,7 +85,7 @@ final class V2WorkflowVersionPinningTest extends TestCase
         $this->assertSame('v2026.05.01-rc1', $run->compatibility);
     }
 
-    public function test_start_falls_back_to_worker_compatibility_current_when_no_pin_supplied(): void
+    public function testStartFallsBackToWorkerCompatibilityCurrentWhenNoPinSupplied(): void
     {
         config()
             ->set('workflows.v2.compatibility.current', 'build-from-worker-context');
@@ -103,7 +103,7 @@ final class V2WorkflowVersionPinningTest extends TestCase
         $this->assertSame('build-from-worker-context', $run->compatibility);
     }
 
-    public function test_explicit_pin_overrides_worker_compatibility_current(): void
+    public function testExplicitPinOverridesWorkerCompatibilityCurrent(): void
     {
         config()
             ->set('workflows.v2.compatibility.current', 'build-from-worker-context');
@@ -122,7 +122,7 @@ final class V2WorkflowVersionPinningTest extends TestCase
         $this->assertSame('operator-routed-build', $run->compatibility);
     }
 
-    public function test_blank_pin_value_falls_through_to_legacy_resolution(): void
+    public function testBlankPinValueFallsThroughToLegacyResolution(): void
     {
         config()
             ->set('workflows.v2.compatibility.current', 'build-from-worker-context');

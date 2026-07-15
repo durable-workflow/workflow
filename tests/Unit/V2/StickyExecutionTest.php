@@ -16,7 +16,8 @@ final class StickyExecutionTest extends TestCase
 {
     public function testWorkflowTaskInheritsActiveStickyAffinityFromRun(): void
     {
-        $stickyUntil = now()->addMinutes(5);
+        $stickyUntil = now()
+            ->addMinutes(5);
 
         $run = WorkflowRun::query()->create([
             'workflow_instance_id' => 'wf-sticky-inherit',
@@ -51,7 +52,8 @@ final class StickyExecutionTest extends TestCase
             'namespace' => 'default',
             'status' => RunStatus::Waiting->value,
             'sticky_worker_id' => 'worker-sticky',
-            'sticky_until' => now()->subSecond(),
+            'sticky_until' => now()
+                ->subSecond(),
         ]);
 
         $task = WorkflowTask::query()->create([
@@ -70,7 +72,8 @@ final class StickyExecutionTest extends TestCase
     {
         $task = new WorkflowTask([
             'sticky_worker_id' => 'worker-a',
-            'sticky_until' => now()->addMinute(),
+            'sticky_until' => now()
+                ->addMinute(),
         ]);
 
         $this->assertSame(

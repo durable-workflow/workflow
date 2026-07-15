@@ -47,10 +47,7 @@ final class V2DeterministicTimeReplayTest extends TestCase
         $startedAt = Carbon::parse('2026-02-01T12:00:00Z');
         Carbon::setTestNow($startedAt);
 
-        $workflow = WorkflowStub::make(
-            TestReplayDeterministicTimeWorkflow::class,
-            'replay-deterministic-time-1',
-        );
+        $workflow = WorkflowStub::make(TestReplayDeterministicTimeWorkflow::class, 'replay-deterministic-time-1');
         $workflow->start('Taylor');
 
         $this->runReadyTaskOfType(TaskType::Workflow);

@@ -22,16 +22,14 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 final class ServiceCatalog
 {
     public const SCOPE_RELEVANT = 'relevant';
+
     public const SCOPE_OWNED = 'owned';
+
     public const SCOPE_CALLER = 'caller';
+
     public const SCOPE_TARGET = 'target';
 
-    public const SCOPES = [
-        self::SCOPE_RELEVANT,
-        self::SCOPE_OWNED,
-        self::SCOPE_CALLER,
-        self::SCOPE_TARGET,
-    ];
+    public const SCOPES = [self::SCOPE_RELEVANT, self::SCOPE_OWNED, self::SCOPE_CALLER, self::SCOPE_TARGET];
 
     /**
      * @return Builder<WorkflowServiceEndpoint>
@@ -78,10 +76,10 @@ final class ServiceCatalog
     /**
      * Build a service-call query, optionally filtered to one of:
      *
-      *   - SCOPE_RELEVANT (default) - calls whose durable `namespace` matches.
-      *   - SCOPE_OWNED             - alias of the durable namespace view.
-      *   - SCOPE_CALLER            - namespace-owned calls initiated from the namespace.
-      *   - SCOPE_TARGET            - namespace-owned calls targeting the namespace.
+     *   - SCOPE_RELEVANT (default) - calls whose durable `namespace` matches.
+     *   - SCOPE_OWNED             - alias of the durable namespace view.
+     *   - SCOPE_CALLER            - namespace-owned calls initiated from the namespace.
+     *   - SCOPE_TARGET            - namespace-owned calls targeting the namespace.
      *
      * Status is the durable {@see \Workflow\V2\Enums\ServiceCallStatus}
      * value; a null status returns calls in any state.

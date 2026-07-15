@@ -235,7 +235,9 @@ final class FailureFactory
         ?int $fallbackCode = null,
     ): RestoredWorkflowException {
         if (is_string($payload)) {
-            $payload = ['message' => $payload];
+            $payload = [
+                'message' => $payload,
+            ];
         }
 
         return new RestoredWorkflowException(

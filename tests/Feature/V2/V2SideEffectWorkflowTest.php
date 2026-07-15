@@ -230,7 +230,9 @@ final class V2SideEffectWorkflowTest extends TestCase
 
         $replayedRun = (new WorkflowReplayer())->runFromHistoryExport($export);
         $replayedEvent = $replayedRun->historyEvents
-            ->first(static fn (WorkflowHistoryEvent $entry): bool => $entry->event_type === HistoryEventType::SideEffectRecorded);
+            ->first(
+                static fn (WorkflowHistoryEvent $entry): bool => $entry->event_type === HistoryEventType::SideEffectRecorded
+            );
 
         $this->assertInstanceOf(WorkflowHistoryEvent::class, $replayedEvent);
         $this->assertIsArray($replayedEvent->payload['result']);
@@ -319,7 +321,7 @@ final class V2SideEffectWorkflowTest extends TestCase
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-side-effect-payloads-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-side-effect-payloads-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -341,7 +343,7 @@ final class V2SideEffectWorkflowTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

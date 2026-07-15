@@ -228,7 +228,13 @@ final class WorkflowCommandNormalizer
                 self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
 
                 $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
-                $payloadCodec = self::payloadCodecForResolvedPayload($command, $arguments, 'arguments', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload(
+                    $command,
+                    $arguments,
+                    'arguments',
+                    $index,
+                    $errors
+                );
 
                 $normalized[] = array_filter([
                     'type' => $type,
@@ -295,7 +301,13 @@ final class WorkflowCommandNormalizer
                 self::assertChildWorkflowTimeoutOrdering($executionTimeout, $runTimeout, $index, $errors);
 
                 $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
-                $payloadCodec = self::payloadCodecForResolvedPayload($command, $arguments, 'arguments', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload(
+                    $command,
+                    $arguments,
+                    'arguments',
+                    $index,
+                    $errors
+                );
 
                 $normalized[] = array_filter([
                     'type' => $type,
@@ -1245,6 +1257,14 @@ final class WorkflowCommandNormalizer
     {
         foreach (self::FIELD_SCOPES as $field => $scope) {
             if (! array_key_exists($field, $command) || $command[$field] === null) {
+                continue;
+            }
+
+            // Version-marker commands have a frozen wire shape and deliberately
+            // drop fields added by newer SDKs. Treat payload_codec like every
+            // other unknown marker field instead of promoting it into the
+            // canonical command or rejecting an otherwise replayable marker.
+            if ($type === 'record_version_marker' && $field === 'payload_codec') {
                 continue;
             }
 

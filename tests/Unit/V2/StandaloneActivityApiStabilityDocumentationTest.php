@@ -14,30 +14,15 @@ final class StandaloneActivityApiStabilityDocumentationTest extends TestCase
     {
         $document = $this->fileContents('docs/api-stability.md');
 
-        $this->assertStringContainsString(
-            'Workflow\\V2\\Support\\StandaloneActivityStartService',
-            $document,
-        );
+        $this->assertStringContainsString('Workflow\\V2\\Support\\StandaloneActivityStartService', $document);
         $this->assertStringContainsString(
             'Workflow\\V2\\StandaloneActivity\\StandaloneActivityHostType',
             $document,
         );
-        $this->assertStringContainsString(
-            '## Server-facing standalone activity stability list',
-            $document,
-        );
-        $this->assertStringContainsString(
-            'standalone-activity start contract',
-            $document,
-        );
-        $this->assertStringContainsString(
-            StandaloneActivityHostType::WORKFLOW_TYPE,
-            $document,
-        );
-        $this->assertStringContainsString(
-            'stable wire identifier',
-            $document,
-        );
+        $this->assertStringContainsString('## Server-facing standalone activity stability list', $document);
+        $this->assertStringContainsString('standalone-activity start contract', $document);
+        $this->assertStringContainsString(StandaloneActivityHostType::WORKFLOW_TYPE, $document);
+        $this->assertStringContainsString('stable wire identifier', $document);
         $this->assertMatchesRegularExpression(
             '/## Server-facing standalone activity stability list.*'
                 . 'Workflow\\\\V2\\\\Support\\\\StandaloneActivityStartService.*'

@@ -458,11 +458,7 @@ final class ScheduleManager
                     $schedule->save();
 
                     $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
-                    $startResult = self::startRun(
-                        $schedule,
-                        occurrenceTime: $occurrenceTime,
-                        outcome: 'drained',
-                    );
+                    $startResult = self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'drained');
 
                     return [
                         'instance_id' => $startResult->instanceId,
@@ -545,56 +541,6 @@ final class ScheduleManager
         }
 
         return $results;
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function tickResult(
-        WorkflowSchedule $schedule,
-        ScheduleTriggerResult $detail,
-        ?DateTimeInterface $occurrenceTime,
-    ): array {
-        $row = [
-            'schedule_id' => $schedule->schedule_id,
-            'instance_id' => $detail->instanceId,
-            'outcome' => $detail->outcome,
-        ];
-
-        if ($detail->runId !== null) {
-            $row['run_id'] = $detail->runId;
-        }
-
-        if ($detail->reason !== null) {
-            $row['reason'] = $detail->reason;
-        }
-
-        if ($occurrenceTime !== null) {
-            $row['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
-        }
-
-        if ($schedule->last_fired_at !== null) {
-            $row['last_fired_at'] = $schedule->last_fired_at->format('Y-m-d\TH:i:s.uP');
-        }
-
-        if ($schedule->next_fire_at !== null) {
-            $row['next_fire_at'] = $schedule->next_fire_at->format('Y-m-d\TH:i:s.uP');
-        }
-
-        return $row;
-    }
-
-    private static function dateTimeFromPayload(mixed $value): ?DateTimeInterface
-    {
-        if (! is_string($value) || $value === '') {
-            return null;
-        }
-
-        try {
-            return new \DateTimeImmutable($value);
-        } catch (\Exception) {
-            return null;
-        }
     }
 
     public static function describe(WorkflowSchedule $schedule): ScheduleDescription
@@ -686,6 +632,56 @@ final class ScheduleManager
         return $results;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private static function tickResult(
+        WorkflowSchedule $schedule,
+        ScheduleTriggerResult $detail,
+        ?DateTimeInterface $occurrenceTime,
+    ): array {
+        $row = [
+            'schedule_id' => $schedule->schedule_id,
+            'instance_id' => $detail->instanceId,
+            'outcome' => $detail->outcome,
+        ];
+
+        if ($detail->runId !== null) {
+            $row['run_id'] = $detail->runId;
+        }
+
+        if ($detail->reason !== null) {
+            $row['reason'] = $detail->reason;
+        }
+
+        if ($occurrenceTime !== null) {
+            $row['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+        }
+
+        if ($schedule->last_fired_at !== null) {
+            $row['last_fired_at'] = $schedule->last_fired_at->format('Y-m-d\TH:i:s.uP');
+        }
+
+        if ($schedule->next_fire_at !== null) {
+            $row['next_fire_at'] = $schedule->next_fire_at->format('Y-m-d\TH:i:s.uP');
+        }
+
+        return $row;
+    }
+
+    private static function dateTimeFromPayload(mixed $value): ?DateTimeInterface
+    {
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            return new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
+    }
+
     // ── Internals ────────────────────────────────────────────────────
 
     private static function triggerForBackfill(
@@ -767,10 +763,7 @@ final class ScheduleManager
                 'schedule_start',
                 $schedule->schedule_id,
                 $reason,
-                sprintf(
-                    'Schedule [%s] is no longer active and cannot start a workflow.',
-                    $schedule->schedule_id,
-                ),
+                sprintf('Schedule [%s] is no longer active and cannot start a workflow.', $schedule->schedule_id),
             );
         }
 

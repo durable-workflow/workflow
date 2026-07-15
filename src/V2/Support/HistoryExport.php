@@ -108,7 +108,8 @@ final class HistoryExport
                 'memo' => $run->typedMemos(),
                 'search_attributes' => self::resolveSearchAttributes($run, $summary),
                 'status' => $run->status->value,
-                'status_bucket' => $run->status->statusBucket()->value,
+                'status_bucket' => $run->status->statusBucket()
+->value,
                 'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
                 'archived_at' => self::timestamp($summary?->archived_at ?? $run->archived_at),
                 'archive_command_id' => $summary?->archive_command_id ?? $run->archive_command_id,

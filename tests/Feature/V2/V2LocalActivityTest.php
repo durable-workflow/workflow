@@ -30,7 +30,8 @@ final class V2LocalActivityTest extends TestCase
     public function testLocalActivityExecutesInWorkflowTaskAndRecordsMarkedHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestLocalActivityWorkflow::class, 'local-activity-basic');
@@ -107,7 +108,8 @@ final class V2LocalActivityTest extends TestCase
     public function testLocalActivityHeartbeatRenewsWorkflowTaskAndRecordsLocalMarker(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestLocalHeartbeatWorkflow::class, 'local-activity-heartbeat');
@@ -134,7 +136,8 @@ final class V2LocalActivityTest extends TestCase
         $deadline = microtime(true) + 10;
 
         while (microtime(true) < $deadline) {
-            $cutoff = now()->format('Y-m-d H:i:s.u');
+            $cutoff = now()
+                ->format('Y-m-d H:i:s.u');
 
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()

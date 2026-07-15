@@ -94,14 +94,7 @@ final class WorkflowStep
 
     public static function waiting(YieldedCommand $yielded): self
     {
-        return new self(
-            false,
-            null,
-            $yielded instanceof ActivityCall ? $yielded : null,
-            $yielded,
-            null,
-            [],
-        );
+        return new self(false, null, $yielded instanceof ActivityCall ? $yielded : null, $yielded, null, []);
     }
 
     public static function recordSideEffect(SideEffectCall $call, mixed $result, string $payloadCodec = 'avro'): self
@@ -145,7 +138,9 @@ final class WorkflowStep
                 'delay_seconds' => $yielded->seconds,
             ],
             $yielded instanceof SignalCall => self::signalWaitCommand($yielded),
-            $yielded instanceof AwaitCall || $yielded instanceof AwaitWithTimeoutCall => self::conditionWaitCommand($yielded),
+            $yielded instanceof AwaitCall || $yielded instanceof AwaitWithTimeoutCall => self::conditionWaitCommand(
+                $yielded
+            ),
             $yielded instanceof ChildWorkflowCall => self::childWorkflowCommand($yielded, $payloadCodec),
             $yielded instanceof ServiceOperationCall => self::serviceOperationCommand($yielded, $payloadCodec),
             $yielded instanceof SideEffectCall => throw new UnsupportedWorkflowYieldException(

@@ -24,20 +24,14 @@ final class HostedControlPlaneContractTest extends TestCase
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/hosted-control-plane.md',
             $manifest['authority_doc'],
         );
-        $this->assertSame(
-            'X-Durable-Workflow-Hosted-Control-Plane-Version',
-            $manifest['protocol_header'],
-        );
+        $this->assertSame('X-Durable-Workflow-Hosted-Control-Plane-Version', $manifest['protocol_header']);
     }
 
     public function testDeploymentLadderKeepsManagedCloudAdditive(): void
     {
         $ladder = HostedControlPlaneContract::manifest()['deployment_ladder'];
 
-        $this->assertSame(
-            ['embedded_package', 'standalone_server', 'managed_cloud'],
-            array_keys($ladder),
-        );
+        $this->assertSame(['embedded_package', 'standalone_server', 'managed_cloud'], array_keys($ladder));
         $this->assertTrue($ladder['embedded_package']['runtime_authority']);
         $this->assertTrue($ladder['standalone_server']['runtime_authority']);
         $this->assertFalse(
@@ -57,15 +51,9 @@ final class HostedControlPlaneContractTest extends TestCase
             ['organization', 'project', 'environment', 'namespace'],
             HostedControlPlaneContract::tenantHierarchyLevels(),
         );
-        $this->assertSame(
-            HostedControlPlaneContract::tenantHierarchyLevels(),
-            $hierarchy['levels'],
-        );
+        $this->assertSame(HostedControlPlaneContract::tenantHierarchyLevels(), $hierarchy['levels']);
         $this->assertSame('runtime_execution_boundary', $hierarchy['namespace_role']);
-        $this->assertSame(
-            'one_namespace_belongs_to_one_runtime_target_at_a_time',
-            $hierarchy['placement_rule'],
-        );
+        $this->assertSame('one_namespace_belongs_to_one_runtime_target_at_a_time', $hierarchy['placement_rule']);
         $this->assertContains('runtime_target_base_url', $hierarchy['runtime_target_identity']);
         $this->assertContains('region', $hierarchy['runtime_target_identity']);
         $this->assertContains('residency_profile', $hierarchy['runtime_target_identity']);
@@ -75,18 +63,27 @@ final class HostedControlPlaneContractTest extends TestCase
     {
         $identity = HostedControlPlaneContract::manifest()['identity_boundary'];
 
-        foreach (['hosted_user', 'service_account', 'worker_credential', 'runtime_target_credential', 'provider_support_actor'] as $class) {
+        foreach ([
+            'hosted_user',
+            'service_account',
+            'worker_credential',
+            'runtime_target_credential',
+            'provider_support_actor',
+        ] as $class) {
             $this->assertContains($class, $identity['identity_classes']);
         }
 
-        foreach (['actor_type', 'capability', 'target_namespace', 'hosted_audit_id_or_request_fingerprint', 'command_outcome'] as $field) {
+        foreach ([
+            'actor_type',
+            'capability',
+            'target_namespace',
+            'hosted_audit_id_or_request_fingerprint',
+            'command_outcome',
+        ] as $field) {
             $this->assertContains($field, $identity['runtime_attribution_fields']);
         }
 
-        $this->assertContains(
-            'runtime_credentials_are_role_scoped',
-            $identity['guarantees'],
-        );
+        $this->assertContains('runtime_credentials_are_role_scoped', $identity['guarantees']);
     }
 
     public function testQuotaMeteringAndFairnessHaveMachineReadableRefusals(): void
@@ -133,7 +130,7 @@ final class HostedControlPlaneContractTest extends TestCase
         $this->assertSame('support_led', $modes['cloud_relay']['self_serve_status']);
 
         foreach ($modes as $name => $mode) {
-            $this->assertSame('worker_protocol', $mode['protocol'], "$name must keep the standard worker protocol");
+            $this->assertSame('worker_protocol', $mode['protocol'], "{$name} must keep the standard worker protocol");
         }
     }
 
@@ -172,8 +169,11 @@ final class HostedControlPlaneContractTest extends TestCase
         );
 
         foreach ($actions as $name => $action) {
-            $this->assertTrue($action['audit_required'], "$name must be audited");
-            $this->assertFalse($action['runtime_history_edit_allowed'], "$name must not edit runtime history directly");
+            $this->assertTrue($action['audit_required'], "{$name} must be audited");
+            $this->assertFalse(
+                $action['runtime_history_edit_allowed'],
+                "{$name} must not edit runtime history directly"
+            );
         }
         $this->assertSame('disabled', $actions['support_access_session']['support_access']['default']);
         $this->assertSame('additive_overlap_before_revoke', $actions['rotate_machine_identity']['rotation_rule']);

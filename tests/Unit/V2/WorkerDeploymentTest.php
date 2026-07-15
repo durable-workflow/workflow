@@ -51,11 +51,7 @@ final class WorkerDeploymentTest extends TestCase
 
     public function testNameUsesUnversionedPlaceholderForNullBuildId(): void
     {
-        $deployment = WorkerDeployment::forActiveBuild(
-            namespace: 'tenant-a',
-            taskQueue: 'work',
-            buildId: null,
-        );
+        $deployment = WorkerDeployment::forActiveBuild(namespace: 'tenant-a', taskQueue: 'work', buildId: null);
 
         $this->assertSame('tenant-a/work@unversioned', $deployment->name());
         $this->assertNull($deployment->buildId);

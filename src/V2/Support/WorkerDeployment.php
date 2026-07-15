@@ -47,7 +47,8 @@ final class WorkerDeployment
         public readonly ?CarbonInterface $promotedAt,
         public readonly ?CarbonInterface $drainedAt,
         public readonly ?CarbonInterface $rolledBackAt,
-    ) {}
+    ) {
+    }
 
     /**
      * Construct a deployment for an active build cohort.
@@ -136,12 +137,7 @@ final class WorkerDeployment
      */
     public function name(): string
     {
-        return sprintf(
-            '%s/%s@%s',
-            $this->namespace,
-            $this->taskQueue,
-            $this->buildId ?? 'unversioned',
-        );
+        return sprintf('%s/%s@%s', $this->namespace, $this->taskQueue, $this->buildId ?? 'unversioned');
     }
 
     public function isPromoted(): bool
@@ -265,10 +261,7 @@ final class WorkerDeployment
         $value = trim($value);
 
         if ($value === '') {
-            throw new InvalidArgumentException(sprintf(
-                'WorkerDeployment requires a non-empty %s.',
-                $field,
-            ));
+            throw new InvalidArgumentException(sprintf('WorkerDeployment requires a non-empty %s.', $field));
         }
 
         return $value;
@@ -307,7 +300,6 @@ final class WorkerDeployment
     }
 
     /**
-     * @param mixed $value
      * @return list<string>
      */
     private static function normalizeWorkflowTypes(mixed $value): array

@@ -67,11 +67,7 @@ final class IdempotentProjectionUpsert
         if ($updateColumns === []) {
             $model::query()->insertOrIgnore($attributes);
         } else {
-            $model::query()->upsert(
-                [$attributes],
-                array_keys($key),
-                $updateColumns,
-            );
+            $model::query()->upsert([$attributes], array_keys($key), $updateColumns);
         }
 
         /** @var TModel|null $row */
@@ -122,5 +118,4 @@ final class IdempotentProjectionUpsert
 
         return false;
     }
-
 }

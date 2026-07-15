@@ -39,19 +39,23 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
     public function evaluate(ServiceBoundaryRequest $request): ServiceBoundaryDecision
     {
-        if (($denial = $this->checkAuthorization($request)) !== null) {
+        $denial = $this->checkAuthorization($request);
+        if ($denial !== null) {
             return $denial;
         }
 
-        if (($denial = $this->checkRateLimit($request)) !== null) {
+        $denial = $this->checkRateLimit($request);
+        if ($denial !== null) {
             return $denial;
         }
 
-        if (($denial = $this->checkConcurrency($request)) !== null) {
+        $denial = $this->checkConcurrency($request);
+        if ($denial !== null) {
             return $denial;
         }
 
-        if (($denial = $this->checkCircuitBreak($request)) !== null) {
+        $denial = $this->checkCircuitBreak($request);
+        if ($denial !== null) {
             return $denial;
         }
 
@@ -89,7 +93,8 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
     private function checkAuthorization(ServiceBoundaryRequest $request): ?ServiceBoundaryDecision
     {
         $globalAuth = $this->arrayAt($this->rules, ['authorization']);
-        if (($denial = $this->checkRequiredRoles($request, $globalAuth, 'operation')) !== null) {
+        $denial = $this->checkRequiredRoles($request, $globalAuth, 'operation');
+        if ($denial !== null) {
             return $denial;
         }
 
@@ -98,17 +103,20 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
             'service' => $request->serviceBoundaryPolicy,
             'operation' => $request->operationBoundaryPolicy,
         ] as $axis => $policy) {
-            if (($denial = $this->checkRequiredRoles($request, $policy, $axis)) !== null) {
+            $denial = $this->checkRequiredRoles($request, $policy, $axis);
+            if ($denial !== null) {
                 return $denial;
             }
 
-            if (($denial = $this->checkCallerNamespacePolicy($request, $policy, $axis)) !== null) {
+            $denial = $this->checkCallerNamespacePolicy($request, $policy, $axis);
+            if ($denial !== null) {
                 return $denial;
             }
         }
 
         $namespaceRules = $this->arrayAt($this->rules, ['namespaces']);
-        if (($denial = $this->checkCallerNamespacePolicy($request, $namespaceRules, 'operation')) !== null) {
+        $denial = $this->checkCallerNamespacePolicy($request, $namespaceRules, 'operation');
+        if ($denial !== null) {
             return $denial;
         }
 
@@ -125,7 +133,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                     $request->targetNamespace,
                 ),
                 policyName: self::POLICY_NAME,
-                metadata: ['forbidden_axis' => 'operation'],
+                metadata: [
+                    'forbidden_axis' => 'operation',
+                ],
             );
         }
 
@@ -134,7 +144,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                 reason: 'default_action_denied',
                 message: 'Service-boundary policy default action is deny.',
                 policyName: self::POLICY_NAME,
-                metadata: ['forbidden_axis' => 'operation'],
+                metadata: [
+                    'forbidden_axis' => 'operation',
+                ],
             );
         }
 
@@ -149,10 +161,7 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
         array $policy,
         string $axis,
     ): ?ServiceBoundaryDecision {
-        $required = $this->firstList($policy, [
-            ['required_roles'],
-            ['authorization', 'required_roles'],
-        ]) ?? [];
+        $required = $this->firstList($policy, [['required_roles'], ['authorization', 'required_roles']]) ?? [];
 
         if ($required === []) {
             return null;
@@ -171,7 +180,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                 $request->principal->subject,
             ),
             policyName: self::POLICY_NAME,
-            metadata: ['forbidden_axis' => $axis],
+            metadata: [
+                'forbidden_axis' => $axis,
+            ],
         );
     }
 
@@ -202,7 +213,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                     $caller,
                 ),
                 policyName: self::POLICY_NAME,
-                metadata: ['forbidden_axis' => $axis],
+                metadata: [
+                    'forbidden_axis' => $axis,
+                ],
             );
         }
 
@@ -224,7 +237,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                 reason: 'caller_namespace_missing',
                 message: 'Caller namespace is required by service-boundary allow policy.',
                 policyName: self::POLICY_NAME,
-                metadata: ['forbidden_axis' => $axis],
+                metadata: [
+                    'forbidden_axis' => $axis,
+                ],
             );
         }
 
@@ -237,7 +252,9 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
                     $request->targetNamespace,
                 ),
                 policyName: self::POLICY_NAME,
-                metadata: ['forbidden_axis' => $axis],
+                metadata: [
+                    'forbidden_axis' => $axis,
+                ],
             );
         }
 
@@ -308,11 +325,7 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
         return ServiceBoundaryDecision::denyConcurrency(
             retryAfterSeconds: $this->retryAfterSeconds($rules),
-            message: sprintf(
-                'Concurrency limit %d reached for service-boundary [%s].',
-                $max,
-                $key,
-            ),
+            message: sprintf('Concurrency limit %d reached for service-boundary [%s].', $max, $key),
             policyName: self::POLICY_NAME,
             metadata: [
                 'observed_in_flight' => $current,
@@ -336,10 +349,7 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
         return ServiceBoundaryDecision::denyCircuitOpen(
             retryAfterSeconds: $this->retryAfterSeconds($rules),
-            message: sprintf(
-                'Service-boundary circuit is open for target [%s].',
-                $request->targetKey(),
-            ),
+            message: sprintf('Service-boundary circuit is open for target [%s].', $request->targetKey()),
             policyName: self::POLICY_NAME,
             metadata: [
                 'target_key' => $request->targetKey(),

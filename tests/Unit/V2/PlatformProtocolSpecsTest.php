@@ -22,10 +22,7 @@ final class PlatformProtocolSpecsTest extends TestCase
 
         $this->assertIsString($json);
         $this->assertSame(PlatformProtocolSpecs::MIRROR_SHA256, hash('sha256', $json));
-        $this->assertSame(
-            json_decode($json, true, 512, JSON_THROW_ON_ERROR),
-            PlatformProtocolSpecs::manifest(),
-        );
+        $this->assertSame(json_decode($json, true, 512, JSON_THROW_ON_ERROR), PlatformProtocolSpecs::manifest());
     }
 
     public function testManifestAdvertisesAuthorityIdentity(): void
@@ -42,18 +39,11 @@ final class PlatformProtocolSpecsTest extends TestCase
     {
         $manifest = PlatformProtocolSpecs::manifest();
 
-        $this->assertSame(
-            ['openapi', 'json_schema', 'asyncapi'],
-            array_keys($manifest['formats']),
-        );
+        $this->assertSame(['openapi', 'json_schema', 'asyncapi'], array_keys($manifest['formats']));
 
         foreach ($manifest['formats'] as $format => $definition) {
-            $this->assertArrayHasKey('meaning', $definition, "format $format needs meaning");
-            $this->assertArrayHasKey(
-                'file_extensions',
-                $definition,
-                "format $format needs file_extensions",
-            );
+            $this->assertArrayHasKey('meaning', $definition, "format {$format} needs meaning");
+            $this->assertArrayHasKey('file_extensions', $definition, "format {$format} needs file_extensions");
         }
     }
 
@@ -61,14 +51,11 @@ final class PlatformProtocolSpecsTest extends TestCase
     {
         $manifest = PlatformProtocolSpecs::manifest();
 
-        $this->assertSame(
-            ['published', 'in_progress', 'planned'],
-            array_keys($manifest['status_levels']),
-        );
+        $this->assertSame(['published', 'in_progress', 'planned'], array_keys($manifest['status_levels']));
 
         foreach ($manifest['status_levels'] as $level => $meaning) {
-            $this->assertIsString($meaning, "status level $level meaning must be a string");
-            $this->assertNotSame('', $meaning, "status level $level must have a non-empty meaning");
+            $this->assertIsString($meaning, "status level {$level} meaning must be a string");
+            $this->assertNotSame('', $meaning, "status level {$level} must have a non-empty meaning");
         }
     }
 
@@ -82,17 +69,17 @@ final class PlatformProtocolSpecsTest extends TestCase
         );
 
         foreach ($manifest['evolution_rules'] as $rule => $definition) {
-            $this->assertArrayHasKey('meaning', $definition, "evolution rule $rule needs meaning");
+            $this->assertArrayHasKey('meaning', $definition, "evolution rule {$rule} needs meaning");
             $this->assertArrayHasKey(
                 'applies_to_formats',
                 $definition,
-                "evolution rule $rule needs applies_to_formats",
+                "evolution rule {$rule} needs applies_to_formats",
             );
             foreach ($definition['applies_to_formats'] as $format) {
                 $this->assertContains(
                     $format,
                     PlatformProtocolSpecs::formatValues(),
-                    "evolution rule $rule applies_to_formats must use the format vocabulary",
+                    "evolution rule {$rule} applies_to_formats must use the format vocabulary",
                 );
             }
         }
@@ -150,7 +137,7 @@ final class PlatformProtocolSpecsTest extends TestCase
 
         foreach ($manifest['specs'] as $name => $spec) {
             foreach ($requiredFields as $field) {
-                $this->assertArrayHasKey($field, $spec, "spec $name is missing $field");
+                $this->assertArrayHasKey($field, $spec, "spec {$name} is missing {$field}");
             }
 
             $this->assertContains($spec['format'], $allowedFormats);
@@ -165,7 +152,7 @@ final class PlatformProtocolSpecsTest extends TestCase
                 $this->assertStringStartsWith(
                     'https://durable-workflow.github.io/platform-protocol-specs/',
                     $spec['spec_url'],
-                    "spec $name must expose a public HTTPS reference",
+                    "spec {$name} must expose a public HTTPS reference",
                 );
                 $this->assertSame('https', parse_url($spec['spec_url'], PHP_URL_SCHEME));
                 $this->assertSame('durable-workflow.github.io', parse_url($spec['spec_url'], PHP_URL_HOST));
@@ -198,7 +185,7 @@ final class PlatformProtocolSpecsTest extends TestCase
             $this->assertStringNotContainsString(
                 $repositoryLocalReference,
                 $json,
-                "public catalog must not expose $repositoryLocalReference",
+                "public catalog must not expose {$repositoryLocalReference}",
             );
         }
     }
@@ -244,10 +231,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         }
 
         $this->assertArrayNotHasKey('docs_authority_aligned', $check['gates']);
-        $this->assertStringNotContainsString(
-            'docs/platform-protocol-specs.md',
-            $check['enforcement']['machine'],
-        );
+        $this->assertStringNotContainsString('docs/platform-protocol-specs.md', $check['enforcement']['machine']);
         $this->assertStringNotContainsString('walks', $check['enforcement']['machine']);
     }
 

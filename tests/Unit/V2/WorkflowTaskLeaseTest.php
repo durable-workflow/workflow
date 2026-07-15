@@ -20,7 +20,8 @@ final class WorkflowTaskLeaseTest extends TestCase
 
         $this->assertSame(WorkflowTaskLease::DEFAULT_SECONDS, WorkflowTaskLease::seconds());
 
-        config()->set(WorkflowTaskLease::CONFIG_KEY, 8);
+        config()
+            ->set(WorkflowTaskLease::CONFIG_KEY, 8);
 
         $this->assertSame(8, WorkflowTaskLease::seconds());
         $this->assertTrue(WorkflowTaskLease::expiresAt()->equalTo($now->copy()->addSeconds(8)));
@@ -31,7 +32,8 @@ final class WorkflowTaskLeaseTest extends TestCase
         config()->set(WorkflowTaskLease::CONFIG_KEY, 0);
         $this->assertSame(WorkflowTaskLease::DEFAULT_SECONDS, WorkflowTaskLease::seconds());
 
-        config()->set(WorkflowTaskLease::CONFIG_KEY, 'invalid');
+        config()
+            ->set(WorkflowTaskLease::CONFIG_KEY, 'invalid');
         $this->assertSame(WorkflowTaskLease::DEFAULT_SECONDS, WorkflowTaskLease::seconds());
     }
 }

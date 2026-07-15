@@ -27,8 +27,8 @@ return new class() extends WorkflowMigration {
                 ->nullable()
                 ->index();
             $table->json('supported');
-            $table->timestamp('recorded_at', 6);
-            $table->timestamp('expires_at', 6)
+            $table->dateTime('recorded_at', 6);
+            $table->dateTime('expires_at', 6)
                 ->index();
             $table->timestamps(6);
 

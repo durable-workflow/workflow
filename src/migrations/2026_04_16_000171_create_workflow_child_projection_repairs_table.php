@@ -25,10 +25,7 @@ return new class() extends WorkflowMigration {
                 ['workflow_run_id', 'workflow_task_id', 'history_sequence'],
                 'workflow_child_projection_repairs_drain_idx',
             );
-            $table->index(
-                ['workflow_run_id', 'failure_id'],
-                'workflow_child_projection_repairs_failure_idx',
-            );
+            $table->index(['workflow_run_id', 'failure_id'], 'workflow_child_projection_repairs_failure_idx');
         });
     }
 

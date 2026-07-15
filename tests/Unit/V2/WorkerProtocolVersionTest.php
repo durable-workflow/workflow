@@ -110,10 +110,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::workerCapabilities(), $summary['worker_capabilities']);
         $this->assertSame(WorkerProtocolVersion::nonTerminalCommandTypes(), $summary['non_terminal_command_types']);
         $this->assertSame(WorkerProtocolVersion::terminalCommandTypes(), $summary['terminal_command_types']);
-        $this->assertSame(
-            WorkerHistoryPayloadContract::manifest(),
-            $summary['workflow_history_budget'],
-        );
+        $this->assertSame(WorkerHistoryPayloadContract::manifest(), $summary['workflow_history_budget']);
         $this->assertSame(
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
             $summary['history_pagination']['default_page_size']
@@ -122,10 +119,7 @@ final class WorkerProtocolVersionTest extends TestCase
             WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             $summary['history_pagination']['max_page_size']
         );
-        $this->assertSame(
-            \Workflow\Serializers\CodecRegistry::universal(),
-            $summary['payload_codecs_universal']
-        );
+        $this->assertSame(\Workflow\Serializers\CodecRegistry::universal(), $summary['payload_codecs_universal']);
         $this->assertSame(
             \Workflow\Serializers\CodecRegistry::engineSpecific(),
             $summary['payload_codecs_engine_specific']
@@ -181,10 +175,9 @@ final class WorkerProtocolVersionTest extends TestCase
             ['exception_class', 'exception_type', 'exception', 'non_retryable'],
             $shape['optional_fields'],
         );
-        $this->assertSame(
-            ['exception' => '1.10'],
-            $shape['field_minimum_protocol_versions'],
-        );
+        $this->assertSame([
+            'exception' => '1.10',
+        ], $shape['field_minimum_protocol_versions'],);
         $this->assertSame('non-empty string', $shape['message']['shape']);
         $this->assertSame('string', $shape['exception_class']['shape']);
         $this->assertFalse($shape['exception_class']['required']);
@@ -351,10 +344,7 @@ final class WorkerProtocolVersionTest extends TestCase
 
     public function testClampLongPollTimeoutAllowsImmediateProbe(): void
     {
-        $this->assertSame(
-            0,
-            WorkerProtocolVersion::clampLongPollTimeout(0),
-        );
+        $this->assertSame(0, WorkerProtocolVersion::clampLongPollTimeout(0));
     }
 
     public function testClampLongPollTimeoutClampsBelowMinimum(): void
@@ -405,10 +395,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $summary = WorkerProtocolVersion::describe();
 
         $this->assertArrayHasKey('local_activities', $summary);
-        $this->assertSame(
-            'durable-workflow.v2.local-activity.contract',
-            $summary['local_activities']['schema'],
-        );
+        $this->assertSame('durable-workflow.v2.local-activity.contract', $summary['local_activities']['schema']);
         $this->assertSame(1, $summary['local_activities']['version']);
         $this->assertSame('local', $summary['local_activities']['execution']['mode']);
         $this->assertFalse($summary['local_activities']['execution']['ordinary_activity_task_created']);
@@ -417,7 +404,10 @@ final class WorkerProtocolVersionTest extends TestCase
             $summary['local_activities']['routing']['rejected_options'],
         );
         $this->assertSame(
-            ['execution_mode' => 'local', 'local_activity' => true],
+            [
+                'execution_mode' => 'local',
+                'local_activity' => true,
+            ],
             $summary['local_activities']['execution']['history_marker'],
         );
     }
@@ -459,7 +449,10 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertContains('orphaned', $summary['worker_sessions']['visibility']);
         $this->assertSame(['closed'], $summary['worker_sessions']['terminal_statuses']);
         $this->assertContains('ttl_expired', $summary['worker_sessions']['terminal_conditions']);
-        $this->assertContains('registered_worker_heartbeat_staleness', $summary['worker_sessions']['failure_detection']);
+        $this->assertContains(
+            'registered_worker_heartbeat_staleness',
+            $summary['worker_sessions']['failure_detection']
+        );
         $this->assertContains(
             'prefer_ordinary_queued_activities_for_independent_steps',
             $summary['worker_sessions']['authoring_guidance'],

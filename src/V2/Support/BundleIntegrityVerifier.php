@@ -161,7 +161,13 @@ final class BundleIntegrityVerifier
         $version = self::intValue($bundle['schema_version'] ?? null);
 
         if ($schema === null) {
-            self::addFinding($findings, 'bundle.schema_missing', self::SEVERITY_ERROR, 'Bundle is missing the schema field.', 'schema');
+            self::addFinding(
+                $findings,
+                'bundle.schema_missing',
+                self::SEVERITY_ERROR,
+                'Bundle is missing the schema field.',
+                'schema'
+            );
         } elseif ($schema !== HistoryExport::SCHEMA) {
             self::addFinding(
                 $findings,
@@ -169,12 +175,21 @@ final class BundleIntegrityVerifier
                 self::SEVERITY_ERROR,
                 sprintf('Bundle schema [%s] does not match expected [%s].', $schema, HistoryExport::SCHEMA),
                 'schema',
-                ['expected' => HistoryExport::SCHEMA, 'actual' => $schema],
+                [
+                    'expected' => HistoryExport::SCHEMA,
+                    'actual' => $schema,
+                ],
             );
         }
 
         if ($version === null) {
-            self::addFinding($findings, 'bundle.schema_version_missing', self::SEVERITY_ERROR, 'Bundle is missing schema_version.', 'schema_version');
+            self::addFinding(
+                $findings,
+                'bundle.schema_version_missing',
+                self::SEVERITY_ERROR,
+                'Bundle is missing schema_version.',
+                'schema_version'
+            );
         } elseif ($version !== HistoryExport::SCHEMA_VERSION) {
             self::addFinding(
                 $findings,
@@ -186,7 +201,10 @@ final class BundleIntegrityVerifier
                     HistoryExport::SCHEMA_VERSION,
                 ),
                 'schema_version',
-                ['expected' => HistoryExport::SCHEMA_VERSION, 'actual' => $version],
+                [
+                    'expected' => HistoryExport::SCHEMA_VERSION,
+                    'actual' => $version,
+                ],
             );
         }
 
@@ -312,7 +330,10 @@ final class BundleIntegrityVerifier
                     $highestSequence,
                 ),
                 'workflow.last_history_sequence',
-                ['last_history_sequence' => $lastSequence, 'highest_history_sequence' => $highestSequence],
+                [
+                    'last_history_sequence' => $lastSequence,
+                    'highest_history_sequence' => $highestSequence,
+                ],
             );
         }
     }
@@ -371,7 +392,10 @@ final class BundleIntegrityVerifier
                         $findings,
                         'payload_manifest.avro_framing_missing',
                         self::SEVERITY_WARNING,
-                        sprintf('Avro payload [%s] is missing framing metadata; offline decoders cannot pick a wrapper schema.', $path),
+                        sprintf(
+                            'Avro payload [%s] is missing framing metadata; offline decoders cannot pick a wrapper schema.',
+                            $path
+                        ),
                         $path,
                     );
                 }
@@ -389,7 +413,10 @@ final class BundleIntegrityVerifier
                                 $path,
                             ),
                             $path,
-                            ['expected' => $expected, 'actual' => $writerSchemaFingerprint],
+                            [
+                                'expected' => $expected,
+                                'actual' => $writerSchemaFingerprint,
+                            ],
                         );
                     }
                 }
@@ -419,7 +446,10 @@ final class BundleIntegrityVerifier
                         self::SEVERITY_ERROR,
                         'Avro generic_wrapper.writer_schema_fingerprint disagrees with the embedded wrapper_schema.',
                         'codec_schemas.avro.generic_wrapper.writer_schema_fingerprint',
-                        ['expected' => $derived, 'actual' => $expectedFingerprint],
+                        [
+                            'expected' => $derived,
+                            'actual' => $expectedFingerprint,
+                        ],
                     );
                 }
             }
@@ -492,7 +522,10 @@ final class BundleIntegrityVerifier
                         $previousSequence,
                     ),
                     $path,
-                    ['sequence' => $sequence, 'previous_sequence' => $previousSequence],
+                    [
+                        'sequence' => $sequence,
+                        'previous_sequence' => $previousSequence,
+                    ],
                 );
             }
 
@@ -518,7 +551,10 @@ final class BundleIntegrityVerifier
                         self::SEVERITY_ERROR,
                         sprintf('History event id [%s] appears more than once.', $id),
                         $path,
-                        ['id' => $id, 'first_seen_at' => $seenIds[$id]],
+                        [
+                            'id' => $id,
+                            'first_seen_at' => $seenIds[$id],
+                        ],
                     );
                 } else {
                     $seenIds[$id] = $path;
@@ -591,7 +627,11 @@ final class BundleIntegrityVerifier
                         $outcome ?? 'null',
                     ),
                     "commands[{$index}]",
-                    ['command_id' => $id, 'status' => $status, 'outcome' => $outcome],
+                    [
+                        'command_id' => $id,
+                        'status' => $status,
+                        'outcome' => $outcome,
+                    ],
                 );
             }
         }
@@ -683,7 +723,10 @@ final class BundleIntegrityVerifier
                 $findings,
                 'integrity.canonicalization_unsupported',
                 self::SEVERITY_ERROR,
-                sprintf('Unsupported canonicalization [%s]; only json-recursive-ksort-v1 is recognized offline.', $report['canonicalization'] ?? 'null'),
+                sprintf(
+                    'Unsupported canonicalization [%s]; only json-recursive-ksort-v1 is recognized offline.',
+                    $report['canonicalization'] ?? 'null'
+                ),
                 'integrity.canonicalization',
             );
 
@@ -695,7 +738,10 @@ final class BundleIntegrityVerifier
                 $findings,
                 'integrity.checksum_algorithm_unsupported',
                 self::SEVERITY_ERROR,
-                sprintf('Unsupported checksum algorithm [%s]; only sha256 is recognized.', $report['checksum_algorithm'] ?? 'null'),
+                sprintf(
+                    'Unsupported checksum algorithm [%s]; only sha256 is recognized.',
+                    $report['checksum_algorithm'] ?? 'null'
+                ),
                 'integrity.checksum_algorithm',
             );
 
@@ -738,7 +784,10 @@ final class BundleIntegrityVerifier
                     self::SEVERITY_ERROR,
                     'Recomputed bundle checksum does not match the recorded checksum; the bundle has been altered after export.',
                     'integrity.checksum',
-                    ['expected' => $report['expected_checksum'], 'actual' => $report['recomputed_checksum']],
+                    [
+                        'expected' => $report['expected_checksum'],
+                        'actual' => $report['recomputed_checksum'],
+                    ],
                 );
             }
         }
@@ -798,7 +847,9 @@ final class BundleIntegrityVerifier
                 self::SEVERITY_ERROR,
                 'Bundle signature does not match the configured key; treat the bundle as untrusted.',
                 'integrity.signature',
-                ['key_id' => $report['key_id']],
+                [
+                    'key_id' => $report['key_id'],
+                ],
             );
         }
 
@@ -914,7 +965,9 @@ final class BundleIntegrityVerifier
                 'errors' => 1,
                 'warnings' => 0,
                 'info' => 0,
-                'findings_by_rule' => ['bundle.unparseable' => 1],
+                'findings_by_rule' => [
+                    'bundle.unparseable' => 1,
+                ],
             ],
             'findings' => [
                 [

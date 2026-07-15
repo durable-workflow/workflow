@@ -227,10 +227,7 @@ final class Avro implements SerializerInterface
         if ($codec !== 'avro') {
             throw new CodecDecodeException(
                 'avro',
-                sprintf(
-                    'Avro envelope declared unsupported codec %s.',
-                    self::describeEnvelopeCodec($codec),
-                ),
+                sprintf('Avro envelope declared unsupported codec %s.', self::describeEnvelopeCodec($codec)),
                 'Use Workflow\\Serializers\\Avro::decodeEnvelope() only for language-neutral Avro envelopes.',
             );
         }

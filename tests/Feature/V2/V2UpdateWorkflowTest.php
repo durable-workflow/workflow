@@ -294,7 +294,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('name', $detail['declared_signal_contracts'][0]['parameters'][0]['name']);
         $this->assertTrue($detail['declared_signal_contracts'][0]['parameters'][0]['required']);
         $this->assertSame('string', $detail['declared_signal_contracts'][0]['parameters'][0]['type']);
-        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame(['approve', 'explode', 'largeResult'], $detail['declared_updates']);
         $this->assertSame('approve', $detail['declared_update_contracts'][0]['name']);
         $this->assertSame('approved', $detail['declared_update_contracts'][0]['parameters'][0]['name']);
         $this->assertTrue($detail['declared_update_contracts'][0]['parameters'][0]['required']);
@@ -1202,7 +1202,9 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $this->assertSame(
             ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'],
-            $orderedEvents->pluck('event_type')->map(static fn ($type) => $type->value)->all(),
+            $orderedEvents->pluck('event_type')
+                ->map(static fn ($type) => $type->value)
+                ->all(),
         );
         $this->assertSame($signal->commandId(), $orderedEvents[0]->workflow_command_id);
         $this->assertSame($result->commandId(), $orderedEvents[1]->workflow_command_id);
@@ -1704,7 +1706,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $detail = RunDetailView::forRun($run);
 
         $this->assertSame(['name-provided'], $detail['declared_signals']);
-        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame(['approve', 'explode', 'largeResult'], $detail['declared_updates']);
         $this->assertSame('durable_history', $detail['declared_contract_source']);
     }
 
@@ -1997,7 +1999,7 @@ final class V2UpdateWorkflowTest extends TestCase
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-update-payloads-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-update-payloads-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -2019,7 +2021,7 @@ final class V2UpdateWorkflowTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

@@ -19,10 +19,10 @@ use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\ChildWorkflowOptions;
-use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\ServiceOperationCall;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
+use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStep;
@@ -122,7 +122,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'sequence' => 1,
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                 ],
                 'recorded_at' => '2026-05-12T10:12:13+00:00',
             ]],
@@ -155,7 +155,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'sequence' => 1,
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                 ],
                 'recorded_at' => '2026-05-12T10:12:13+00:00',
             ]],
@@ -195,7 +195,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'sequence' => 1,
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                     'timeout_seconds' => 5,
                 ],
                 'recorded_at' => '2026-05-12T10:12:13+00:00',
@@ -208,7 +208,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'timer_kind' => 'condition_timeout',
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                     'delay_seconds' => 5,
                     'fire_at' => '2026-05-12T10:12:18+00:00',
                 ],
@@ -220,7 +220,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'sequence' => 1,
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                     'timeout_seconds' => 5,
                 ],
                 'recorded_at' => '2026-05-12T10:12:15+00:00',
@@ -233,7 +233,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'timer_kind' => 'condition_timeout',
                     'condition_wait_id' => 'wait-1',
                     'condition_key' => 'ready',
-                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'condition_definition_fingerprint' => 'sha256:' . str_repeat('1', 64),
                     'delay_seconds' => 5,
                     'fired_at' => '2026-05-12T10:12:18+00:00',
                 ],
@@ -942,7 +942,9 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'payload' => [
                         'sequence' => 5,
                         'activity_type' => 'refund_card',
-                        'result' => Serializer::serializeWithCodec('avro', ['activity' => 'refund_card']),
+                        'result' => Serializer::serializeWithCodec('avro', [
+                            'activity' => 'refund_card',
+                        ]),
                         'payload_codec' => 'avro',
                     ],
                     'recorded_at' => '2026-05-12T10:12:20+00:00',
@@ -952,7 +954,9 @@ final class WorkflowFiberRunnerTest extends TestCase
                     'payload' => [
                         'sequence' => 6,
                         'activity_type' => 'cancel_hotel',
-                        'result' => Serializer::serializeWithCodec('avro', ['activity' => 'cancel_hotel']),
+                        'result' => Serializer::serializeWithCodec('avro', [
+                            'activity' => 'cancel_hotel',
+                        ]),
                         'payload_codec' => 'avro',
                     ],
                     'recorded_at' => '2026-05-12T10:12:25+00:00',
@@ -1043,11 +1047,17 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame('complete_workflow', $scheduled->command['type']);
         $this->assertSame('record_side_effect', $scheduled->commands[0]['type']);
         $this->assertSame(
-            ['seed' => 123, 'source' => 'php-worker'],
+            [
+                'seed' => 123,
+                'source' => 'php-worker',
+            ],
             Serializer::unserializeWithCodec('avro', $scheduled->commands[0]['result']),
         );
         $this->assertSame(
-            ['seed' => 123, 'source' => 'php-worker'],
+            [
+                'seed' => 123,
+                'source' => 'php-worker',
+            ],
             Serializer::unserializeWithCodec('avro', $scheduled->commands[1]['result']),
         );
         $this->assertSame(1, WorkerProtocolRunnerSideEffectWorkflow::sideEffectExecutions());
@@ -1064,11 +1074,17 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame('record_side_effect', $scheduled->commands[0]['type']);
         $this->assertSame('schedule_activity', $scheduled->commands[1]['type']);
         $this->assertSame(
-            ['seed' => 789, 'source' => 'callback'],
+            [
+                'seed' => 789,
+                'source' => 'callback',
+            ],
             Serializer::unserializeWithCodec('avro', $scheduled->commands[0]['result']),
         );
         $this->assertSame(
-            [['seed' => 789, 'source' => 'callback']],
+            [[
+                'seed' => 789,
+                'source' => 'callback',
+            ]],
             Serializer::unserializeWithCodec('avro', $scheduled->commands[1]['arguments']),
         );
         $this->assertSame(1, WorkerProtocolRunnerSideEffectThenActivityWorkflow::sideEffectExecutions());
@@ -1078,7 +1094,10 @@ final class WorkflowFiberRunnerTest extends TestCase
     {
         WorkerProtocolRunnerSideEffectThenActivityWorkflow::reset();
 
-        $recordedValue = ['seed' => 456, 'source' => 'history'];
+        $recordedValue = [
+            'seed' => 456,
+            'source' => 'history',
+        ];
         $scheduled = WorkflowFiberRunner::forClass(
             WorkerProtocolRunnerSideEffectThenActivityWorkflow::class,
             'workflow-1',
@@ -1225,7 +1244,7 @@ final class WorkflowFiberRunnerTest extends TestCase
                 'payload' => [
                     'workflow_class' => WorkerProtocolRunnerLegacyVersionThenActivityWorkflow::class,
                     'workflow_type' => WorkerProtocolRunnerLegacyVersionThenActivityWorkflow::class,
-                    'workflow_definition_fingerprint' => 'sha256:'.str_repeat('0', 64),
+                    'workflow_definition_fingerprint' => 'sha256:' . str_repeat('0', 64),
                 ],
                 'recorded_at' => '2026-05-12T00:00:00+00:00',
             ], [
@@ -1394,7 +1413,10 @@ final class WorkflowFiberRunnerTest extends TestCase
 
     public function testServiceOperationCommandUsesPerCallPayloadCodec(): void
     {
-        $payload = ['amount' => 4200, 'currency' => 'USD'];
+        $payload = [
+            'amount' => 4200,
+            'currency' => 'USD',
+        ];
 
         $step = WorkflowStep::yielded(new ServiceOperationCall(
             'payments',
@@ -1404,7 +1426,9 @@ final class WorkflowFiberRunnerTest extends TestCase
             new ServiceOperationOptions(
                 waitFor: ServiceOperationOptions::WAIT_ACCEPTED,
                 payloadCodec: 'json',
-                metadata: ['service_sdk_language' => 'sdk-python'],
+                metadata: [
+                    'service_sdk_language' => 'sdk-python',
+                ],
             ),
         ), 'avro');
 
@@ -1412,7 +1436,9 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame('json', $step->command['payload_codec']);
         $this->assertSame($payload, Serializer::unserializeWithCodec('json', $step->command['request_payload']));
         $this->assertSame('accepted', $step->command['wait_for']);
-        $this->assertSame(['service_sdk_language' => 'sdk-python'], $step->command['metadata']);
+        $this->assertSame([
+            'service_sdk_language' => 'sdk-python',
+        ], $step->command['metadata']);
     }
 
     public function testRunnerResumesStartedServiceOperationWhenHistoryRecordsAcceptedAdmission(): void
@@ -1464,7 +1490,10 @@ final class WorkflowFiberRunnerTest extends TestCase
 
     public function testRunnerDecodesCompletedServiceOperationResponsePayload(): void
     {
-        $responsePayload = ['authorized' => true, 'auth_code' => 'A-42'];
+        $responsePayload = [
+            'authorized' => true,
+            'auth_code' => 'A-42',
+        ];
 
         $completed = WorkflowFiberRunner::forClass(
             WorkerProtocolRunnerServiceOperationWorkflow::class,
@@ -1823,11 +1852,7 @@ final class WorkerProtocolRunnerHandledActivityFailureWorkflow extends Workflow
             );
         }
 
-        return Workflow::activity(
-            'demo.after-failure',
-            'not caught',
-            Workflow::now()->getTimestampMs(),
-        );
+        return Workflow::activity('demo.after-failure', 'not caught', Workflow::now()->getTimestampMs());
     }
 }
 
@@ -1847,19 +1872,23 @@ final class WorkerProtocolRunnerSequentialCompensationFailureWorkflow extends Wo
 
             Workflow::activity('saga_planned_failure');
 
-            return ['status' => 'completed'];
+            return [
+                'status' => 'completed',
+            ];
         } catch (Throwable) {
             try {
                 $this->compensate();
             } catch (Throwable $compensationFailure) {
                 throw new RuntimeException(
-                    'compensation failed for '.self::failedCompensationStep($compensationFailure->getMessage())
-                        .': '.$compensationFailure->getMessage(),
+                    'compensation failed for ' . self::failedCompensationStep($compensationFailure->getMessage())
+                        . ': ' . $compensationFailure->getMessage(),
                     previous: $compensationFailure,
                 );
             }
 
-            return ['status' => 'compensated'];
+            return [
+                'status' => 'compensated',
+            ];
         }
     }
 
@@ -1889,11 +1918,7 @@ final class WorkerProtocolRunnerHandledChildFailureWorkflow extends Workflow
             );
         }
 
-        return Workflow::activity(
-            'demo.after-child-failure',
-            'not caught',
-            Workflow::now()->getTimestampMs(),
-        );
+        return Workflow::activity('demo.after-child-failure', 'not caught', Workflow::now()->getTimestampMs());
     }
 }
 
@@ -2016,11 +2041,16 @@ final class WorkerProtocolRunnerServiceOperationWorkflow extends Workflow
             'payments',
             'PythonPayments',
             'authorize',
-            ['amount' => 4200, 'currency' => 'USD'],
+            [
+                'amount' => 4200,
+                'currency' => 'USD',
+            ],
         );
 
         if (! $result instanceof ServiceOperationResult) {
-            return ['service_call_id' => null];
+            return [
+                'service_call_id' => null,
+            ];
         }
 
         return $result->toArray();
@@ -2036,7 +2066,10 @@ final class WorkerProtocolRunnerHandledServiceOperationFailureWorkflow extends W
                 'payments',
                 'PythonPayments',
                 'authorize',
-                ['amount' => 4200, 'currency' => 'USD'],
+                [
+                    'amount' => 4200,
+                    'currency' => 'USD',
+                ],
             );
         } catch (RuntimeException $exception) {
             return [

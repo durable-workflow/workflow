@@ -33,7 +33,8 @@ final class WorkflowTaskLease
 
     public static function expiresAt(?CarbonInterface $now = null): CarbonInterface
     {
-        return ($now ?? now())->copy()
+        return ($now ?? now())
+            ->copy()
             ->addSeconds(self::seconds());
     }
 }

@@ -46,11 +46,7 @@ final class PlatformProtocolSpecs
 
     public const FORMAT_ASYNCAPI = 'asyncapi';
 
-    public const FORMATS = [
-        self::FORMAT_OPENAPI,
-        self::FORMAT_JSON_SCHEMA,
-        self::FORMAT_ASYNCAPI,
-    ];
+    public const FORMATS = [self::FORMAT_OPENAPI, self::FORMAT_JSON_SCHEMA, self::FORMAT_ASYNCAPI];
 
     public const STATUS_PUBLISHED = 'published';
 
@@ -58,11 +54,7 @@ final class PlatformProtocolSpecs
 
     public const STATUS_PLANNED = 'planned';
 
-    public const STATUSES = [
-        self::STATUS_PUBLISHED,
-        self::STATUS_IN_PROGRESS,
-        self::STATUS_PLANNED,
-    ];
+    public const STATUSES = [self::STATUS_PUBLISHED, self::STATUS_IN_PROGRESS, self::STATUS_PLANNED];
 
     public const EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR = 'additive_minor_breaking_major';
 
@@ -79,7 +71,9 @@ final class PlatformProtocolSpecs
         'durable-workflow/sdk-python',
     ];
 
-    /** @var array<string, mixed>|null */
+    /**
+     * @var array<string, mixed>|null
+     */
     private static ?array $manifest = null;
 
     /**
@@ -110,7 +104,7 @@ final class PlatformProtocolSpecs
         }
 
         if (
-            !is_array($decoded)
+            ! is_array($decoded)
             || ($decoded['schema'] ?? null) !== self::SCHEMA
             || ($decoded['version'] ?? null) !== self::VERSION
             || ($decoded['catalog_url'] ?? null) !== self::CATALOG_URL

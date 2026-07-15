@@ -87,10 +87,7 @@ final class WorkflowServiceProvider extends ServiceProvider
                         return $role;
                     }
 
-                    return new HistoryProjectionMaintenanceFallback(
-                        $role,
-                        new DefaultHistoryProjectionRole(),
-                    );
+                    return new HistoryProjectionMaintenanceFallback($role, new DefaultHistoryProjectionRole());
                 }
             );
         }
@@ -214,7 +211,8 @@ final class WorkflowServiceProvider extends ServiceProvider
         // binding, which would be resolved here at boot and then pinned for
         // the lifetime of the application — drifting from cache.default if
         // operators (or tests) reconfigure the default store after boot.
-        $cache = $this->app->make('cache')->store();
+        $cache = $this->app->make('cache')
+            ->store();
         $validator = new LongPollCacheValidator();
 
         $result = $validator->checkMultiNodeSafety($cache, $multiNode);
@@ -258,7 +256,8 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         if (! array_key_exists(\PDO::ATTR_TIMEOUT, $options)) {
             $options[\PDO::ATTR_TIMEOUT] = max(1, (int) ceil($timeoutMilliseconds / 1000));
-            config()->set($optionsKey, $options);
+            config()
+                ->set($optionsKey, $options);
         }
 
         $this->applySqliteBusyTimeoutToOpenConnection($connectionName, $timeoutMilliseconds);

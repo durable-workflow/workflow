@@ -27,14 +27,6 @@ use Workflow\V2\Support\WorkflowReplayer;
 
 class V2ReplayConformanceCommand extends Command
 {
-    protected $signature = 'workflow:v2:replay-conformance
-        {--artifact-version=* : Repeatable actor=version option for the published artifact tuple}
-        {--artifact-source=* : Repeatable actor=source option proving the published artifact install channel}
-        {--json : Emit a single machine-readable JSON report}
-        {--output= : Write the JSON report to a file instead of stdout}';
-
-    protected $description = 'Emit the Workflow PHP deterministic replay conformance evidence shard';
-
     private const RESULT_SCHEMA = 'durable-workflow.v2.replay-conformance.result';
 
     private const RESULT_VERSION = 1;
@@ -42,49 +34,17 @@ class V2ReplayConformanceCommand extends Command
     /**
      * @var list<string>
      */
-    private const REQUIRED_ARTIFACTS = [
-        'server',
-        'cli',
-        'workflow-php',
-        'sdk-python',
-        'waterline',
-    ];
+    private const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'];
 
     /**
      * @var array<string, list<string>>
      */
     private const PUBLISHED_ARTIFACT_SOURCES = [
-        'server' => [
-            'docker_image',
-            'docker_registry',
-            'oci_image',
-            'published_docker_image',
-            'registry_image',
-        ],
-        'cli' => [
-            'github_release',
-            'github_release_asset',
-            'official_install_script',
-            'release_asset',
-        ],
-        'workflow-php' => [
-            'composer',
-            'composer_package',
-            'packagist',
-            'packagist_package',
-        ],
-        'sdk-python' => [
-            'pip_package',
-            'pypi',
-            'pypi_package',
-            'python_package',
-        ],
-        'waterline' => [
-            'composer',
-            'composer_package',
-            'packagist',
-            'packagist_package',
-        ],
+        'server' => ['docker_image', 'docker_registry', 'oci_image', 'published_docker_image', 'registry_image'],
+        'cli' => ['github_release', 'github_release_asset', 'official_install_script', 'release_asset'],
+        'workflow-php' => ['composer', 'composer_package', 'packagist', 'packagist_package'],
+        'sdk-python' => ['pip_package', 'pypi', 'pypi_package', 'python_package'],
+        'waterline' => ['composer', 'composer_package', 'packagist', 'packagist_package'],
     ];
 
     /**
@@ -109,6 +69,14 @@ class V2ReplayConformanceCommand extends Command
         'version-marker' => 'php_worker_restart_version_marker_state',
         'saga-compensation' => 'php_worker_restart_saga_compensation_state',
     ];
+
+    protected $signature = 'workflow:v2:replay-conformance
+        {--artifact-version=* : Repeatable actor=version option for the published artifact tuple}
+        {--artifact-source=* : Repeatable actor=source option proving the published artifact install channel}
+        {--json : Emit a single machine-readable JSON report}
+        {--output= : Write the JSON report to a file instead of stdout}';
+
+    protected $description = 'Emit the Workflow PHP deterministic replay conformance evidence shard';
 
     public function __construct(
         private readonly Filesystem $files,
@@ -175,16 +143,17 @@ class V2ReplayConformanceCommand extends Command
                 'runtimes' => ['workflow-php'],
             ],
             'scenario_results' => array_values($scenarioResults),
-            'completed_history_replay' => self::sectionSummary($scenarioResults, array_values(self::COMPLETED_SCENARIOS)),
+            'completed_history_replay' => self::sectionSummary(
+                $scenarioResults,
+                array_values(self::COMPLETED_SCENARIOS)
+            ),
             'worker_restart_replay' => self::sectionSummary($scenarioResults, array_values(self::RESTART_SCENARIOS)),
             'adversarial_replay' => self::sectionSummary($scenarioResults, [
                 'php_code_divergence_refusal',
                 'server_history_mutation_refusal',
                 'malformed_history_refusal',
             ]),
-            'in_flight_timing' => self::sectionSummary($scenarioResults, [
-                'php_in_flight_signal_restart_timing',
-            ]),
+            'in_flight_timing' => self::sectionSummary($scenarioResults, ['php_in_flight_signal_restart_timing']),
             'findings' => $findings,
             'finding_links' => $findingLinks,
         ];
@@ -711,9 +680,7 @@ class V2ReplayConformanceCommand extends Command
      */
     private function historyEvents(string $scenario, string $codec, bool $complete): array
     {
-        $events = [
-            $this->event(1, 'WorkflowStarted', []),
-        ];
+        $events = [$this->event(1, 'WorkflowStarted', [])];
 
         switch ($scenario) {
             case 'single-activity':

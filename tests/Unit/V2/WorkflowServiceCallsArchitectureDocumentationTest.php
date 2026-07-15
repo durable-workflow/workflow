@@ -63,7 +63,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
     ];
 
     private const REQUIRED_STATUS_PHRASES = [
-        "`ServiceCallStatus`",
+        '`ServiceCallStatus`',
         "`'pending'`",
         "`'accepted'`",
         "`'started'`",
@@ -88,7 +88,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
     ];
 
     private const REQUIRED_OUTCOME_PHRASES = [
-        "`ServiceCallOutcome`",
+        '`ServiceCallOutcome`',
         "`'accepted'`",
         "`'completed'`",
         "`'cancelled'`",
@@ -560,10 +560,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         $this->assertSame('workflow_signal', ServiceCallBindingKind::WorkflowSignal->value);
         $this->assertSame('workflow_query', ServiceCallBindingKind::WorkflowQuery->value);
         $this->assertSame('activity_execution', ServiceCallBindingKind::ActivityExecution->value);
-        $this->assertSame(
-            'invocable_carrier_request',
-            ServiceCallBindingKind::InvocableCarrierRequest->value,
-        );
+        $this->assertSame('invocable_carrier_request', ServiceCallBindingKind::InvocableCarrierRequest->value);
 
         foreach (ServiceCallBindingKind::cases() as $case) {
             $this->assertStringContainsString(
@@ -588,10 +585,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         $this->assertSame('rejected_not_found', ServiceCallOutcome::RejectedNotFound->value);
         $this->assertSame('rejected_forbidden', ServiceCallOutcome::RejectedForbidden->value);
         $this->assertSame('rejected_throttled', ServiceCallOutcome::RejectedThrottled->value);
-        $this->assertSame(
-            'rejected_concurrency_limited',
-            ServiceCallOutcome::RejectedConcurrencyLimited->value,
-        );
+        $this->assertSame('rejected_concurrency_limited', ServiceCallOutcome::RejectedConcurrencyLimited->value);
         $this->assertSame('rejected_circuit_open', ServiceCallOutcome::RejectedCircuitOpen->value);
         $this->assertSame('degraded', ServiceCallOutcome::Degraded->value);
         $this->assertSame('handler_failed', ServiceCallOutcome::HandlerFailed->value);
@@ -661,11 +655,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
             $this->assertStringContainsString(
                 sprintf("'%s'", $column),
                 $migration,
-                sprintf(
-                    'Migration %s must declare column %s named by the contract.',
-                    self::MIGRATION,
-                    $column,
-                ),
+                sprintf('Migration %s must declare column %s named by the contract.', self::MIGRATION, $column),
             );
         }
     }

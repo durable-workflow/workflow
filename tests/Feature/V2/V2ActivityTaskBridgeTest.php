@@ -372,7 +372,6 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'activity_class' => $execution->activity_class,
             'activity_type' => $execution->activity_type,
             'sequence' => $execution->sequence,
-            'payload_codec' => $execution->payload_codec,
             'activity' => ActivitySnapshot::fromExecution($execution),
         ]);
 
@@ -1081,7 +1080,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-activity-task-bridge-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-activity-task-bridge-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -1103,7 +1102,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use JsonException;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 
 /**
@@ -56,7 +55,10 @@ final class InvocableHttpAdapter
         try {
             $envelope = json_decode($rawBody, associative: true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            return $this->badRequest('invalid_invocable_request', 'Request body is not valid JSON: ' . $e->getMessage());
+            return $this->badRequest(
+                'invalid_invocable_request',
+                'Request body is not valid JSON: ' . $e->getMessage()
+            );
         }
 
         if (! is_array($envelope) || array_is_list($envelope)) {
@@ -78,7 +80,9 @@ final class InvocableHttpAdapter
 
         return [
             'status' => 200,
-            'headers' => ['Content-Type' => self::RESULT_MEDIA_TYPE],
+            'headers' => [
+                'Content-Type' => self::RESULT_MEDIA_TYPE,
+            ],
             'body' => json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
         ];
     }
@@ -90,7 +94,9 @@ final class InvocableHttpAdapter
     {
         return [
             'status' => 400,
-            'headers' => ['Content-Type' => self::ERROR_MEDIA_TYPE],
+            'headers' => [
+                'Content-Type' => self::ERROR_MEDIA_TYPE,
+            ],
             'body' => json_encode([
                 'error' => $error,
                 'message' => $message,

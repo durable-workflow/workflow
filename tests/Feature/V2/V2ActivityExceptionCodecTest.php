@@ -380,7 +380,8 @@ final class V2ActivityExceptionCodecTest extends TestCase
         );
 
         $this->assertTrue($outcome['recorded']);
-        $this->assertNull($outcome['next_task']);
+        $this->assertInstanceOf(WorkflowTask::class, $outcome['next_task']);
+        $this->assertSame(TaskType::Workflow, $outcome['next_task']->task_type);
 
         $execution->refresh();
         $this->assertSame(ActivityStatus::Failed, $execution->status);
@@ -475,10 +476,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertIsArray($retryException);
         $this->assertSame($detailsBlob, $retryException['details'] ?? null);
         $this->assertSame('avro', $retryException['details_payload_codec'] ?? null);
-        $this->assertSame(
-            '/app/src/TimeoutActivity.php',
-            $retryException['runtime_diagnostics']['file'] ?? null,
-        );
+        $this->assertSame('/app/src/TimeoutActivity.php', $retryException['runtime_diagnostics']['file'] ?? null);
         $this->assertArrayNotHasKey('class', $retryException);
         $this->assertArrayNotHasKey('file', $retryException);
         $this->assertArrayNotHasKey('line', $retryException);

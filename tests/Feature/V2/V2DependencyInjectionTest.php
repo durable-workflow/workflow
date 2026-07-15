@@ -27,8 +27,10 @@ final class V2DependencyInjectionTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
     }
 
@@ -67,7 +69,9 @@ final class V2DependencyInjectionTest extends TestCase
 
         $this->assertTrue($query['query_running_in_console'] ?? false);
         $this->assertSame('before-signal', $query['prefix'] ?? null);
-        $this->assertSame(['source' => 'query'], $query['context'] ?? null);
+        $this->assertSame([
+            'source' => 'query',
+        ], $query['context'] ?? null);
         $this->assertSame('Taylor', $query['state']['name'] ?? null);
         $this->assertSame($metadata, $query['state']['metadata'] ?? null);
         $this->assertTrue($query['state']['workflow_running_in_console'] ?? false);
@@ -118,7 +122,10 @@ final class V2DependencyInjectionTest extends TestCase
         $this->assertSame(ActivityStatus::Completed, $executions[0]->status);
         $this->assertSame(ActivityStatus::Completed, $executions[1]->status);
         $this->assertNull($executions[0]->activity_options['execution_mode'] ?? null);
-        $this->assertSame(LocalActivityRuntime::EXECUTION_MODE, $executions[1]->activity_options['execution_mode'] ?? null);
+        $this->assertSame(
+            LocalActivityRuntime::EXECUTION_MODE,
+            $executions[1]->activity_options['execution_mode'] ?? null
+        );
         $this->assertNoWorkflowFailures($workflow->runId());
     }
 
@@ -127,7 +134,8 @@ final class V2DependencyInjectionTest extends TestCase
         $deadline = microtime(true) + 10;
 
         while (microtime(true) < $deadline) {
-            $cutoff = now()->format('Y-m-d H:i:s.u');
+            $cutoff = now()
+                ->format('Y-m-d H:i:s.u');
 
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
@@ -157,8 +165,6 @@ final class V2DependencyInjectionTest extends TestCase
 
     private function assertNoWorkflowFailures(string $runId): void
     {
-        $this->assertSame(0, WorkflowFailure::query()
-            ->where('workflow_run_id', $runId)
-            ->count());
+        $this->assertSame(0, WorkflowFailure::query() ->where('workflow_run_id', $runId) ->count());
     }
 }

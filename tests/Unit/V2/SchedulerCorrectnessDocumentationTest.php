@@ -514,9 +514,7 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
         yield 'multi-node-requirements' => ['docs/deployment/multi-node-requirements.md'];
     }
 
-    /**
-     * @dataProvider operatorFacingDocsProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('operatorFacingDocsProvider')]
     public function testOperatorFacingDocLinksToSchedulerCorrectnessContract(string $relative): void
     {
         $contents = $this->fileContents($relative);
@@ -531,9 +529,7 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
         );
     }
 
-    /**
-     * @dataProvider operatorFacingDocsProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('operatorFacingDocsProvider')]
     public function testOperatorFacingDocDoesNotClaimSharedCacheIsRequiredForCorrectness(string $relative): void
     {
         $contents = $this->fileContents($relative);
@@ -557,9 +553,7 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
         );
     }
 
-    /**
-     * @dataProvider operatorFacingDocsProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('operatorFacingDocsProvider')]
     public function testOperatorFacingDocClassifiesCacheAsAccelerationLayer(string $relative): void
     {
         $contents = $this->fileContents($relative);

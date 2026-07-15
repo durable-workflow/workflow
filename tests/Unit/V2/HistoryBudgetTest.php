@@ -66,7 +66,8 @@ final class HistoryBudgetTest extends TestCase
     public function testCustomFanOutThresholdFromConfig(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 50);
-        config()->set('workflows.v2.history_budget.fan_out_warning_threshold', 30);
+        config()
+            ->set('workflows.v2.history_budget.fan_out_warning_threshold', 30);
 
         $this->assertSame(50, HistoryBudget::fanOutHardThreshold());
         $this->assertSame(30, HistoryBudget::fanOutWarningThreshold());
@@ -89,7 +90,8 @@ final class HistoryBudgetTest extends TestCase
     public function testWarningThresholdClampsToHardThreshold(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
-        config()->set('workflows.v2.history_budget.event_warning_threshold', 5000);
+        config()
+            ->set('workflows.v2.history_budget.event_warning_threshold', 5000);
 
         $this->assertSame(100, HistoryBudget::eventWarningThreshold());
     }
@@ -134,7 +136,8 @@ final class HistoryBudgetTest extends TestCase
     public function testRunBetweenWarnAndHardReportsApproaching(): void
     {
         config()->set('workflows.v2.history_budget.event_warning_threshold', 3);
-        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 10);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_event_threshold', 10);
 
         $run = $this->createRunWithEvents(4);
 
@@ -142,10 +145,7 @@ final class HistoryBudgetTest extends TestCase
 
         $this->assertFalse($budget['continue_as_new_recommended']);
         $this->assertSame(HistoryBudget::PRESSURE_APPROACHING, $budget['pressure']);
-        $this->assertSame(
-            [HistoryBudget::DIMENSION_EVENT_COUNT],
-            $budget['pressure_dimensions'],
-        );
+        $this->assertSame([HistoryBudget::DIMENSION_EVENT_COUNT], $budget['pressure_dimensions']);
     }
 
     public function testRunAtEventHardThresholdRecommendsContinueAsNew(): void
@@ -196,9 +196,12 @@ final class HistoryBudgetTest extends TestCase
             ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
         config()
             ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 0);
-        config()->set('workflows.v2.history_budget.event_warning_threshold', 0);
-        config()->set('workflows.v2.history_budget.size_bytes_warning_threshold', 0);
-        config()->set('workflows.v2.history_budget.fan_out_warning_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.event_warning_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.size_bytes_warning_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.fan_out_warning_threshold', 0);
 
         $run = $this->createRunWithEvents(100);
 
@@ -301,8 +304,10 @@ final class HistoryBudgetTest extends TestCase
     public function testFanOutAtHardThresholdRecommendsContinueAsNew(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 4);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 4);
 
         $run = $this->createRun();
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
@@ -325,9 +330,12 @@ final class HistoryBudgetTest extends TestCase
     public function testFanOutBetweenWarnAndHardReportsApproaching(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
-        config()->set('workflows.v2.history_budget.fan_out_warning_threshold', 4);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+        config()
+            ->set('workflows.v2.history_budget.fan_out_warning_threshold', 4);
 
         $run = $this->createRun();
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
@@ -344,10 +352,7 @@ final class HistoryBudgetTest extends TestCase
 
         $this->assertFalse($budget['continue_as_new_recommended']);
         $this->assertSame(HistoryBudget::PRESSURE_APPROACHING, $budget['pressure']);
-        $this->assertSame(
-            [HistoryBudget::DIMENSION_FAN_OUT],
-            $budget['pressure_dimensions'],
-        );
+        $this->assertSame([HistoryBudget::DIMENSION_FAN_OUT], $budget['pressure_dimensions']);
     }
 
     public function testEventsWithoutParallelGroupHaveZeroFanOut(): void
@@ -362,8 +367,10 @@ final class HistoryBudgetTest extends TestCase
     public function testBoundedFanOutUsesFirstNumericSizeForEachParallelGroup(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
 
         $run = $this->createRun();
 
@@ -396,7 +403,8 @@ final class HistoryBudgetTest extends TestCase
     public function testFromCountersDerivesPressureWithoutLoadingHistory(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
-        config()->set('workflows.v2.history_budget.event_warning_threshold', 80);
+        config()
+            ->set('workflows.v2.history_budget.event_warning_threshold', 80);
 
         $budget = HistoryBudget::fromCounters(85, 1024, 0);
 

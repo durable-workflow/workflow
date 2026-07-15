@@ -64,11 +64,7 @@ final class SdkNeutralityContract
 
     public const POSTURE_OUT_OF_SCOPE = 'out_of_scope';
 
-    public const POSTURES = [
-        self::POSTURE_PRIORITY,
-        self::POSTURE_DEMAND_DRIVEN,
-        self::POSTURE_OUT_OF_SCOPE,
-    ];
+    public const POSTURES = [self::POSTURE_PRIORITY, self::POSTURE_DEMAND_DRIVEN, self::POSTURE_OUT_OF_SCOPE];
 
     public const RULE_PROTOCOL = 'protocol_neutrality';
 
@@ -94,7 +90,9 @@ final class SdkNeutralityContract
         self::RULE_DOCUMENTATION,
     ];
 
-    /** @var array<string, mixed>|null */
+    /**
+     * @var array<string, mixed>|null
+     */
     private static ?array $manifest = null;
 
     /**
@@ -124,7 +122,9 @@ final class SdkNeutralityContract
             throw new RuntimeException('SDK neutrality contract is not valid JSON.', 0, $exception);
         }
 
-        if (!is_array($decoded) || ($decoded['schema'] ?? null) !== self::SCHEMA || ($decoded['version'] ?? null) !== self::VERSION) {
+        if (! is_array(
+            $decoded
+        ) || ($decoded['schema'] ?? null) !== self::SCHEMA || ($decoded['version'] ?? null) !== self::VERSION) {
             throw new RuntimeException('SDK neutrality contract identity does not match the class contract.');
         }
 

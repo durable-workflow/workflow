@@ -197,13 +197,30 @@ final class ExternalPayloads
     {
         self::referenceFromEnvelope($envelope);
 
-        $json = json_encode($envelope, JSON_UNESCAPED_SLASHES);
+        $json = json_encode(self::canonicalizeObjectKeys($envelope), JSON_UNESCAPED_SLASHES);
 
         if (! is_string($json)) {
             throw new InvalidArgumentException('External payload envelope could not be encoded.');
         }
 
-        return self::STORED_REFERENCE_PREFIX.base64_encode($json);
+        return self::STORED_REFERENCE_PREFIX . base64_encode($json);
+    }
+
+    private static function canonicalizeObjectKeys(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        foreach ($value as $key => $item) {
+            $value[$key] = self::canonicalizeObjectKeys($item);
+        }
+
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
     }
 
     /**

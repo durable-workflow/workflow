@@ -15,8 +15,7 @@ final class UpdateCommandGate
         WorkflowRun $run,
         ?int $beforeCommandSequence = null,
         ?string $ignoredCommandId = null,
-    ): ?WorkflowCommand
-    {
+    ): ?WorkflowCommand {
         /** @var WorkflowCommand|null $command */
         $query = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->where('workflow_run_id', $run->id)

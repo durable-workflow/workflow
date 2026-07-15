@@ -321,12 +321,12 @@ class MigrationTest extends TestCase
     }
 
     /**
-     * Run v2 migrations (2026_04_* files)
+     * Run the complete v2 migration set.
      */
     private function runV2Migrations(): void
     {
         $migrationDir = __DIR__ . '/../../src/migrations/';
-        $files = glob($migrationDir . '2026_04_*.php');
+        $files = glob($migrationDir . '2026_*.php');
         sort($files);
 
         $batch = 2;

@@ -127,7 +127,9 @@ final class WorkflowExecutor
                     $task,
                     $sequence,
                     WorkflowStepHistory::LOCAL_ACTIVITY,
-                    ['activity_type' => $current->activity],
+                    [
+                        'activity_type' => $current->activity,
+                    ],
                 )) {
                     return null;
                 }
@@ -207,7 +209,9 @@ final class WorkflowExecutor
                     $task,
                     $sequence,
                     WorkflowStepHistory::ACTIVITY,
-                    ['activity_type' => $current->activity],
+                    [
+                        'activity_type' => $current->activity,
+                    ],
                 )) {
                     return null;
                 }
@@ -550,7 +554,9 @@ final class WorkflowExecutor
                         $task,
                         $sequence,
                         WorkflowStepHistory::VERSION_MARKER,
-                        ['change_id' => $current->changeId],
+                        [
+                            'change_id' => $current->changeId,
+                        ],
                     )
                 ) {
                     return null;
@@ -742,7 +748,9 @@ final class WorkflowExecutor
                     $task,
                     $sequence,
                     WorkflowStepHistory::SIGNAL_WAIT,
-                    ['signal_name' => $current->name],
+                    [
+                        'signal_name' => $current->name,
+                    ],
                 )) {
                     return null;
                 }
@@ -898,7 +906,9 @@ final class WorkflowExecutor
                     $task,
                     $sequence,
                     WorkflowStepHistory::SERVICE_OPERATION,
-                    ['operation_name' => $current->operationName],
+                    [
+                        'operation_name' => $current->operationName,
+                    ],
                 )) {
                     return null;
                 }
@@ -936,13 +946,7 @@ final class WorkflowExecutor
                             $serviceEvent->recorded_at,
                         );
 
-                        $this->recordFailureHandled(
-                            $run,
-                            $task,
-                            null,
-                            $sequence,
-                            $serviceEvent->payload,
-                        );
+                        $this->recordFailureHandled($run, $task, null, $sequence, $serviceEvent->payload);
                     } else {
                         $current = $workflowExecution->send(
                             $this->serviceOperationResult($serviceEvent, $run),
@@ -971,7 +975,9 @@ final class WorkflowExecutor
                     $task,
                     $sequence,
                     WorkflowStepHistory::CHILD_WORKFLOW,
-                    ['child_workflow_type' => $current->workflow],
+                    [
+                        'child_workflow_type' => $current->workflow,
+                    ],
                 )) {
                     return null;
                 }
@@ -1125,8 +1131,12 @@ final class WorkflowExecutor
                             ? WorkflowStepHistory::ACTIVITY
                             : WorkflowStepHistory::CHILD_WORKFLOW,
                         $call instanceof ActivityCall
-                            ? ['activity_type' => $call->activity]
-                            : ['child_workflow_type' => $call->workflow],
+                            ? [
+                                'activity_type' => $call->activity,
+                            ]
+                            : [
+                                'child_workflow_type' => $call->workflow,
+                            ],
                     )) {
                         return null;
                     }
@@ -1485,6 +1495,39 @@ final class WorkflowExecutor
 
             return null;
         }
+    }
+
+    /**
+     * Close a run whose server-enforced execution or run deadline elapsed.
+     *
+     * External worker bridges call this while holding the task and run locks,
+     * immediately before accepting commands. This makes the deadline the
+     * authority at the workflow-task commit boundary, even when the watchdog
+     * cannot repair a run because its task remains leased.
+     */
+    public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'updates',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+
+        if (! $this->deadlineExpired($run)) {
+            return false;
+        }
+
+        $this->timeoutRun($run, $task);
+
+        return true;
     }
 
     private function scheduleActivity(
@@ -2438,8 +2481,7 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         bool $signalsCanAdvance = false,
-    ): ?WorkflowTask
-    {
+    ): ?WorkflowTask {
         $this->markRunWaiting($run, $task, $signalsCanAdvance);
 
         return null;
@@ -2474,8 +2516,7 @@ final class WorkflowExecutor
     private function createPendingSignalResumeTask(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId = null,
-    ): ?WorkflowTask
-    {
+    ): ?WorkflowTask {
         if (self::hasOpenWorkflowTask($run->id)) {
             return null;
         }
@@ -3027,39 +3068,6 @@ final class WorkflowExecutor
         );
 
         return $command;
-    }
-
-    /**
-     * Close a run whose server-enforced execution or run deadline elapsed.
-     *
-     * External worker bridges call this while holding the task and run locks,
-     * immediately before accepting commands. This makes the deadline the
-     * authority at the workflow-task commit boundary, even when the watchdog
-     * cannot repair a run because its task remains leased.
-     */
-    public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
-    {
-        $run->load([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'tasks',
-            'commands',
-            'updates',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
-
-        if (! $this->deadlineExpired($run)) {
-            return false;
-        }
-
-        $this->timeoutRun($run, $task);
-
-        return true;
     }
 
     private function deadlineExpired(WorkflowRun $run): bool
@@ -4053,7 +4061,9 @@ final class WorkflowExecutor
     {
         $serialized = ExternalPayloads::payloadBlob(
             $event->payload['result'] ?? null,
-            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue(
+                $run?->payload_codec ?? null
+            ),
             is_string($run?->namespace) ? $run->namespace : null,
         );
 
@@ -4074,7 +4084,9 @@ final class WorkflowExecutor
     {
         $serialized = ExternalPayloads::payloadBlob(
             $event->payload['result'] ?? null,
-            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue(
+                $run?->payload_codec ?? null
+            ),
             is_string($run?->namespace) ? $run->namespace : null,
         );
 
@@ -4483,25 +4495,19 @@ final class WorkflowExecutor
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $serializedRequest = Serializer::serializeWithCodec($payloadCodec, $call->requestPayload);
         $storedRequest = ExternalPayloads::externalizeForNamespace($serializedRequest, $payloadCodec, $namespace);
-        $surface = $this->serviceControlPlane()->execute(
-            $call->endpointName,
-            $call->serviceName,
-            $call->operationName,
-            $this->serviceOperationControlPlaneOptions($run, $sequence, $call, $payloadCodec, $serializedRequest),
-        );
+        $surface = $this->serviceControlPlane()
+            ->execute(
+                $call->endpointName,
+                $call->serviceName,
+                $call->operationName,
+                $this->serviceOperationControlPlaneOptions($run, $sequence, $call, $payloadCodec, $serializedRequest),
+            );
         $eventType = self::serviceOperationEventTypeForSurface($surface);
 
         $event = WorkflowHistoryEvent::record(
             $run,
             $eventType,
-            $this->serviceOperationEventPayload(
-                $run,
-                $sequence,
-                $call,
-                $surface,
-                $storedRequest,
-                $payloadCodec,
-            ),
+            $this->serviceOperationEventPayload($run, $sequence, $call, $surface, $storedRequest, $payloadCodec),
             $task,
         );
         $run->historyEvents->push($event);
@@ -4595,8 +4601,7 @@ final class WorkflowExecutor
     private static function serviceOperationStartedEventIsVisible(
         WorkflowHistoryEvent $event,
         ServiceOperationCall $call,
-    ): bool
-    {
+    ): bool {
         if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
             return true;
         }

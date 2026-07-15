@@ -331,9 +331,7 @@ class WorkflowRun extends Model
             return $storedEnvelope['codec'];
         }
 
-        throw new WorkflowOutputCodecUnavailableException(
-            is_string($this->id) ? $this->id : null,
-        );
+        throw new WorkflowOutputCodecUnavailableException(is_string($this->id) ? $this->id : null);
     }
 
     /**

@@ -21,9 +21,7 @@ final class StaleProjectionRoleRoutingTest extends TestCase
         yield 'lineage' => [$base . '/RunLineageProjector.php'];
     }
 
-    /**
-     * @dataProvider projectorPaths
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('projectorPaths')]
     public function testProjectorRoutesPruningThroughMaintenanceRole(string $path): void
     {
         $contents = file_get_contents($path);

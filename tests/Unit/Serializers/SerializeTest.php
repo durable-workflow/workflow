@@ -14,9 +14,7 @@ use Workflow\Serializers\Y;
 
 final class SerializeTest extends TestCase
 {
-    /**
-     * @dataProvider dataProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('dataProvider')]
     public function testSerialize($data): void
     {
         $this->testSerializeUnserialize($data, Y::class, Y::class);

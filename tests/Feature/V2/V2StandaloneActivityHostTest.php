@@ -200,8 +200,10 @@ final class V2StandaloneActivityHostTest extends TestCase
             'compatibility' => 'test',
             'payload_codec' => CodecRegistry::defaultCodec(),
             'started_at' => $startedAt,
-            'closed_at' => $startedAt->copy()->addSecond(),
-            'last_progress_at' => $startedAt->copy()->addSecond(),
+            'closed_at' => $startedAt->copy()
+                ->addSecond(),
+            'last_progress_at' => $startedAt->copy()
+                ->addSecond(),
         ]);
 
         WorkflowRun::query()->create([
@@ -214,9 +216,12 @@ final class V2StandaloneActivityHostTest extends TestCase
             'closed_reason' => 'completed',
             'compatibility' => 'test',
             'payload_codec' => CodecRegistry::defaultCodec(),
-            'started_at' => $startedAt->copy()->addSeconds(2),
-            'closed_at' => $startedAt->copy()->addSeconds(3),
-            'last_progress_at' => $startedAt->copy()->addSeconds(3),
+            'started_at' => $startedAt->copy()
+                ->addSeconds(2),
+            'closed_at' => $startedAt->copy()
+                ->addSeconds(3),
+            'last_progress_at' => $startedAt->copy()
+                ->addSeconds(3),
         ]);
 
         $instance->forceFill([
@@ -479,7 +484,8 @@ final class V2StandaloneActivityHostTest extends TestCase
     public function testWatchdogTimeoutSweepClosesHostRunWithoutWorkflowDispatch(): void
     {
         Queue::fake();
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 300);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 300);
 
         $startedAt = Carbon::parse('2026-01-15 10:00:00');
         Carbon::setTestNow($startedAt);
@@ -503,7 +509,11 @@ final class V2StandaloneActivityHostTest extends TestCase
 
             $this->assertStandaloneTimeoutClosedHost(
                 $start,
-                ['enforced' => true, 'reason' => null, 'next_task' => null],
+                [
+                    'enforced' => true,
+                    'reason' => null,
+                    'next_task' => null,
+                ],
                 'schedule_to_start',
                 'schedule-to-start deadline expired',
             );

@@ -248,7 +248,12 @@ final class EmbeddedV2HistoryImport
         $rows['workflow_failures'] += self::writeFailures($bundle, $runId);
         $rows['workflow_links'] += self::writeLinks($bundle, $runId, $instanceId);
         $rows['workflow_memos'] += self::writeMemos($workflow, $runId, $instanceId, $historySequence);
-        $rows['workflow_search_attributes'] += self::writeSearchAttributes($workflow, $runId, $instanceId, $historySequence);
+        $rows['workflow_search_attributes'] += self::writeSearchAttributes(
+            $workflow,
+            $runId,
+            $instanceId,
+            $historySequence
+        );
 
         RunSummaryProjector::project($run->fresh([
             'instance',
@@ -712,8 +717,12 @@ final class EmbeddedV2HistoryImport
     /**
      * @param array<string, mixed> $workflow
      */
-    private static function writeSearchAttributes(array $workflow, string $runId, string $instanceId, int $sequence): int
-    {
+    private static function writeSearchAttributes(
+        array $workflow,
+        string $runId,
+        string $instanceId,
+        int $sequence
+    ): int {
         $count = 0;
 
         foreach (self::arrayValue($workflow['search_attributes'] ?? null) ?? [] as $key => $value) {
@@ -775,7 +784,11 @@ final class EmbeddedV2HistoryImport
         $runStatus = is_string($workflow['status'] ?? null) ? RunStatus::tryFrom($workflow['status']) : null;
 
         if (! Schema::hasColumn('workflow_runs', 'import_source')) {
-            self::addFinding($errors, 'target.import_markers_missing', 'Run import marker columns are missing; run migrations before importing.');
+            self::addFinding(
+                $errors,
+                'target.import_markers_missing',
+                'Run import marker columns are missing; run migrations before importing.'
+            );
         }
 
         if (($integrity['status'] ?? null) === BundleIntegrityVerifier::STATUS_FAILED) {
@@ -788,7 +801,11 @@ final class EmbeddedV2HistoryImport
             $signatureVerified = $integrity['integrity']['signature_verified'] ?? null;
 
             if ($signatureVerified !== true) {
-                self::addFinding($errors, 'bundle.signature_required', 'A verified history-export signature is required for this import.');
+                self::addFinding(
+                    $errors,
+                    'bundle.signature_required',
+                    'A verified history-export signature is required for this import.'
+                );
             }
         }
 
@@ -801,22 +818,42 @@ final class EmbeddedV2HistoryImport
         }
 
         if ($runStatus === null) {
-            self::addFinding($errors, 'workflow.status_unsupported', 'Bundle workflow.status is not a supported v2 run status.');
+            self::addFinding(
+                $errors,
+                'workflow.status_unsupported',
+                'Bundle workflow.status is not a supported v2 run status.'
+            );
         } elseif ($runStatus->isTerminal()) {
             if (($bundle['history_complete'] ?? null) !== true) {
-                self::addFinding($errors, 'workflow.terminal_history_incomplete', 'Terminal run imports require history_complete=true.');
+                self::addFinding(
+                    $errors,
+                    'workflow.terminal_history_incomplete',
+                    'Terminal run imports require history_complete=true.'
+                );
             }
         } elseif ((bool) ($workflow['is_current_run'] ?? false) !== true) {
-            self::addFinding($errors, 'workflow.non_terminal_not_current', 'Non-terminal embedded v2 imports must be the current run.');
+            self::addFinding(
+                $errors,
+                'workflow.non_terminal_not_current',
+                'Non-terminal embedded v2 imports must be the current run.'
+            );
         }
 
         if (self::stringValue($workflow['source_runtime'] ?? null) !== EmbeddedV2ImportContract::SOURCE_RUNTIME) {
-            self::addFinding($errors, 'workflow.source_runtime_unsupported', 'Bundle workflow.source_runtime must be embedded.');
+            self::addFinding(
+                $errors,
+                'workflow.source_runtime_unsupported',
+                'Bundle workflow.source_runtime must be embedded.'
+            );
         }
 
         $redaction = self::arrayValue($bundle['redaction'] ?? null) ?? [];
         if (self::listValue($redaction['paths'] ?? null) !== []) {
-            self::addFinding($errors, 'bundle.redacted_payloads', 'Redacted history bundles cannot be imported as server-managed state.');
+            self::addFinding(
+                $errors,
+                'bundle.redacted_payloads',
+                'Redacted history bundles cannot be imported as server-managed state.'
+            );
         }
 
         if (! (bool) ($options['allow_open_leases'] ?? false)) {
@@ -837,7 +874,11 @@ final class EmbeddedV2HistoryImport
     {
         foreach (self::listValue($bundle['tasks'] ?? null) as $task) {
             if (($task['status'] ?? null) === TaskStatus::Leased->value) {
-                self::addFinding($errors, 'tasks.leased_task_present', 'Leased workflow or activity tasks must be completed, failed, or released before import.');
+                self::addFinding(
+                    $errors,
+                    'tasks.leased_task_present',
+                    'Leased workflow or activity tasks must be completed, failed, or released before import.'
+                );
 
                 return;
             }
@@ -846,7 +887,11 @@ final class EmbeddedV2HistoryImport
         foreach (self::listValue($bundle['activities'] ?? null) as $activity) {
             foreach (self::listValue($activity['attempts'] ?? null) as $attempt) {
                 if (($attempt['status'] ?? null) === ActivityAttemptStatus::Running->value) {
-                    self::addFinding($errors, 'activities.running_attempt_present', 'Running activity attempts must be released before import.');
+                    self::addFinding(
+                        $errors,
+                        'activities.running_attempt_present',
+                        'Running activity attempts must be released before import.'
+                    );
 
                     return;
                 }
@@ -860,14 +905,18 @@ final class EmbeddedV2HistoryImport
     private static function existingRunOutcome(?string $runId, ?string $dedupeKey): array
     {
         if ($runId === null) {
-            return ['status' => 'none'];
+            return [
+                'status' => 'none',
+            ];
         }
 
         /** @var WorkflowRun|null $run */
         $run = WorkflowRun::query()->find($runId);
 
         if (! $run instanceof WorkflowRun) {
-            return ['status' => 'none'];
+            return [
+                'status' => 'none',
+            ];
         }
 
         if (
@@ -875,10 +924,14 @@ final class EmbeddedV2HistoryImport
             && is_string($run->import_dedupe_key)
             && $run->import_dedupe_key === $dedupeKey
         ) {
-            return ['status' => 'already_imported'];
+            return [
+                'status' => 'already_imported',
+            ];
         }
 
-        return ['status' => 'conflict'];
+        return [
+            'status' => 'conflict',
+        ];
     }
 
     /**
@@ -942,7 +995,9 @@ final class EmbeddedV2HistoryImport
             )),
             'workflow_run_timers' => count(self::listValue($bundle['timers'] ?? null)),
             'workflow_failures' => count(self::listValue($bundle['failures'] ?? null)),
-            'workflow_links' => count(self::listValue((self::arrayValue($bundle['links'] ?? null) ?? [])['parents'] ?? null))
+            'workflow_links' => count(
+                self::listValue((self::arrayValue($bundle['links'] ?? null) ?? [])['parents'] ?? null)
+            )
                 + count(self::listValue((self::arrayValue($bundle['links'] ?? null) ?? [])['children'] ?? null)),
             'workflow_run_summaries' => 1,
         ];

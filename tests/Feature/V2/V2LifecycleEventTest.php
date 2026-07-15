@@ -61,7 +61,8 @@ final class V2LifecycleEventTest extends TestCase
         config()->set('queue.default', 'redis');
         config()
             ->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.storage.transaction_attempts', 2);
+        config()
+            ->set('workflows.storage.transaction_attempts', 2);
         Queue::fake();
 
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
@@ -111,7 +112,9 @@ final class V2LifecycleEventTest extends TestCase
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lifecycle-start-retry');
         $workflow->start('Taylor');
 
-        $this->assertSame(2, $customRole->projectRunCalls);
+        // The failed transaction, committed transaction, and post-dispatch refresh
+        // each project once; lifecycle events still publish only after commit.
+        $this->assertSame(3, $customRole->projectRunCalls);
         Event::assertDispatched(WorkflowStarted::class, 1);
         Event::assertDispatched(LegacyWorkflowStarted::class, 1);
         Event::assertDispatched(StateChanged::class, 1);

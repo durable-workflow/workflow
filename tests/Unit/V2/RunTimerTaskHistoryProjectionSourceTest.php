@@ -40,7 +40,7 @@ final class RunTimerTaskHistoryProjectionSourceTest extends TestCase
 
         $this->assertSame(
             1,
-            substr_count($contents, 'historyProjectionRole()->projectRun('),
+            preg_match_all('/historyProjectionRole\(\)\s*->projectRun\(/', $contents),
             'Only the projectRun() helper may dispatch into HistoryProjectionRole::projectRun().',
         );
     }

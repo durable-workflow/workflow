@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use function Workflow\V2\localActivity;
 use Workflow\V2\Support\LocalActivityOptions;
 use Workflow\V2\Workflow;
-use function Workflow\V2\localActivity;
 
 final class TestLocalHeartbeatWorkflow extends Workflow
 {
@@ -15,8 +15,6 @@ final class TestLocalHeartbeatWorkflow extends Workflow
      */
     public function handle(): array
     {
-        return localActivity(TestHeartbeatActivity::class, new LocalActivityOptions(
-            heartbeatTimeout: 300,
-        ));
+        return localActivity(TestHeartbeatActivity::class, new LocalActivityOptions(heartbeatTimeout: 300));
     }
 }

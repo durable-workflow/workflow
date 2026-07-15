@@ -220,50 +220,70 @@ final class WorkflowServiceProviderTest extends TestCase
 
     public function testProviderConfiguresDefaultSqliteStorageBusyTimeout(): void
     {
-        config()->set('database.default', 'sqlite');
-        config()->set('database.connections.sqlite', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-            'foreign_key_constraints' => true,
-            'busy_timeout' => null,
-            'options' => [],
-        ]);
-        config()->set('workflows.storage.connection', null);
-        config()->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
+        $originalDefault = config('database.default');
+        $connection = 'workflow_test_sqlite_timeout';
+        config()
+            ->set('database.default', $connection);
+        config()
+            ->set("database.connections.{$connection}", [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+                'busy_timeout' => null,
+                'options' => [],
+            ]);
+        config()
+            ->set('workflows.storage.connection', null);
+        config()
+            ->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
 
-        (new WorkflowServiceProvider($this->app))->boot();
+        try {
+            (new WorkflowServiceProvider($this->app))->boot();
 
-        $this->assertSame(7000, config('database.connections.sqlite.busy_timeout'));
+            $this->assertSame(7000, config("database.connections.{$connection}.busy_timeout"));
 
-        $options = config('database.connections.sqlite.options');
-        $this->assertIsArray($options);
-        $this->assertSame(7, $options[\PDO::ATTR_TIMEOUT] ?? null);
+            $options = config("database.connections.{$connection}.options");
+            $this->assertIsArray($options);
+            $this->assertSame(7, $options[\PDO::ATTR_TIMEOUT] ?? null);
+        } finally {
+            config()->set('database.default', $originalDefault);
+        }
     }
 
     public function testProviderDoesNotOverrideExplicitSqliteStorageTimeout(): void
     {
-        config()->set('database.default', 'sqlite');
-        config()->set('database.connections.sqlite', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-            'foreign_key_constraints' => true,
-            'busy_timeout' => 250,
-            'options' => [
-                \PDO::ATTR_TIMEOUT => 1,
-            ],
-        ]);
-        config()->set('workflows.storage.connection', null);
-        config()->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
+        $originalDefault = config('database.default');
+        $connection = 'workflow_test_sqlite_timeout';
+        config()
+            ->set('database.default', $connection);
+        config()
+            ->set("database.connections.{$connection}", [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+                'busy_timeout' => 250,
+                'options' => [
+                    \PDO::ATTR_TIMEOUT => 1,
+                ],
+            ]);
+        config()
+            ->set('workflows.storage.connection', null);
+        config()
+            ->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
 
-        (new WorkflowServiceProvider($this->app))->boot();
+        try {
+            (new WorkflowServiceProvider($this->app))->boot();
 
-        $this->assertSame(250, config('database.connections.sqlite.busy_timeout'));
+            $this->assertSame(250, config("database.connections.{$connection}.busy_timeout"));
 
-        $options = config('database.connections.sqlite.options');
-        $this->assertIsArray($options);
-        $this->assertSame(1, $options[\PDO::ATTR_TIMEOUT] ?? null);
+            $options = config("database.connections.{$connection}.options");
+            $this->assertIsArray($options);
+            $this->assertSame(1, $options[\PDO::ATTR_TIMEOUT] ?? null);
+        } finally {
+            config()->set('database.default', $originalDefault);
+        }
     }
 
     public function testConfigIsPublished(): void

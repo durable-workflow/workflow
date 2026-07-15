@@ -155,15 +155,12 @@ final class V2RepairPassCommandTest extends TestCase
     public function testRunPassDoesNotRecordWorkerHeartbeatWhileLoopThrottleIsHeld(): void
     {
         Queue::fake();
-        config()->set('workflows.v2.compatibility.current', 'build-throttled');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-throttled');
         WorkerCompatibilityFleet::clear();
         Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
 
-        $report = TaskWatchdog::runPass(
-            connection: 'redis',
-            queue: 'default',
-            respectThrottle: true,
-        );
+        $report = TaskWatchdog::runPass(connection: 'redis', queue: 'default', respectThrottle: true);
 
         $this->assertTrue($report['throttled']);
         $this->assertSame(0, WorkerCompatibilityHeartbeat::query()->count());
@@ -172,15 +169,12 @@ final class V2RepairPassCommandTest extends TestCase
     public function testRunPassRecordsWorkerHeartbeatOnceLoopThrottleClears(): void
     {
         Queue::fake();
-        config()->set('workflows.v2.compatibility.current', 'build-cleared');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-cleared');
         WorkerCompatibilityFleet::clear();
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
 
-        $report = TaskWatchdog::runPass(
-            connection: 'redis',
-            queue: 'default',
-            respectThrottle: true,
-        );
+        $report = TaskWatchdog::runPass(connection: 'redis', queue: 'default', respectThrottle: true);
 
         $this->assertFalse($report['throttled']);
         $this->assertGreaterThan(0, WorkerCompatibilityHeartbeat::query()->count());

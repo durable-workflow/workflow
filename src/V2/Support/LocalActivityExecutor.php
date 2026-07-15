@@ -270,8 +270,10 @@ final class LocalActivityExecutor
             'current_attempt_id' => $attemptId,
             'started_at' => $now,
             'last_heartbeat_at' => $now,
-            'close_deadline_at' => $startToCloseTimeout === null ? null : $now->copy()->addSeconds($startToCloseTimeout),
-            'heartbeat_deadline_at' => $heartbeatTimeout === null ? null : $now->copy()->addSeconds($heartbeatTimeout),
+            'close_deadline_at' => $startToCloseTimeout === null ? null : $now->copy()
+                ->addSeconds($startToCloseTimeout),
+            'heartbeat_deadline_at' => $heartbeatTimeout === null ? null : $now->copy()
+                ->addSeconds($heartbeatTimeout),
         ])->save();
 
         /** @var ActivityAttempt $attempt */
@@ -416,23 +418,28 @@ final class LocalActivityExecutor
 
         self::closeAttempt($attempt, ActivityAttemptStatus::Completed);
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, LocalActivityRuntime::eventPayload([
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt->id,
-            'activity_class' => $execution->activity_class,
-            'activity_type' => $execution->activity_type,
-            'sequence' => $execution->sequence,
-            'attempt_number' => $attempt->attempt_number,
-            'result' => ExternalPayloads::historyValue(
-                $execution->result,
-                $encoded['codec'],
-                is_string($run->namespace) ? $run->namespace : null,
-            ),
-            'payload_codec' => $encoded['codec'],
-            'workflow_task_id' => $task->id,
-            'activity' => ActivitySnapshot::fromExecution($execution),
-            'activity_attempt' => self::attemptSnapshot($attempt->fresh() ?? $attempt),
-        ]), $task);
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ActivityCompleted,
+            LocalActivityRuntime::eventPayload([
+                'activity_execution_id' => $execution->id,
+                'activity_attempt_id' => $attempt->id,
+                'activity_class' => $execution->activity_class,
+                'activity_type' => $execution->activity_type,
+                'sequence' => $execution->sequence,
+                'attempt_number' => $attempt->attempt_number,
+                'result' => ExternalPayloads::historyValue(
+                    $execution->result,
+                    $encoded['codec'],
+                    is_string($run->namespace) ? $run->namespace : null,
+                ),
+                'payload_codec' => $encoded['codec'],
+                'workflow_task_id' => $task->id,
+                'activity' => ActivitySnapshot::fromExecution($execution),
+                'activity_attempt' => self::attemptSnapshot($attempt->fresh() ?? $attempt),
+            ]),
+            $task
+        );
 
         LifecycleEventDispatcher::activityCompleted(
             $run,
@@ -514,7 +521,10 @@ final class LocalActivityExecutor
 
         $execution->forceFill([
             'status' => ActivityStatus::Pending,
-            'exception' => Serializer::serializeWithCodec($runCodec ?? CodecRegistry::defaultCodec(), $exceptionPayload),
+            'exception' => Serializer::serializeWithCodec(
+                $runCodec ?? CodecRegistry::defaultCodec(),
+                $exceptionPayload
+            ),
             'last_heartbeat_at' => null,
             'close_deadline_at' => null,
             'heartbeat_deadline_at' => null,
@@ -539,30 +549,35 @@ final class LocalActivityExecutor
             'compatibility' => $run->compatibility,
         ]);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, LocalActivityRuntime::eventPayload([
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
-            'activity_class' => $execution->activity_class,
-            'activity_type' => $execution->activity_type,
-            'sequence' => $execution->sequence,
-            'retry_task_id' => $retryTask->id,
-            'retry_of_task_id' => $task->id,
-            'retry_available_at' => $retryAvailableAt->toJSON(),
-            'retry_backoff_seconds' => $backoffSeconds,
-            'retry_after_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
-            'retry_after_attempt' => $attemptNumber,
-            'retry_reason' => $retryReason,
-            'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
-            'retry_policy' => $execution->retry_policy,
-            'timeout_kind' => $timeoutKind,
-            'exception_type' => $exceptionPayload['type'] ?? null,
-            'exception_class' => $exceptionPayload['class'] ?? $throwable::class,
-            'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
-            'code' => $throwable->getCode(),
-            'exception' => $exceptionPayload,
-            'workflow_task_id' => $task->id,
-            'activity' => ActivitySnapshot::fromExecution($execution),
-        ]), $task);
+        WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ActivityRetryScheduled,
+            LocalActivityRuntime::eventPayload([
+                'activity_execution_id' => $execution->id,
+                'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
+                'activity_class' => $execution->activity_class,
+                'activity_type' => $execution->activity_type,
+                'sequence' => $execution->sequence,
+                'retry_task_id' => $retryTask->id,
+                'retry_of_task_id' => $task->id,
+                'retry_available_at' => $retryAvailableAt->toJSON(),
+                'retry_backoff_seconds' => $backoffSeconds,
+                'retry_after_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
+                'retry_after_attempt' => $attemptNumber,
+                'retry_reason' => $retryReason,
+                'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
+                'retry_policy' => $execution->retry_policy,
+                'timeout_kind' => $timeoutKind,
+                'exception_type' => $exceptionPayload['type'] ?? null,
+                'exception_class' => $exceptionPayload['class'] ?? $throwable::class,
+                'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
+                'code' => $throwable->getCode(),
+                'exception' => $exceptionPayload,
+                'workflow_task_id' => $task->id,
+                'activity' => ActivitySnapshot::fromExecution($execution),
+            ]),
+            $task
+        );
 
         self::projectRun($run);
 
@@ -599,7 +614,10 @@ final class LocalActivityExecutor
 
         $execution->forceFill([
             'status' => ActivityStatus::Failed,
-            'exception' => Serializer::serializeWithCodec($runCodec ?? CodecRegistry::defaultCodec(), $exceptionPayload),
+            'exception' => Serializer::serializeWithCodec(
+                $runCodec ?? CodecRegistry::defaultCodec(),
+                $exceptionPayload
+            ),
             'closed_at' => now(),
             'close_deadline_at' => null,
             'heartbeat_deadline_at' => null,
@@ -609,27 +627,32 @@ final class LocalActivityExecutor
             self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
         }
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, LocalActivityRuntime::eventPayload(array_merge([
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
-            'activity_class' => $execution->activity_class,
-            'activity_type' => $execution->activity_type,
-            'sequence' => $execution->sequence,
-            'attempt_number' => $attempt?->attempt_number ?? $execution->attempt_count,
-            'failure_id' => $failure->id,
-            'failure_category' => $failureCategory->value,
-            'non_retryable' => $nonRetryable,
-            'exception_type' => $exceptionPayload['type'] ?? null,
-            'exception_class' => $failure->exception_class,
-            'message' => $failure->message,
-            'code' => $throwable->getCode(),
-            'exception' => $exceptionPayload,
-            'workflow_task_id' => $task->id,
-            'activity' => ActivitySnapshot::fromExecution($execution),
-            'activity_attempt' => $attempt instanceof ActivityAttempt
-                ? self::attemptSnapshot($attempt->fresh() ?? $attempt)
-                : null,
-        ], self::structuralLimitPayload($throwable))), $task);
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ActivityFailed,
+            LocalActivityRuntime::eventPayload(array_merge([
+                'activity_execution_id' => $execution->id,
+                'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
+                'activity_class' => $execution->activity_class,
+                'activity_type' => $execution->activity_type,
+                'sequence' => $execution->sequence,
+                'attempt_number' => $attempt?->attempt_number ?? $execution->attempt_count,
+                'failure_id' => $failure->id,
+                'failure_category' => $failureCategory->value,
+                'non_retryable' => $nonRetryable,
+                'exception_type' => $exceptionPayload['type'] ?? null,
+                'exception_class' => $failure->exception_class,
+                'message' => $failure->message,
+                'code' => $throwable->getCode(),
+                'exception' => $exceptionPayload,
+                'workflow_task_id' => $task->id,
+                'activity' => ActivitySnapshot::fromExecution($execution),
+                'activity_attempt' => $attempt instanceof ActivityAttempt
+                    ? self::attemptSnapshot($attempt->fresh() ?? $attempt)
+                    : null,
+            ], self::structuralLimitPayload($throwable))),
+            $task
+        );
 
         LifecycleEventDispatcher::activityFailed(
             $run,
@@ -715,28 +738,33 @@ final class LocalActivityExecutor
             'trace_preview' => '',
         ]);
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityTimedOut, LocalActivityRuntime::eventPayload([
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
-            'activity_class' => $execution->activity_class,
-            'activity_type' => $execution->activity_type,
-            'sequence' => $execution->sequence,
-            'attempt_number' => $attemptNumber,
-            'failure_id' => $failure->id,
-            'failure_category' => $failureCategory->value,
-            'timeout_kind' => $timeoutKind,
-            'message' => $throwable->getMessage(),
-            'exception_class' => $exceptionClass,
-            'schedule_deadline_at' => $execution->schedule_deadline_at?->toIso8601String(),
-            'close_deadline_at' => $execution->close_deadline_at?->toIso8601String(),
-            'schedule_to_close_deadline_at' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
-            'heartbeat_deadline_at' => $execution->heartbeat_deadline_at?->toIso8601String(),
-            'workflow_task_id' => $task->id,
-            'activity' => ActivitySnapshot::fromExecution($execution),
-            'activity_attempt' => $attempt instanceof ActivityAttempt
-                ? self::attemptSnapshot($attempt->fresh() ?? $attempt)
-                : null,
-        ]), $task);
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ActivityTimedOut,
+            LocalActivityRuntime::eventPayload([
+                'activity_execution_id' => $execution->id,
+                'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
+                'activity_class' => $execution->activity_class,
+                'activity_type' => $execution->activity_type,
+                'sequence' => $execution->sequence,
+                'attempt_number' => $attemptNumber,
+                'failure_id' => $failure->id,
+                'failure_category' => $failureCategory->value,
+                'timeout_kind' => $timeoutKind,
+                'message' => $throwable->getMessage(),
+                'exception_class' => $exceptionClass,
+                'schedule_deadline_at' => $execution->schedule_deadline_at?->toIso8601String(),
+                'close_deadline_at' => $execution->close_deadline_at?->toIso8601String(),
+                'schedule_to_close_deadline_at' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
+                'heartbeat_deadline_at' => $execution->heartbeat_deadline_at?->toIso8601String(),
+                'workflow_task_id' => $task->id,
+                'activity' => ActivitySnapshot::fromExecution($execution),
+                'activity_attempt' => $attempt instanceof ActivityAttempt
+                    ? self::attemptSnapshot($attempt->fresh() ?? $attempt)
+                    : null,
+            ]),
+            $task
+        );
 
         LifecycleEventDispatcher::activityFailed(
             $run,
@@ -817,7 +845,9 @@ final class LocalActivityExecutor
                 HistoryEventType::ActivityTimedOut->value,
             ])
             ->get()
-            ->first(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['activity_execution_id'] ?? null) === $execution->id);
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => ($event->payload['activity_execution_id'] ?? null) === $execution->id
+            );
 
         return $event;
     }
@@ -853,7 +883,9 @@ final class LocalActivityExecutor
     {
         $now = now();
 
-        if ($execution->schedule_to_close_deadline_at !== null && $now->gte($execution->schedule_to_close_deadline_at)) {
+        if ($execution->schedule_to_close_deadline_at !== null && $now->gte(
+            $execution->schedule_to_close_deadline_at
+        )) {
             return 'schedule_to_close';
         }
 
@@ -959,6 +991,8 @@ final class LocalActivityExecutor
     {
         /** @var \Workflow\V2\Contracts\HistoryProjectionRole $role */
         $role = app(\Workflow\V2\Contracts\HistoryProjectionRole::class);
-        $role->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']) ?? $run);
+        $role->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']) ?? $run
+        );
     }
 }

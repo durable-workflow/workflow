@@ -139,10 +139,20 @@ final class CompiledWorkflowDefinition
                 'version_selection',
             ],
             'properties' => [
-                'schema' => ['const' => self::SCHEMA],
-                'schema_version' => ['const' => self::SCHEMA_VERSION],
-                'workflow_type' => ['type' => 'string', 'minLength' => 1],
-                'definition_version' => ['type' => 'string', 'minLength' => 1],
+                'schema' => [
+                    'const' => self::SCHEMA,
+                ],
+                'schema_version' => [
+                    'const' => self::SCHEMA_VERSION,
+                ],
+                'workflow_type' => [
+                    'type' => 'string',
+                    'minLength' => 1,
+                ],
+                'definition_version' => [
+                    'type' => 'string',
+                    'minLength' => 1,
+                ],
                 'definition_fingerprint' => [
                     'type' => 'string',
                     'pattern' => '^sha256:[a-f0-9]{64}$',
@@ -152,15 +162,15 @@ final class CompiledWorkflowDefinition
                     'required' => ['format'],
                     'properties' => [
                         'format' => [
-                            'enum' => [
-                                self::SOURCE_PHP_CLASS,
-                                self::SOURCE_SERVERLESS_WORKFLOW,
-                            ],
+                            'enum' => [self::SOURCE_PHP_CLASS, self::SOURCE_SERVERLESS_WORKFLOW],
                         ],
                     ],
                     'additionalProperties' => true,
                 ],
-                'entrypoint_step_id' => ['type' => 'string', 'minLength' => 1],
+                'entrypoint_step_id' => [
+                    'type' => 'string',
+                    'minLength' => 1,
+                ],
                 'steps' => [
                     'type' => 'array',
                     'minItems' => 1,
@@ -168,7 +178,10 @@ final class CompiledWorkflowDefinition
                         'type' => 'object',
                         'required' => ['id', 'kind', 'name'],
                         'properties' => [
-                            'id' => ['type' => 'string', 'minLength' => 1],
+                            'id' => [
+                                'type' => 'string',
+                                'minLength' => 1,
+                            ],
                             'kind' => [
                                 'enum' => [
                                     self::STEP_ENTRY,
@@ -179,8 +192,13 @@ final class CompiledWorkflowDefinition
                                     self::STEP_ACTION,
                                 ],
                             ],
-                            'name' => ['type' => 'string', 'minLength' => 1],
-                            'parameters' => ['type' => 'array'],
+                            'name' => [
+                                'type' => 'string',
+                                'minLength' => 1,
+                            ],
+                            'parameters' => [
+                                'type' => 'array',
+                            ],
                         ],
                         'additionalProperties' => true,
                     ],
@@ -189,12 +207,23 @@ final class CompiledWorkflowDefinition
                     'type' => 'object',
                     'required' => ['strategy', 'selected_version', 'available_versions'],
                     'properties' => [
-                        'strategy' => ['type' => 'string', 'minLength' => 1],
-                        'requested_version' => ['type' => ['string', 'null']],
-                        'selected_version' => ['type' => 'string', 'minLength' => 1],
+                        'strategy' => [
+                            'type' => 'string',
+                            'minLength' => 1,
+                        ],
+                        'requested_version' => [
+                            'type' => ['string', 'null'],
+                        ],
+                        'selected_version' => [
+                            'type' => 'string',
+                            'minLength' => 1,
+                        ],
                         'available_versions' => [
                             'type' => 'array',
-                            'items' => ['type' => 'string', 'minLength' => 1],
+                            'items' => [
+                                'type' => 'string',
+                                'minLength' => 1,
+                            ],
                         ],
                     ],
                     'additionalProperties' => true,
@@ -271,7 +300,10 @@ final class CompiledWorkflowDefinition
 
         foreach (['workflow_type', 'definition_version', 'definition_fingerprint', 'entrypoint_step_id'] as $field) {
             if (self::nonEmptyString($compiled[$field] ?? null) === null) {
-                throw new LogicException(sprintf('Compiled workflow IR field [%s] must be a non-empty string.', $field));
+                throw new LogicException(sprintf(
+                    'Compiled workflow IR field [%s] must be a non-empty string.',
+                    $field
+                ));
             }
         }
 

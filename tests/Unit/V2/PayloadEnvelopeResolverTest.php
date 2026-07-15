@@ -62,10 +62,13 @@ final class PayloadEnvelopeResolverTest extends TestCase
 
     public function testResolveToArrayDecodesJsonEnvelope(): void
     {
-        $this->assertSame(['scheduled', ['runtime' => 'python']], PayloadEnvelopeResolver::resolveToArray([
-            'codec' => 'json',
-            'blob' => '["scheduled",{"runtime":"python"}]',
-        ]));
+        $this->assertSame([
+            'scheduled', [
+                'runtime' => 'python',
+            ]], PayloadEnvelopeResolver::resolveToArray([
+                'codec' => 'json',
+                'blob' => '["scheduled",{"runtime":"python"}]',
+            ]));
     }
 
     public function testResolveToArrayRejectsUnknownCodec(): void

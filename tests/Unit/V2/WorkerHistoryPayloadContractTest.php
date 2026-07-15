@@ -43,15 +43,9 @@ final class WorkerHistoryPayloadContractTest extends TestCase
     {
         $manifest = WorkerHistoryPayloadContract::manifest();
 
-        $this->assertSame(
-            'durable-workflow.v2.worker-history-payload.contract',
-            $manifest['schema'],
-        );
+        $this->assertSame('durable-workflow.v2.worker-history-payload.contract', $manifest['schema']);
         $this->assertSame(1, $manifest['version']);
-        $this->assertSame(
-            WorkerHistoryPayloadContract::BUDGET_FIELDS,
-            $manifest['fields'],
-        );
+        $this->assertSame(WorkerHistoryPayloadContract::BUDGET_FIELDS, $manifest['fields']);
 
         foreach (WorkerHistoryPayloadContract::BUDGET_FIELDS as $field) {
             $this->assertContains($field, $manifest['full_response_required_fields']);

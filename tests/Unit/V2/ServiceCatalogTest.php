@@ -86,7 +86,10 @@ class ServiceCatalogTest extends TestCase
             'status' => ServiceCallStatus::Accepted->value,
         ]);
 
-        $this->assertSame($crossNamespaceCall->id, ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'shipping')->id);
+        $this->assertSame(
+            $crossNamespaceCall->id,
+            ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'shipping')->id
+        );
         $this->assertNull(ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'billing'));
         $this->assertNull(ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'finance'));
         $this->assertSame($crossNamespaceCall->id, ServiceCatalog::findServiceCall($crossNamespaceCall->id, null)->id);
@@ -133,19 +136,15 @@ class ServiceCatalogTest extends TestCase
 
         $this->assertEqualsCanonicalizing(
             [$ownedCall->id, $callerCall->id, $targetCall->id],
-            $owned->pluck('id')->all(),
+            $owned->pluck('id')
+                ->all(),
         );
-        $this->assertEqualsCanonicalizing(
-            [$ownedCall->id, $callerCall->id],
-            $caller->pluck('id')->all(),
-        );
-        $this->assertEqualsCanonicalizing(
-            [$ownedCall->id, $targetCall->id],
-            $target->pluck('id')->all(),
-        );
+        $this->assertEqualsCanonicalizing([$ownedCall->id, $callerCall->id], $caller->pluck('id') ->all());
+        $this->assertEqualsCanonicalizing([$ownedCall->id, $targetCall->id], $target->pluck('id') ->all());
         $this->assertEqualsCanonicalizing(
             [$ownedCall->id, $callerCall->id, $targetCall->id],
-            $relevant->pluck('id')->all(),
+            $relevant->pluck('id')
+                ->all(),
         );
         $this->assertNotContains($crossNamespaceCallerCall->id, $owned->pluck('id')->all());
         $this->assertNotContains($crossNamespaceCallerCall->id, $caller->pluck('id')->all());
@@ -168,7 +167,11 @@ class ServiceCatalogTest extends TestCase
             'status' => ServiceCallStatus::Failed->value,
         ]);
 
-        $failedCalls = ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_OWNED, ServiceCallStatus::Failed->value)->get();
+        $failedCalls = ServiceCatalog::serviceCallsQuery(
+            'billing',
+            ServiceCatalog::SCOPE_OWNED,
+            ServiceCallStatus::Failed->value
+        )->get();
 
         $this->assertSame([$failed->id], $failedCalls->pluck('id')->all());
         $this->assertNotContains($accepted->id, $failedCalls->pluck('id')->all());
@@ -212,7 +215,9 @@ class ServiceCatalogTest extends TestCase
             'namespace' => 'billing',
             'status' => ServiceCallStatus::Failed->value,
             'outcome' => ServiceCallOutcome::RejectedForbidden->value,
-            'retry_policy' => ['max_attempts' => 3],
+            'retry_policy' => [
+                'max_attempts' => 3,
+            ],
             'metadata' => [
                 'service_call_attempts' => [
                     [
@@ -239,7 +244,9 @@ class ServiceCatalogTest extends TestCase
         $this->assertSame('policy', $shape['outcome_bucket']);
         $this->assertTrue($shape['is_terminal']);
         $this->assertTrue($shape['is_policy_outcome']);
-        $this->assertSame(['max_attempts' => 3], $shape['retry_policy']);
+        $this->assertSame([
+            'max_attempts' => 3,
+        ], $shape['retry_policy']);
         $this->assertSame(2, $shape['retry_attempt_count']);
         $this->assertSame('TransientGreetingFailure', $shape['service_call_attempts'][0]['failure_type']);
         $this->assertSame(1, $shape['service_call_attempts'][0]['scheduled_backoff_seconds']);

@@ -6,17 +6,25 @@ namespace Tests\Fixtures\V2;
 
 use Illuminate\Contracts\Foundation\Application;
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use Workflow\V2\Workflow;
-use function Workflow\V2\activity;
 use function Workflow\V2\localActivity;
 use function Workflow\V2\signal;
+use Workflow\V2\Workflow;
 
 #[Type('test-dependency-injection-workflow')]
 #[Signal('approved-by', [
-    ['name' => 'actor', 'type' => 'string', 'allows_null' => false],
-    ['name' => 'context', 'type' => 'array', 'allows_null' => false],
+    [
+        'name' => 'actor',
+        'type' => 'string',
+        'allows_null' => false,
+    ],
+    [
+        'name' => 'context',
+        'type' => 'array',
+        'allows_null' => false,
+    ],
 ])]
 final class TestDependencyInjectionWorkflow extends Workflow
 {

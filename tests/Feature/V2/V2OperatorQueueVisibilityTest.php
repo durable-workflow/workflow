@@ -358,19 +358,29 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-b', 'external', 'build-b');
         StandaloneWorkerVisibility::recordCompatibility('other', 'worker-c', 'external', 'build-other');
 
-        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
-        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-b', null, 'external'));
+        $buildADetails = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external');
+        $buildBDetails = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-b', null, 'external');
+
+        $this->assertCount(2, $buildADetails);
+        $this->assertTrue(collect($buildADetails)->firstWhere('worker_id', 'worker-a')['supports_required']);
+        $this->assertFalse(collect($buildADetails)->firstWhere('worker_id', 'worker-b')['supports_required']);
+        $this->assertCount(2, $buildBDetails);
+        $this->assertFalse(collect($buildBDetails)->firstWhere('worker_id', 'worker-a')['supports_required']);
+        $this->assertTrue(collect($buildBDetails)->firstWhere('worker_id', 'worker-b')['supports_required']);
         $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('other', 'build-other', null, 'external'));
 
         WorkerCompatibilityFleet::forgetWorkerForNamespace('default', 'worker-a');
 
-        $this->assertSame([], WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
+        $buildADetails = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external');
+        $this->assertCount(1, $buildADetails);
+        $this->assertSame('worker-b', $buildADetails[0]['worker_id']);
+        $this->assertFalse($buildADetails[0]['supports_required']);
         $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-b', null, 'external'));
         $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('other', 'build-other', null, 'external'));
 
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'external', 'build-a');
 
-        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
+        $this->assertCount(2, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
     }
 
     private function createRun(string $instanceId, string $runId, string $namespace): WorkflowRun

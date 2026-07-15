@@ -55,12 +55,24 @@ return new class() extends WorkflowMigration {
         Schema::table('workflow_tasks', static function (Blueprint $table): void {
             foreach (['sticky_worker_id', 'sticky_until', 'sticky_replay_mode', 'sticky_claimed_at'] as $column) {
                 if (Schema::hasColumn('workflow_tasks', $column)) {
+                    $table->dropIndex("workflow_tasks_{$column}_index");
+                }
+            }
+
+            foreach (['sticky_worker_id', 'sticky_until', 'sticky_replay_mode', 'sticky_claimed_at'] as $column) {
+                if (Schema::hasColumn('workflow_tasks', $column)) {
                     $table->dropColumn($column);
                 }
             }
         });
 
         Schema::table('workflow_runs', static function (Blueprint $table): void {
+            foreach (['sticky_worker_id', 'sticky_until'] as $column) {
+                if (Schema::hasColumn('workflow_runs', $column)) {
+                    $table->dropIndex("workflow_runs_{$column}_index");
+                }
+            }
+
             foreach (['sticky_worker_id', 'sticky_until'] as $column) {
                 if (Schema::hasColumn('workflow_runs', $column)) {
                     $table->dropColumn($column);

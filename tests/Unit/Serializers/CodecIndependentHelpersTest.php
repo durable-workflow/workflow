@@ -13,9 +13,7 @@ use Workflow\Serializers\Y;
 
 final class CodecIndependentHelpersTest extends TestCase
 {
-    /**
-     * @dataProvider codecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('codecProvider')]
     public function testSerializableReturnsTrueForScalarsRegardlessOfCodec(string $codec): void
     {
         config([
@@ -30,9 +28,7 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertTrue(Serializer::serializable(null));
     }
 
-    /**
-     * @dataProvider codecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('codecProvider')]
     public function testSerializableReturnsFalseForClosureRegardlessOfCodec(string $codec): void
     {
         config([
@@ -42,9 +38,7 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertFalse(Serializer::serializable(static fn (): string => 'closure'));
     }
 
-    /**
-     * @dataProvider codecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('codecProvider')]
     public function testSerializeModelsPassesThroughPlainArraysRegardlessOfCodec(string $codec): void
     {
         config([
@@ -61,9 +55,7 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertSame($input, Serializer::serializeModels($input));
     }
 
-    /**
-     * @dataProvider codecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('codecProvider')]
     public function testSerializeModelsConvertsThrowableToArrayRegardlessOfCodec(string $codec): void
     {
         config([
@@ -81,9 +73,7 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertIsArray($data['trace']);
     }
 
-    /**
-     * @dataProvider codecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('codecProvider')]
     public function testUnserializeModelsIsIdentityForPlainArraysRegardlessOfCodec(string $codec): void
     {
         config([
@@ -100,9 +90,7 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertSame($input, Serializer::unserializeModels($input));
     }
 
-    /**
-     * @dataProvider languageNeutralCodecProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('languageNeutralCodecProvider')]
     public function testSerializeThrowableUnderLanguageNeutralCodecPreservesDiagnosticData(string $codec): void
     {
         if ($codec === 'avro' && ! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {

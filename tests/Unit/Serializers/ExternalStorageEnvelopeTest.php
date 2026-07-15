@@ -31,7 +31,9 @@ final class ExternalStorageEnvelopeTest extends TestCase
     public function testEnvelopeOffloadsLargePayloadToExternalStorage(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
-        $largeValue = ['data' => str_repeat('x', 200)];
+        $largeValue = [
+            'data' => str_repeat('x', 200),
+        ];
 
         $envelope = Serializer::externalStorageEnvelope($largeValue, 'json', $driver, 10);
 
@@ -47,7 +49,9 @@ final class ExternalStorageEnvelopeTest extends TestCase
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
 
-        $envelope = Serializer::externalStorageEnvelope(['ok' => true], 'json', $driver, 100_000);
+        $envelope = Serializer::externalStorageEnvelope([
+            'ok' => true,
+        ], 'json', $driver, 100_000);
 
         $this->assertArrayHasKey('codec', $envelope);
         $this->assertArrayHasKey('blob', $envelope);
@@ -83,7 +87,11 @@ final class ExternalStorageEnvelopeTest extends TestCase
     public function testEnvelopeCanBeRoundTrippedThroughPayloadEnvelopeResolver(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
-        $value = ['nested' => ['data' => str_repeat('a', 200)]];
+        $value = [
+            'nested' => [
+                'data' => str_repeat('a', 200),
+            ],
+        ];
 
         $envelope = Serializer::externalStorageEnvelope($value, 'json', $driver, 10);
 
@@ -98,7 +106,9 @@ final class ExternalStorageEnvelopeTest extends TestCase
     public function testInlineEnvelopeCanBeRoundTrippedThroughPayloadEnvelopeResolver(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
-        $value = ['small' => true];
+        $value = [
+            'small' => true,
+        ];
 
         $envelope = Serializer::externalStorageEnvelope($value, 'json', $driver, 100_000);
 
@@ -133,7 +143,9 @@ final class ExternalStorageEnvelopeTest extends TestCase
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
 
-        $envelope = Serializer::externalStorageEnvelope(['x' => 1], 'avro', $driver, 100_000);
+        $envelope = Serializer::externalStorageEnvelope([
+            'x' => 1,
+        ], 'avro', $driver, 100_000);
 
         $this->assertSame('avro', $envelope['codec']);
     }

@@ -49,11 +49,7 @@ final class HostedControlPlaneDocumentationTest extends TestCase
         'Audit export boundary',
     ];
 
-    private const REQUIRED_LADDER_LEVELS = [
-        'embedded_package',
-        'standalone_server',
-        'managed_cloud',
-    ];
+    private const REQUIRED_LADDER_LEVELS = ['embedded_package', 'standalone_server', 'managed_cloud'];
 
     private const REQUIRED_ENDPOINT_CLASSES = [
         'hosted_control_plane',
@@ -88,11 +84,7 @@ final class HostedControlPlaneDocumentationTest extends TestCase
         'support_access_session',
     ];
 
-    private const REQUIRED_AUDIT_BOUNDARIES = [
-        'hosted_audit_log',
-        'runtime_history_export',
-        'support_bundle',
-    ];
+    private const REQUIRED_AUDIT_BOUNDARIES = ['hosted_audit_log', 'runtime_history_export', 'support_bundle'];
 
     public function testDocumentExistsAndDeclaresFrozenSections(): void
     {
@@ -208,22 +200,10 @@ final class HostedControlPlaneDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        $this->assertStringContainsString(
-            'Workflow\V2\Support\HostedControlPlaneContract',
-            $contents,
-        );
-        $this->assertStringContainsString(
-            'durable-workflow.v2.hosted-control-plane.contract',
-            $contents,
-        );
-        $this->assertStringContainsString(
-            'X-Durable-Workflow-Hosted-Control-Plane-Version',
-            $contents,
-        );
-        $this->assertStringContainsString(
-            'hosted_control_plane_contract',
-            $contents,
-        );
+        $this->assertStringContainsString('Workflow\V2\Support\HostedControlPlaneContract', $contents);
+        $this->assertStringContainsString('durable-workflow.v2.hosted-control-plane.contract', $contents);
+        $this->assertStringContainsString('X-Durable-Workflow-Hosted-Control-Plane-Version', $contents);
+        $this->assertStringContainsString('hosted_control_plane_contract', $contents);
     }
 
     public function testDocumentSeparatesHostedAuditFromRuntimeHistoryExport(): void
@@ -246,14 +226,8 @@ final class HostedControlPlaneDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        $this->assertStringContainsString(
-            'tests/Unit/V2/HostedControlPlaneContractTest.php',
-            $contents,
-        );
-        $this->assertStringContainsString(
-            'tests/Unit/V2/HostedControlPlaneDocumentationTest.php',
-            $contents,
-        );
+        $this->assertStringContainsString('tests/Unit/V2/HostedControlPlaneContractTest.php', $contents);
+        $this->assertStringContainsString('tests/Unit/V2/HostedControlPlaneDocumentationTest.php', $contents);
     }
 
     private function documentContents(): string

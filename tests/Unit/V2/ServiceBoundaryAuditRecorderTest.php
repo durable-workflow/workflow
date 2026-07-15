@@ -22,7 +22,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_persists_an_admitted_call_with_full_principal_attribution(): void
+    public function testPersistsAnAdmittedCallWithFullPrincipalAttribution(): void
     {
         [, , $operation] = $this->seedCatalog();
 
@@ -46,7 +46,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->assertSame($operation->id, $call->workflow_service_operation_id);
     }
 
-    public function test_persists_a_rejected_call_with_the_same_audit_shape(): void
+    public function testPersistsARejectedCallWithTheSameAuditShape(): void
     {
         [, , $operation] = $this->seedCatalog();
 
@@ -69,14 +69,17 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->assertSame('user:tester', $call->caller_principal_subject);
     }
 
-    public function test_persists_decision_metadata_and_retry_advice(): void
+    public function testPersistsDecisionMetadataAndRetryAdvice(): void
     {
         [, , $operation] = $this->seedCatalog();
 
         $decision = ServiceBoundaryDecision::denyRateLimit(
             retryAfterSeconds: 7,
             message: 'rate limited',
-            metadata: ['observed_window_count' => 12, 'requests_per_minute' => 10],
+            metadata: [
+                'observed_window_count' => 12,
+                'requests_per_minute' => 10,
+            ],
         );
 
         $call = (new ServiceBoundaryAuditRecorder())
@@ -87,7 +90,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->assertSame(10, $call->outcome_metadata['requests_per_minute']);
     }
 
-    public function test_unresolved_target_is_recorded_with_uniform_not_found_outcome(): void
+    public function testUnresolvedTargetIsRecordedWithUniformNotFoundOutcome(): void
     {
         $request = new ServiceBoundaryRequest(
             principal: ServiceCallPrincipal::system(),
@@ -150,7 +153,9 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
                 method: 'token',
                 roles: ['service.call'],
                 tenant: 'acme',
-                claims: ['scope' => 'invoices.write'],
+                claims: [
+                    'scope' => 'invoices.write',
+                ],
             ),
             callerNamespace: $callerNamespace,
             targetNamespace: 'finance',
@@ -165,7 +170,9 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
             idempotencyKey: 'invoice-1',
             operationBoundaryPolicy: [
                 'authorization' => [
-                    'caller_namespaces' => ['allow' => ['analytics']],
+                    'caller_namespaces' => [
+                        'allow' => ['analytics'],
+                    ],
                 ],
             ],
         );

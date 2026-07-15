@@ -65,13 +65,13 @@ use Workflow\V2\Support\PendingMessageTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\TaskRepair;
-use Workflow\V2\Support\WorkflowExecutionGate;
-use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
-use Workflow\V2\Support\WorkflowTaskPayload;
-use Workflow\V2\Support\WorkflowTaskOwnership;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\WorkflowTaskOwnership;
+use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\V2\Workflow as V2Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -258,7 +258,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->beforeApplicationDestroyed(static function (): void {
             Carbon::setTestNow();
         });
-        config()->set('workflows.v2.workflow_task_lease_seconds', 2);
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 2);
 
         $run = $this->createWaitingRun();
 
@@ -267,7 +268,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -382,18 +384,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
         ]);
 
-        $expected = $this->recordClaimHistory(
-            $run,
-            $task,
-            $projectionCardinality,
-        );
+        $expected = $this->recordClaimHistory($run, $task, $projectionCardinality);
         $this->createClaimProjectionCardinality($run, $projectionCardinality);
         $summaryBeforeClaim = $this->createHistoryBudgetSummary(
             $run,
@@ -412,31 +411,31 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowTask::class,
+            'eloquent.retrieved: ' . WorkflowTask::class,
             static function () use (&$retrievedTasks): void {
                 $retrievedTasks++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.ActivityExecution::class,
+            'eloquent.retrieved: ' . ActivityExecution::class,
             static function () use (&$retrievedActivityExecutions): void {
                 $retrievedActivityExecutions++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowFailure::class,
+            'eloquent.retrieved: ' . WorkflowFailure::class,
             static function () use (&$retrievedFailures): void {
                 $retrievedFailures++;
             },
@@ -500,7 +499,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -541,7 +541,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -590,9 +591,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::disableQueryLog();
 
         $this->assertTrue($result['claimed']);
-        $this->assertSame([
-            ['projectRun', $run->id],
-        ], $customRole->calls);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
         $this->assertFalse($run->relationLoaded('historyEvents'));
         $this->assertFalse(collect($queries)->contains(
             static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
@@ -634,7 +633,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forUpdate($update),
             'connection' => 'redis',
             'queue' => 'default',
@@ -722,7 +722,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
         $completed = $this->bridge->complete($childTask->id, [[
             'type' => 'complete_workflow',
-            'result' => Serializer::serialize(['child_result' => 'ok']),
+            'result' => Serializer::serialize([
+                'child_result' => 'ok',
+            ]),
         ]]);
 
         $this->assertTrue($completed['completed']);
@@ -764,7 +766,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $preUpgradePayload = is_array($resumeTask->payload) ? $resumeTask->payload : [];
         unset($preUpgradePayload['workflow_history_event_id']);
-        $resumeTask->forceFill(['payload' => $preUpgradePayload])->save();
+        $resumeTask->forceFill([
+            'payload' => $preUpgradePayload,
+        ])->save();
         $this->assertArrayNotHasKey('workflow_history_event_id', $resumeTask->refresh()->payload);
 
         $budgetRun = WorkflowRun::query()->findOrFail($parentRun->id);
@@ -776,13 +780,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -929,7 +933,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $completed = $this->bridge->complete($childTask->id, $index === 0
                 ? [[
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                    'result' => Serializer::serialize([
+                        'child_result' => 'ok',
+                    ]),
                 ]]
                 : [[
                     'type' => 'fail_workflow',
@@ -969,13 +975,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -1014,19 +1020,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($summary->task_problem);
         $this->assertSame(1, $summary->exception_count);
         $this->assertCount(2, $waits);
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $waits->pluck('source_status')->all());
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $waits->pluck('source_status')
+            ->all());
         foreach ($waits as $wait) {
             $this->assertSame($resumeTask->id, $wait->task_id);
             $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
         }
         $this->assertEqualsCanonicalizing($resolutions->pluck('id')->all(), $timelineEventIds);
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $lineageStatuses);
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $lineageStatuses);
 
         $this->assertSame(1, $retrievedHistoryEvents);
         $this->assertNotEmpty($retrievedRuns);
@@ -1077,7 +1078,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($signal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1098,7 +1100,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $completed = $this->bridge->complete($childTask->id, $index === 0
                 ? [[
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                    'result' => Serializer::serialize([
+                        'child_result' => 'ok',
+                    ]),
                 ]]
                 : [[
                     'type' => 'fail_workflow',
@@ -1140,13 +1144,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -1191,10 +1195,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertCount(2, $waits);
         $this->assertSame(['resolved', 'resolved'], $waits->pluck('status')->all());
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $waits->pluck('source_status')->all());
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $waits->pluck('source_status')
+            ->all());
         foreach ($waits as $wait) {
             $this->assertTrue($wait->task_backed);
             $this->assertSame($signalTask->id, $wait->task_id);
@@ -1205,13 +1207,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame([
             HistoryEventType::ChildRunCompleted->value,
             HistoryEventType::ChildRunFailed->value,
-        ], $timeline->pluck('type')->all());
+        ], $timeline->pluck('type')
+            ->all());
 
         $this->assertCount(2, $lineage);
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $lineage->pluck('status')->all());
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $lineage->pluck('status') ->all());
         $this->assertSame(['completed', 'failed'], $lineage->pluck('closed_reason')->all());
 
         $this->assertSame(0, $retrievedHistoryEvents);
@@ -1270,7 +1270,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($signal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1285,7 +1286,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Failed->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [
                 'replay_blocked' => true,
                 'replay_blocked_reason' => 'failure_resolution',
@@ -1297,7 +1299,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
 
         (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
-        $this->app->instance(HistoryProjectionRole::class, new class implements HistoryProjectionRole {
+        $this->app->instance(HistoryProjectionRole::class, new class() implements HistoryProjectionRole {
             public function projectRun(WorkflowRun $run): WorkflowRunSummary
             {
                 if (ChildResolutionProjectionContext::projectionFor($run) !== null) {
@@ -1321,7 +1323,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $completed = $this->bridge->complete($childTask->id, $index === 0
                 ? [[
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                    'result' => Serializer::serialize([
+                        'child_result' => 'ok',
+                    ]),
                 ]]
                 : [[
                     'type' => 'fail_workflow',
@@ -1405,7 +1409,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($laterSignal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1443,13 +1448,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -1500,10 +1505,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertCount(2, $waits);
         $this->assertSame(['resolved', 'resolved'], $waits->pluck('status')->all());
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $waits->pluck('source_status')->all());
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $waits->pluck('source_status')
+            ->all());
         foreach ($waits as $wait) {
             $this->assertSame($laterSignalTask->id, $wait->task_id);
             $this->assertSame(TaskStatus::Leased->value, $wait->task_status);
@@ -1513,11 +1516,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame([
             HistoryEventType::ChildRunCompleted->value,
             HistoryEventType::ChildRunFailed->value,
-        ], $timeline->pluck('type')->all());
-        $this->assertSame([
-            RunStatus::Completed->value,
-            RunStatus::Failed->value,
-        ], $lineage->pluck('status')->all());
+        ], $timeline->pluck('type')
+            ->all());
+        $this->assertSame([RunStatus::Completed->value, RunStatus::Failed->value], $lineage->pluck('status') ->all());
         $this->assertSame(['completed', 'failed'], $lineage->pluck('closed_reason')->all());
 
         $this->assertSame(2, $retrievedHistoryEvents);
@@ -1529,7 +1530,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $this->assertFalse($retrievedRun->relationLoaded('failures'));
         }
         $this->assertCount(3, $historyQueries);
-        $this->assertCount(2, $historyQueries->filter(
+        $this->assertCount(3, $historyQueries->filter(
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 1'),
         ));
         $this->assertCount(1, $historyQueries->filter(
@@ -1578,7 +1579,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($signal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1631,7 +1633,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $completedChildTask = $childTasks->last();
         $completed = $this->bridge->complete($completedChildTask->id, [[
             'type' => 'complete_workflow',
-            'result' => Serializer::serialize(['child_result' => 'ok']),
+            'result' => Serializer::serialize([
+                'child_result' => 'ok',
+            ]),
         ]]);
 
         $this->assertTrue($failed['completed']);
@@ -1685,19 +1689,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->orderBy('sequence')
             ->pluck('history_event_id')
             ->all());
-        $this->assertSame([
-            RunStatus::Failed->value,
-            RunStatus::Completed->value,
-        ], WorkflowRunWait::query()
+        $this->assertSame([RunStatus::Failed->value, RunStatus::Completed->value], WorkflowRunWait::query()
             ->where('workflow_run_id', $parentRun->id)
             ->where('kind', 'child')
             ->orderBy('sequence')
             ->pluck('source_status')
             ->all());
-        $this->assertSame([
-            RunStatus::Failed->value,
-            RunStatus::Completed->value,
-        ], WorkflowRunLineageEntry::query()
+        $this->assertSame([RunStatus::Failed->value, RunStatus::Completed->value], WorkflowRunLineageEntry::query()
             ->where('workflow_run_id', $parentRun->id)
             ->where('direction', 'child')
             ->whereIn('lineage_id', $links->pluck('id')->all())
@@ -1737,7 +1735,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($signal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1752,7 +1751,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Failed->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [
                 'replay_blocked' => true,
                 'replay_blocked_reason' => 'failure_resolution',
@@ -1764,7 +1764,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
 
         (new DefaultHistoryProjectionRole())->projectRun(WorkflowRun::query()->findOrFail($parentRun->id));
-        $this->app->instance(HistoryProjectionRole::class, new class implements HistoryProjectionRole {
+        $this->app->instance(HistoryProjectionRole::class, new class() implements HistoryProjectionRole {
             public function projectRun(WorkflowRun $run): WorkflowRunSummary
             {
                 if (ChildResolutionProjectionContext::projectionFor($run) !== null) {
@@ -1855,7 +1855,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($laterSignal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1928,7 +1929,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => WorkflowTaskPayload::forSignal($signal),
             'connection' => 'redis',
             'queue' => 'default',
@@ -1965,9 +1967,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
         $pendingRepair = WorkflowChildProjectionRepair::query()->findOrFail($resolution->id);
         $this->assertNotNull($pendingRepair->failed_child_counted_at);
-        $this->assertSame(1, WorkflowRunSummary::query()
-            ->findOrFail($parentRun->id)
-            ->exception_count);
+        $this->assertSame(1, WorkflowRunSummary::query() ->findOrFail($parentRun->id) ->exception_count);
         $this->assertSame(1, WorkflowTimelineEntry::query()
             ->where('workflow_run_id', $parentRun->id)
             ->where('history_event_id', $resolution->id)
@@ -1979,9 +1979,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertDatabaseMissing('workflow_child_projection_repairs', [
             'workflow_history_event_id' => $resolution->id,
         ]);
-        $this->assertSame(1, WorkflowRunSummary::query()
-            ->findOrFail($parentRun->id)
-            ->exception_count);
+        $this->assertSame(1, WorkflowRunSummary::query() ->findOrFail($parentRun->id) ->exception_count);
         $this->assertSame(1, WorkflowTimelineEntry::query()
             ->where('workflow_run_id', $parentRun->id)
             ->where('history_event_id', $resolution->id)
@@ -2030,7 +2028,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $parentRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Failed->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [
                 'replay_blocked' => true,
                 'replay_blocked_reason' => 'failure_resolution',
@@ -2053,7 +2052,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
         $completed = $this->bridge->complete($childTask->id, [[
             'type' => 'complete_workflow',
-            'result' => Serializer::serialize(['child_result' => 'ok']),
+            'result' => Serializer::serialize([
+                'child_result' => 'ok',
+            ]),
         ]]);
 
         $this->assertTrue($completed['completed']);
@@ -2079,19 +2080,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowTask::class,
+            'eloquent.retrieved: ' . WorkflowTask::class,
             static function () use (&$retrievedTasks): void {
                 $retrievedTasks++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -2111,8 +2112,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->filter(static function (array $query): bool {
                 $sql = strtolower($query['query']);
 
-                return str_starts_with(ltrim($sql), 'select')
-                    && str_contains($sql, 'workflow_tasks');
+                return str_starts_with(ltrim($sql), 'select * from "workflow_tasks"')
+                    || str_starts_with(ltrim($sql), 'select * from `workflow_tasks`')
+                    || str_starts_with(ltrim($sql), 'select * from workflow_tasks');
             })
             ->values();
 
@@ -2438,10 +2440,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame('schedule_activity', $step->command['type']);
         $this->assertSame('demo.second', $step->command['activity_type']);
-        $this->assertSame(
-            ['first-result'],
-            Serializer::unserializeWithCodec('avro', $step->command['arguments']),
-        );
+        $this->assertSame(['first-result'], Serializer::unserializeWithCodec('avro', $step->command['arguments']));
         $this->assertSame([$namespace], $policy->driverNamespaces);
     }
 
@@ -2878,7 +2877,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $this->assertSame($codec, $payload['arguments_envelope']['codec']);
             $this->assertArrayHasKey('external_storage', $payload['arguments_envelope']);
             $this->assertArrayNotHasKey('blob', $payload['arguments_envelope']);
-            $this->assertSame(ExternalPayloadReference::SCHEMA, $payload['arguments_envelope']['external_storage']['schema']);
+            $this->assertSame(
+                ExternalPayloadReference::SCHEMA,
+                $payload['arguments_envelope']['external_storage']['schema']
+            );
         }
     }
 
@@ -2907,8 +2909,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 20);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 100);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 100);
 
         $run = $this->createWaitingRun();
 
@@ -2917,7 +2921,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -2940,22 +2945,20 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $expected['history_fan_out'],
         );
         ConfiguredBridgeWorkflowRunSummary::$retrievedCount = 0;
-        config()->set(
-            'workflows.v2.run_summary_model',
-            ConfiguredBridgeWorkflowRunSummary::class,
-        );
+        config()
+            ->set('workflows.v2.run_summary_model', ConfiguredBridgeWorkflowRunSummary::class);
 
         $retrievedHistoryEvents = 0;
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -2974,14 +2977,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($expected['history_size_bytes'], $result['history_size_bytes']);
         $this->assertSame($expected['history_fan_out'], $result['history_fan_out']);
         $this->assertTrue($result['continue_as_new_recommended']);
-        $this->assertSame(
-            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
-            $result['history_budget_pressure'],
-        );
-        $this->assertSame(
-            $expected['pressure_dimensions'],
-            $result['history_budget_pressure_dimensions'],
-        );
+        $this->assertSame(HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED, $result['history_budget_pressure']);
+        $this->assertSame($expected['pressure_dimensions'], $result['history_budget_pressure_dimensions']);
         $this->assertSame(4, $retrievedHistoryEvents);
         $this->assertSame(1, ConfiguredBridgeWorkflowRunSummary::$retrievedCount);
         $this->assertNotEmpty($retrievedRuns);
@@ -3003,8 +3000,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 100);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 10);
 
         $run = $this->createWaitingRun();
 
@@ -3013,7 +3012,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -3066,13 +3066,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var list<WorkflowRun> $retrievedRuns */
         $retrievedRuns = [];
         Event::listen(
-            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
             static function () use (&$retrievedHistoryEvents): void {
                 $retrievedHistoryEvents++;
             },
         );
         Event::listen(
-            'eloquent.retrieved: '.WorkflowRun::class,
+            'eloquent.retrieved: ' . WorkflowRun::class,
             static function (WorkflowRun $retrievedRun) use (&$retrievedRuns): void {
                 $retrievedRuns[] = $retrievedRun;
             },
@@ -3093,14 +3093,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($expected['history_fan_out'], $result['history_fan_out']);
         $this->assertSame($expected, $boundedBudget);
         $this->assertTrue($result['continue_as_new_recommended']);
-        $this->assertSame(
-            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
-            $result['history_budget_pressure'],
-        );
-        $this->assertSame(
-            $expected['pressure_dimensions'],
-            $result['history_budget_pressure_dimensions'],
-        );
+        $this->assertSame(HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED, $result['history_budget_pressure']);
+        $this->assertSame($expected['pressure_dimensions'], $result['history_budget_pressure_dimensions']);
         $this->assertSame(3, $retrievedHistoryEvents);
         $this->assertNotEmpty($retrievedRuns);
         $this->assertFalse($run->relationLoaded('historyEvents'));
@@ -3122,12 +3116,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             static fn (array $query): bool => str_contains(strtolower($query['query']), 'limit 3'),
         ));
 
-        $incompleteSummary = $this->createHistoryBudgetSummary(
-            $run,
-            $expected['history_event_count'],
-            0,
-            0,
-        );
+        $incompleteSummary = $this->createHistoryBudgetSummary($run, $expected['history_event_count'], 0, 0);
         DB::flushQueryLog();
         DB::enableQueryLog();
         $incompleteSummaryResult = $this->bridge->historyPayloadPaginated($task->id, 23, 2);
@@ -3137,18 +3126,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($incompleteSummaryResult);
         $this->assertHistoryBudgetResponseMatches($expected, $incompleteSummaryResult);
         $this->assertCount(2, $incompleteSummaryResult['history_events']);
-        $this->assertSame(
-            $expected['history_event_count'],
-            $incompleteSummaryResult['total_history_events'],
-        );
-        $this->assertSame(
-            $expected['history_size_bytes'],
-            $incompleteSummaryResult['history_size_bytes'],
-        );
-        $this->assertSame(
-            $expected['history_fan_out'],
-            $incompleteSummaryResult['history_fan_out'],
-        );
+        $this->assertSame($expected['history_event_count'], $incompleteSummaryResult['total_history_events']);
+        $this->assertSame($expected['history_size_bytes'], $incompleteSummaryResult['history_size_bytes']);
+        $this->assertSame($expected['history_fan_out'], $incompleteSummaryResult['history_fan_out']);
         $this->assertTrue($incompleteSummaryResult['continue_as_new_recommended']);
         $this->assertSame(
             $expected['pressure_dimensions'],
@@ -3172,10 +3152,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($staleSummaryResult);
         $this->assertHistoryBudgetResponseMatches($expected, $staleSummaryResult);
-        $this->assertSame(
-            $expected['history_event_count'],
-            $staleSummaryResult['total_history_events'],
-        );
+        $this->assertSame($expected['history_event_count'], $staleSummaryResult['total_history_events']);
         $this->assertSame($expected['history_size_bytes'], $staleSummaryResult['history_size_bytes']);
         $this->assertSame($expected['history_fan_out'], $staleSummaryResult['history_fan_out']);
         $this->assertSame(
@@ -3880,8 +3857,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_type' => 'polyglot.contract.PhpToPythonWorkflow',
             'namespace' => 'default',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -3896,8 +3875,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'connection' => 'redis',
             'queue' => 'polyglot-contract-shared',
             'compatibility' => null,
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
             'last_history_sequence' => 0,
         ]);
 
@@ -3906,7 +3887,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'namespace' => 'default',
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'polyglot-contract-shared',
@@ -3986,9 +3968,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'execution_timeout_seconds' => 30,
         ])->save();
         $run->forceFill([
-            'execution_deadline_at' => now()->addSeconds(28),
+            'execution_deadline_at' => now()
+                ->addSeconds(28),
             'run_timeout_seconds' => 1,
-            'run_deadline_at' => now()->subSecond(),
+            'run_deadline_at' => now()
+                ->subSecond(),
         ])->save();
 
         $task = $this->createLeasedTask($run);
@@ -4039,7 +4023,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testInlineWorkflowAndChildCompletionPreserveCommandResultCodecAcrossSurfaces(): void
     {
         $parentRun = $this->createWaitingRun();
-        $parentRun->forceFill(['payload_codec' => 'avro'])->save();
+        $parentRun->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $parentTask */
         $parentTask = $this->createLeasedTask($parentRun);
@@ -4071,7 +4057,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->bridge->claimStatus($childTask->id, 'external-child-worker');
 
         $codec = 'workflow-serializer-y';
-        $expected = ['child_result' => 'inline'];
+        $expected = [
+            'child_result' => 'inline',
+        ];
         $payload = Serializer::serializeWithCodec($codec, $expected);
         $completed = $this->bridge->complete($childTask->id, [
             [
@@ -4090,7 +4078,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertIsString($storedOutput);
         $this->assertSame($payload, $storedOutput);
         $this->assertFalse(ExternalPayloads::isStoredReference($storedOutput));
-        $this->assertSame(['codec' => $codec, 'blob' => $payload], $childRun->outputEnvelope());
+        $this->assertSame([
+            'codec' => $codec,
+            'blob' => $payload,
+        ], $childRun->outputEnvelope());
         $this->assertSame($expected, $childRun->workflowOutput());
 
         $detail = RunDetailView::forRun($childRun->fresh());
@@ -4162,7 +4153,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testResultlessChildCompletionDoesNotRequireAnOutputCodecForLiveOrExportedReplay(): void
     {
         $parentRun = $this->createWaitingRun();
-        $parentRun->forceFill(['payload_codec' => 'avro'])->save();
+        $parentRun->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $parentTask */
         $parentTask = $this->createLeasedTask($parentRun);
@@ -4208,9 +4201,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->firstOrFail();
         $workflowCompletedPayload = $workflowCompleted->payload;
         unset($workflowCompletedPayload['payload_codec']);
-        $workflowCompleted->forceFill(['payload' => $workflowCompletedPayload])->save();
+        $workflowCompleted->forceFill([
+            'payload' => $workflowCompletedPayload,
+        ])->save();
 
-        $childRun->forceFill(['output_payload_codec' => null])->save();
+        $childRun->forceFill([
+            'output_payload_codec' => null,
+        ])->save();
         /** @var WorkflowRun $childRun */
         $childRun = $childRun->fresh(['historyEvents']);
 
@@ -4246,11 +4243,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testLegacyInlineWorkflowOutputWithoutProjectedCodecFailsExplicitly(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
-        $payload = Serializer::serializeWithCodec('workflow-serializer-y', ['legacy' => true]);
+        $payload = Serializer::serializeWithCodec('workflow-serializer-y', [
+            'legacy' => true,
+        ]);
 
         $this->bridge->complete($task->id, [
             [
@@ -4267,10 +4268,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->firstOrFail();
         $legacyPayload = $completion->payload;
         unset($legacyPayload['payload_codec']);
-        $completion->forceFill(['payload' => $legacyPayload])->save();
+        $completion->forceFill([
+            'payload' => $legacyPayload,
+        ])->save();
 
         $run->refresh();
-        $run->forceFill(['output_payload_codec' => null])->save();
+        $run->forceFill([
+            'output_payload_codec' => null,
+        ])->save();
         $run->refresh();
 
         foreach ([
@@ -4310,13 +4315,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
 
         $run = $this->createWaitingRun('default');
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
 
         $codec = 'workflow-serializer-y';
-        $expected = ['message' => str_repeat('Y', 64)];
+        $expected = [
+            'message' => str_repeat('Y', 64),
+        ];
         $payload = Serializer::serializeWithCodec($codec, $expected);
 
         $result = $this->bridge->complete($task->id, [
@@ -4355,13 +4364,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
 
         $run = $this->createWaitingRun('default');
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
 
         $codec = 'workflow-serializer-y';
-        $expected = ['message' => str_repeat('Y', 64)];
+        $expected = [
+            'message' => str_repeat('Y', 64),
+        ];
         $payload = Serializer::serializeWithCodec($codec, $expected);
 
         $result = $this->bridge->complete($task->id, [
@@ -4441,7 +4454,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($failureEvent);
         $this->assertSame('compensation failed for unknown: activity failed', $failureEvent->payload['message']);
         $this->assertSame('TypedCancelFlightError', $failureEvent->payload['exception_type']);
-        $this->assertSame('cancel_flight typed compensation failure', $failureEvent->payload['exception']['message'] ?? null);
+        $this->assertSame(
+            'cancel_flight typed compensation failure',
+            $failureEvent->payload['exception']['message'] ?? null
+        );
 
         $failure = WorkflowFailure::query()
             ->where('workflow_run_id', $run->id)
@@ -4515,7 +4531,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ];
 
         foreach ($cases as $label => $command) {
-            $result = $this->bridge->complete('missing-task-'.$label, [$command]);
+            $result = $this->bridge->complete('missing-task-' . $label, [$command]);
 
             $this->assertFalse($result['completed'], $label);
             $this->assertSame('invalid_commands', $result['reason'], $label);
@@ -4656,10 +4672,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ExternalPayloadReference::SCHEMA,
             $event->payload['result']['external_storage']['schema'],
         );
-        $this->assertSame(
-            $serialized,
-            ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null),
-        );
+        $this->assertSame($serialized, ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null));
     }
 
     public function testCompleteExternalizesSideEffectResultWithCommandPayloadCodec(): void
@@ -5017,7 +5030,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $updateCompletion = $this->bridge->complete($updateTask->id, [[
             'type' => 'complete_update',
             'update_id' => $update->id,
-            'result' => Serializer::serializeWithCodec('avro', ['approved' => true]),
+            'result' => Serializer::serializeWithCodec('avro', [
+                'approved' => true,
+            ]),
         ]]);
 
         $this->assertTrue($updateCompletion['completed']);
@@ -5035,7 +5050,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $replayedCompletion = $this->bridge->complete($updateTask->id, [[
             'type' => 'complete_update',
             'update_id' => $update->id,
-            'result' => Serializer::serializeWithCodec('avro', ['approved' => true]),
+            'result' => Serializer::serializeWithCodec('avro', [
+                'approved' => true,
+            ]),
         ]]);
 
         $this->assertFalse($replayedCompletion['completed']);
@@ -5277,10 +5294,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ExternalPayloadReference::SCHEMA,
             $event->payload['result']['external_storage']['schema'],
         );
-        $this->assertSame(
-            $resultPayload,
-            ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null),
-        );
+        $this->assertSame($resultPayload, ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null));
 
         $updateRows = RunUpdateView::forRun($run->fresh());
         $updateRow = collect($updateRows)
@@ -5647,7 +5661,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
 
         $run = $this->createWaitingRun('default');
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -5684,7 +5700,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame($codec, $scheduledEvent->payload['activity']['payload_codec'] ?? null);
         $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['codec'] ?? null);
-        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null);
+        $this->assertSame(
+            $codec,
+            $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null
+        );
     }
 
     public function testCompleteSchedulesActivityPreservesArgumentsEnvelopeCodec(): void
@@ -5696,7 +5715,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
 
         $run = $this->createWaitingRun('default');
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -5733,7 +5754,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame($codec, $scheduledEvent->payload['activity']['payload_codec'] ?? null);
         $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['codec'] ?? null);
-        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null);
+        $this->assertSame(
+            $codec,
+            $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null
+        );
     }
 
     public function testCompleteSchedulesTimer(): void
@@ -6271,7 +6295,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'signal_name' => 'advance',
             'signal_wait_id' => $waitId,
             'sequence' => 1,
-            'value' => Serializer::serialize(['late' => true]),
+            'value' => Serializer::serialize([
+                'late' => true,
+            ]),
         ]);
 
         $wait = collect(\Workflow\V2\Support\SignalWaits::forRun($run))
@@ -6290,12 +6316,16 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $matching = $this->recordReceivedSignal($run, 'advance', 'signal-wait-advance');
 
         $unrelated->forceFill([
-            'received_at' => now()->subSeconds(2),
-            'created_at' => now()->subSeconds(2),
+            'received_at' => now()
+                ->subSeconds(2),
+            'created_at' => now()
+                ->subSeconds(2),
         ])->save();
         $matching->forceFill([
-            'received_at' => now()->subSecond(),
-            'created_at' => now()->subSecond(),
+            'received_at' => now()
+                ->subSecond(),
+            'created_at' => now()
+                ->subSecond(),
         ])->save();
 
         /** @var WorkflowTask $task */
@@ -6639,12 +6669,16 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $resumeTask = $this->createLeasedTask($run);
 
         $first->forceFill([
-            'received_at' => now()->subSeconds(2),
-            'created_at' => now()->subSeconds(2),
+            'received_at' => now()
+                ->subSeconds(2),
+            'created_at' => now()
+                ->subSeconds(2),
         ])->save();
         $second->forceFill([
-            'received_at' => now()->subSecond(),
-            'created_at' => now()->subSecond(),
+            'received_at' => now()
+                ->subSecond(),
+            'created_at' => now()
+                ->subSecond(),
         ])->save();
 
         $resumeTask->forceFill([
@@ -6684,7 +6718,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $signalTask->forceFill([
             'status' => TaskStatus::Leased->value,
             'lease_owner' => 'external-worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ])->save();
 
         $secondResult = $this->bridge->complete($signalTask->id, [
@@ -6719,16 +6754,22 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $resumeTask = $this->createLeasedTask($run);
 
         $first->forceFill([
-            'received_at' => now()->subSeconds(3),
-            'created_at' => now()->subSeconds(3),
+            'received_at' => now()
+                ->subSeconds(3),
+            'created_at' => now()
+                ->subSeconds(3),
         ])->save();
         $third->forceFill([
-            'received_at' => now()->subSeconds(2),
-            'created_at' => now()->subSeconds(2),
+            'received_at' => now()
+                ->subSeconds(2),
+            'created_at' => now()
+                ->subSeconds(2),
         ])->save();
         $second->forceFill([
-            'received_at' => now()->subSecond(),
-            'created_at' => now()->subSecond(),
+            'received_at' => now()
+                ->subSecond(),
+            'created_at' => now()
+                ->subSecond(),
         ])->save();
 
         $resumeTask->forceFill([
@@ -6776,18 +6817,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
             ->get()
-            ->first(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $first->id);
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $first->id
+            );
 
         $this->assertNotNull($firstSatisfied);
         $this->assertSame(1, $firstSatisfied->payload['sequence'] ?? null);
-        $this->assertNotNull(WorkflowCommand::query()
-            ->whereKey($first->workflow_command_id)
-            ->value('applied_at'));
+        $this->assertNotNull(WorkflowCommand::query() ->whereKey($first->workflow_command_id) ->value('applied_at'));
 
         $signalTask->forceFill([
             'status' => TaskStatus::Leased->value,
             'lease_owner' => 'external-worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ])->save();
 
         $secondResult = $this->bridge->complete($signalTask->id, [
@@ -6816,7 +6858,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
             ->get()
-            ->first(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $second->id);
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $second->id
+            );
 
         $this->assertNotNull($secondSatisfied);
         $this->assertSame($second->workflow_sequence, $secondSatisfied->payload['sequence'] ?? null);
@@ -6824,6 +6868,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->whereIn('id', [$first->id, $second->id, $third->id])
             ->orderBy('command_sequence')
             ->pluck('status')
+            ->map(static fn (SignalStatus $status): string => $status->value)
             ->all());
     }
 
@@ -6977,7 +7022,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompleteStartsChildWorkflowPreservesArgumentsEnvelopeCodec(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -7124,7 +7171,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $closed = $this->bridge->complete($parentCloseTask->id, [
             [
                 'type' => 'complete_workflow',
-                'result' => Serializer::serialize(['parent' => 'done']),
+                'result' => Serializer::serialize([
+                    'parent' => 'done',
+                ]),
             ],
         ]);
 
@@ -7290,7 +7339,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $completed = $this->bridge->complete($continuedTask->id, [
             [
                 'type' => 'complete_workflow',
-                'result' => Serializer::serialize(['child' => 'done']),
+                'result' => Serializer::serialize([
+                    'child' => 'done',
+                ]),
             ],
         ]);
 
@@ -7390,7 +7441,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $closed = $this->bridge->complete($parentCloseTask->id, [
             [
                 'type' => 'complete_workflow',
-                'result' => Serializer::serialize(['parent' => 'done']),
+                'result' => Serializer::serialize([
+                    'parent' => 'done',
+                ]),
             ],
         ]);
 
@@ -7516,7 +7569,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $completed = $this->bridge->complete($childTask->id, [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                    'result' => Serializer::serialize([
+                        'child_result' => 'ok',
+                    ]),
                 ],
             ]);
         } finally {
@@ -7586,7 +7641,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $closed = $this->bridge->complete($parentCloseTask->id, [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serialize(['parent' => 'done']),
+                    'result' => Serializer::serialize([
+                        'parent' => 'done',
+                    ]),
                 ],
             ]);
         } finally {
@@ -8000,6 +8057,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'resume_source_id' => $link->child_workflow_run_id,
             'workflow_history_event_id' => $childCompleted->id,
             'child_call_id' => $link->id,
+            'child_workflow_run_id' => $link->child_workflow_run_id,
             'workflow_sequence' => 1,
             'workflow_event_type' => HistoryEventType::ChildRunCompleted->value,
         ], $parentResumeTask->payload);
@@ -8042,11 +8100,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     {
         $run = $this->createWaitingRun();
         $now = now();
-        $executionDeadline = $now->copy()->addMinutes(10);
+        $executionDeadline = $now->copy()
+            ->addMinutes(10);
         $run->forceFill([
             'run_timeout_seconds' => 90,
             'execution_deadline_at' => $executionDeadline,
-            'run_deadline_at' => $now->copy()->addSeconds(15),
+            'run_deadline_at' => $now->copy()
+                ->addSeconds(15),
         ])->save();
 
         /** @var WorkflowTask $task */
@@ -8309,7 +8369,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompleteContinueAsNewPreservesArgumentsEnvelopeCodec(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -8863,7 +8925,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
     private function bindThrowingHistoryProjectionRole(): void
     {
-        $this->app->instance(HistoryProjectionRole::class, new class implements HistoryProjectionRole {
+        $this->app->instance(HistoryProjectionRole::class, new class() implements HistoryProjectionRole {
             public function projectRun(WorkflowRun $run): WorkflowRunSummary
             {
                 throw new RuntimeException('projection unavailable');
@@ -8906,8 +8968,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     private function bindNamespacedExternalPayloadPolicy(
         ExternalPayloadStorageDriver $driver,
         string $namespace,
-    ): NamespacedExternalPayloadStoragePolicy
-    {
+    ): NamespacedExternalPayloadStoragePolicy {
         $policy = new NamespacedExternalPayloadStoragePolicy($driver, $namespace);
 
         $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
@@ -9119,8 +9180,10 @@ SQL);
     private function assertHistoryBudgetPressureResponses(string $dimension): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 1_000_000);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1_000_000_000);
-        config()->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 1_000_000);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1_000_000_000);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_fan_out_threshold', 1_000_000);
 
         match ($dimension) {
             HistoryBudget::DIMENSION_EVENT_COUNT => config()->set(
@@ -9145,7 +9208,8 @@ SQL);
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -9176,15 +9240,9 @@ SQL);
         $expected = HistoryBudget::forRun($run);
         $this->assertSame(1, $expected['history_event_count']);
         $this->assertGreaterThan(0, $expected['history_size_bytes']);
-        $this->assertSame(
-            $dimension === HistoryBudget::DIMENSION_FAN_OUT ? 12 : 0,
-            $expected['history_fan_out'],
-        );
+        $this->assertSame($dimension === HistoryBudget::DIMENSION_FAN_OUT ? 12 : 0, $expected['history_fan_out']);
         $this->assertTrue($expected['continue_as_new_recommended']);
-        $this->assertSame(
-            HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED,
-            $expected['pressure'],
-        );
+        $this->assertSame(HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED, $expected['pressure']);
         $this->assertSame([$dimension], $expected['pressure_dimensions']);
 
         $this->createHistoryBudgetSummary(
@@ -9199,10 +9257,7 @@ SQL);
 
         $this->assertIsArray($fullResponse);
         $this->assertIsArray($paginatedResponse);
-        $this->assertSame(
-            WorkerHistoryPayloadContract::FULL_RESPONSE_REQUIRED_FIELDS,
-            array_keys($fullResponse),
-        );
+        $this->assertSame(WorkerHistoryPayloadContract::FULL_RESPONSE_REQUIRED_FIELDS, array_keys($fullResponse));
         $this->assertSame(
             WorkerHistoryPayloadContract::PAGINATED_RESPONSE_REQUIRED_FIELDS,
             array_keys($paginatedResponse),
@@ -9240,11 +9295,8 @@ SQL);
      *     pressure_dimensions: list<string>
      * }
      */
-    private function recordClaimHistory(
-        WorkflowRun $run,
-        WorkflowTask $task,
-        int $eventCount,
-    ): array {
+    private function recordClaimHistory(WorkflowRun $run, WorkflowTask $task, int $eventCount): array
+    {
         for ($sequence = 1; $sequence <= $eventCount; $sequence++) {
             if ($sequence === 1) {
                 WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
@@ -9279,7 +9331,8 @@ SQL);
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Completed->value,
-                'available_at' => now()->subMinute(),
+                'available_at' => now()
+                    ->subMinute(),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -9292,8 +9345,10 @@ SQL);
                 'activity_class' => 'BoundedClaimActivity',
                 'activity_type' => 'bounded-claim-activity',
                 'status' => ActivityStatus::Completed->value,
-                'started_at' => now()->subMinutes(2),
-                'closed_at' => now()->subMinute(),
+                'started_at' => now()
+                    ->subMinutes(2),
+                'closed_at' => now()
+                    ->subMinute(),
             ]);
 
             WorkflowFailure::query()->create([
@@ -9327,7 +9382,8 @@ SQL);
             'workflow_type' => $run->workflow_type,
             'namespace' => $run->namespace,
             'status' => $run->status->value,
-            'status_bucket' => $run->status->statusBucket()->value,
+            'status_bucket' => $run->status->statusBucket()
+->value,
             'history_event_count' => $historyEventCount,
             'history_size_bytes' => $historySizeBytes,
             'history_fan_out' => $historyFanOut,
@@ -9338,7 +9394,7 @@ SQL);
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-workflow-task-bridge-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-workflow-task-bridge-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -9360,7 +9416,7 @@ SQL);
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

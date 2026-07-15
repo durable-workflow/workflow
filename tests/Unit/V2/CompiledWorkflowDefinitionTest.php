@@ -17,10 +17,7 @@ final class CompiledWorkflowDefinitionTest extends TestCase
     {
         $schema = CompiledWorkflowDefinition::schema();
 
-        $this->assertSame(
-            'durable-workflow.v2.compiled-workflow-ir',
-            $schema['properties']['schema']['const'],
-        );
+        $this->assertSame('durable-workflow.v2.compiled-workflow-ir', $schema['properties']['schema']['const']);
         $this->assertSame(1, $schema['properties']['schema_version']['const']);
         $this->assertContains('steps', $schema['required']);
         $this->assertContains(
@@ -143,25 +140,47 @@ final class CompiledWorkflowDefinitionTest extends TestCase
         $this->expectExceptionMessage('duplicated');
 
         ServerlessWorkflowCompiler::compile($this->serverlessWorkflowDocument('1.0.0', [
-            ['name' => 'Validate Order', 'type' => 'operation'],
-            ['name' => 'Validate Order', 'type' => 'operation'],
+            [
+                'name' => 'Validate Order',
+                'type' => 'operation',
+            ],
+            [
+                'name' => 'Validate Order',
+                'type' => 'operation',
+            ],
         ]));
     }
 
     public function testVersionSelectorSupportsExactAndHighestSemanticVersionSelection(): void
     {
         $v1 = ServerlessWorkflowCompiler::compile(
-            $this->serverlessWorkflowDocument('1.0.0', [['name' => 'Start', 'type' => 'operation', 'end' => true]]),
+            $this->serverlessWorkflowDocument('1.0.0', [[
+                'name' => 'Start',
+                'type' => 'operation',
+                'end' => true,
+            ]]),
         );
         $v2 = ServerlessWorkflowCompiler::compile(
-            $this->serverlessWorkflowDocument('2.0.0', [['name' => 'Start', 'type' => 'operation', 'end' => true]]),
+            $this->serverlessWorkflowDocument('2.0.0', [[
+                'name' => 'Start',
+                'type' => 'operation',
+                'end' => true,
+            ]]),
         );
 
         $selected = WorkflowDefinitionVersionSelector::select([$v2, $v1], '1.0.0');
         $latest = WorkflowDefinitionVersionSelector::select([$v1, $v2]);
         $compiledSelected = ServerlessWorkflowCompiler::compileSelected([
-            $this->serverlessWorkflowDocument('1.0.0', [['name' => 'Start', 'type' => 'operation', 'end' => true]]),
-            $this->serverlessWorkflowDocument('2.0.0', [['name' => 'Start', 'type' => 'operation', 'end' => true]]),
+            $this->serverlessWorkflowDocument('1.0.0', [[
+                'name' => 'Start',
+                'type' => 'operation',
+                'end' => true,
+            ]]),
+            $this->serverlessWorkflowDocument('2.0.0', [[
+                'name' => 'Start',
+                'type' => 'operation',
+                'end' => true,
+            ]]),
         ], '2.0.0');
 
         $this->assertSame('1.0.0', $selected['definition_version']);

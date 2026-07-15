@@ -22,8 +22,15 @@ final class PolyglotAvroEnvelopeTest extends TestCase
             3.14,
             'polyglot',
             'hello',
-            ['a' => 1, 'b' => 'two', 'c' => [1, 2, 3]],
-            [1, 'two', 3.0, null, true, ['nested' => 'map']],
+            [
+                'a' => 1,
+                'b' => 'two',
+                'c' => [1, 2, 3],
+            ],
+            [
+                1, 'two', 3.0, null, true, [
+                    'nested' => 'map',
+                ]],
         ];
 
         foreach ($values as $value) {
@@ -37,7 +44,9 @@ final class PolyglotAvroEnvelopeTest extends TestCase
 
     public function testEnvelopeBlobUsesGenericWrapperPrefix(): void
     {
-        $envelope = Avro::envelope(['polyglot' => true]);
+        $envelope = Avro::envelope([
+            'polyglot' => true,
+        ]);
         $raw = base64_decode($envelope['blob'], strict: true);
 
         $this->assertNotFalse($raw);
@@ -47,12 +56,15 @@ final class PolyglotAvroEnvelopeTest extends TestCase
 
     public function testDecodeEnvelopeAcceptsRawBlobWhenCodecIsKnownFromTask(): void
     {
-        $envelope = Avro::envelope(['runtime' => 'python', 'length' => 8]);
+        $envelope = Avro::envelope([
+            'runtime' => 'python',
+            'length' => 8,
+        ]);
 
-        $this->assertSame(
-            ['runtime' => 'python', 'length' => 8],
-            Avro::decodeEnvelope($envelope['blob']),
-        );
+        $this->assertSame([
+            'runtime' => 'python',
+            'length' => 8,
+        ], Avro::decodeEnvelope($envelope['blob']),);
     }
 
     public function testDecodeEnvelopeRejectsEngineSpecificCodec(): void

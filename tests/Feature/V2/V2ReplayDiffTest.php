@@ -23,7 +23,8 @@ final class V2ReplayDiffTest extends TestCase
     public function testReplayDiffReportsCleanReplayForFreshBundle(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'replay-diff-clean');
@@ -51,7 +52,8 @@ final class V2ReplayDiffTest extends TestCase
     public function testReplayDiffSurfacesShapeMismatchAsDrift(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'replay-diff-drifted');
@@ -94,7 +96,8 @@ final class V2ReplayDiffTest extends TestCase
     public function testReplayDiffSurfacesSameShapeActivityTypeDrift(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'replay-diff-activity-type-drift');
@@ -139,7 +142,10 @@ final class V2ReplayDiffTest extends TestCase
     public function testReplayDiffReportsBundleInvalidWhenSchemaMissing(): void
     {
         $report = (new ReplayDiff())->diffExport([
-            'workflow' => ['run_id' => 'r-1', 'instance_id' => 'i-1'],
+            'workflow' => [
+                'run_id' => 'r-1',
+                'instance_id' => 'i-1',
+            ],
         ]);
 
         $this->assertSame(ReplayDiff::STATUS_FAILED, $report['status']);

@@ -152,7 +152,11 @@ final class QueryStateReplayer
                     true
                 )) {
                     if ($execution !== null) {
-                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::ACTIVITY);
+                        WorkflowStepHistory::assertTypedHistoryRecorded(
+                            $run,
+                            $historySequence,
+                            WorkflowStepHistory::ACTIVITY
+                        );
                     }
 
                     $this->applyRecordedUpdates($run, $workflow, $historySequence);
@@ -229,7 +233,11 @@ final class QueryStateReplayer
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
                     if ($timer !== null) {
-                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $historySequence, WorkflowStepHistory::TIMER);
+                        WorkflowStepHistory::assertTypedHistoryRecorded(
+                            $run,
+                            $historySequence,
+                            WorkflowStepHistory::TIMER
+                        );
                     }
 
                     $this->applyRecordedUpdates($run, $workflow, $historySequence);
@@ -300,7 +308,11 @@ final class QueryStateReplayer
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
                 $this->applyRecordedUpdates($run, $workflow, $historySequence);
-                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT);
+                WorkflowStepHistory::assertCompatible(
+                    $run,
+                    $historySequence,
+                    WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT
+                );
 
                 $upsertEvent = $this->searchAttributesUpsertedEvent($run, $historySequence);
 
@@ -526,8 +538,12 @@ final class QueryStateReplayer
                             ? WorkflowStepHistory::ACTIVITY
                             : WorkflowStepHistory::CHILD_WORKFLOW,
                         $call instanceof ActivityCall
-                            ? ['activity_type' => $call->activity]
-                            : ['child_workflow_type' => $call->workflow],
+                            ? [
+                                'activity_type' => $call->activity,
+                            ]
+                            : [
+                                'child_workflow_type' => $call->workflow,
+                            ],
                     );
 
                     if ($call instanceof ActivityCall) {
@@ -1140,7 +1156,9 @@ final class QueryStateReplayer
     {
         $serialized = ExternalPayloads::payloadBlob(
             $event->payload['result'] ?? null,
-            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue(
+                $run?->payload_codec ?? null
+            ),
             is_string($run?->namespace) ? $run->namespace : null,
         );
 
@@ -1350,8 +1368,7 @@ final class QueryStateReplayer
     private static function serviceOperationStartedEventIsVisible(
         WorkflowHistoryEvent $event,
         ServiceOperationCall $call,
-    ): bool
-    {
+    ): bool {
         if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
             return true;
         }
@@ -1505,7 +1522,7 @@ final class QueryStateReplayer
         $signalWaitId = $this->stringValue($event->payload['signal_wait_id'] ?? null);
 
         if ($signalWaitId !== null) {
-            return 'signal-wait:'.$signalWaitId;
+            return 'signal-wait:' . $signalWaitId;
         }
 
         if ($eventType !== HistoryEventType::SignalApplied->value) {
@@ -1514,7 +1531,7 @@ final class QueryStateReplayer
 
         $signalId = $this->stringValue($event->payload['signal_id'] ?? null);
 
-        return $signalId === null ? null : 'signal:'.$signalId;
+        return $signalId === null ? null : 'signal:' . $signalId;
     }
 
     private function hasWorkflowCommandSequence(?string $type): bool

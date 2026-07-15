@@ -11,9 +11,7 @@ use Workflow\Serializers\Y;
 
 final class EncodeTest extends TestCase
 {
-    /**
-     * @dataProvider dataProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('dataProvider')]
     public function testYEncode(string $bytes): void
     {
         config([
@@ -23,9 +21,7 @@ final class EncodeTest extends TestCase
         $this->assertSame($bytes, $decoded);
     }
 
-    /**
-     * @dataProvider dataProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('dataProvider')]
     public function testBase64Encode(string $bytes): void
     {
         config([

@@ -211,10 +211,7 @@ final class ChildProjectionRepairStore
     private static function query(): Builder
     {
         /** @var Builder<WorkflowChildProjectionRepair> $query */
-        $query = ConfiguredV2Models::query(
-            'child_projection_repair_model',
-            WorkflowChildProjectionRepair::class,
-        );
+        $query = ConfiguredV2Models::query('child_projection_repair_model', WorkflowChildProjectionRepair::class);
 
         return $query;
     }

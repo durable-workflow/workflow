@@ -93,7 +93,13 @@ final class EmbeddedV2ImportContract
                 'conflicting_existing_run' => 'rejected before writing any rows',
             ],
             'visibility_and_audit' => [
-                'workflow_run_columns' => ['import_source', 'import_id', 'import_dedupe_key', 'import_contract_version', 'imported_at'],
+                'workflow_run_columns' => [
+                    'import_source',
+                    'import_id',
+                    'import_dedupe_key',
+                    'import_contract_version',
+                    'imported_at',
+                ],
                 'summary_engine_source' => self::ENGINE_SOURCE,
                 'detail_fields' => ['engine_source', 'import_source', 'import_id', 'import_dedupe_key', 'imported_at'],
             ],

@@ -105,10 +105,7 @@ class WorkflowHistoryEvent extends Model
                     'last_history_sequence' => $sequence,
                     'last_progress_at' => $now,
                 ]);
-                $run->syncOriginalAttributes([
-                    'last_history_sequence',
-                    'last_progress_at',
-                ]);
+                $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
 
                 return $event;
             });

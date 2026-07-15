@@ -1606,11 +1606,12 @@ final class V2WebhookWorkflowTest extends TestCase
         ])->assertStatus(202);
 
         $path = '/webhooks/instances/order-update-webhook-idempotent-queued/updates/approve';
-        $first = $this->withHeader('X-Request-Id', 'queued-update-request-1')->postJson($path, [
-            'wait_for' => 'completed',
-            'wait_timeout_seconds' => 1,
-            'arguments' => [true, 'idempotent'],
-        ]);
+        $first = $this->withHeader('X-Request-Id', 'queued-update-request-1')
+            ->postJson($path, [
+                'wait_for' => 'completed',
+                'wait_timeout_seconds' => 1,
+                'arguments' => [true, 'idempotent'],
+            ]);
 
         $first
             ->assertStatus(202)
@@ -1619,10 +1620,11 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('wait_for', 'completed')
             ->assertJsonPath('wait_timed_out', true);
 
-        $second = $this->withHeader('X-Request-Id', 'queued-update-request-1')->postJson($path, [
-            'wait_for' => 'accepted',
-            'arguments' => [true, 'idempotent'],
-        ]);
+        $second = $this->withHeader('X-Request-Id', 'queued-update-request-1')
+            ->postJson($path, [
+                'wait_for' => 'accepted',
+                'arguments' => [true, 'idempotent'],
+            ]);
 
         $second
             ->assertStatus(202)
@@ -1649,10 +1651,11 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $this->runReadyWorkflowTask($workflow->runId());
 
-        $completed = $this->withHeader('X-Request-Id', 'queued-update-request-1')->postJson($path, [
-            'wait_for' => 'accepted',
-            'arguments' => [true, 'idempotent'],
-        ]);
+        $completed = $this->withHeader('X-Request-Id', 'queued-update-request-1')
+            ->postJson($path, [
+                'wait_for' => 'accepted',
+                'arguments' => [true, 'idempotent'],
+            ]);
 
         $completed
             ->assertStatus(200)
@@ -3506,7 +3509,7 @@ final class V2WebhookWorkflowTest extends TestCase
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-webhook-worker-payloads-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-webhook-worker-payloads-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -3528,7 +3531,7 @@ final class V2WebhookWorkflowTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

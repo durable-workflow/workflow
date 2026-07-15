@@ -38,8 +38,8 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -58,12 +58,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *
      * @var list<string>
      */
-    private const PROJECTION_RUN_RELATIONS = [
-        'instance',
-        'tasks',
-        'activityExecutions',
-        'failures',
-    ];
+    private const PROJECTION_RUN_RELATIONS = ['instance', 'tasks', 'activityExecutions', 'failures'];
 
     /**
      * Projection relations for call sites that also need to see active timer
@@ -166,8 +161,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         /** @var class-string<WorkflowRun> $runModel */
         $runModel = ConfiguredV2Models::resolve('run_model', WorkflowRun::class);
 
-        $taskTable = (new $taskModel)->getTable();
-        $runTable = (new $runModel)->getTable();
+        $taskTable = (new $taskModel())->getTable();
+        $runTable = (new $runModel())->getTable();
 
         // Polyglot routing fix: when the caller filters by workflow_type, we
         // join workflow_tasks to workflow_runs and constrain the join's
@@ -184,46 +179,41 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         // supports. We always return `$taskTable.*` so downstream Eloquent
         // hydration sees the WorkflowTask shape it expects.
         $query = $taskModel::query()
-            ->select($taskTable.'.*')
-            ->where($taskTable.'.task_type', TaskType::Workflow->value)
-            ->where($taskTable.'.status', TaskStatus::Ready->value)
+            ->select($taskTable . '.*')
+            ->where($taskTable . '.task_type', TaskType::Workflow->value)
+            ->where($taskTable . '.status', TaskStatus::Ready->value)
             ->where(static function ($q) use ($availabilityCutoff, $taskTable) {
-                $q->whereNull($taskTable.'.available_at')
-                    ->orWhere($taskTable.'.available_at', '<=', $availabilityCutoff);
+                $q->whereNull($taskTable . '.available_at')
+                    ->orWhere($taskTable . '.available_at', '<=', $availabilityCutoff);
             })
             // Dispatch order is (priority asc, available_at asc, id) so urgent
             // tasks lead and FIFO order is preserved within a tier. Fairness
             // across workload classes (fairness_key) is a separate reorder pass
             // applied to the candidate batch by the caller.
-            ->orderBy($taskTable.'.priority')
-            ->orderBy($taskTable.'.available_at')
-            ->orderBy($taskTable.'.id')
+            ->orderBy($taskTable . '.priority')
+            ->orderBy($taskTable . '.available_at')
+            ->orderBy($taskTable . '.id')
             ->limit(max(1, min($limit, self::POLL_BATCH_CAP)));
 
         if ($connection !== null) {
-            $query->where($taskTable.'.connection', $connection);
+            $query->where($taskTable . '.connection', $connection);
         }
 
         if ($queue !== null) {
-            $query->where($taskTable.'.queue', $queue);
+            $query->where($taskTable . '.queue', $queue);
         }
 
         if ($compatibility !== null) {
-            $query->where($taskTable.'.compatibility', $compatibility);
+            $query->where($taskTable . '.compatibility', $compatibility);
         }
 
         if ($namespace !== null) {
-            $query->where($taskTable.'.namespace', $namespace);
+            $query->where($taskTable . '.namespace', $namespace);
         }
 
         if ($requestedWorkflowTypes !== []) {
-            $query->join(
-                $runTable,
-                $runTable.'.id',
-                '=',
-                $taskTable.'.workflow_run_id',
-            )
-                ->whereIn($runTable.'.workflow_type', $requestedWorkflowTypes);
+            $query->join($runTable, $runTable . '.id', '=', $taskTable . '.workflow_run_id')
+                ->whereIn($runTable . '.workflow_type', $requestedWorkflowTypes);
         }
 
         $tasks = $query->get();
@@ -484,7 +474,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $historyBudgetPayload = WorkerHistoryPayloadContract::fromBudget($historyBudget);
 
         $lastEventSequence = $historyEvents->isNotEmpty()
-            ? (int) $historyEvents->last()->sequence
+            ? (int) $historyEvents->last()
+->sequence
             : null;
 
         return [
@@ -568,7 +559,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 return $this->executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
-            DB::transaction(function () use ($taskId, $throwable): void {
+            DB::transaction(static function () use ($taskId, $throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -621,7 +612,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
     {
-        return DB::transaction(function () use ($taskId, $failure): array {
+        return DB::transaction(static function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -822,7 +813,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     {
         $parsed = self::parseCommands($commands);
 
-        if ($parsed === null) {
+        if ($parsed === null && $commands !== []) {
             return [
                 'completed' => false,
                 'task_id' => $taskId,
@@ -839,6 +830,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->lockForUpdate()
                 ->find($taskId);
 
+            if ($parsed === null && ($task === null || ! self::isSignalResumeTask($task))) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task?->workflow_run_id,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => 'invalid_commands',
+                ];
+            }
+
             if ($task === null || $task->task_type !== TaskType::Workflow) {
                 return [
                     'completed' => false,
@@ -849,6 +851,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
                 ];
             }
+
+            $parsed ??= [
+                'non_terminal' => [],
+                'terminal' => null,
+            ];
 
             if ($task->status !== TaskStatus::Leased) {
                 return [
@@ -966,24 +973,27 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 is_string($run->namespace) ? $run->namespace : null,
             )
             : null;
+        $resultCodec = $result === null ? null : $outputCodec;
 
         $run->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
             'output' => $result,
-            'output_payload_codec' => $outputCodec,
+            'output_payload_codec' => $resultCodec,
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
-            'output' => ExternalPayloads::historyValue(
-                $result,
-                $outputCodec,
-                is_string($run->namespace) ? $run->namespace : null,
-            ),
-            'payload_codec' => $outputCodec,
-        ], $task);
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, array_filter([
+            'output' => $result === null
+                ? null
+                : ExternalPayloads::historyValue(
+                    $result,
+                    $outputCodec,
+                    is_string($run->namespace) ? $run->namespace : null,
+                ),
+            'payload_codec' => $resultCodec,
+        ], static fn (mixed $value): bool => $value !== null), $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
 
@@ -1208,6 +1218,15 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             : null;
     }
 
+    private static function isSignalResumeTask(WorkflowTask $task): bool
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+
+        return ($payload['resume_source_kind'] ?? null) === 'workflow_signal'
+            && self::workflowSignalIdForTask($task) !== null
+            && self::nonEmptyString($payload['signal_name'] ?? null) !== null;
+    }
+
     private function recordAppliedSignalForSignalResume(WorkflowRun $run, WorkflowTask $task): void
     {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
@@ -1315,10 +1334,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
     }
 
-    private static function canApplyUnprojectedExternalSignal(
-        WorkflowRun $run,
-        WorkflowSignal $signal,
-    ): bool {
+    private static function canApplyUnprojectedExternalSignal(WorkflowRun $run, WorkflowSignal $signal): bool
+    {
         if (WorkflowExecutionGate::blockedReason($run)
             !== WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE
         ) {
@@ -1345,8 +1362,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         WorkflowRun $run,
         array &$createdTaskIds,
         ?string $alreadyAttemptedSignalId = null,
-    ): void
-    {
+    ): void {
         if (self::hasOpenWorkflowTask($run->id)) {
             return;
         }
@@ -1423,8 +1439,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         WorkflowSignal $signal,
         bool $hasAdvanceableConditionWait,
         array $openSignalWaitsById,
-    ): bool
-    {
+    ): bool {
         if ($hasAdvanceableConditionWait) {
             return true;
         }
@@ -1568,12 +1583,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      * either re-opening the wait or advancing to the next command. When a signal
      * resume advances, make that resolution explicit in history for replay and
      * Waterline instead of leaving only SignalReceived as an implicit cue.
-     *
      */
-    private function recordSatisfiedConditionWaitForSignalResume(
-        WorkflowRun $run,
-        WorkflowTask $task,
-    ): void {
+    private function recordSatisfiedConditionWaitForSignalResume(WorkflowRun $run, WorkflowTask $task): void
+    {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
 
         if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
@@ -2243,12 +2255,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $requestPayload = isset($command['request_payload']) && is_string($command['request_payload'])
             ? ExternalPayloads::externalizeForNamespace($command['request_payload'], $payloadCodec, $namespace)
             : null;
-        $surface = $this->serviceControlPlane()->execute(
-            $command['endpoint_name'],
-            $command['service_name'],
-            $command['operation_name'],
-            $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec),
-        );
+        $surface = $this->serviceControlPlane()
+            ->execute(
+                $command['endpoint_name'],
+                $command['service_name'],
+                $command['operation_name'],
+                $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec),
+            );
 
         $eventType = self::serviceOperationEventTypeForSurface($surface);
         $event = WorkflowHistoryEvent::record($run, $eventType, $this->serviceOperationEventPayload(
@@ -2390,8 +2403,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         HistoryEventType $eventType,
         array $command,
         array $surface,
-    ): bool
-    {
+    ): bool {
         if ($eventType !== HistoryEventType::ServiceCallStarted) {
             return true;
         }
@@ -2467,7 +2479,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $payload += [
                 'exception_type' => 'service_call_cancelled',
                 'exception_class' => RuntimeException::class,
-                'message' => self::nonEmptyString($surface['failure_message'] ?? null) ?? 'Service operation cancelled.',
+                'message' => self::nonEmptyString(
+                    $surface['failure_message'] ?? null
+                ) ?? 'Service operation cancelled.',
                 'code' => 0,
                 'exception' => [
                     'class' => RuntimeException::class,
@@ -3137,18 +3151,15 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $argumentsPayloadCodec = $commandPayloadCodec ?? ($run->payload_codec ?? CodecRegistry::defaultCodec());
         $arguments = $hasReplacementArguments ? $command['arguments'] : $run->arguments;
         $arguments = is_string($arguments)
-            ? ExternalPayloads::externalizeForNamespace(
-                $arguments,
-                $argumentsPayloadCodec,
-                $namespace,
-            )
+            ? ExternalPayloads::externalizeForNamespace($arguments, $argumentsPayloadCodec, $namespace)
             : null;
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
         $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
         $runTimeoutSeconds = is_int($run->run_timeout_seconds) ? $run->run_timeout_seconds : null;
         $executionDeadlineAt = $run->execution_deadline_at;
         $runDeadlineAt = $runTimeoutSeconds !== null
-            ? $now->copy()->addSeconds($runTimeoutSeconds)
+            ? $now->copy()
+                ->addSeconds($runTimeoutSeconds)
             : null;
 
         /** @var WorkflowInstance $instance */
@@ -3552,7 +3563,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         TaskDispatcher::dispatch($retryTask);
 
-        self::projectRunBestEffort($retryRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_retry_start');
+        self::projectRunBestEffort(
+            $retryRun,
+            self::PROJECTION_RUN_RELATIONS_WITH_HISTORY,
+            'child_workflow_retry_start'
+        );
 
         return $retryTask;
     }
@@ -4722,7 +4737,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function claimIfReady(string $taskId): bool
     {
-        return DB::transaction(function () use ($taskId): bool {
+        return DB::transaction(static function () use ($taskId): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -4883,10 +4898,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      * that delegates to the default role. Repairs are acknowledged only after
      * it returns successfully.
      */
-    private static function projectWorkflowTaskClaim(
-        WorkflowRun $run,
-        WorkflowTask $task,
-    ): void {
+    private static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task): void
+    {
         $pendingRepairs = ChildProjectionRepairStore::pendingFor($run, $task);
         $role = self::historyProjectionRole();
 
@@ -4916,12 +4929,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         try {
             $role = self::historyProjectionRole();
 
-            ChildResolutionProjectionContext::run(
-                $run,
-                $task,
-                $event,
-                static fn () => $role->projectRun($run),
-            );
+            ChildResolutionProjectionContext::run($run, $task, $event, static fn () => $role->projectRun($run));
 
             ChildProjectionRepairStore::acknowledge([$repair]);
         } catch (Throwable $exception) {
@@ -4943,8 +4951,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *
      * @param list<string> $with
      */
-    private static function projectRunBestEffort(WorkflowRun $run, array $with = [], string $operation = 'projection'): void
-    {
+    private static function projectRunBestEffort(
+        WorkflowRun $run,
+        array $with = [],
+        string $operation = 'projection'
+    ): void {
         try {
             self::projectRun($run, $with);
         } catch (Throwable $exception) {

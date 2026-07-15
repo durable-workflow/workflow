@@ -421,6 +421,48 @@ final class ActivityOutcomeRecorder
     }
 
     /**
+     * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    public static function recordForAttempt(
+        string $attemptId,
+        mixed $result,
+        ?Throwable $throwable,
+        ?string $codec = null
+    ): array {
+        /** @var ActivityAttempt|null $attempt */
+        $attempt = ActivityAttempt::query()
+            ->with('execution')
+            ->find($attemptId);
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return self::ignored('attempt_not_found');
+        }
+
+        if (! is_string($attempt->workflow_task_id) || $attempt->workflow_task_id === '') {
+            return self::ignored('task_not_found');
+        }
+
+        $execution = $attempt->execution;
+
+        if (! $execution instanceof ActivityExecution) {
+            return self::ignored('activity_execution_missing');
+        }
+
+        $attemptNumber = max(1, (int) $attempt->attempt_number);
+
+        return self::record(
+            $attempt->workflow_task_id,
+            $attempt->id,
+            $attemptNumber,
+            $result,
+            $throwable,
+            ActivityRetryPolicy::maxAttemptsFromSnapshot($execution),
+            ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptNumber),
+            $codec,
+        );
+    }
+
+    /**
      * Close a standalone-activity host run with the activity's terminal
      * outcome. On success the run is marked Completed and the run output
      * is set to the activity's serialized result (so a "show" surface can
@@ -501,48 +543,6 @@ final class ActivityOutcomeRecorder
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $payload);
 
         LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
-    }
-
-    /**
-     * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}
-     */
-    public static function recordForAttempt(
-        string $attemptId,
-        mixed $result,
-        ?Throwable $throwable,
-        ?string $codec = null
-    ): array {
-        /** @var ActivityAttempt|null $attempt */
-        $attempt = ActivityAttempt::query()
-            ->with('execution')
-            ->find($attemptId);
-
-        if (! $attempt instanceof ActivityAttempt) {
-            return self::ignored('attempt_not_found');
-        }
-
-        if (! is_string($attempt->workflow_task_id) || $attempt->workflow_task_id === '') {
-            return self::ignored('task_not_found');
-        }
-
-        $execution = $attempt->execution;
-
-        if (! $execution instanceof ActivityExecution) {
-            return self::ignored('activity_execution_missing');
-        }
-
-        $attemptNumber = max(1, (int) $attempt->attempt_number);
-
-        return self::record(
-            $attempt->workflow_task_id,
-            $attempt->id,
-            $attemptNumber,
-            $result,
-            $throwable,
-            ActivityRetryPolicy::maxAttemptsFromSnapshot($execution),
-            ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptNumber),
-            $codec,
-        );
     }
 
     /**

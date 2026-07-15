@@ -954,11 +954,16 @@ final class HealthCheckTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
-        config()->set('workflows.v2.compatibility.current', 'release-2026-04-09');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.v2.compatibility.current', 'release-2026-04-09');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'health-routing-fleet-instance',
@@ -975,8 +980,10 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'running',
             'compatibility' => 'release-2026-04-09',
-            'started_at' => now()->subMinutes(8),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(8),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -994,11 +1001,14 @@ final class HealthCheckTest extends TestCase
             'status' => 'running',
             'status_bucket' => 'running',
             'compatibility' => 'release-2026-04-09',
-            'started_at' => now()->subMinutes(8),
-            'next_task_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(8),
+            'next_task_at' => now()
+                ->subMinutes(5),
             'liveness_state' => 'workflow_task_waiting_for_compatible_worker',
             'liveness_reason' => 'No active worker heartbeat advertises the required compatibility marker.',
-            'created_at' => now()->subMinutes(8),
+            'created_at' => now()
+                ->subMinutes(8),
             'updated_at' => now(),
         ]);
 
@@ -1133,7 +1143,8 @@ final class HealthCheckTest extends TestCase
         // This stands in for any earlier test or service-provider boot
         // that warmed the manager's memoization with a Repository that
         // does not match the driver currently advertised in config.
-        config()->set('cache.stores.file.driver', 'array');
+        config()
+            ->set('cache.stores.file.driver', 'array');
         config()
             ->set('cache.default', 'file');
         \Illuminate\Support\Facades\Cache::store('file');
@@ -1142,7 +1153,8 @@ final class HealthCheckTest extends TestCase
         // store, while keeping the manager's memoization untouched. The
         // acceleration check must report the configured driver — `file`,
         // not multi-node-capable — under `multi_node = true`.
-        config()->set('cache.stores.file.driver', 'file');
+        config()
+            ->set('cache.stores.file.driver', 'file');
         config()
             ->set('workflows.v2.long_poll.multi_node', true);
 

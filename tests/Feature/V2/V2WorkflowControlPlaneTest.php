@@ -150,7 +150,9 @@ final class V2WorkflowControlPlaneTest extends TestCase
 
         WorkflowTask::query()
             ->where('workflow_run_id', $run->id)
-            ->update(['status' => TaskStatus::Completed->value]);
+            ->update([
+                'status' => TaskStatus::Completed->value,
+            ]);
 
         $run->forceFill([
             'status' => RunStatus::Waiting->value,
@@ -178,8 +180,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
             ->first();
-        $this->assertNotNull($resumeTask);
-        $this->assertSame('polyglot-shared', $resumeTask->queue);
+        $this->assertNull($resumeTask);
     }
 
     public function testStartUsesHistoryProjectionRoleBindingForNewRunProjection(): void

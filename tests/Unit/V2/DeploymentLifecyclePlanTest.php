@@ -210,11 +210,7 @@ final class DeploymentLifecyclePlanTest extends TestCase
 
     public function testDrainAllowsActiveAndPromotedAndOnlyRefusesRolledBack(): void
     {
-        $base = WorkerDeployment::forActiveBuild(
-            namespace: 'default',
-            taskQueue: 'queue',
-            buildId: 'b',
-        );
+        $base = WorkerDeployment::forActiveBuild(namespace: 'default', taskQueue: 'queue', buildId: 'b');
 
         $this->assertSame([], DeploymentLifecyclePlan::evaluateDrain($base));
         $this->assertSame([], DeploymentLifecyclePlan::evaluateDrain(
@@ -230,11 +226,7 @@ final class DeploymentLifecyclePlanTest extends TestCase
 
     public function testResumeRefusesTerminalStatesAndIsIdempotentOtherwise(): void
     {
-        $base = WorkerDeployment::forActiveBuild(
-            namespace: 'default',
-            taskQueue: 'queue',
-            buildId: 'b',
-        );
+        $base = WorkerDeployment::forActiveBuild(namespace: 'default', taskQueue: 'queue', buildId: 'b');
 
         $this->assertSame([], DeploymentLifecyclePlan::evaluateResume($base));
         $this->assertSame([], DeploymentLifecyclePlan::evaluateResume(
@@ -250,11 +242,7 @@ final class DeploymentLifecyclePlanTest extends TestCase
 
     public function testRollbackRefusesPendingAndAlreadyRolledBackDeployments(): void
     {
-        $base = WorkerDeployment::forActiveBuild(
-            namespace: 'default',
-            taskQueue: 'queue',
-            buildId: 'b',
-        );
+        $base = WorkerDeployment::forActiveBuild(namespace: 'default', taskQueue: 'queue', buildId: 'b');
 
         $this->assertSame([], DeploymentLifecyclePlan::evaluateRollback(
             $base->withState(DeploymentLifecycleState::Promoted),

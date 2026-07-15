@@ -77,17 +77,12 @@ final class HistoryTimeline
 
         $failure = FailureSnapshots::forSelfDescribingEvent($event);
         $failures = is_string($failure['id'] ?? null)
-            ? collect([$failure['id'] => $failure])
+            ? collect([
+                $failure['id'] => $failure,
+            ])
             : collect();
 
-        return self::mapEvent(
-            $event,
-            collect(),
-            collect(),
-            collect(),
-            collect(),
-            $failures,
-        );
+        return self::mapEvent($event, collect(), collect(), collect(), collect(), $failures);
     }
 
     private static function mapEvent(
@@ -601,7 +596,10 @@ final class HistoryTimeline
                 ?? self::stringValue($payload['update_name'] ?? null),
             'payload_codec' => $payloadCodec,
             'payload_available' => $snapshotPayloadEnvelope !== null || CommandPayloadPreview::available($payloadBlob),
-            'payload' => $snapshotPayloadEnvelope ?? CommandPayloadPreview::previewWithCodec($payloadBlob, $payloadCodec),
+            'payload' => $snapshotPayloadEnvelope ?? CommandPayloadPreview::previewWithCodec(
+                $payloadBlob,
+                $payloadCodec
+            ),
             'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
             'context' => self::arrayValue(
                 $snapshot['context'] ?? null

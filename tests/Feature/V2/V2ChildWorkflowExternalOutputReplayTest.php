@@ -126,7 +126,8 @@ final class V2ChildWorkflowExternalOutputReplayTest extends TestCase
             'child_run_number' => 1,
             'child_status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
-            'closed_at' => now()->toJSON(),
+            'closed_at' => now()
+                ->toJSON(),
             'output' => $historyOutput,
         ]);
 
@@ -155,8 +156,10 @@ final class V2ChildWorkflowExternalOutputReplayTest extends TestCase
             'workflow_type' => $workflowType,
             'namespace' => $namespace,
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -174,9 +177,11 @@ final class V2ChildWorkflowExternalOutputReplayTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'closed_at' => $status === RunStatus::Completed ? now() : null,
-            'last_progress_at' => now()->subSeconds(30),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -211,7 +216,7 @@ final class V2ChildWorkflowExternalOutputReplayTest extends TestCase
 
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-child-external-output-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-child-external-output-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -233,7 +238,7 @@ final class V2ChildWorkflowExternalOutputReplayTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

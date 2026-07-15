@@ -52,11 +52,16 @@ final class V2TaskDispatchTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
-        config()->set('workflows.v2.workflow_task_lease_seconds', 8);
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 8);
 
         $workflowRun = $this->createWaitingRun('01J000000000000000000LEASE');
         /** @var WorkflowTask $workflowTask */
@@ -64,7 +69,8 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $workflowRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -84,15 +90,19 @@ final class V2TaskDispatchTest extends TestCase
             'sequence' => 1,
             'status' => TimerStatus::Pending->value,
             'delay_seconds' => 1,
-            'fire_at' => now()->subSecond(),
+            'fire_at' => now()
+                ->subSecond(),
         ]);
         /** @var WorkflowTask $timerTask */
         $timerTask = WorkflowTask::query()->create([
             'workflow_run_id' => $timerRun->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['timer_id' => $timer->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
@@ -111,7 +121,8 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $localRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',

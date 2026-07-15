@@ -23,11 +23,8 @@ final class RunWaitProjector
      * Apply bounded task metadata to its selected wait and every child outcome
      * already assigned to the same task, without rebuilding the wait snapshot.
      */
-    public static function projectWorkflowTaskClaim(
-        WorkflowRun $run,
-        WorkflowTask $task,
-        ?string $waitId,
-    ): void {
+    public static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task, ?string $waitId): void
+    {
         $waitModel = self::waitModel();
         $values = [
             'task_backed' => true,
@@ -94,6 +91,7 @@ final class RunWaitProjector
             ?? 'child workflow';
 
         $waitModel = self::waitModel();
+        $resolvedAt = $event->recorded_at ?? $event->created_at;
         $waitModel::query()
             ->where('workflow_run_id', $run->id)
             ->where('wait_id', $waitId)
@@ -110,7 +108,7 @@ final class RunWaitProjector
                     RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
                     default => sprintf('Child workflow %s resolved.', $label),
                 },
-                'resolved_at' => $event->recorded_at ?? $event->created_at,
+                'resolved_at' => $resolvedAt?->format('Y-m-d H:i:s.u'),
                 'task_backed' => true,
                 'task_id' => $task->id,
                 'task_type' => $task->task_type->value,
@@ -122,10 +120,8 @@ final class RunWaitProjector
         $run->unsetRelation('waits');
     }
 
-    public static function hasPendingChildResolutionForTask(
-        WorkflowRun $run,
-        WorkflowTask $task,
-    ): bool {
+    public static function hasPendingChildResolutionForTask(WorkflowRun $run, WorkflowTask $task): bool
+    {
         $waitModel = self::waitModel();
 
         return $waitModel::query()
@@ -203,14 +199,6 @@ final class RunWaitProjector
         return $projected;
     }
 
-    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
-    {
-        /** @var HistoryProjectionMaintenanceRole $role */
-        $role = App::make(HistoryProjectionMaintenanceRole::class);
-
-        return $role;
-    }
-
     /**
      * @return array{source: string, waits: list<array<string, mixed>>}
      */
@@ -268,6 +256,14 @@ final class RunWaitProjector
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionMatchesSnapshot($projected, $canonicalWaits),
         ];
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

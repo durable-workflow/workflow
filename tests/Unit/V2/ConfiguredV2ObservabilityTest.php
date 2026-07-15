@@ -41,11 +41,10 @@ use Workflow\V2\Support\RunDetailView;
 final class ConfiguredV2ObservabilityTest extends TestCase
 {
     /**
-     * @dataProvider relationMatrixProvider
-     *
      * @param class-string<object> $modelClass
      * @param class-string<object> $configuredClass
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('relationMatrixProvider')]
     public function testModelRelationsResolveConfiguredV2Classes(
         string $modelClass,
         string $relation,
@@ -150,7 +149,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
         $this->assertNull($resolved);
         $this->assertFalse(
-            collect($queries)->contains(static fn (string $sql): bool => str_contains($sql, 'workflow_runs')),
+            collect($queries)
+                ->contains(static fn (string $sql): bool => str_contains($sql, 'workflow_runs')),
             'Empty locked instances should not issue a workflow_runs lookup that can gap-lock concurrent first-run inserts.',
         );
     }

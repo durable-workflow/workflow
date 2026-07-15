@@ -93,7 +93,8 @@ final class RunLineageProjector
         }
 
         /** @var WorkflowRunLineageEntry|null $existing */
-        $existing = $existingQuery->limit(1)->first();
+        $existing = $existingQuery->limit(1)
+            ->first();
         $existingPayload = $existing?->toLineagePayload() ?? [];
         $lineageId = $childCallId
             ?? self::stringValue($existingPayload['id'] ?? null)
@@ -146,14 +147,7 @@ final class RunLineageProjector
                 ->where('direction', 'child')
                 ->count();
         $seen = [];
-        $projected = self::projectEntry(
-            $lineageModel,
-            $run,
-            $entry,
-            'child',
-            (int) $position,
-            $seen,
-        );
+        $projected = self::projectEntry($lineageModel, $run, $entry, 'child', (int) $position, $seen);
 
         if (! $projected instanceof WorkflowRunLineageEntry) {
             throw new \LogicException('Child-resolution lineage projection requires a lineage identity.');
@@ -162,14 +156,6 @@ final class RunLineageProjector
         $run->unsetRelation('lineageEntries');
 
         return $projected;
-    }
-
-    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
-    {
-        /** @var HistoryProjectionMaintenanceRole $role */
-        $role = App::make(HistoryProjectionMaintenanceRole::class);
-
-        return $role;
     }
 
     /**
@@ -230,6 +216,14 @@ final class RunLineageProjector
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionCoversSnapshot($projected, $parents, $continuedWorkflows),
         ];
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

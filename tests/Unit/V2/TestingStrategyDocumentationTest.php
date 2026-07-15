@@ -119,11 +119,7 @@ final class TestingStrategyDocumentationTest extends TestCase
         'Mocking a workflow class is rejected',
     ];
 
-    private const REQUIRED_BUCKET_STATUSES = [
-        'proven',
-        'partial',
-        'planned',
-    ];
+    private const REQUIRED_BUCKET_STATUSES = ['proven', 'partial', 'planned'];
 
     private const REQUIRED_RELATED_CONTRACTS = [
         '../workflow/plan.md',

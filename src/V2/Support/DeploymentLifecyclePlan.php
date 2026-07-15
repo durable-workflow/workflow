@@ -63,10 +63,7 @@ final class DeploymentLifecyclePlan
         if ($deployment->state === DeploymentLifecycleState::Draining) {
             $blockages[] = new DeploymentBlockage(
                 reason: DeploymentBlockageReason::FleetIsDraining,
-                message: sprintf(
-                    'Deployment %s is draining; resume it before promoting.',
-                    $deployment->name(),
-                ),
+                message: sprintf('Deployment %s is draining; resume it before promoting.', $deployment->name()),
                 scope: self::scopeOf($deployment),
                 expectedResolution: 'Resume the deployment, then retry promotion.',
             );
@@ -243,10 +240,7 @@ final class DeploymentLifecyclePlan
             return [
                 new DeploymentBlockage(
                     reason: DeploymentBlockageReason::IncompatiblePolicy,
-                    message: sprintf(
-                        'Deployment %s is already rolled back.',
-                        $deployment->name(),
-                    ),
+                    message: sprintf('Deployment %s is already rolled back.', $deployment->name()),
                     scope: self::scopeOf($deployment),
                     expectedResolution: 'No action required; the deployment is already terminal.',
                 ),

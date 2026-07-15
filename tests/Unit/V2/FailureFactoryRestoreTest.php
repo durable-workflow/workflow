@@ -9,9 +9,9 @@ use Error;
 use Exception;
 use RuntimeException;
 use Tests\TestCase;
+use TypeError;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
-use TypeError;
 use Workflow\V2\Support\FailureFactory;
 
 final class FailureFactoryRestoreTest extends TestCase
@@ -25,9 +25,8 @@ final class FailureFactoryRestoreTest extends TestCase
      * threw a bare Error fell through to Exception's reflection target and
      * raised "Cannot access protected property Error::$message" during replay,
      * stranding the run in waiting.
-     *
-     * @dataProvider errorSubclassesProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('errorSubclassesProvider')]
     public function testRestoresErrorSubclassesWithoutFallingBackToExceptionBaseClass(
         string $class,
         string $message
@@ -79,7 +78,9 @@ final class FailureFactoryRestoreTest extends TestCase
             'message' => 'planned python failure',
             'non_retryable' => true,
             'details_payload_codec' => 'avro',
-            'details' => Serializer::serializeWithCodec('avro', ['label' => 'planned-python-failure']),
+            'details' => Serializer::serializeWithCodec('avro', [
+                'label' => 'planned-python-failure',
+            ]),
         ];
 
         $restored = FailureFactory::restoreForReplay($payload);

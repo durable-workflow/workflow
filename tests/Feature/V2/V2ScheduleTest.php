@@ -172,8 +172,7 @@ final class V2ScheduleTest extends TestCase
 
     public function testDeletedScheduleSelectedBeforeDispatchIsNotStartedOrAttributed(): void
     {
-        $starter = new class implements ScheduleWorkflowStarter
-        {
+        $starter = new class() implements ScheduleWorkflowStarter {
             public bool $called = false;
 
             public function start(
@@ -357,7 +356,8 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
-        $dueAt = now()->subMinute();
+        $dueAt = now()
+            ->subMinute();
 
         $schedule->forceFill([
             'next_fire_at' => $dueAt,
@@ -374,7 +374,8 @@ final class V2ScheduleTest extends TestCase
         $this->assertArrayHasKey('next_fire_at', $results[0]);
 
         $schedule->refresh();
-        $recentAction = collect($schedule->recent_actions)->last();
+        $recentAction = collect($schedule->recent_actions)
+            ->last();
 
         $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $recentAction['occurrence_time']);
         $this->assertArrayHasKey('fire_lag_ms', $recentAction);

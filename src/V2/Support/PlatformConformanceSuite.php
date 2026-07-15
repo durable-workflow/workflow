@@ -53,7 +53,9 @@ final class PlatformConformanceSuite
         self::CONFORMANCE_LEVEL_NONCONFORMING,
     ];
 
-    /** @var array<string, mixed>|null */
+    /**
+     * @var array<string, mixed>|null
+     */
     private static ?array $manifest = null;
 
     /**
@@ -73,7 +75,9 @@ final class PlatformConformanceSuite
         }
 
         if (hash('sha256', $json) !== self::MIRROR_SHA256) {
-            throw new RuntimeException('Platform conformance suite mirror digest does not match the packaged authority.');
+            throw new RuntimeException(
+                'Platform conformance suite mirror digest does not match the packaged authority.'
+            );
         }
 
         try {
@@ -83,7 +87,9 @@ final class PlatformConformanceSuite
             throw new RuntimeException('Platform conformance suite mirror is not valid JSON.', 0, $exception);
         }
 
-        if (!is_array($decoded) || ($decoded['schema'] ?? null) !== self::SCHEMA || ($decoded['version'] ?? null) !== self::VERSION) {
+        if (! is_array(
+            $decoded
+        ) || ($decoded['schema'] ?? null) !== self::SCHEMA || ($decoded['version'] ?? null) !== self::VERSION) {
             throw new RuntimeException('Platform conformance suite mirror identity does not match the class contract.');
         }
 

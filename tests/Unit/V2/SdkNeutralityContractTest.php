@@ -34,10 +34,7 @@ final class SdkNeutralityContractTest extends TestCase
             hash('sha256', $json),
             'Changing any contract semantics requires a new reviewed authority digest.',
         );
-        $this->assertSame(
-            json_decode($json, true, 512, JSON_THROW_ON_ERROR),
-            SdkNeutralityContract::manifest(),
-        );
+        $this->assertSame(json_decode($json, true, 512, JSON_THROW_ON_ERROR), SdkNeutralityContract::manifest());
     }
 
     public function testManifestAdvertisesAuthorityIdentity(): void
@@ -126,11 +123,11 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertSame($expected, SdkNeutralityContract::ruleNames());
 
         foreach ($manifest['neutrality_rules'] as $name => $rule) {
-            $this->assertArrayHasKey('requirement', $rule, "rule $name needs requirement");
-            $this->assertArrayHasKey('rationale', $rule, "rule $name needs rationale");
-            $this->assertArrayHasKey('authority', $rule, "rule $name needs authority pointer");
-            $this->assertArrayHasKey('how_to_apply', $rule, "rule $name needs how_to_apply");
-            $this->assertNotEmpty($rule['authority'], "rule $name needs public authority references");
+            $this->assertArrayHasKey('requirement', $rule, "rule {$name} needs requirement");
+            $this->assertArrayHasKey('rationale', $rule, "rule {$name} needs rationale");
+            $this->assertArrayHasKey('authority', $rule, "rule {$name} needs authority pointer");
+            $this->assertArrayHasKey('how_to_apply', $rule, "rule {$name} needs how_to_apply");
+            $this->assertNotEmpty($rule['authority'], "rule {$name} needs public authority references");
 
             foreach ($rule['authority'] as $reference) {
                 $this->assertContains($reference['kind'], ['catalog', 'protocol_spec', 'scenario_catalog']);
@@ -176,10 +173,7 @@ final class SdkNeutralityContractTest extends TestCase
             'durable-workflow.v2.history-event-payloads',
             array_column($rule['authority'], 'id'),
         );
-        $this->assertContains(
-            'durable-workflow.v2.replay-bundle',
-            array_column($rule['authority'], 'id'),
-        );
+        $this->assertContains('durable-workflow.v2.replay-bundle', array_column($rule['authority'], 'id'));
         $scenarioAuthorities = array_values(array_filter(
             $rule['authority'],
             static fn (array $authority): bool => $authority['kind'] === 'scenario_catalog',
@@ -205,7 +199,7 @@ final class SdkNeutralityContractTest extends TestCase
         }
         $publicReferences[] = $manifest['release_gates']['enforcement']['machine_authority'];
 
-        $encoded = json_encode($publicReferences, JSON_THROW_ON_ERROR);
+        $encoded = json_encode($publicReferences, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         foreach (['tests/', '.php', '::', '\\'] as $repoLocalMarker) {
             $this->assertStringNotContainsString($repoLocalMarker, $encoded);
         }
@@ -220,22 +214,18 @@ final class SdkNeutralityContractTest extends TestCase
 
         $coveredRules = [];
         foreach ($checklist as $stepName => $step) {
-            $this->assertArrayHasKey('rule', $step, "audit step $stepName needs rule");
-            $this->assertArrayHasKey('check', $step, "audit step $stepName needs check");
+            $this->assertArrayHasKey('rule', $step, "audit step {$stepName} needs rule");
+            $this->assertArrayHasKey('check', $step, "audit step {$stepName} needs check");
             $this->assertContains(
                 $step['rule'],
                 $declared,
-                "audit step $stepName references unknown rule {$step['rule']}",
+                "audit step {$stepName} references unknown rule {$step['rule']}",
             );
             $coveredRules[$step['rule']] = true;
         }
 
         foreach ($declared as $rule) {
-            $this->assertArrayHasKey(
-                $rule,
-                $coveredRules,
-                "neutrality rule $rule has no matching audit step",
-            );
+            $this->assertArrayHasKey($rule, $coveredRules, "neutrality rule {$rule} has no matching audit step");
         }
 
         $this->assertArrayHasKey(
@@ -254,7 +244,7 @@ final class SdkNeutralityContractTest extends TestCase
             $this->assertContains(
                 $family,
                 $surfaceFamilies,
-                "audit scope references surface family $family which is not declared by SurfaceStabilityContract",
+                "audit scope references surface family {$family} which is not declared by SurfaceStabilityContract",
             );
         }
 
@@ -277,18 +267,12 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertArrayHasKey('python_sdk', $policy['first_party']);
         $this->assertArrayHasKey('rust_sdk', $policy['first_party']);
 
-        $this->assertSame(
-            SdkNeutralityContract::POSTURE_PRIORITY,
-            $policy['first_party']['php_sdk']['posture'],
-        );
+        $this->assertSame(SdkNeutralityContract::POSTURE_PRIORITY, $policy['first_party']['php_sdk']['posture']);
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
             $policy['first_party']['python_sdk']['posture'],
         );
-        $this->assertSame(
-            SdkNeutralityContract::POSTURE_PRIORITY,
-            $policy['first_party']['rust_sdk']['posture'],
-        );
+        $this->assertSame(SdkNeutralityContract::POSTURE_PRIORITY, $policy['first_party']['rust_sdk']['posture']);
 
         foreach ($policy['first_party'] as $sdk) {
             $this->assertStringStartsWith('https://', $sdk['package_url']);
@@ -306,20 +290,14 @@ final class SdkNeutralityContractTest extends TestCase
 
         $phpSdk = $policy['first_party']['php_sdk'];
         $this->assertSame('durable-workflow/sdk', $phpSdk['package']);
-        $this->assertSame(
-            'https://packagist.org/packages/durable-workflow/sdk',
-            $phpSdk['package_url'],
-        );
+        $this->assertSame('https://packagist.org/packages/durable-workflow/sdk', $phpSdk['package_url']);
         $this->assertStringContainsString('Framework-neutral standalone', $phpSdk['role']);
         $this->assertSame('signal_query_runtime_contract', $phpSdk['conformance']['category']);
         $this->assertSame(
             SdkNeutralityContract::SIGNAL_QUERY_SCENARIOS_URL,
             $phpSdk['conformance']['scenario_catalog_url'],
         );
-        $this->assertSame(
-            ['sdk_php', 'php_sdk_client', 'php_worker'],
-            $phpSdk['conformance']['actor_ids'],
-        );
+        $this->assertSame(['sdk_php', 'php_sdk_client', 'php_worker'], $phpSdk['conformance']['actor_ids']);
 
         $workflowEngine = $policy['embedded_engines']['php_workflow_engine'];
         $this->assertSame('durable-workflow/workflow', $workflowEngine['package']);
@@ -331,10 +309,7 @@ final class SdkNeutralityContractTest extends TestCase
             SdkNeutralityContract::REPLAY_SCENARIOS_URL,
             $workflowEngine['conformance']['scenario_catalog_url'],
         );
-        $this->assertSame(
-            ['workflow_php_runtime'],
-            $workflowEngine['conformance']['actor_ids'],
-        );
+        $this->assertSame(['workflow_php_runtime'], $workflowEngine['conformance']['actor_ids']);
 
         $rustConformance = $policy['first_party']['rust_sdk']['conformance'];
         $this->assertSame('signal_query_runtime_contract', $rustConformance['category']);
@@ -354,7 +329,7 @@ final class SdkNeutralityContractTest extends TestCase
             $this->assertSame(
                 SdkNeutralityContract::POSTURE_DEMAND_DRIVEN,
                 $entry['posture'],
-                "$name must be marked demand-driven",
+                "{$name} must be marked demand-driven",
             );
         }
 
@@ -366,10 +341,7 @@ final class SdkNeutralityContractTest extends TestCase
 
     public function testPostureVocabularyIsClosed(): void
     {
-        $this->assertSame(
-            ['priority', 'demand_driven', 'out_of_scope'],
-            SdkNeutralityContract::postureValues(),
-        );
+        $this->assertSame(['priority', 'demand_driven', 'out_of_scope'], SdkNeutralityContract::postureValues());
     }
 
     public function testReleaseGatesAreDeclared(): void
@@ -384,10 +356,7 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertArrayHasKey('discovery_entry_present', $gates);
 
         $enforcement = $manifest['release_gates']['enforcement'];
-        $this->assertSame(
-            SdkNeutralityContract::PUBLIC_CONTRACT_URL,
-            $enforcement['machine_authority'],
-        );
+        $this->assertSame(SdkNeutralityContract::PUBLIC_CONTRACT_URL, $enforcement['machine_authority']);
         $this->assertStringContainsString(
             'conformance scenario ID',
             $enforcement['machine'],

@@ -206,7 +206,9 @@ final class V2RunTimerTaskHistoryRoleTest extends TestCase
             'compatibility' => 'build-a',
         ]);
 
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -225,10 +227,7 @@ final class V2RunTimerTaskHistoryRoleTest extends TestCase
 
         // Two projections: the successful claim leases the task and projects,
         // then the handler short-circuits on the cancelled run and projects again.
-        $this->assertSame(
-            [['projectRun', $run->id], ['projectRun', $run->id]],
-            $customRole->calls,
-        );
+        $this->assertSame([['projectRun', $run->id], ['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testCancelledTimerHandlerUsesHistoryProjectionRoleBinding(): void
@@ -259,7 +258,9 @@ final class V2RunTimerTaskHistoryRoleTest extends TestCase
             'compatibility' => 'build-a',
         ]);
 
-        $timer->forceFill(['status' => TimerStatus::Cancelled->value])->save();
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -275,10 +276,7 @@ final class V2RunTimerTaskHistoryRoleTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::TimerFired->value)
             ->count());
-        $this->assertSame(
-            [['projectRun', $run->id], ['projectRun', $run->id]],
-            $customRole->calls,
-        );
+        $this->assertSame([['projectRun', $run->id], ['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testTimerFiredHandlerUsesHistoryProjectionRoleBinding(): void
@@ -348,7 +346,9 @@ final class V2RunTimerTaskHistoryRoleTest extends TestCase
     private function bindRecordingRole(): object
     {
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            /** @var array<int, array{0: string, 1: string}> */
+            /**
+             * @var array<int, array{0: string, 1: string}>
+             */
             public array $calls = [];
 
             public function __construct(

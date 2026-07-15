@@ -1,6 +1,10 @@
 name: build
 
 on:
+  push:
+    branches: [v2]
+  pull_request:
+    branches: [v2]
   workflow_dispatch:
 
 jobs:
@@ -52,12 +56,12 @@ jobs:
         options: >-
           --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
         ports:
-        - 3306:3306
+        - 3306
 
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379
 
     steps:
     - uses: actions/checkout@v6
@@ -75,18 +79,38 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Export GitHub Actions test defaults
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
       run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
         {
+          resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
           echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
-          echo "DB_HOST=127.0.0.1"
           echo "DB_DATABASE=testbench"
           echo "DB_USERNAME=root"
           echo "DB_PASSWORD=password"
           echo "QUEUE_FAILED_DRIVER=null"
-          echo "REDIS_HOST=127.0.0.1"
           echo "REDIS_PASSWORD="
-          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
           # Testbench defaults cache to array (per-process, in-memory). The V2
           # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
           # visible to the two queue:work worker processes so their wake()
@@ -100,7 +124,7 @@ jobs:
         } >> "$GITHUB_ENV"
 
     - name: Create MySQL database
-      run: mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports['3306'] }}
+      run: mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
@@ -132,19 +156,18 @@ jobs:
         exit "$status"
       env:
         DB_CONNECTION: mysql
-        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
     - name: Upload MySQL feature timing report
-      if: always()
+      if: ${{ always() && github.server_url == 'https://github.com' }}
       uses: actions/upload-artifact@v4
       with:
         name: feature-timing-mysql-${{ matrix.shard }}
         path: build/test-results/mysql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if MySQL tests fail
-      if: failure() || steps.mysql_suite.outcome == 'failure'
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.mysql_suite.outcome == 'failure') }}
       uses: actions/upload-artifact@v4
       with:
         name: laravel-log-mysql-${{ matrix.shard }}
@@ -166,12 +189,12 @@ jobs:
           POSTGRES_PASSWORD: password
           POSTGRES_DB: testbench
         ports:
-        - 5432:5432
+        - 5432
 
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379
 
     steps:
     - uses: actions/checkout@v6
@@ -189,18 +212,38 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Export GitHub Actions test defaults
+    - name: Resolve service endpoints and export test defaults
+      env:
+        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
       run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
         {
+          resolve_service postgres 5432 "$POSTGRES_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
           echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
-          echo "DB_HOST=127.0.0.1"
           echo "DB_DATABASE=testbench"
           echo "DB_USERNAME=root"
           echo "DB_PASSWORD=password"
           echo "QUEUE_FAILED_DRIVER=null"
-          echo "REDIS_HOST=127.0.0.1"
           echo "REDIS_PASSWORD="
-          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
           # Testbench defaults cache to array (per-process, in-memory). The V2
           # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
           # visible to the two queue:work worker processes so their wake()
@@ -243,7 +286,6 @@ jobs:
         exit "$status"
       env:
         DB_CONNECTION: pgsql
-        DB_PORT: ${{ job.services.postgres.ports['5432'] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
         # Safety net kept after #427: libpq honors PGOPTIONS on every
@@ -256,14 +298,14 @@ jobs:
         PGOPTIONS: "-c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
     - name: Upload PostgreSQL feature timing report
-      if: always()
+      if: ${{ always() && github.server_url == 'https://github.com' }}
       uses: actions/upload-artifact@v4
       with:
         name: feature-timing-postgresql-${{ matrix.shard }}
         path: build/test-results/pgsql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if PostgreSQL tests fail
-      if: failure() || steps.pgsql_suite.outcome == 'failure'
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pgsql_suite.outcome == 'failure') }}
       uses: actions/upload-artifact@v4
       with:
         name: laravel-log-postgresql-${{ matrix.shard }}
@@ -284,12 +326,12 @@ jobs:
           --health-timeout 5s
           --health-retries 10
         ports:
-        - 3306:3306
+        - 3306
 
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379
 
     steps:
     - uses: actions/checkout@v6
@@ -307,6 +349,34 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MARIADB_PUBLISHED_PORT: ${{ job.services.mariadb.ports[3306] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service mariadb 3306 "$MARIADB_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+        } >> "$GITHUB_ENV"
+
     - name: Run bounded history budget regressions on MariaDB 10.5
       run: >-
         vendor/bin/phpunit --testdox --testsuite feature
@@ -316,8 +386,6 @@ jobs:
       env:
         APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
         DB_CONNECTION: mysql
-        DB_HOST: 127.0.0.1
-        DB_PORT: ${{ job.services.mariadb.ports['3306'] }}
         DB_DATABASE: testbench
         DB_USERNAME: root
         DB_PASSWORD: password
@@ -325,13 +393,11 @@ jobs:
         CACHE_STORE: redis
         QUEUE_CONNECTION: redis
         QUEUE_FAILED_DRIVER: 'null'
-        REDIS_HOST: 127.0.0.1
         REDIS_PASSWORD: ''
-        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
         XDEBUG_MODE: off
 
     - name: Upload Laravel log if MariaDB tests fail
-      if: failure()
+      if: ${{ github.server_url == 'https://github.com' && failure() }}
       uses: actions/upload-artifact@v4
       with:
         name: laravel-log-mariadb
@@ -344,7 +410,7 @@ jobs:
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379
 
     steps:
     - uses: actions/checkout@v6
@@ -365,13 +431,32 @@ jobs:
     - name: Create SQLite database
       run: touch testbench.sqlite
 
-    - name: Export coverage test defaults
+    - name: Resolve service endpoint and export coverage test defaults
+      env:
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
       run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
         {
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
           echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
-          echo "REDIS_HOST=127.0.0.1"
           echo "REDIS_PASSWORD="
-          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
           echo "QUEUE_FAILED_DRIVER=null"
         } >> "$GITHUB_ENV"
 

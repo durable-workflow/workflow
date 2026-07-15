@@ -22,7 +22,7 @@ final class TimerWorkflowTest extends TestCase
 
         while ($workflow->running());
 
-        $this->assertLessThan(5, now()->diffInSeconds($now));
+        $this->assertLessThan(5, $now->diffInSeconds(now()));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());
     }
@@ -37,7 +37,7 @@ final class TimerWorkflowTest extends TestCase
 
         while ($workflow->running());
 
-        $this->assertGreaterThanOrEqual(5, now()->diffInSeconds($now));
+        $this->assertGreaterThanOrEqual(5, $now->diffInSeconds(now()));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());
     }

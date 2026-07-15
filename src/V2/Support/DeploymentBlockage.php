@@ -35,7 +35,8 @@ final class DeploymentBlockage
         public readonly string $message,
         public readonly array $scope = [],
         public readonly ?string $expectedResolution = null,
-    ) {}
+    ) {
+    }
 
     /**
      * @return array{

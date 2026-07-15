@@ -1145,10 +1145,7 @@ final class WorkflowStub
                 'compatibility' => $run->compatibility,
             ]);
 
-            self::projectRun(
-                $run,
-                ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'],
-            );
+            self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
 
             $startedRun = $run;
         }, self::storageTransactionAttempts());
@@ -2035,6 +2032,13 @@ final class WorkflowStub
 
             $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
 
+            if (! $predecessor instanceof WorkflowCommand && $resumeTask instanceof WorkflowTask) {
+                $resumeTask = $this->mergeWorkflowTaskPayload(
+                    $resumeTask,
+                    WorkflowTaskPayload::forUpdate($update),
+                );
+            }
+
             if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
                 $resumeTask = PendingMessageTask::createForRun($run);
             }
@@ -2063,7 +2067,8 @@ final class WorkflowStub
      */
     private function existingUpdateForRequest(WorkflowInstance $instance): array
     {
-        $context = $this->resolvedCommandContext()->attributes()['context'] ?? [];
+        $context = $this->resolvedCommandContext()
+            ->attributes()['context'] ?? [];
         $request = is_array($context['request'] ?? null) ? $context['request'] : [];
         $requestId = is_string($request['request_id'] ?? null) && $request['request_id'] !== ''
             ? $request['request_id']
@@ -3755,7 +3760,9 @@ final class WorkflowStub
             'command_contract_backfill_needed' => ($contract['backfill_needed'] ?? false) === true,
             'command_contract_backfill_available' => ($contract['backfill_available'] ?? false) === true,
             'declared_signals' => is_array($signals)
-                ? array_values(array_filter($signals, static fn (mixed $signal): bool => is_string($signal) && $signal !== ''))
+                ? array_values(
+                    array_filter($signals, static fn (mixed $signal): bool => is_string($signal) && $signal !== '')
+                )
                 : [],
         ];
     }
@@ -4434,10 +4441,7 @@ final class WorkflowStub
                     $parentRun,
                     $parentReference['parent_sequence']
                 );
-                $childStatus = ChildRunHistory::resolvedStatus(
-                    $resolutionEvent,
-                    $childRun,
-                );
+                $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
 
                 if (
                     $parallelMetadataPath !== []

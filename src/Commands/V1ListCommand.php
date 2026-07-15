@@ -70,10 +70,7 @@ class V1ListCommand extends Command
         $table->render();
 
         $this->line('');
-        $this->info(sprintf(
-            'Found %d active v1 workflow(s) in the workflows table.',
-            $workflows->count()
-        ));
+        $this->info(sprintf('Found %d active v1 workflow(s) in the workflows table.', $workflows->count()));
         $this->line('');
         $this->line('These workflows will continue executing on the v1 engine until they complete.');
         $this->line('Run this command periodically to track v1 workflow completion.');

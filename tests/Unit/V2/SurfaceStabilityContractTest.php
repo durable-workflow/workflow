@@ -30,10 +30,7 @@ final class SurfaceStabilityContractTest extends TestCase
 
         $this->assertSame('durable-workflow.v2.surface-stability.contract', $manifest['schema']);
         $this->assertSame(3, $manifest['version']);
-        $this->assertSame(
-            'https://durable-workflow.github.io/docs/2.0/compatibility',
-            $manifest['authority_url'],
-        );
+        $this->assertSame('https://durable-workflow.github.io/docs/2.0/compatibility', $manifest['authority_url']);
     }
 
     public function testStabilityLevelsCoverFrozenStablePrereleaseExperimental(): void
@@ -46,11 +43,11 @@ final class SurfaceStabilityContractTest extends TestCase
         );
 
         foreach ($manifest['stability_levels'] as $level => $definition) {
-            $this->assertArrayHasKey('meaning', $definition, "stability level $level needs meaning");
+            $this->assertArrayHasKey('meaning', $definition, "stability level {$level} needs meaning");
             $this->assertArrayHasKey(
                 'breaking_change_release',
                 $definition,
-                "stability level $level needs breaking_change_release"
+                "stability level {$level} needs breaking_change_release"
             );
         }
     }
@@ -89,10 +86,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertArrayHasKey('diagnostic_only_fields', $rule);
         $this->assertArrayHasKey('unknown_field_policy', $rule);
 
-        $this->assertStringContainsString(
-            'documented contract',
-            $rule['guaranteed_fields']['definition'],
-        );
+        $this->assertStringContainsString('documented contract', $rule['guaranteed_fields']['definition']);
         $this->assertStringContainsString(
             'must not gate behavior on them',
             $rule['diagnostic_only_fields']['definition'],
@@ -117,18 +111,14 @@ final class SurfaceStabilityContractTest extends TestCase
 
         $allowed = SurfaceStabilityContract::stabilityLevelValues();
         foreach ($manifest['surface_families'] as $name => $family) {
-            $this->assertArrayHasKey('description', $family, "$name needs description");
-            $this->assertArrayHasKey('stability_level', $family, "$name needs stability_level");
+            $this->assertArrayHasKey('description', $family, "{$name} needs description");
+            $this->assertArrayHasKey('stability_level', $family, "{$name} needs stability_level");
             $this->assertContains(
                 $family['stability_level'],
                 $allowed,
-                "$name stability_level must be one of " . implode(', ', $allowed),
+                "{$name} stability_level must be one of " . implode(', ', $allowed),
             );
-            $this->assertArrayHasKey(
-                'breaking_change_release',
-                $family,
-                "$name needs breaking_change_release"
-            );
+            $this->assertArrayHasKey('breaking_change_release', $family, "{$name} needs breaking_change_release");
         }
     }
 
@@ -165,12 +155,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame('1.13', $negotiation['accepted_request_versions_by_default'][13]);
         $this->assertSame('advertised_version', $negotiation['response_version']);
         $this->assertSame(
-            [
-                'missing_header',
-                'malformed_version',
-                'different_major',
-                'minor_greater_than_advertised',
-            ],
+            ['missing_header', 'malformed_version', 'different_major', 'minor_greater_than_advertised'],
             $negotiation['fail_closed_on'],
         );
     }

@@ -72,9 +72,9 @@ final class ScheduleAuditPayloadContractTest extends TestCase
     }
 
     /**
-     * @dataProvider scheduleEvents
      * @param  list<string>  $expected
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('scheduleEvents')]
     public function testPayloadContractExposesExpectedKeys(HistoryEventType $eventType, array $expected): void
     {
         $registry = HistoryEventPayloadContract::payloadKeys();
@@ -97,9 +97,9 @@ final class ScheduleAuditPayloadContractTest extends TestCase
     }
 
     /**
-     * @dataProvider scheduleEvents
      * @param  list<string>  $expected
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('scheduleEvents')]
     public function testAssertKnownPayloadKeysAcceptsEveryDocumentedKey(
         HistoryEventType $eventType,
         array $expected
@@ -113,9 +113,9 @@ final class ScheduleAuditPayloadContractTest extends TestCase
     }
 
     /**
-     * @dataProvider scheduleEvents
      * @param  list<string>  $expected
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('scheduleEvents')]
     public function testAssertKnownPayloadKeysRejectsUndocumentedKeys(
         HistoryEventType $eventType,
         array $expected

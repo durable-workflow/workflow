@@ -75,11 +75,6 @@ final class ActivityTimeoutEnforcer
             ->all();
     }
 
-    private static function deadlineBoundary(CarbonInterface $deadline): string
-    {
-        return $deadline->format((new ActivityExecution())->getDateFormat());
-    }
-
     /**
      * Enforce the timeout for a single activity execution. If the activity
      * has exhausted retries, records a terminal ActivityTimedOut event and
@@ -175,6 +170,11 @@ final class ActivityTimeoutEnforcer
                 'next_task' => null,
             ];
         }
+    }
+
+    private static function deadlineBoundary(CarbonInterface $deadline): string
+    {
+        return $deadline->format((new ActivityExecution())->getDateFormat());
     }
 
     private static function resolveTimeoutKind(ActivityExecution $execution, $now): ?string

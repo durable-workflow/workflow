@@ -317,9 +317,7 @@ final class SurfaceStabilityContract
                     'rust_sdk_published_crate_workflow_contract',
                     'compatibility_page_successor_tuple_rendering',
                 ],
-                'markdown_sources_checked' => [
-                    'docs/compatibility.md#component-versions (artifact tokens only)',
-                ],
+                'markdown_sources_checked' => ['docs/compatibility.md#component-versions (artifact tokens only)'],
                 'human_checks' => [
                     'docs_authority_aligned',
                     'install_docs_aligned',

@@ -31,16 +31,6 @@ final class WorkerProtocolVersion
      */
     public const VERSION = '1.13';
 
-    private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
-
-    private const UPSERT_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.8';
-
-    private const WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION = '1.8';
-
-    private const FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION = '1.10';
-
-    private const SERVICE_OPERATION_COMMAND_MINIMUM_PROTOCOL_VERSION = '1.13';
-
     /**
      * Worker registration capability for server-routed workflow query
      * tasks. Workers that advertise this capability may receive query work
@@ -117,6 +107,16 @@ final class WorkerProtocolVersion
      * drains so public queries do not block heartbeat or workflow progress.
      */
     public const MIN_LONG_POLL_TIMEOUT = 0;
+
+    private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const UPSERT_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION = '1.10';
+
+    private const SERVICE_OPERATION_COMMAND_MINIMUM_PROTOCOL_VERSION = '1.13';
 
     /**
      * Workflow task bridge verbs — the canonical set of operations an
@@ -360,15 +360,7 @@ final class WorkerProtocolVersion
             'attributes' => [
                 'shape' => 'map<string, scalar|list<string>|null>',
                 'key' => 'search_attribute_key',
-                'value_types' => [
-                    'string',
-                    'int',
-                    'float',
-                    'bool',
-                    'datetime-string',
-                    'list<string>',
-                    'null',
-                ],
+                'value_types' => ['string', 'int', 'float', 'bool', 'datetime-string', 'list<string>', 'null'],
                 'null_value' => 'delete_attribute',
                 'list_values' => [
                     'shape' => 'list<string>',
@@ -527,12 +519,7 @@ final class WorkerProtocolVersion
                 'complete' => [
                     'method' => 'POST',
                     'path' => '/api/worker/query-tasks/{query_task_id}/complete',
-                    'request_fields' => [
-                        'lease_owner',
-                        'query_task_attempt',
-                        'result',
-                        'result_envelope',
-                    ],
+                    'request_fields' => ['lease_owner', 'query_task_attempt', 'result', 'result_envelope'],
                 ],
                 'fail' => [
                     'method' => 'POST',
@@ -712,10 +699,7 @@ final class WorkerProtocolVersion
                 'activity_heartbeat_renews_session' => true,
                 'explicit_session_heartbeat' => true,
             ],
-            'failure_detection' => [
-                'lease_expiry',
-                'registered_worker_heartbeat_staleness',
-            ],
+            'failure_detection' => ['lease_expiry', 'registered_worker_heartbeat_staleness'],
             'holder_loss' => [
                 'in_flight_activities_keep_at_least_once_attempt_semantics' => true,
                 'replacement_worker_must_reacquire_session' => true,
@@ -726,33 +710,11 @@ final class WorkerProtocolVersion
                 'session_lease_does_not_override_activity_cancel_requested' => true,
                 'planned_shutdown_should_close_sessions' => true,
             ],
-            'routing' => [
-                'queue',
-                'connection',
-                'requirements',
-            ],
-            'visibility' => [
-                'active',
-                'closed',
-                'expired',
-                'failed',
-                'orphaned',
-            ],
-            'statuses' => [
-                'active',
-                'closed',
-                'expired',
-                'failed',
-                'orphaned',
-            ],
-            'terminal_statuses' => [
-                'closed',
-            ],
-            'terminal_conditions' => [
-                'explicit_close',
-                'ttl_expired',
-                'allow_reacquire_after_failure_false',
-            ],
+            'routing' => ['queue', 'connection', 'requirements'],
+            'visibility' => ['active', 'closed', 'expired', 'failed', 'orphaned'],
+            'statuses' => ['active', 'closed', 'expired', 'failed', 'orphaned'],
+            'terminal_statuses' => ['closed'],
+            'terminal_conditions' => ['explicit_close', 'ttl_expired', 'allow_reacquire_after_failure_false'],
             'authoring_guidance' => [
                 'use_for_process_local_state_gpu_memory_or_filesystem_affinity',
                 'prefer_ordinary_queued_activities_for_independent_steps',

@@ -44,13 +44,7 @@ final class RunTimerTask implements ShouldQueue
      *
      * @var list<string>
      */
-    private const PROJECTION_RUN_RELATIONS = [
-        'instance',
-        'tasks',
-        'activityExecutions',
-        'timers',
-        'failures',
-    ];
+    private const PROJECTION_RUN_RELATIONS = ['instance', 'tasks', 'activityExecutions', 'timers', 'failures'];
 
     /**
      * Run relations plus the history-event graph required when a timer
@@ -306,7 +300,8 @@ final class RunTimerTask implements ShouldQueue
             $run = $run->fresh($with) ?? $run;
         }
 
-        $this->historyProjectionRole()->projectRun($run);
+        $this->historyProjectionRole()
+            ->projectRun($run);
     }
 
     private function historyProjectionRole(): HistoryProjectionRole

@@ -180,8 +180,14 @@ final class V2ReplaySimulateCommandTest extends TestCase
             ],
             'payloads' => [
                 'codec' => 'workflow-serializer',
-                'arguments' => ['available' => false, 'data' => null],
-                'output' => ['available' => false, 'data' => null],
+                'arguments' => [
+                    'available' => false,
+                    'data' => null,
+                ],
+                'output' => [
+                    'available' => false,
+                    'data' => null,
+                ],
             ],
             'history_events' => [
                 [
@@ -223,11 +229,24 @@ final class V2ReplaySimulateCommandTest extends TestCase
             'activities' => [],
             'timers' => [],
             'failures' => [],
-            'links' => ['projection_source' => 'rebuilt', 'parents' => [], 'children' => []],
-            'redaction' => ['applied' => false, 'policy' => null, 'paths' => []],
+            'links' => [
+                'projection_source' => 'rebuilt',
+                'parents' => [],
+                'children' => [],
+            ],
+            'redaction' => [
+                'applied' => false,
+                'policy' => null,
+                'paths' => [],
+            ],
             'codec_schemas' => [],
-            'payload_manifest' => ['version' => 1, 'entries' => []],
-            'summary' => ['history_event_count' => 2],
+            'payload_manifest' => [
+                'version' => 1,
+                'entries' => [],
+            ],
+            'summary' => [
+                'history_event_count' => 2,
+            ],
             'selected_run' => [
                 'waits_projection_source' => 'rebuilt',
                 'timeline_projection_source' => 'rebuilt',

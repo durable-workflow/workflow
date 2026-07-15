@@ -56,7 +56,9 @@ return new class() extends WorkflowMigration {
                         ->where('id', $event->workflow_run_id)
                         ->whereNotNull('output')
                         ->whereNull('output_payload_codec')
-                        ->update(['output_payload_codec' => $codec]);
+                        ->update([
+                            'output_payload_codec' => $codec,
+                        ]);
                 }
             });
 
@@ -87,7 +89,9 @@ return new class() extends WorkflowMigration {
                     $connection->table('workflow_runs')
                         ->where('id', $run->id)
                         ->whereNull('output_payload_codec')
-                        ->update(['output_payload_codec' => $codec]);
+                        ->update([
+                            'output_payload_codec' => $codec,
+                        ]);
                 }
             }, 'id');
     }

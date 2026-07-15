@@ -116,10 +116,7 @@ final class WorkflowRunRetentionCleanup
                 $runId,
             );
             $report['child_projection_repairs_deleted'] = self::deleteByRun(
-                ConfiguredV2Models::query(
-                    'child_projection_repair_model',
-                    WorkflowChildProjectionRepair::class,
-                ),
+                ConfiguredV2Models::query('child_projection_repair_model', WorkflowChildProjectionRepair::class),
                 $runId,
             );
             $report['run_waits_deleted'] = self::deleteByRun(

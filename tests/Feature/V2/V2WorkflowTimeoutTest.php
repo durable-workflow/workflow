@@ -223,7 +223,7 @@ final class V2WorkflowTimeoutTest extends TestCase
 
         // Run deadline is reset for each new run and must never move earlier.
         $this->assertTrue($lastRun->run_deadline_at->gte($firstRun->run_deadline_at));
-        $this->assertEqualsWithDelta(3600, $lastRun->run_deadline_at->diffInSeconds($lastRun->started_at), 1);
+        $this->assertEqualsWithDelta(3600, $lastRun->started_at->diffInSeconds($lastRun->run_deadline_at), 1);
     }
 
     public function testControlPlaneDescribeIncludesTimeoutFields(): void

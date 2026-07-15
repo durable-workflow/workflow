@@ -15,7 +15,9 @@ final class WorkerHistoryPayloadContract
 
     public const VERSION = 1;
 
-    /** @var list<string> */
+    /**
+     * @var list<string>
+     */
     public const BUDGET_FIELDS = [
         'total_history_events',
         'history_size_bytes',
@@ -25,7 +27,9 @@ final class WorkerHistoryPayloadContract
         'history_budget_pressure_dimensions',
     ];
 
-    /** @var list<string> */
+    /**
+     * @var list<string>
+     */
     public const FULL_RESPONSE_REQUIRED_FIELDS = [
         'task_id',
         'workflow_run_id',
@@ -50,7 +54,9 @@ final class WorkerHistoryPayloadContract
         'history_events',
     ];
 
-    /** @var list<string> */
+    /**
+     * @var list<string>
+     */
     public const PAGINATED_RESPONSE_REQUIRED_FIELDS = [
         'task_id',
         'workflow_run_id',

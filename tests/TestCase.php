@@ -125,6 +125,11 @@ abstract class TestCase extends BaseTestCase
         $this->artisan('migrate:fresh');
 
         $this->loadLaravelMigrations();
+
+        // Testbench's PendingCommand binds a mocked OutputStyle while it runs
+        // migrations. Remove that per-command binding so application commands
+        // invoked by a test can write to the output buffer supplied by Artisan.
+        $this->app->offsetUnset(\Illuminate\Console\OutputStyle::class);
     }
 
     protected function getPackageProviders($app)

@@ -14,6 +14,10 @@ use Workflow\V2\Support\ReplayVerification;
 
 class V2ReplayVerifyCommand extends Command
 {
+    private const REPORT_SCHEMA = ReplayVerification::VERIFICATION_REPORT_SCHEMA;
+
+    private const REPORT_SCHEMA_VERSION = ReplayVerification::VERIFICATION_REPORT_SCHEMA_VERSION;
+
     protected $signature = 'workflow:v2:replay-verify
         {bundle : Path to a workflow:v2:history-export bundle (JSON)}
         {--signing-key= : HMAC key for signature verification (overrides config)}
@@ -23,10 +27,6 @@ class V2ReplayVerifyCommand extends Command
         {--output= : Write the JSON report to a file instead of stdout}';
 
     protected $description = 'Verify a Workflow v2 history bundle: integrity, structure, and replay against current code';
-
-    private const REPORT_SCHEMA = ReplayVerification::VERIFICATION_REPORT_SCHEMA;
-
-    private const REPORT_SCHEMA_VERSION = ReplayVerification::VERIFICATION_REPORT_SCHEMA_VERSION;
 
     public function __construct(
         private readonly Filesystem $files,
@@ -129,11 +129,7 @@ class V2ReplayVerifyCommand extends Command
      */
     private function verdict(array $integrity, ?array $replayDiff): string
     {
-        return ReplayVerification::verdictFor(
-            $integrity,
-            $replayDiff,
-            (bool) $this->option('strict-warnings'),
-        );
+        return ReplayVerification::verdictFor($integrity, $replayDiff, (bool) $this->option('strict-warnings'));
     }
 
     /**

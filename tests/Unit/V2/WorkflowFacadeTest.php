@@ -6,6 +6,9 @@ namespace Workflow\Tests\Unit\V2;
 
 use Orchestra\Testbench\TestCase;
 use ReflectionMethod;
+use function Workflow\V2\activity;
+use function Workflow\V2\localActivity;
+use function Workflow\V2\parallel;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\AllCall;
@@ -23,12 +26,9 @@ use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
+use function Workflow\V2\workerSession;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
-use function Workflow\V2\activity;
-use function Workflow\V2\localActivity;
-use function Workflow\V2\parallel;
-use function Workflow\V2\workerSession;
 
 /**
  * The static facade on Workflow\V2\Workflow is a thin delegate to the
@@ -82,7 +82,9 @@ class WorkflowFacadeTest extends TestCase
     public function testLocalActivityRejectsQueuedRoutingOptions(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.');
+        $this->expectExceptionMessage(
+            'Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.'
+        );
 
         localActivity('App\\Activities\\Example', new ActivityOptions(queue: 'imports'));
     }
@@ -90,7 +92,9 @@ class WorkflowFacadeTest extends TestCase
     public function testLocalActivityRejectsWorkerSessionOptions(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.');
+        $this->expectExceptionMessage(
+            'Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.'
+        );
 
         localActivity(
             'App\\Activities\\Example',

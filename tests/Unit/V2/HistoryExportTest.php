@@ -1177,7 +1177,9 @@ final class HistoryExportTest extends TestCase
             'command_type' => CommandType::Signal->value,
             'target_scope' => 'instance',
             'payload_codec' => $codec,
-            'payload' => Serializer::serialize(['name' => 'external-signal']),
+            'payload' => Serializer::serialize([
+                'name' => 'external-signal',
+            ]),
             'source' => 'api',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::SignalReceived->value,
@@ -1207,7 +1209,9 @@ final class HistoryExportTest extends TestCase
             'command_type' => CommandType::Update->value,
             'target_scope' => 'instance',
             'payload_codec' => $codec,
-            'payload' => Serializer::serialize(['name' => 'external-update']),
+            'payload' => Serializer::serialize([
+                'name' => 'external-update',
+            ]),
             'source' => 'api',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::UpdateCompleted->value,
@@ -1249,10 +1253,7 @@ final class HistoryExportTest extends TestCase
 
         $timelineEntry = collect($bundle['timeline'])->firstWhere('command_id', $command->id);
         $this->assertIsArray($timelineEntry);
-        $this->assertSame(
-            ExternalPayloads::storedEnvelope($commandPayload),
-            $timelineEntry['command']['payload'],
-        );
+        $this->assertSame(ExternalPayloads::storedEnvelope($commandPayload), $timelineEntry['command']['payload']);
 
         foreach ([
             'payloads.arguments.data',

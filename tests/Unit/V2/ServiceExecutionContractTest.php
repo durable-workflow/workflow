@@ -48,10 +48,7 @@ final class ServiceExecutionContractTest extends TestCase
         $controlPlane = ServiceExecutionContract::manifest()['control_plane'];
 
         $this->assertSame(ServiceControlPlane::class, $controlPlane['interface']);
-        $this->assertSame(
-            ['execute', 'describeCall', 'cancelCall'],
-            array_keys($controlPlane['methods']),
-        );
+        $this->assertSame(['execute', 'describeCall', 'cancelCall'], array_keys($controlPlane['methods']));
         $this->assertSame(
             ['endpoint_name', 'service_name', 'operation_name'],
             $controlPlane['methods']['execute']['input_address_fields'],
@@ -174,10 +171,7 @@ final class ServiceExecutionContractTest extends TestCase
 
         $this->assertSame($expected, array_keys($manifest['failure_reasons']));
         $this->assertSame($expected, ServiceExecutionContract::failureReasonValues());
-        $this->assertSame(
-            'cancelled',
-            $manifest['failure_reasons']['cancellation']['terminal_status'],
-        );
+        $this->assertSame('cancelled', $manifest['failure_reasons']['cancellation']['terminal_status']);
     }
 
     public function testManifestNamesDurableServiceRecordsAndGuaranteedObservabilityFields(): void
@@ -192,14 +186,8 @@ final class ServiceExecutionContractTest extends TestCase
             ['handler_binding_kind', 'handler_target_reference', 'handler_binding'],
             $manifest['durable_records']['operations']['binding_fields'],
         );
-        $this->assertContains(
-            'resolved_binding_kind',
-            $manifest['durable_records']['calls']['link_fields'],
-        );
-        $this->assertContains(
-            'resolved_target_reference',
-            $manifest['observability']['guaranteed_fields'],
-        );
+        $this->assertContains('resolved_binding_kind', $manifest['durable_records']['calls']['link_fields']);
+        $this->assertContains('resolved_target_reference', $manifest['observability']['guaranteed_fields']);
     }
 
     public function testExecutionRulesRequireDurableCallIdAndFailClosedUnknownBindings(): void

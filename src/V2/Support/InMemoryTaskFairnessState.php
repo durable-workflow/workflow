@@ -23,7 +23,8 @@ final class InMemoryTaskFairnessState implements TaskFairnessState
          * Smaller values make the scheduler more reactive to bursty workloads.
          */
         private readonly float $halfLifeSeconds = 30.0,
-    ) {}
+    ) {
+    }
 
     public function snapshot(string $namespace, string $taskQueue, array $classes): array
     {

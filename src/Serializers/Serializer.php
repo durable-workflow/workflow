@@ -173,12 +173,18 @@ final class Serializer
         $blob = self::serializeWithCodec($canonicalCodec, $value);
 
         if (strlen($blob) <= $thresholdBytes) {
-            return ['codec' => $canonicalCodec, 'blob' => $blob];
+            return [
+                'codec' => $canonicalCodec,
+                'blob' => $blob,
+            ];
         }
 
         $reference = ExternalPayloadStorage::store($driver, $blob, $canonicalCodec);
 
-        return ['codec' => $canonicalCodec, 'external_storage' => $reference->toArray()];
+        return [
+            'codec' => $canonicalCodec,
+            'external_storage' => $reference->toArray(),
+        ];
     }
 
     /**

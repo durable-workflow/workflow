@@ -62,11 +62,11 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 {
     public function testCancelledRunPathUsesHistoryProjectionRoleBinding(): void
     {
-        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(
-            instanceId: 'issue-678-history-role-cancelled',
-        );
+        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(instanceId: 'issue-678-history-role-cancelled');
 
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -87,11 +87,11 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 
     public function testTerminatedRunPathUsesHistoryProjectionRoleBinding(): void
     {
-        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(
-            instanceId: 'issue-678-history-role-terminated',
-        );
+        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(instanceId: 'issue-678-history-role-terminated');
 
-        $run->forceFill(['status' => RunStatus::Terminated->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Terminated->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -120,7 +120,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-already-completed',
         );
 
-        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -153,7 +155,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-already-failed',
         );
 
-        $run->forceFill(['status' => RunStatus::Failed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Failed->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -193,7 +197,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-already-completed-failure',
         );
 
-        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -214,9 +220,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 
     public function testSuccessResumePathUsesHistoryProjectionRoleBinding(): void
     {
-        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(
-            instanceId: 'issue-678-history-role-success',
-        );
+        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(instanceId: 'issue-678-history-role-success');
 
         $customRole = $this->bindRecordingRole();
 
@@ -267,9 +271,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         // alongside its codec regression; this is the canonical, self-contained
         // pin in the dedicated history-role file so the coverage survives any
         // future refactor of that codec test.
-        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(
-            instanceId: 'issue-678-history-role-retry',
-        );
+        [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(instanceId: 'issue-678-history-role-retry');
 
         $customRole = $this->bindRecordingRole();
 
@@ -450,7 +452,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-record-for-attempt-cancelled',
         );
 
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -485,7 +489,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-record-for-attempt-terminated',
         );
 
-        $run->forceFill(['status' => RunStatus::Terminated->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Terminated->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -523,7 +529,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-record-for-attempt-already-completed',
         );
 
-        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -560,7 +568,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             instanceId: 'issue-678-history-role-record-for-attempt-already-failed',
         );
 
-        $run->forceFill(['status' => RunStatus::Failed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Failed->value,
+        ])->save();
 
         $customRole = $this->bindRecordingRole();
 
@@ -581,7 +591,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
     private function bindRecordingRole(): object
     {
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            /** @var array<int, array{0: string, 1: string}> */
+            /**
+             * @var array<int, array{0: string, 1: string}>
+             */
             public array $calls = [];
 
             public function __construct(

@@ -55,7 +55,11 @@ final class ServiceOperationOptions
         public readonly ?string $principalTenant = null,
         public readonly array $principalClaims = [],
     ) {
-        if ($this->modeOverride !== null && ! in_array($this->modeOverride, [self::MODE_SYNC, self::MODE_ASYNC], true)) {
+        if ($this->modeOverride !== null && ! in_array(
+            $this->modeOverride,
+            [self::MODE_SYNC, self::MODE_ASYNC],
+            true
+        )) {
             throw new InvalidArgumentException('Service operation mode_override must be sync or async.');
         }
 

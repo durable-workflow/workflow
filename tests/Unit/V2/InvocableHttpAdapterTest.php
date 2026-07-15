@@ -40,7 +40,11 @@ final class InvocableHttpAdapterTest extends TestCase
         $this->assertSame('php-invocable-http', $body['metadata']['carrier']);
         $this->assertSame('billing.charge-card', $body['metadata']['handler']);
         $this->assertSame(
-            ['approved' => true, 'amount' => 4200, 'currency' => 'USD'],
+            [
+                'approved' => true,
+                'amount' => 4200,
+                'currency' => 'USD',
+            ],
             Serializer::unserializeWithCodec('avro', $body['result']['payload']['blob']),
         );
     }
@@ -92,7 +96,9 @@ final class InvocableHttpAdapterTest extends TestCase
     public function testRejectsWorkflowTaskInputWithStructuredFailureEnvelope(): void
     {
         $adapter = new InvocableHttpAdapter([
-            'billing.invoice.workflow' => static fn (): array => ['ignored' => true],
+            'billing.invoice.workflow' => static fn (): array => [
+                'ignored' => true,
+            ],
         ], resultCodec: 'avro');
 
         $response = $adapter->handle(json_encode($this->workflowInput()));
@@ -185,7 +191,9 @@ final class InvocableHttpAdapterTest extends TestCase
             ],
             'lease' => [
                 'owner' => 'worker-php-a',
-                'expires_at' => (new DateTimeImmutable('+5 minutes', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s.u\Z'),
+                'expires_at' => (new DateTimeImmutable('+5 minutes', new DateTimeZone('UTC')))->format(
+                    'Y-m-d\TH:i:s.u\Z'
+                ),
                 'heartbeat_endpoint' => '/api/worker/workflow-tasks/wft_01HV7D2K3X9K2M7YVQ4T0A1B2C/heartbeat',
             ],
             'payloads' => [

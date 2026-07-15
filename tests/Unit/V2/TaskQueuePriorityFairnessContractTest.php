@@ -23,26 +23,17 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
     {
         $manifest = TaskQueuePriorityFairnessContract::manifest();
 
-        $this->assertSame(
-            'durable-workflow.v2.task-queue-priority-fairness.contract',
-            $manifest['schema'],
-        );
+        $this->assertSame('durable-workflow.v2.task-queue-priority-fairness.contract', $manifest['schema']);
         $this->assertSame(1, $manifest['version']);
         $this->assertSame('task_queue_priority_fairness', $manifest['feature']);
-        $this->assertSame(
-            'docs/architecture/task-queue-priority-fairness.md',
-            $manifest['authority_doc'],
-        );
+        $this->assertSame('docs/architecture/task-queue-priority-fairness.md', $manifest['authority_doc']);
     }
 
     public function testFieldsCoverPriorityFairnessKeyAndWeight(): void
     {
         $fields = TaskQueuePriorityFairnessContract::fields();
 
-        $this->assertSame(
-            ['priority', 'fairness_key', 'fairness_weight'],
-            array_keys($fields),
-        );
+        $this->assertSame(['priority', 'fairness_key', 'fairness_weight'], array_keys($fields));
     }
 
     public function testPriorityFieldRangeMatchesNormalizer(): void
@@ -64,10 +55,7 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
         $this->assertSame('string', $fairnessKey['type']);
         $this->assertTrue($fairnessKey['nullable']);
         $this->assertSame(TaskFairnessKey::MAX_LENGTH, $fairnessKey['max_length']);
-        $this->assertSame(
-            TaskFairnessKey::DEFAULT_CLASS,
-            $fairnessKey['default_class_label'],
-        );
+        $this->assertSame(TaskFairnessKey::DEFAULT_CLASS, $fairnessKey['default_class_label']);
         $this->assertNull($fairnessKey['default']);
         $this->assertSame('trim_then_lowercase', $fairnessKey['normalization']);
         $this->assertSame(1, preg_match('/' . trim($fairnessKey['pattern'], '/') . '/', 'tenant.alpha'));
@@ -87,22 +75,13 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
     {
         $inheritance = TaskQueuePriorityFairnessContract::manifest()['inheritance'];
 
-        $this->assertSame(
-            'inherits_priority_and_fairness_from_parent_run',
-            $inheritance['workflow_task'],
-        );
-        $this->assertSame(
-            'inherits_from_run_unless_activity_options_overrides',
-            $inheritance['activity_task'],
-        );
+        $this->assertSame('inherits_priority_and_fairness_from_parent_run', $inheritance['workflow_task']);
+        $this->assertSame('inherits_from_run_unless_activity_options_overrides', $inheritance['activity_task']);
         $this->assertSame(
             ['priority', 'fairness_key', 'fairness_weight'],
             $inheritance['activity_options_override_fields'],
         );
-        $this->assertSame(
-            'Workflow\\V2\\Support\\TaskSchedulingFields',
-            $inheritance['override_resolver'],
-        );
+        $this->assertSame('Workflow\\V2\\Support\\TaskSchedulingFields', $inheritance['override_resolver']);
     }
 
     public function testPersistenceColumnsAndIndexesAreEnumerated(): void
@@ -127,14 +106,8 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
     {
         $dispatch = TaskQueuePriorityFairnessContract::manifest()['dispatch'];
 
-        $this->assertSame(
-            'priority_asc_then_available_at_asc_then_id',
-            $dispatch['poll_order'],
-        );
-        $this->assertSame(
-            'within_priority_tier_only',
-            $dispatch['fairness_reorder_scope'],
-        );
+        $this->assertSame('priority_asc_then_available_at_asc_then_id', $dispatch['poll_order']);
+        $this->assertSame('within_priority_tier_only', $dispatch['fairness_reorder_scope']);
         $this->assertSame(
             'deficit_round_robin_by_recent_dispatch_score_over_weight',
             $dispatch['fairness_algorithm'],
@@ -149,19 +122,10 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
         $observability = TaskQueuePriorityFairnessContract::manifest()['observability'];
 
         $this->assertSame('GET', $observability['method']);
-        $this->assertStringContainsString(
-            '/task-queues/{queue}/priority-fairness',
-            $observability['route'],
-        );
+        $this->assertStringContainsString('/task-queues/{queue}/priority-fairness', $observability['route']);
         $this->assertTrue($observability['separates_workflow_and_activity']);
-        $this->assertSame(
-            'priority_fairness_surface',
-            $observability['response_shape']['workflow_task'],
-        );
-        $this->assertSame(
-            'priority_fairness_surface',
-            $observability['response_shape']['activity_task'],
-        );
+        $this->assertSame('priority_fairness_surface', $observability['response_shape']['workflow_task']);
+        $this->assertSame('priority_fairness_surface', $observability['response_shape']['activity_task']);
 
         $shape = $observability['priority_fairness_surface_shape'];
         $this->assertArrayHasKey('ready_tasks', $shape);
@@ -174,12 +138,7 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
         $apis = TaskQueuePriorityFairnessContract::manifest()['authoring_apis'];
 
         foreach (
-            [
-                'start_options',
-                'activity_options',
-                'priority_normalizer',
-                'fairness_key_normalizer',
-            ] as $key
+            ['start_options', 'activity_options', 'priority_normalizer', 'fairness_key_normalizer'] as $key
         ) {
             $this->assertArrayHasKey($key, $apis);
             $this->assertTrue(class_exists($apis[$key]), "Class {$apis[$key]} must exist");
@@ -191,10 +150,7 @@ final class TaskQueuePriorityFairnessContractTest extends TestCase
         $summary = WorkerProtocolVersion::describe();
 
         $this->assertArrayHasKey('task_queue_priority_fairness', $summary);
-        $this->assertSame(
-            TaskQueuePriorityFairnessContract::manifest(),
-            $summary['task_queue_priority_fairness'],
-        );
+        $this->assertSame(TaskQueuePriorityFairnessContract::manifest(), $summary['task_queue_priority_fairness']);
     }
 
     public function testWorkerProtocolSemanticsHelperReturnsManifest(): void

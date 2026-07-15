@@ -89,9 +89,38 @@ final class ExternalPayloadsTest extends TestCase
         ExternalPayloads::resolveStoredPayload($stored, 'workflow-serializer-y', 'default', $driver);
     }
 
+    public function testStoredReferenceEncodingIsIndependentOfObjectKeyOrder(): void
+    {
+        $reference = [
+            'schema' => ExternalPayloadReference::SCHEMA,
+            'uri' => 'file:///payloads/example.avro',
+            'sha256' => str_repeat('a', 64),
+            'size_bytes' => 128,
+            'codec' => 'avro',
+        ];
+        $databaseNormalizedReference = [
+            'uri' => $reference['uri'],
+            'codec' => $reference['codec'],
+            'schema' => $reference['schema'],
+            'sha256' => $reference['sha256'],
+            'size_bytes' => $reference['size_bytes'],
+        ];
+
+        $stored = ExternalPayloads::encodeStoredEnvelope([
+            'codec' => 'avro',
+            'external_storage' => $reference,
+        ]);
+        $recovered = ExternalPayloads::encodeStoredEnvelope([
+            'external_storage' => $databaseNormalizedReference,
+            'codec' => 'avro',
+        ]);
+
+        $this->assertSame($stored, $recovered);
+    }
+
     private function makeStorageRoot(): string
     {
-        $this->storageRoot = sys_get_temp_dir().'/dw-external-payloads-test-'.bin2hex(random_bytes(6));
+        $this->storageRoot = sys_get_temp_dir() . '/dw-external-payloads-test-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
     }
@@ -120,7 +149,7 @@ final class ExternalPayloadsTest extends TestCase
                 continue;
             }
 
-            $path = $directory.DIRECTORY_SEPARATOR.$item;
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
 
             if (is_dir($path)) {
                 $this->removeDirectory($path);

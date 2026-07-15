@@ -35,6 +35,7 @@ use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
+use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -1297,8 +1298,8 @@ final class V2QueryWorkflowTest extends TestCase
 
         $childInstance = WorkflowInstance::create([
             'id' => 'query-child-resolution-authority-child',
-            'workflow_class' => TestHistoryReplayedChildWorkflow::class,
-            'workflow_type' => 'workflow.child',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => TestTimerWorkflow::class,
             'run_count' => 1,
         ]);
 
@@ -1320,8 +1321,8 @@ final class V2QueryWorkflowTest extends TestCase
         $childRun = WorkflowRun::create([
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
-            'workflow_class' => TestHistoryReplayedChildWorkflow::class,
-            'workflow_type' => 'workflow.child',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => TestTimerWorkflow::class,
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'arguments' => Serializer::serialize([]),
@@ -1369,8 +1370,8 @@ final class V2QueryWorkflowTest extends TestCase
                 'sequence' => 1,
                 'child_workflow_instance_id' => $childInstance->id,
                 'child_workflow_run_id' => $childRun->id,
-                'child_workflow_type' => 'workflow.child',
-                'child_workflow_class' => TestHistoryReplayedChildWorkflow::class,
+                'child_workflow_type' => TestTimerWorkflow::class,
+                'child_workflow_class' => TestTimerWorkflow::class,
                 'child_run_number' => 1,
             ],
             'recorded_at' => now()

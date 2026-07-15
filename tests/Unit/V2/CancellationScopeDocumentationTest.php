@@ -335,7 +335,7 @@ final class CancellationScopeDocumentationTest extends TestCase
 
         foreach (self::REQUIRED_PARENT_DISPOSITIONS as $disposition) {
             $this->assertMatchesRegularExpression(
-                '/\|\s*'.preg_quote($disposition, '/').'\s*\|/i',
+                '/\|\s*' . preg_quote($disposition, '/') . '\s*\|/i',
                 $contents,
                 sprintf('Parent-close disposition matrix must include %s.', $disposition),
             );

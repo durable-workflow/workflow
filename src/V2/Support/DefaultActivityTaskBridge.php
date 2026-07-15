@@ -32,12 +32,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
      *
      * @var list<string>
      */
-    private const PROJECTION_RUN_RELATIONS = [
-        'instance',
-        'tasks',
-        'activityExecutions',
-        'failures',
-    ];
+    private const PROJECTION_RUN_RELATIONS = ['instance', 'tasks', 'activityExecutions', 'failures'];
 
     public function poll(
         ?string $connection,
@@ -647,7 +642,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         if (is_string($failure)) {
             return FailureFactory::restoreExternalWorkerFailure(
-                ['message' => $failure],
+                [
+                    'message' => $failure,
+                ],
                 RuntimeException::class,
                 $failure,
                 0,

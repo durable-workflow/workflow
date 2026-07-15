@@ -24,11 +24,7 @@ final class PendingMessageTask
             return null;
         }
 
-        $signal = self::nextEligibleSignal(
-            $run,
-            $alreadyAttemptedSignalId,
-            $includeReceivedProjectedSignalWait,
-        );
+        $signal = self::nextEligibleSignal($run, $alreadyAttemptedSignalId, $includeReceivedProjectedSignalWait);
         $update = self::nextReadyUpdate($run);
 
         if ($signal instanceof WorkflowSignal && self::signalPrecedesUpdate($signal, $update)) {
@@ -69,7 +65,13 @@ final class PendingMessageTask
             $includeReceivedProjectedSignalWait,
         );
         $unprojectedSignalContract = self::unprojectedSignalContract($freshRun);
-        $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
+        /** @var WorkflowSignal|null $attemptedSignal */
+        $attemptedSignal = $alreadyAttemptedSignalId === null
+            ? null
+            : ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+                ->where('workflow_run_id', $run->id)
+                ->whereKey($alreadyAttemptedSignalId)
+                ->first();
         $firstEligibleSignal = null;
 
         foreach ($signals as $signal) {
@@ -84,16 +86,42 @@ final class PendingMessageTask
 
             $firstEligibleSignal ??= $signal;
 
-            if ($afterAttemptedSignal) {
+            if (! $attemptedSignal instanceof WorkflowSignal || self::signalFollows($signal, $attemptedSignal)) {
                 return $signal;
-            }
-
-            if ($signal->id === $alreadyAttemptedSignalId) {
-                $afterAttemptedSignal = true;
             }
         }
 
-        return $afterAttemptedSignal ? null : $firstEligibleSignal;
+        return $attemptedSignal instanceof WorkflowSignal ? null : $firstEligibleSignal;
+    }
+
+    private static function signalFollows(WorkflowSignal $candidate, WorkflowSignal $attempted): bool
+    {
+        $candidateSequence = $candidate->command_sequence;
+        $attemptedSequence = $attempted->command_sequence;
+
+        if ($candidateSequence !== $attemptedSequence) {
+            if ($candidateSequence === null) {
+                return true;
+            }
+
+            if ($attemptedSequence === null) {
+                return false;
+            }
+
+            return $candidateSequence > $attemptedSequence;
+        }
+
+        foreach (['received_at', 'created_at'] as $attribute) {
+            $candidateTimestamp = $candidate->{$attribute}?->format('U.u');
+            $attemptedTimestamp = $attempted->{$attribute}?->format('U.u');
+
+            if ($candidateTimestamp !== $attemptedTimestamp) {
+                return $candidateTimestamp !== null
+                    && ($attemptedTimestamp === null || $candidateTimestamp > $attemptedTimestamp);
+            }
+        }
+
+        return $candidate->id > $attempted->id;
     }
 
     private static function nextReadyUpdate(WorkflowRun $run): ?WorkflowUpdate
@@ -118,10 +146,8 @@ final class PendingMessageTask
             : null;
     }
 
-    private static function signalPrecedesUpdate(
-        WorkflowSignal $signal,
-        ?WorkflowUpdate $update,
-    ): bool {
+    private static function signalPrecedesUpdate(WorkflowSignal $signal, ?WorkflowUpdate $update): bool
+    {
         if (! $update instanceof WorkflowUpdate) {
             return true;
         }
@@ -239,8 +265,7 @@ final class PendingMessageTask
     private static function advanceableSignalWaitsById(
         WorkflowRun $run,
         bool $includeReceivedProjectedSignalWait,
-    ): array
-    {
+    ): array {
         $waits = [];
 
         foreach (SignalWaits::forRun($run) as $wait) {

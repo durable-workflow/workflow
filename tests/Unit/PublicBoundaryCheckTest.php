@@ -48,11 +48,7 @@ final class PublicBoundaryCheckTest extends TestCase
             'PUBLIC_BOUNDARY_GIT_BASELINE' => 'target',
         ]);
 
-        self::assertSame(
-            0,
-            $process->getExitCode(),
-            $process->getErrorOutput() . $process->getOutput(),
-        );
+        self::assertSame(0, $process->getExitCode(), $process->getErrorOutput() . $process->getOutput());
     }
 
     public function testCommitMetadataScanRejectsBadCandidateCommitAfterBaseline(): void

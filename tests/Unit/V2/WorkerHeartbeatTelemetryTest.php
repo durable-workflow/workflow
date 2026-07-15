@@ -9,7 +9,7 @@ use Workflow\V2\Support\WorkerHeartbeatTelemetry;
 
 final class WorkerHeartbeatTelemetryTest extends TestCase
 {
-    public function test_task_slots_derives_available_from_capacity_minus_inflight(): void
+    public function testTaskSlotsDerivesAvailableFromCapacityMinusInflight(): void
     {
         $slots = WorkerHeartbeatTelemetry::taskSlots(
             workflowCapacity: 10,
@@ -25,27 +25,23 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
         self::assertSame(4, $slots['session_available']);
     }
 
-    public function test_task_slots_floors_at_zero_when_inflight_exceeds_capacity(): void
+    public function testTaskSlotsFloorsAtZeroWhenInflightExceedsCapacity(): void
     {
-        $slots = WorkerHeartbeatTelemetry::taskSlots(
-            workflowCapacity: 4,
-            workflowInflight: 9,
-        );
+        $slots = WorkerHeartbeatTelemetry::taskSlots(workflowCapacity: 4, workflowInflight: 9);
 
         self::assertSame(0, $slots['workflow_available']);
     }
 
-    public function test_task_slots_omits_keys_when_inputs_are_unknown(): void
+    public function testTaskSlotsOmitsKeysWhenInputsAreUnknown(): void
     {
-        $slots = WorkerHeartbeatTelemetry::taskSlots(
-            activityCapacity: 5,
-            activityInflight: 1,
-        );
+        $slots = WorkerHeartbeatTelemetry::taskSlots(activityCapacity: 5, activityInflight: 1);
 
-        self::assertSame(['activity_available' => 4], $slots);
+        self::assertSame([
+            'activity_available' => 4,
+        ], $slots);
     }
 
-    public function test_process_metrics_include_memory_pid_and_optional_uptime(): void
+    public function testProcessMetricsIncludeMemoryPidAndOptionalUptime(): void
     {
         $startedAt = time() - 30;
         $metrics = WorkerHeartbeatTelemetry::processMetrics(startedAt: $startedAt);
@@ -61,7 +57,7 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
         self::assertLessThan(120, $metrics['process_uptime_seconds']);
     }
 
-    public function test_process_metrics_omit_uptime_when_started_at_is_null(): void
+    public function testProcessMetricsOmitUptimeWhenStartedAtIsNull(): void
     {
         $metrics = WorkerHeartbeatTelemetry::processMetrics();
 
@@ -69,7 +65,7 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
         self::assertArrayNotHasKey('process_started_at', $metrics);
     }
 
-    public function test_process_metrics_cpu_percent_uses_started_at_for_long_running_workers(): void
+    public function testProcessMetricsCpuPercentUsesStartedAtForLongRunningWorkers(): void
     {
         if (! function_exists('getrusage')) {
             self::markTestSkipped('getrusage() is not available on this platform');

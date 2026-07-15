@@ -16,13 +16,13 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
     {
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class);
 
-        $now = now();
+        $startedAt = hrtime(true);
 
         $workflow->start(shouldTimeout: false);
 
         while ($workflow->running());
 
-        $this->assertLessThan(5, now()->diffInSeconds($now));
+        $this->assertLessThan(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());
     }
@@ -31,13 +31,13 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
     {
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class);
 
-        $now = now();
+        $startedAt = hrtime(true);
 
         $workflow->start(shouldTimeout: true);
 
         while ($workflow->running());
 
-        $this->assertGreaterThanOrEqual(5, now()->diffInSeconds($now));
+        $this->assertGreaterThanOrEqual(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_timed_out', $workflow->output());
     }
@@ -52,5 +52,10 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertFalse($workflow->output());
+    }
+
+    private static function elapsedSeconds(int $startedAt): float
+    {
+        return (hrtime(true) - $startedAt) / 1_000_000_000;
     }
 }

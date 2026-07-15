@@ -77,14 +77,6 @@ final class RunTimerProjector
         return $projected;
     }
 
-    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
-    {
-        /** @var HistoryProjectionMaintenanceRole $role */
-        $role = App::make(HistoryProjectionMaintenanceRole::class);
-
-        return $role;
-    }
-
     /**
      * @return array{
      *     source: string,
@@ -156,6 +148,14 @@ final class RunTimerProjector
             'schema_version_mismatch' => $schemaVersionMismatch,
             'reasons' => $reasons,
         ];
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

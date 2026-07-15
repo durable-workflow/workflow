@@ -75,6 +75,7 @@ final class UpdateWaits
                 'command_sequence' => self::intValue($update['command_sequence'] ?? null),
                 'command_status' => 'accepted',
                 'command_outcome' => self::stringValue($update['outcome'] ?? null),
+                'ordering_state' => self::stringValue($update['ordering_state'] ?? null),
             ];
         }
 

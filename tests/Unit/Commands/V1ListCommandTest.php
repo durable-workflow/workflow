@@ -8,6 +8,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
 use Workflow\Commands\V1ListCommand;
 
@@ -31,14 +32,15 @@ final class V1ListCommandTest extends TestCase
             ]);
         }
 
-        $this->artisan('workflow:v1:list')
-            ->expectsOutputToContain((string) $activeId)
-            ->expectsOutputToContain('ActiveIntegerWorkflow')
-            ->doesntExpectOutputToContain('TerminalCompletedWorkflow')
-            ->doesntExpectOutputToContain('TerminalFailedWorkflow')
-            ->doesntExpectOutputToContain('TerminalCancelledWorkflow')
-            ->expectsOutputToContain('Found 1 active v1 workflow(s) in the workflows table.')
-            ->assertSuccessful();
+        [$exitCode, $output] = $this->runListCommand();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString((string) $activeId, $output);
+        $this->assertStringContainsString('ActiveIntegerWorkflow', $output);
+        $this->assertStringNotContainsString('TerminalCompletedWorkflow', $output);
+        $this->assertStringNotContainsString('TerminalFailedWorkflow', $output);
+        $this->assertStringNotContainsString('TerminalCancelledWorkflow', $output);
+        $this->assertStringContainsString('Found 1 active v1 workflow(s) in the workflows table.', $output);
     }
 
     public function testJsonOutputPreservesTheIntegerIdType(): void
@@ -50,10 +52,10 @@ final class V1ListCommandTest extends TestCase
             'updated_at' => '2026-07-09 10:00:00',
         ]);
 
-        $exitCode = Artisan::call('workflow:v1:list', [
+        [$exitCode, $output] = $this->runListCommand([
             '--json' => true,
         ]);
-        $workflows = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+        $workflows = json_decode(trim($output), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame(0, $exitCode);
         $this->assertIsArray($workflows);
@@ -81,17 +83,18 @@ final class V1ListCommandTest extends TestCase
             ]);
         }
 
-        $this->artisan('workflow:v1:list')
-            ->expectsOutputToContain($shortId)
-            ->expectsOutputToContain(substr($longId, 0, 24) . '...')
-            ->expectsOutputToContain(substr($uuidId, 0, 24) . '...')
-            ->expectsOutputToContain('Found 3 active v1 workflow(s) in the workflows table.')
-            ->assertSuccessful();
+        [$exitCode, $output] = $this->runListCommand();
 
-        $exitCode = Artisan::call('workflow:v1:list', [
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString($shortId, $output);
+        $this->assertStringContainsString(substr($longId, 0, 24) . '...', $output);
+        $this->assertStringContainsString(substr($uuidId, 0, 24) . '...', $output);
+        $this->assertStringContainsString('Found 3 active v1 workflow(s) in the workflows table.', $output);
+
+        [$exitCode, $output] = $this->runListCommand([
             '--json' => true,
         ]);
-        $workflows = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+        $workflows = json_decode(trim($output), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame(0, $exitCode);
         $this->assertIsArray($workflows);
@@ -122,10 +125,23 @@ final class V1ListCommandTest extends TestCase
             $command->getDescription()
         );
 
-        $this->artisan('workflow:v1:list')
-            ->expectsOutput('No active v1 workflows found in the workflows table.')
-            ->expectsOutputToContain('DROP TABLE IF EXISTS workflows;')
-            ->assertSuccessful();
+        [$exitCode, $output] = $this->runListCommand();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('No active v1 workflows found in the workflows table.', $output);
+        $this->assertStringContainsString('DROP TABLE IF EXISTS workflows;', $output);
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     * @return array{0: int, 1: string}
+     */
+    private function runListCommand(array $arguments = []): array
+    {
+        $output = new BufferedOutput();
+        $exitCode = Artisan::call('workflow:v1:list', $arguments, $output);
+
+        return [$exitCode, $output->fetch()];
     }
 
     private function recreateWorkflowsTableWithStringIds(): void
@@ -142,11 +158,16 @@ final class V1ListCommandTest extends TestCase
         }
 
         Schema::create('workflows', static function (Blueprint $table): void {
-            $table->string('id')->primary();
+            $table->string('id')
+                ->primary();
             $table->text('class');
-            $table->text('arguments')->nullable();
-            $table->text('output')->nullable();
-            $table->string('status')->default('pending')->index();
+            $table->text('arguments')
+                ->nullable();
+            $table->text('output')
+                ->nullable();
+            $table->string('status')
+                ->default('pending')
+                ->index();
             $table->timestamps(6);
         });
     }

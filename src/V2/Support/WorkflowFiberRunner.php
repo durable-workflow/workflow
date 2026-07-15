@@ -250,11 +250,7 @@ final class WorkflowFiberRunner
             );
         }
 
-        return WorkflowStep::completeUpdate(
-            $updateId,
-            $result,
-            $this->payloadCodec,
-        );
+        return WorkflowStep::completeUpdate($updateId, $result, $this->payloadCodec);
     }
 
     private function nextObservableStep(): WorkflowStep
@@ -634,11 +630,7 @@ final class WorkflowFiberRunner
         }
 
         $sequence = $this->updateHandlerSequence($event, $payload);
-        $arguments = self::updateArgumentsFromPayload(
-            $payload,
-            $this->payloadCodec,
-            $this->namespace,
-        );
+        $arguments = self::updateArgumentsFromPayload($payload, $this->payloadCodec, $this->namespace);
         $method = new ReflectionMethod($this->workflow, $resolved['method']);
         $parameters = $this->workflow->resolveMethodDependencies($arguments, $method);
 
@@ -1038,8 +1030,7 @@ final class WorkflowFiberRunner
         array $historyEvents,
         string $payloadCodec,
         ?string $namespace,
-    ): array
-    {
+    ): array {
         $outcomes = [];
 
         foreach ($historyEvents as $event) {
@@ -1382,8 +1373,7 @@ final class WorkflowFiberRunner
         array $historyEvents,
         string $payloadCodec,
         ?string $namespace,
-    ): array
-    {
+    ): array {
         $outcomes = [];
 
         foreach ($historyEvents as $event) {
@@ -1468,8 +1458,7 @@ final class WorkflowFiberRunner
         array $historyEvents,
         string $fallbackCodec,
         ?string $namespace,
-    ): array
-    {
+    ): array {
         $outcomes = [];
 
         foreach ($historyEvents as $event) {
@@ -1630,8 +1619,7 @@ final class WorkflowFiberRunner
         array $historyEvents,
         string $payloadCodec,
         ?string $namespace,
-    ): array
-    {
+    ): array {
         $sideEffects = [];
 
         foreach ($historyEvents as $event) {
@@ -1719,8 +1707,7 @@ final class WorkflowFiberRunner
         string $fallbackCodec,
         ?string $eventCodec = null,
         ?string $namespace = null,
-    ): mixed
-    {
+    ): mixed {
         $codec = self::payloadCodec($payload, $eventCodec, $fallbackCodec);
         $serialized = ExternalPayloads::payloadBlob($payload, $codec, $namespace);
 
@@ -1846,8 +1833,11 @@ final class WorkflowFiberRunner
      * @param array<string, mixed> $payload
      * @param list<string> $payloadKeys
      */
-    private static function eventRecordedAt(array $event, array $payload = [], array $payloadKeys = []): ?CarbonInterface
-    {
+    private static function eventRecordedAt(
+        array $event,
+        array $payload = [],
+        array $payloadKeys = []
+    ): ?CarbonInterface {
         $recordedAt = self::eventTime($event['recorded_at'] ?? null);
 
         if ($recordedAt !== null) {

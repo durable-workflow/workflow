@@ -162,25 +162,6 @@ final class ChildRunHistory
         });
     }
 
-    private static function afterAuthoritativeCommit(callable $projection): void
-    {
-        $callback = static function () use ($projection): void {
-            try {
-                $projection();
-            } catch (Throwable $throwable) {
-                report($throwable);
-            }
-        };
-
-        if (DB::transactionLevel() > 0) {
-            DB::afterCommit($callback);
-
-            return;
-        }
-
-        $callback();
-    }
-
     /**
      * @return list<int>
      */
@@ -580,9 +561,7 @@ final class ChildRunHistory
         WorkflowHistoryEvent $resolutionEvent,
         ?WorkflowRun $childRun = null,
     ): mixed {
-        $childRun ??= self::loadRun(
-            self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null)
-        );
+        $childRun ??= self::loadRun(self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null));
         $payload = $resolutionEvent->payload['output'] ?? null;
 
         if ($payload === null && $childRun !== null) {
@@ -665,6 +644,25 @@ final class ChildRunHistory
             ),
             0,
         );
+    }
+
+    private static function afterAuthoritativeCommit(callable $projection): void
+    {
+        $callback = static function () use ($projection): void {
+            try {
+                $projection();
+            } catch (Throwable $throwable) {
+                report($throwable);
+            }
+        };
+
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit($callback);
+
+            return;
+        }
+
+        $callback();
     }
 
     /**
@@ -783,8 +781,7 @@ final class ChildRunHistory
         mixed $payload,
         ?WorkflowRun $childRun,
         ?string $payloadCodec = null,
-    ): mixed
-    {
+    ): mixed {
         if ($payload === null) {
             return null;
         }
@@ -809,8 +806,7 @@ final class ChildRunHistory
         mixed $payload,
         ?WorkflowRun $childRun,
         ?string $payloadCodec = null,
-    ): ?string
-    {
+    ): ?string {
         if ($payloadCodec !== null && $payloadCodec !== '') {
             return $payloadCodec;
         }

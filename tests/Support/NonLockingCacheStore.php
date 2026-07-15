@@ -68,6 +68,11 @@ final class NonLockingCacheStore implements Store
         return $this->put($key, $value, 0);
     }
 
+    public function touch($key, $seconds): bool
+    {
+        return array_key_exists($key, $this->values);
+    }
+
     public function forget($key): bool
     {
         unset($this->values[$key]);

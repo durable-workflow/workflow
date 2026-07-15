@@ -111,8 +111,8 @@ final class V2WorkflowReplayerTest extends TestCase
 
         $snapshot = ActivitySnapshot::fromExecution($activity);
 
-        $this->assertSame($arguments, $snapshot['arguments']);
-        $this->assertSame($result, $snapshot['result']);
+        $this->assertEquals($arguments, $snapshot['arguments']);
+        $this->assertEquals($result, $snapshot['result']);
     }
 
     public function testPublicReplayerPreservesExternalRunAndCommandPayloadEnvelopesFromHistoryExport(): void
@@ -152,10 +152,10 @@ final class V2WorkflowReplayerTest extends TestCase
         $command = $run->commands->first();
 
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $run->arguments);
-        $this->assertSame($arguments, ExternalPayloads::storedEnvelope($run->arguments));
+        $this->assertEquals($arguments, ExternalPayloads::storedEnvelope($run->arguments));
         $this->assertInstanceOf(WorkflowCommand::class, $command);
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $command->payload);
-        $this->assertSame($commandPayload, ExternalPayloads::storedEnvelope($command->payload));
+        $this->assertEquals($commandPayload, ExternalPayloads::storedEnvelope($command->payload));
     }
 
     private function runReadyTaskForRun(string $runId, TaskType $taskType): void

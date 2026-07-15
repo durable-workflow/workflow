@@ -41,7 +41,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=packagist_package',
             ],
             '--output' => $reportPath,
-        ])->assertSuccessful();
+        ])->assertSuccessful()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');
@@ -66,9 +67,15 @@ final class V2ReplayConformanceCommandTest extends TestCase
         $this->assertSame('pass', $scenarios['php_completed_history_activity_replay']['status']);
         $this->assertSame('pass', $scenarios['php_worker_restart_signal_update_state']['status']);
         $this->assertSame('pass', $scenarios['php_code_divergence_refusal']['status']);
-        $this->assertSame('non_determinism_error', $scenarios['php_code_divergence_refusal']['observed_outputs']['observed_outcome']);
+        $this->assertSame(
+            'non_determinism_error',
+            $scenarios['php_code_divergence_refusal']['observed_outputs']['observed_outcome']
+        );
         $this->assertSame('pass', $scenarios['server_history_mutation_refusal']['status']);
-        $this->assertSame('bundle_invalid_or_drifted', $scenarios['server_history_mutation_refusal']['observed_outputs']['observed_outcome']);
+        $this->assertSame(
+            'bundle_invalid_or_drifted',
+            $scenarios['server_history_mutation_refusal']['observed_outputs']['observed_outcome']
+        );
         $this->assertSame('pass', $scenarios['malformed_history_refusal']['status']);
         $this->assertSame('pass', $scenarios['php_in_flight_signal_restart_timing']['status']);
         $this->assertSame(
@@ -84,9 +91,7 @@ final class V2ReplayConformanceCommandTest extends TestCase
         $reportPath = $this->ephemeralPath('replay-conformance-out');
 
         $this->artisan('workflow:v2:replay-conformance', [
-            '--artifact-version' => [
-                'workflow-php=2.0.0-alpha.172',
-            ],
+            '--artifact-version' => ['workflow-php=2.0.0-alpha.172'],
             '--artifact-source' => [
                 'server=docker_image',
                 'cli=official_install_script',
@@ -95,7 +100,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=packagist_package',
             ],
             '--output' => $reportPath,
-        ])->assertFailed();
+        ])->assertFailed()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');
@@ -122,7 +128,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=2.0.0-alpha.57',
             ],
             '--output' => $reportPath,
-        ])->assertFailed();
+        ])->assertFailed()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');
@@ -155,7 +162,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=packagist_package',
             ],
             '--output' => $reportPath,
-        ])->assertFailed();
+        ])->assertFailed()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');
@@ -186,7 +194,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=packagist_package',
             ],
             '--output' => $reportPath,
-        ])->assertFailed();
+        ])->assertFailed()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');
@@ -194,10 +203,7 @@ final class V2ReplayConformanceCommandTest extends TestCase
 
         $this->assertSame('fail', $scenarios['published_artifact_install_only']['status']);
         $this->assertSame('dev-main', $observed['rejected_versions']['workflow-php']['version']);
-        $this->assertSame(
-            'workspace_repo_as_artifact_under_test',
-            $observed['forbidden_sources']['server'],
-        );
+        $this->assertSame('workspace_repo_as_artifact_under_test', $observed['forbidden_sources']['server']);
         $this->assertFalse($observed['published_artifacts_only']);
     }
 
@@ -221,7 +227,8 @@ final class V2ReplayConformanceCommandTest extends TestCase
                 'waterline=github_release',
             ],
             '--output' => $reportPath,
-        ])->assertFailed();
+        ])->assertFailed()
+            ->execute();
 
         $report = $this->readJson($reportPath);
         $scenarios = array_column($report['scenario_results'], null, 'scenario_id');

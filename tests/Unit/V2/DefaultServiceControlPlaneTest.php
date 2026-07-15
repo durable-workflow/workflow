@@ -48,7 +48,10 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame(ServiceCallOutcome::RejectedNotFound, $call->outcome);
         $this->assertSame('billing', $call->target_namespace);
         $this->assertSame('finance', $call->caller_namespace);
-        $this->assertSame(ServiceCallFailureReason::ResolutionFailure->value, $call->outcome_metadata['failure_reason']);
+        $this->assertSame(
+            ServiceCallFailureReason::ResolutionFailure->value,
+            $call->outcome_metadata['failure_reason']
+        );
         $this->assertSame('endpoint', $call->outcome_metadata['resolution_failed_at']);
     }
 
@@ -79,7 +82,9 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->operation($endpoint, $service, [
             'boundary_policy' => [
                 'authorization' => [
-                    'caller_namespaces' => ['allow' => ['shipping']],
+                    'caller_namespaces' => [
+                        'allow' => ['shipping'],
+                    ],
                 ],
             ],
         ]);
@@ -217,7 +222,9 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $result = $controlPlane->execute('billing', 'invoices', 'create', [
             'namespace' => 'billing',
             'caller_namespace' => 'finance',
-            'arguments' => ['approved' => true],
+            'arguments' => [
+                'approved' => true,
+            ],
         ]);
 
         $this->assertTrue($result['accepted']);
@@ -231,7 +238,9 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame('invoice-42', $fakeWorkflow->signals[0]['instance_id']);
         $this->assertSame('approve', $fakeWorkflow->signals[0]['name']);
         $this->assertSame('billing', $fakeWorkflow->signals[0]['options']['namespace']);
-        $this->assertSame(['approved' => true], $fakeWorkflow->signals[0]['options']['arguments']);
+        $this->assertSame([
+            'approved' => true,
+        ], $fakeWorkflow->signals[0]['options']['arguments']);
     }
 
     public function testWorkflowQueryBindingDispatchesThroughWorkflowControlPlaneAndCompletesCall(): void
@@ -441,10 +450,7 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['outcome']);
         $this->assertCount(2, $fakeWorkflow->queries);
         $this->assertSame(
-            [
-                ServiceCallStatus::Accepted->value,
-                ServiceCallStatus::Started->value,
-            ],
+            [ServiceCallStatus::Accepted->value, ServiceCallStatus::Started->value],
             $fakeWorkflow->queryObservedCallStatuses,
         );
         $this->assertSame(ServiceCallStatus::Started->value, $result['service_call_attempts'][0]['status']);
@@ -494,7 +500,9 @@ final class DefaultServiceControlPlaneTest extends TestCase
                 'query_name' => 'greet',
             ],
             'boundary_policy' => [
-                'concurrency_limit' => ['max_in_flight' => 1],
+                'concurrency_limit' => [
+                    'max_in_flight' => 1,
+                ],
             ],
             'retry_policy' => [
                 'max_attempts' => 2,
@@ -757,17 +765,23 @@ final class DefaultServiceControlPlaneTest extends TestCase
         [$endpoint, $service, $operation] = $this->catalogWithOperation('billing');
 
         $blocked = $this->serviceCall($endpoint, $service, $operation, [
-            'cancellation_policy' => ['allow_cancel' => false],
+            'cancellation_policy' => [
+                'allow_cancel' => false,
+            ],
         ]);
 
-        $blockedResult = $controlPlane->cancelCall($blocked->id, ['namespace' => 'billing']);
+        $blockedResult = $controlPlane->cancelCall($blocked->id, [
+            'namespace' => 'billing',
+        ]);
 
         $this->assertFalse($blockedResult['accepted']);
         $this->assertSame('cancellation_not_allowed', $blockedResult['reason']);
         $this->assertSame(ServiceCallStatus::Started->value, $blocked->refresh()->status);
 
         $allowed = $this->serviceCall($endpoint, $service, $operation, [
-            'cancellation_policy' => ['allow_cancel' => true],
+            'cancellation_policy' => [
+                'allow_cancel' => true,
+            ],
         ]);
 
         $allowedResult = $controlPlane->cancelCall($allowed->id, [
@@ -864,11 +878,6 @@ final class DefaultServiceControlPlaneTest extends TestCase
 final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
 {
     /**
-     * @var array<string, int>
-     */
-    private array $inFlight = [];
-
-    /**
      * @var list<string|null>
      */
     public array $releaseStatuses = [];
@@ -876,6 +885,11 @@ final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
     public bool $releasedWhileCallWasFailed = false;
 
     public bool $admittedCompetingCallDuringRetry = false;
+
+    /**
+     * @var array<string, int>
+     */
+    private array $inFlight = [];
 
     public function evaluate(ServiceBoundaryRequest $request): ServiceBoundaryDecision
     {
@@ -898,7 +912,9 @@ final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
             $this->inFlight[$key] = $current + 1;
         }
 
-        return ServiceBoundaryDecision::allow(metadata: ['boundary_key' => $key]);
+        return ServiceBoundaryDecision::allow(metadata: [
+            'boundary_key' => $key,
+        ]);
     }
 
     public function release(ServiceBoundaryRequest $request): void
@@ -927,7 +943,8 @@ final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
         }
 
         $this->releasedWhileCallWasFailed = true;
-        $this->admittedCompetingCallDuringRetry = $this->evaluate($request)->isAllowed();
+        $this->admittedCompetingCallDuringRetry = $this->evaluate($request)
+            ->isAllowed();
     }
 
     private function maxInFlight(ServiceBoundaryRequest $request): ?int
@@ -958,8 +975,9 @@ final class FakeServiceWorkflowQueryHandler
     /**
      * @param list<array<string, mixed>> $results
      */
-    public function __construct(private array $results)
-    {
+    public function __construct(
+        private array $results
+    ) {
     }
 
     /**

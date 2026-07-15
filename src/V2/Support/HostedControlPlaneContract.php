@@ -31,12 +31,7 @@ final class HostedControlPlaneContract
 
     public const PROTOCOL_HEADER = 'X-Durable-Workflow-Hosted-Control-Plane-Version';
 
-    public const TENANT_HIERARCHY = [
-        'organization',
-        'project',
-        'environment',
-        'namespace',
-    ];
+    public const TENANT_HIERARCHY = ['organization', 'project', 'environment', 'namespace'];
 
     public const ENDPOINT_CLASSES = [
         'hosted_control_plane',
@@ -144,10 +139,7 @@ final class HostedControlPlaneContract
                 'owner' => 'application_host',
                 'contract_boundary' => 'php_package_laravel_queue_application_auth',
                 'runtime_authority' => true,
-                'adds_semantics' => [
-                    'workflow_authoring',
-                    'local_queue_execution',
-                ],
+                'adds_semantics' => ['workflow_authoring', 'local_queue_execution'],
             ],
             'standalone_server' => [
                 'owner' => 'runtime_operator',
@@ -253,12 +245,7 @@ final class HostedControlPlaneContract
                 'retention_days',
             ],
             'refusal_reasons' => self::QUOTA_REFUSAL_REASONS,
-            'refusal_required_fields' => [
-                'reason',
-                'budget',
-                'scope',
-                'retry_allowed',
-            ],
+            'refusal_required_fields' => ['reason', 'budget', 'scope', 'retry_allowed'],
             'guarantees' => [
                 'quota_refusals_are_admission_results_not_history_rewrites',
                 'metering_is_not_source_of_truth_for_history_leases_schedules_or_task_completion',
@@ -403,11 +390,7 @@ final class HostedControlPlaneContract
             'support_bundle' => [
                 'authority' => 'hosted_control_plane_and_runtime_target',
                 'redacted_by_default' => true,
-                'contains' => [
-                    'selected_hosted_audit_ids',
-                    'runtime_export_references',
-                    'diagnostic_summaries',
-                ],
+                'contains' => ['selected_hosted_audit_ids', 'runtime_export_references', 'diagnostic_summaries'],
             ],
         ];
     }

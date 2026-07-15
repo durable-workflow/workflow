@@ -38,7 +38,7 @@ final class StickyExecutionDocumentationTest extends TestCase
 
     private function document(): string
     {
-        $document = file_get_contents(base_path(self::DOCUMENT));
+        $document = file_get_contents(dirname(__DIR__, 3) . '/' . self::DOCUMENT);
 
         $this->assertIsString($document);
 

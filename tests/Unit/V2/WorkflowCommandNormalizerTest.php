@@ -26,7 +26,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
 
         $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'result'));
         $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result'));
-        $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('start_service_operation', 'request_payload'));
+        $this->assertTrue(
+            WorkflowCommandNormalizer::acceptsPayloadEnvelope('start_service_operation', 'request_payload')
+        );
         $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments'));
         $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result'));
     }
@@ -51,7 +53,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $errors = $this->normalizeAndCaptureErrors([
             [
                 'type' => 'complete_workflow',
-                'result' => ['ok' => true],
+                'result' => [
+                    'ok' => true,
+                ],
             ],
         ]);
 
@@ -85,7 +89,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
 
     public function testCompleteWorkflowPreservesEnvelopeCodec(): void
     {
-        $blob = Serializer::serializeWithCodec('workflow-serializer-y', ['ok' => true]);
+        $blob = Serializer::serializeWithCodec('workflow-serializer-y', [
+            'ok' => true,
+        ]);
 
         $out = WorkflowCommandNormalizer::normalize([
             [

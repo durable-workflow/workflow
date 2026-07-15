@@ -107,104 +107,10 @@ final class SearchAttributeUpsertService
     }
 
     /**
-     * @param array<string, WorkflowSearchAttribute> $attributes
-     *
-     * @throws \InvalidArgumentException
-     */
-    private static function validateAttributeSet(array $attributes): void
-    {
-        $count = count($attributes);
-
-        if ($count > WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN) {
-            throw new \InvalidArgumentException(
-                sprintf(
-                    'Search attributes count exceeds maximum (%d > %d)',
-                    $count,
-                    WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN,
-                ),
-            );
-        }
-
-        $totalBytes = 0;
-
-        foreach ($attributes as $attribute) {
-            $value = $attribute->getValue();
-
-            if ($value === null) {
-                continue;
-            }
-
-            if (is_string($value)) {
-                $totalBytes += mb_strlen($value, '8bit');
-
-                continue;
-            }
-
-            $totalBytes += match ($attribute->type) {
-                WorkflowSearchAttribute::TYPE_INT, WorkflowSearchAttribute::TYPE_FLOAT => 8,
-                WorkflowSearchAttribute::TYPE_BOOL => 1,
-                WorkflowSearchAttribute::TYPE_DATETIME => 8,
-                WorkflowSearchAttribute::TYPE_KEYWORD_LIST => array_sum(array_map(
-                    static fn (mixed $entry): int => is_string($entry) ? mb_strlen($entry, '8bit') : 0,
-                    is_array($value) ? $value : [],
-                )),
-                default => 0,
-            };
-        }
-
-        if ($totalBytes > WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES) {
-            throw new \InvalidArgumentException(
-                sprintf(
-                    'Total search attributes size exceeds maximum (%d > %d bytes)',
-                    $totalBytes,
-                    WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES,
-                ),
-            );
-        }
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function upsertRow(WorkflowSearchAttribute $attribute, string $timestamp): array
-    {
-        return array_merge([
-            'workflow_run_id' => $attribute->workflow_run_id,
-            'workflow_instance_id' => $attribute->workflow_instance_id,
-            'key' => $attribute->key,
-            'type' => $attribute->type,
-            'value_string' => null,
-            'value_keyword' => null,
-            'value_keyword_list' => null,
-            'value_int' => null,
-            'value_float' => null,
-            'value_bool' => null,
-            'value_datetime' => null,
-            'upserted_at_sequence' => $attribute->upserted_at_sequence,
-            'inherited_from_parent' => $attribute->inherited_from_parent,
-            'created_at' => $timestamp,
-            'updated_at' => $timestamp,
-        ], array_intersect_key(
-            $attribute->getAttributes(),
-            array_flip([
-                'value_string',
-                'value_keyword',
-                'value_keyword_list',
-                'value_int',
-                'value_float',
-                'value_bool',
-                'value_datetime',
-            ]),
-        ));
-    }
-
-    /**
      * Validate that every declared search-attribute type can store the
      * corresponding normalized value before any upsert mutates state.
      *
      * @param array<string, string> $attributeTypes Declared storage types keyed by attribute name
-     *
-     * @throws \InvalidArgumentException
      */
     public static function assertDeclaredTypesCompatible(
         UpsertSearchAttributesCall $call,
@@ -334,5 +240,95 @@ final class SearchAttributeUpsertService
     public function deleteAllForRun(string $runId): void
     {
         WorkflowSearchAttribute::where('workflow_run_id', $runId)->delete();
+    }
+
+    /**
+     * @param array<string, WorkflowSearchAttribute> $attributes
+     */
+    private static function validateAttributeSet(array $attributes): void
+    {
+        $count = count($attributes);
+
+        if ($count > WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN) {
+            throw new \InvalidArgumentException(
+                sprintf(
+                    'Search attributes count exceeds maximum (%d > %d)',
+                    $count,
+                    WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN,
+                ),
+            );
+        }
+
+        $totalBytes = 0;
+
+        foreach ($attributes as $attribute) {
+            $value = $attribute->getValue();
+
+            if ($value === null) {
+                continue;
+            }
+
+            if (is_string($value)) {
+                $totalBytes += mb_strlen($value, '8bit');
+
+                continue;
+            }
+
+            $totalBytes += match ($attribute->type) {
+                WorkflowSearchAttribute::TYPE_INT, WorkflowSearchAttribute::TYPE_FLOAT => 8,
+                WorkflowSearchAttribute::TYPE_BOOL => 1,
+                WorkflowSearchAttribute::TYPE_DATETIME => 8,
+                WorkflowSearchAttribute::TYPE_KEYWORD_LIST => array_sum(array_map(
+                    static fn (mixed $entry): int => is_string($entry) ? mb_strlen($entry, '8bit') : 0,
+                    is_array($value) ? $value : [],
+                )),
+                default => 0,
+            };
+        }
+
+        if ($totalBytes > WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES) {
+            throw new \InvalidArgumentException(
+                sprintf(
+                    'Total search attributes size exceeds maximum (%d > %d bytes)',
+                    $totalBytes,
+                    WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES,
+                ),
+            );
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function upsertRow(WorkflowSearchAttribute $attribute, string $timestamp): array
+    {
+        return array_merge([
+            'workflow_run_id' => $attribute->workflow_run_id,
+            'workflow_instance_id' => $attribute->workflow_instance_id,
+            'key' => $attribute->key,
+            'type' => $attribute->type,
+            'value_string' => null,
+            'value_keyword' => null,
+            'value_keyword_list' => null,
+            'value_int' => null,
+            'value_float' => null,
+            'value_bool' => null,
+            'value_datetime' => null,
+            'upserted_at_sequence' => $attribute->upserted_at_sequence,
+            'inherited_from_parent' => $attribute->inherited_from_parent,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ], array_intersect_key(
+            $attribute->getAttributes(),
+            array_flip([
+                'value_string',
+                'value_keyword',
+                'value_keyword_list',
+                'value_int',
+                'value_float',
+                'value_bool',
+                'value_datetime',
+            ]),
+        ));
     }
 }

@@ -49,7 +49,9 @@ final class ServiceBoundaryDecision
             reason: $reason,
             message: $message,
             policyName: $policyName,
-            metadata: ['failure_reason' => 'policy_rejection'] + $metadata,
+            metadata: [
+                'failure_reason' => 'policy_rejection',
+            ] + $metadata,
         );
     }
 
@@ -79,7 +81,9 @@ final class ServiceBoundaryDecision
             message: $message,
             policyName: $policyName,
             retryAfterSeconds: $retryAfterSeconds,
-            metadata: ['failure_reason' => 'policy_rejection'] + $metadata,
+            metadata: [
+                'failure_reason' => 'policy_rejection',
+            ] + $metadata,
         );
     }
 
@@ -95,7 +99,9 @@ final class ServiceBoundaryDecision
             message: $message,
             policyName: $policyName,
             retryAfterSeconds: $retryAfterSeconds,
-            metadata: ['failure_reason' => 'policy_rejection'] + $metadata,
+            metadata: [
+                'failure_reason' => 'policy_rejection',
+            ] + $metadata,
         );
     }
 
@@ -111,7 +117,9 @@ final class ServiceBoundaryDecision
             message: $message,
             policyName: $policyName,
             retryAfterSeconds: $retryAfterSeconds,
-            metadata: ['failure_reason' => 'policy_rejection'] + $metadata,
+            metadata: [
+                'failure_reason' => 'policy_rejection',
+            ] + $metadata,
         );
     }
 

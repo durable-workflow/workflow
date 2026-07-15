@@ -6,6 +6,7 @@ namespace Tests\Unit\Migrations;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 
@@ -221,14 +222,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_lineage_entries'));
         $this->assertTrue(Schema::hasTable('workflow_child_projection_repairs'));
-        $this->assertTrue(Schema::hasColumn(
-            'workflow_child_projection_repairs',
-            'failed_child_counted_at',
-        ));
-        $this->assertTrue(Schema::hasColumn(
-            'workflow_child_projection_repairs',
-            'failure_id',
-        ));
+        $this->assertTrue(Schema::hasColumn('workflow_child_projection_repairs', 'failed_child_counted_at'));
+        $this->assertTrue(Schema::hasColumn('workflow_child_projection_repairs', 'failure_id'));
         $this->assertTrue(Schema::hasTable('workflow_service_endpoints'));
         $this->assertTrue(Schema::hasTable('workflow_services'));
         $this->assertTrue(Schema::hasTable('workflow_service_operations'));
@@ -322,9 +317,7 @@ final class MigrationsTest extends TestCase
         return [['migrate:rollback'], ['migrate:reset']];
     }
 
-    /**
-     * @dataProvider sqliteRollbackCommandProvider
-     */
+    #[DataProvider('sqliteRollbackCommandProvider')]
     public function testSqlitePackageMigrationsSupportRollbackCommands(string $command): void
     {
         $databasePath = tempnam(sys_get_temp_dir(), 'workflow-sqlite-migrations-');
@@ -448,7 +441,9 @@ final class MigrationsTest extends TestCase
                 'workflow_run_id' => $unknownRunId,
                 'sequence' => 1,
                 'event_type' => 'WorkflowCompleted',
-                'payload' => json_encode(['output' => 'inline-output'], JSON_THROW_ON_ERROR),
+                'payload' => json_encode([
+                    'output' => 'inline-output',
+                ], JSON_THROW_ON_ERROR),
                 'created_at' => $now,
                 'updated_at' => $now,
             ],
@@ -465,9 +460,7 @@ final class MigrationsTest extends TestCase
             'workflow-serializer-y',
             DB::table('workflow_runs')->where('id', $knownRunId)->value('output_payload_codec'),
         );
-        $this->assertNull(
-            DB::table('workflow_runs')->where('id', $unknownRunId)->value('output_payload_codec'),
-        );
+        $this->assertNull(DB::table('workflow_runs')->where('id', $unknownRunId)->value('output_payload_codec'));
     }
 
     public function testRunSummaryWorkflowInstanceIdSupportsServerWorkflowIds(): void

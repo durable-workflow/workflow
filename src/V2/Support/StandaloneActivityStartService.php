@@ -119,10 +119,12 @@ final class StandaloneActivityStartService
             $nextRunNumber = self::nextRunNumber($instance);
 
             $scheduleToStartDeadlineAt = $activityOptions->scheduleToStartTimeout !== null
-                ? $now->copy()->addSeconds($activityOptions->scheduleToStartTimeout)
+                ? $now->copy()
+                    ->addSeconds($activityOptions->scheduleToStartTimeout)
                 : null;
             $scheduleToCloseDeadlineAt = $activityOptions->scheduleToCloseTimeout !== null
-                ? $now->copy()->addSeconds($activityOptions->scheduleToCloseTimeout)
+                ? $now->copy()
+                    ->addSeconds($activityOptions->scheduleToCloseTimeout)
                 : null;
 
             /** @var WorkflowRun $run */

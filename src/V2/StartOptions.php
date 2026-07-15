@@ -112,7 +112,9 @@ final class StartOptions
 
     public function withBusinessKey(?string $businessKey): self
     {
-        return $this->cloneWith(['businessKey' => $businessKey]);
+        return $this->cloneWith([
+            'businessKey' => $businessKey,
+        ]);
     }
 
     /**
@@ -120,7 +122,9 @@ final class StartOptions
      */
     public function withLabels(array $labels): self
     {
-        return $this->cloneWith(['labels' => $labels]);
+        return $this->cloneWith([
+            'labels' => $labels,
+        ]);
     }
 
     /**
@@ -128,7 +132,9 @@ final class StartOptions
      */
     public function withMemo(array $memo): self
     {
-        return $this->cloneWith(['memo' => $memo]);
+        return $this->cloneWith([
+            'memo' => $memo,
+        ]);
     }
 
     /**
@@ -136,22 +142,30 @@ final class StartOptions
      */
     public function withSearchAttributes(array $searchAttributes): self
     {
-        return $this->cloneWith(['searchAttributes' => $searchAttributes]);
+        return $this->cloneWith([
+            'searchAttributes' => $searchAttributes,
+        ]);
     }
 
     public function withExecutionTimeout(?int $seconds): self
     {
-        return $this->cloneWith(['executionTimeoutSeconds' => $seconds]);
+        return $this->cloneWith([
+            'executionTimeoutSeconds' => $seconds,
+        ]);
     }
 
     public function withRunTimeout(?int $seconds): self
     {
-        return $this->cloneWith(['runTimeoutSeconds' => $seconds]);
+        return $this->cloneWith([
+            'runTimeoutSeconds' => $seconds,
+        ]);
     }
 
     public function withPriority(?int $priority): self
     {
-        return $this->cloneWith(['priority' => $priority]);
+        return $this->cloneWith([
+            'priority' => $priority,
+        ]);
     }
 
     public function withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self
@@ -173,8 +187,14 @@ final class StartOptions
             array_key_exists('labels', $overrides) ? $overrides['labels'] : $this->labels,
             array_key_exists('memo', $overrides) ? $overrides['memo'] : $this->memo,
             array_key_exists('searchAttributes', $overrides) ? $overrides['searchAttributes'] : $this->searchAttributes,
-            array_key_exists('executionTimeoutSeconds', $overrides) ? $overrides['executionTimeoutSeconds'] : $this->executionTimeoutSeconds,
-            array_key_exists('runTimeoutSeconds', $overrides) ? $overrides['runTimeoutSeconds'] : $this->runTimeoutSeconds,
+            array_key_exists(
+                'executionTimeoutSeconds',
+                $overrides
+            ) ? $overrides['executionTimeoutSeconds'] : $this->executionTimeoutSeconds,
+            array_key_exists(
+                'runTimeoutSeconds',
+                $overrides
+            ) ? $overrides['runTimeoutSeconds'] : $this->runTimeoutSeconds,
             array_key_exists('priority', $overrides) ? $overrides['priority'] : $this->priority,
             array_key_exists('fairnessKey', $overrides) ? $overrides['fairnessKey'] : $this->fairnessKey,
             array_key_exists('fairnessWeight', $overrides) ? $overrides['fairnessWeight'] : $this->fairnessWeight,
@@ -361,7 +381,9 @@ final class StartOptions
                 continue;
             }
 
-            $stringValue = is_bool($value) ? ($value ? '1' : '0') : (is_string($value) ? trim($value) : (string) $value);
+            $stringValue = is_bool($value) ? ($value ? '1' : '0') : (is_string($value) ? trim(
+                $value
+            ) : (string) $value);
 
             if ($stringValue !== '' && strlen($stringValue) > WorkflowInstanceId::MAX_LENGTH) {
                 throw new LogicException(sprintf(

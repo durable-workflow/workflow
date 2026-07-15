@@ -133,9 +133,24 @@ final class TaskQueuePriorityFairnessTest extends TestCase
     public function testFairnessSchedulerNeverViolatesPriorityOrder(): void
     {
         $candidates = [
-            ['task_id' => 'low-tenant-a', 'priority' => 9, 'fairness_key' => 'tenant-a', 'fairness_weight' => 1],
-            ['task_id' => 'high-tenant-b', 'priority' => 0, 'fairness_key' => 'tenant-b', 'fairness_weight' => 1],
-            ['task_id' => 'mid-tenant-a', 'priority' => 5, 'fairness_key' => 'tenant-a', 'fairness_weight' => 1],
+            [
+                'task_id' => 'low-tenant-a',
+                'priority' => 9,
+                'fairness_key' => 'tenant-a',
+                'fairness_weight' => 1,
+            ],
+            [
+                'task_id' => 'high-tenant-b',
+                'priority' => 0,
+                'fairness_key' => 'tenant-b',
+                'fairness_weight' => 1,
+            ],
+            [
+                'task_id' => 'mid-tenant-a',
+                'priority' => 5,
+                'fairness_key' => 'tenant-a',
+                'fairness_weight' => 1,
+            ],
         ];
 
         $scheduler = new TaskFairnessScheduler(new InMemoryTaskFairnessState());
@@ -205,71 +220,6 @@ final class TaskQueuePriorityFairnessTest extends TestCase
         );
     }
 
-    private function createReadyRun(): WorkflowRun
-    {
-        /** @var WorkflowInstance $instance */
-        $instance = WorkflowInstance::query()->create([
-            'workflow_class' => TestGreetingWorkflow::class,
-            'workflow_type' => 'test-greeting-workflow',
-            'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
-        ]);
-
-        /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()->create([
-            'workflow_instance_id' => $instance->id,
-            'run_number' => 1,
-            'workflow_class' => TestGreetingWorkflow::class,
-            'workflow_type' => 'test-greeting-workflow',
-            'status' => RunStatus::Running->value,
-            'arguments' => Serializer::serialize(['Taylor']),
-            'connection' => 'redis',
-            'queue' => 'default',
-            'priority' => TaskPriority::DEFAULT,
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
-        ]);
-
-        $instance->forceFill(['current_run_id' => $run->id])->save();
-
-        return $run;
-    }
-
-    private function seedTask(WorkflowRun $run, int $priority, int $secondsAgo): WorkflowTask
-    {
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'task_type' => TaskType::Workflow->value,
-            'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSeconds($secondsAgo),
-            'payload' => [],
-            'connection' => 'redis',
-            'queue' => 'default',
-            'priority' => $priority,
-        ]);
-
-        return $task;
-    }
-
-    private function seedActivityTask(WorkflowRun $run, int $priority): WorkflowTask
-    {
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'task_type' => TaskType::Activity->value,
-            'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => [],
-            'connection' => 'redis',
-            'queue' => 'default',
-            'priority' => $priority,
-        ]);
-
-        return $task;
-    }
-
     public function testWorkflowTaskPollEndpointAppliesFairnessReorderAndRecordsDispatch(): void
     {
         $this->bootWebhookRoutes();
@@ -284,7 +234,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->subSeconds(10 - $i),
+                'available_at' => now()
+                    ->subSeconds(10 - $i),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -298,7 +249,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->subSeconds(5 - $i),
+                'available_at' => now()
+                    ->subSeconds(5 - $i),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -343,7 +295,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Activity->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->subSeconds(10 - $i),
+                'available_at' => now()
+                    ->subSeconds(10 - $i),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -357,7 +310,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Activity->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->subSeconds(5 - $i),
+                'available_at' => now()
+                    ->subSeconds(5 - $i),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -397,7 +351,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -408,7 +363,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -421,7 +377,8 @@ final class TaskQueuePriorityFairnessTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -475,6 +432,79 @@ final class TaskQueuePriorityFairnessTest extends TestCase
         $response->assertJsonPath('workflow_task.priority_tiers', []);
         $response->assertJsonPath('workflow_task.recent_dispatch', []);
         $response->assertJsonPath('activity_task.ready_tasks', 0);
+    }
+
+    private function createReadyRun(): WorkflowRun
+    {
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'priority' => TaskPriority::DEFAULT,
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        return $run;
+    }
+
+    private function seedTask(WorkflowRun $run, int $priority, int $secondsAgo): WorkflowTask
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds($secondsAgo),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'priority' => $priority,
+        ]);
+
+        return $task;
+    }
+
+    private function seedActivityTask(WorkflowRun $run, int $priority): WorkflowTask
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'priority' => $priority,
+        ]);
+
+        return $task;
     }
 
     private function bootWebhookRoutes(): void

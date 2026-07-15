@@ -10,7 +10,12 @@ interface ServiceControlPlane
      * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
-    public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array;
+    public function execute(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $options = []
+    ): array;
 
     /**
      * @param array<string, mixed> $options

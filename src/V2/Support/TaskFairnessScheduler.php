@@ -23,7 +23,8 @@ final class TaskFairnessScheduler
 {
     public function __construct(
         private readonly TaskFairnessState $state,
-    ) {}
+    ) {
+    }
 
     /**
      * @param  list<array{task_id?: string, priority?: int, fairness_key?: ?string, fairness_weight?: int}>  $candidates

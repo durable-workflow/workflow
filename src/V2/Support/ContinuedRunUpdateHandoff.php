@@ -15,10 +15,8 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class ContinuedRunUpdateHandoff
 {
-    public static function transferInstanceScoped(
-        WorkflowRun $closingRun,
-        WorkflowRun $continuedRun,
-    ): void {
+    public static function transferInstanceScoped(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
+    {
         $updates = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
             ->where('workflow_run_id', $closingRun->id)
             ->where('target_scope', 'instance')

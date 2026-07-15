@@ -53,11 +53,7 @@ final class StickyExecution
      */
     public static function replayModes(): array
     {
-        return [
-            self::MODE_STICKY_HIT_EXPECTED,
-            self::MODE_COLD_REPLAY,
-            self::MODE_FORCED_COLD_REPLAY,
-        ];
+        return [self::MODE_STICKY_HIT_EXPECTED, self::MODE_COLD_REPLAY, self::MODE_FORCED_COLD_REPLAY];
     }
 
     public static function enabled(): bool
@@ -92,8 +88,11 @@ final class StickyExecution
         return $until->gt($now ?? now());
     }
 
-    public static function claimReplayMode(WorkflowTask $task, ?string $leaseOwner, ?CarbonInterface $now = null): string
-    {
+    public static function claimReplayMode(
+        WorkflowTask $task,
+        ?string $leaseOwner,
+        ?CarbonInterface $now = null
+    ): string {
         $stickyWorkerId = self::nonEmptyString($task->sticky_worker_id);
 
         if ($stickyWorkerId === null) {

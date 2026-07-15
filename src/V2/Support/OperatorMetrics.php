@@ -375,7 +375,8 @@ final class OperatorMetrics
      */
     private static function stickyExecutionMetrics(CarbonInterface $now, ?string $namespace): array
     {
-        $windowStart = $now->copy()->subMinute();
+        $windowStart = $now->copy()
+            ->subMinute();
         $hitExpected = self::stickyReplayModeCount(
             StickyExecution::MODE_STICKY_HIT_EXPECTED,
             $windowStart,

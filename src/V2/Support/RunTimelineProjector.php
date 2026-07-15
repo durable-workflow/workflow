@@ -75,54 +75,6 @@ final class RunTimelineProjector
     }
 
     /**
-     * @param class-string<WorkflowTimelineEntry> $entryModel
-     * @param array<string, mixed> $entry
-     */
-    private static function upsertEntry(
-        WorkflowRun $run,
-        string $entryModel,
-        string $projectionId,
-        string $historyEventId,
-        array $entry,
-    ): WorkflowTimelineEntry {
-        /** @var WorkflowTimelineEntry $row */
-        $row = IdempotentProjectionUpsert::upsert(
-            $entryModel,
-            ['id' => $projectionId],
-            [
-                'workflow_run_id' => $run->id,
-                'workflow_instance_id' => $run->workflow_instance_id,
-                'history_event_id' => $historyEventId,
-                'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
-                'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
-                'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
-                'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
-                'source_kind' => self::stringValue($entry['source_kind'] ?? null),
-                'source_id' => self::stringValue($entry['source_id'] ?? null),
-                'summary' => self::stringValue($entry['summary'] ?? null),
-                'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
-                'command_id' => self::stringValue($entry['command_id'] ?? null),
-                'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
-                'task_id' => self::stringValue($entry['task_id'] ?? null),
-                'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
-                'timer_id' => self::stringValue($entry['timer_id'] ?? null),
-                'failure_id' => self::stringValue($entry['failure_id'] ?? null),
-                'payload' => self::normalizedPayload($entry),
-            ],
-        );
-
-        return $row;
-    }
-
-    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
-    {
-        /** @var HistoryProjectionMaintenanceRole $role */
-        $role = App::make(HistoryProjectionMaintenanceRole::class);
-
-        return $role;
-    }
-
-    /**
      * @return array{source: string, timeline: list<array<string, mixed>>, total_count: int}
      */
     public static function snapshotForRun(WorkflowRun $run, ?int $limit = null): array
@@ -189,6 +141,56 @@ final class RunTimelineProjector
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionMatchesHistory($projected, $canonicalTimeline),
         ];
+    }
+
+    /**
+     * @param class-string<WorkflowTimelineEntry> $entryModel
+     * @param array<string, mixed> $entry
+     */
+    private static function upsertEntry(
+        WorkflowRun $run,
+        string $entryModel,
+        string $projectionId,
+        string $historyEventId,
+        array $entry,
+    ): WorkflowTimelineEntry {
+        /** @var WorkflowTimelineEntry $row */
+        $row = IdempotentProjectionUpsert::upsert(
+            $entryModel,
+            [
+                'id' => $projectionId,
+            ],
+            [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'history_event_id' => $historyEventId,
+                'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
+                'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
+                'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
+                'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
+                'source_kind' => self::stringValue($entry['source_kind'] ?? null),
+                'source_id' => self::stringValue($entry['source_id'] ?? null),
+                'summary' => self::stringValue($entry['summary'] ?? null),
+                'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
+                'command_id' => self::stringValue($entry['command_id'] ?? null),
+                'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
+                'task_id' => self::stringValue($entry['task_id'] ?? null),
+                'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
+                'timer_id' => self::stringValue($entry['timer_id'] ?? null),
+                'failure_id' => self::stringValue($entry['failure_id'] ?? null),
+                'payload' => self::normalizedPayload($entry),
+            ],
+        );
+
+        return $row;
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

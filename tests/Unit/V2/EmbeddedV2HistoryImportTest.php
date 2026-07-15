@@ -105,10 +105,7 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $report = EmbeddedV2HistoryImport::import($bundle);
 
         $this->assertSame('rejected', $report['status']);
-        $this->assertContains(
-            'tasks.leased_task_present',
-            array_column($report['eligibility']['errors'], 'rule'),
-        );
+        $this->assertContains('tasks.leased_task_present', array_column($report['eligibility']['errors'], 'rule'));
         $this->assertFalse(WorkflowRun::query()->whereKey($runId)->exists());
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
     }
@@ -146,6 +143,7 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $bundle['activities'][0]['payload_codec'] = $codec;
         $bundle['activities'][0]['arguments'] = $arguments;
         $bundle['activities'][0]['result'] = $result;
+        $bundle = $this->resealBundle($bundle);
         $runId = $bundle['workflow']['run_id'];
         $this->clearWorkflowState();
 
@@ -186,7 +184,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $commandId = (string) Str::ulid();
         $signalCommandId = (string) Str::ulid();
         $updateCommandId = (string) Str::ulid();
-        $now = now()->toJSON();
+        $now = now()
+            ->toJSON();
 
         $bundle['payloads']['arguments']['data'] = $runArguments;
         $bundle['commands'] = [
@@ -265,6 +264,7 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'closed_at' => $now,
             ],
         ];
+        $bundle = $this->resealBundle($bundle);
         $this->clearWorkflowState();
 
         $report = EmbeddedV2HistoryImport::import($bundle);
@@ -302,8 +302,14 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertSame($commandPayload, $detailCommand['payload']);
         $this->assertNull($detailCommand['target_name']);
         $this->assertSame([], $detailCommand['validation_errors']);
-        $this->assertSame($this->externalStorageEnvelope($codec, 'import-signal-command-payload'), $detailSignalCommand['payload']);
-        $this->assertSame($this->externalStorageEnvelope($codec, 'import-update-command-payload'), $detailUpdateCommand['payload']);
+        $this->assertSame(
+            $this->externalStorageEnvelope($codec, 'import-signal-command-payload'),
+            $detailSignalCommand['payload']
+        );
+        $this->assertSame(
+            $this->externalStorageEnvelope($codec, 'import-update-command-payload'),
+            $detailUpdateCommand['payload']
+        );
         $this->assertSame($signalArguments, $detailSignal['arguments']);
         $this->assertSame($updateArguments, $detailUpdate['arguments']);
         $this->assertSame($updateResult, $detailUpdate['result']);
@@ -316,10 +322,16 @@ final class EmbeddedV2HistoryImportTest extends TestCase
 
         $this->assertIsArray($fallbackSignal);
         $this->assertIsArray($fallbackUpdate);
-        $this->assertSame($this->externalStorageEnvelope($codec, 'import-signal-command-payload'), $fallbackSignal['arguments']);
+        $this->assertSame(
+            $this->externalStorageEnvelope($codec, 'import-signal-command-payload'),
+            $fallbackSignal['arguments']
+        );
         $this->assertNull($fallbackSignal['name']);
         $this->assertSame([], $fallbackSignal['validation_errors']);
-        $this->assertSame($this->externalStorageEnvelope($codec, 'import-update-command-payload'), $fallbackUpdate['arguments']);
+        $this->assertSame(
+            $this->externalStorageEnvelope($codec, 'import-update-command-payload'),
+            $fallbackUpdate['arguments']
+        );
         $this->assertNull($fallbackUpdate['name']);
         $this->assertSame([], $fallbackUpdate['validation_errors']);
     }
@@ -471,5 +483,51 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'codec' => $codec,
             ],
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @return array<string, mixed>
+     */
+    private function resealBundle(array $bundle): array
+    {
+        unset($bundle['integrity']);
+
+        $canonicalJson = json_encode(
+            self::canonicalize($bundle),
+            JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
+        );
+
+        $bundle['integrity'] = [
+            'canonicalization' => 'json-recursive-ksort-v1',
+            'checksum_algorithm' => 'sha256',
+            'checksum' => hash('sha256', $canonicalJson),
+            'signature_algorithm' => null,
+            'signature' => null,
+            'key_id' => null,
+        ];
+
+        return $bundle;
+    }
+
+    private static function canonicalize(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(static fn (mixed $item): mixed => self::canonicalize($item), $value);
+        }
+
+        $canonical = [];
+
+        foreach ($value as $key => $item) {
+            $canonical[$key] = self::canonicalize($item);
+        }
+
+        ksort($canonical, SORT_STRING);
+
+        return $canonical;
     }
 }

@@ -24,7 +24,10 @@ final class PackageBoundaryTest extends TestCase
                 'Workflow\\V2\\Worker\\WorkflowQueryTaskExecutor',
             ] as $removedClass
         ) {
-            $this->assertFalse(class_exists($removedClass), $removedClass . ' must be provided by durable-workflow/sdk instead.');
+            $this->assertFalse(
+                class_exists($removedClass),
+                $removedClass . ' must be provided by durable-workflow/sdk instead.'
+            );
         }
     }
 

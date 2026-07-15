@@ -38,7 +38,8 @@ final class ParentClosePolicyContractTest extends TestCase
         $reflection = new ReflectionClass(Workflow::class);
 
         foreach (['child', 'executeChildWorkflow'] as $method) {
-            $docComment = $reflection->getMethod($method)->getDocComment();
+            $docComment = $reflection->getMethod($method)
+                ->getDocComment();
 
             $this->assertIsString(
                 $docComment,
@@ -137,10 +138,7 @@ final class ParentClosePolicyContractTest extends TestCase
 
     private function methodBody(string $source, string $method): string
     {
-        $pattern = sprintf(
-            '/function\s+%s\b[^{]*(\{(?:[^{}]++|(?1))*+\})/s',
-            preg_quote($method, '/'),
-        );
+        $pattern = sprintf('/function\s+%s\b[^{]*(\{(?:[^{}]++|(?1))*+\})/s', preg_quote($method, '/'));
 
         if (preg_match($pattern, $source, $matches) !== 1) {
             $this->fail(sprintf('Could not locate method body for %s.', $method));

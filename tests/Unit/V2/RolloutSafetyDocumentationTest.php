@@ -734,10 +734,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
             $this->assertStringNotContainsString(
                 $forbidden,
                 $contents,
-                sprintf(
-                    'Rollout safety contract must not describe prerelease v2 version-skew as %s.',
-                    $forbidden
-                ),
+                sprintf('Rollout safety contract must not describe prerelease v2 version-skew as %s.', $forbidden),
             );
         }
     }

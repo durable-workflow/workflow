@@ -21,8 +21,11 @@ use LogicException;
 final class TaskPriority
 {
     public const MIN = 0;
+
     public const MIN_USER = 1;
+
     public const MAX = 9;
+
     public const DEFAULT = 5;
 
     public static function normalize(mixed $value): int

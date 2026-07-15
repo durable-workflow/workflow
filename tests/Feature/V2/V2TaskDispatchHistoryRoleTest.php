@@ -262,7 +262,9 @@ final class V2TaskDispatchHistoryRoleTest extends TestCase
     private function bindRecordingRole(): HistoryProjectionRole
     {
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            /** @var list<array{0: string, 1: string}> */
+            /**
+             * @var list<array{0: string, 1: string}>
+             */
             public array $calls = [];
 
             public function __construct(
