@@ -2051,7 +2051,8 @@ final class WorkflowStub
             return false;
         }
 
-        $run = ConfiguredV2Models::workflowRunQuery()->find($update->workflow_run_id);
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($update->workflow_run_id);
 
         return ! $run instanceof WorkflowRun
             || ! (UpdateCommandGate::blockingSignal($run, $update->command_sequence) instanceof WorkflowCommand);

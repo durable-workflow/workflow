@@ -2456,7 +2456,11 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        $signalTask = PendingMessageTask::createForRun($run, self::workflowSignalIdForTask($task));
+        $signalTask = PendingMessageTask::createForRun(
+            $run,
+            self::workflowSignalIdForTask($task),
+            includeReceivedProjectedSignalWait: false,
+        );
 
         if ($signalTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($signalTask);

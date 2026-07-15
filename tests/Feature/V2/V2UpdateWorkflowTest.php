@@ -158,6 +158,25 @@ final class V2UpdateWorkflowTest extends TestCase
         ));
     }
 
+    public function testQueueFakeInlineUpdateUsesConfiguredRunModelQuery(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-configured-run-query');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $result = $workflow->attemptUpdate('approve', true, 'configured-run-query');
+
+        $this->assertTrue($result->completed());
+        $this->assertSame('update_completed', $result->outcome());
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:configured-run-query'],
+        ], $result->result());
+    }
+
     public function testCallingAliasedUpdateMethodRecordsTheDeclaredAlias(): void
     {
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-aliased-method');

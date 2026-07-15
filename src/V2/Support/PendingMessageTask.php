@@ -18,12 +18,17 @@ final class PendingMessageTask
     public static function createForRun(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId = null,
+        bool $includeReceivedProjectedSignalWait = true,
     ): ?WorkflowTask {
         if (self::hasOpenWorkflowTask($run->id)) {
             return null;
         }
 
-        $signal = self::nextEligibleSignal($run, $alreadyAttemptedSignalId);
+        $signal = self::nextEligibleSignal(
+            $run,
+            $alreadyAttemptedSignalId,
+            $includeReceivedProjectedSignalWait,
+        );
         $update = self::nextReadyUpdate($run);
 
         if ($signal instanceof WorkflowSignal && self::signalPrecedesUpdate($signal, $update)) {
@@ -44,6 +49,7 @@ final class PendingMessageTask
     private static function nextEligibleSignal(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId,
+        bool $includeReceivedProjectedSignalWait,
     ): ?WorkflowSignal {
         $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
             ->where('workflow_run_id', $run->id)
@@ -58,15 +64,20 @@ final class PendingMessageTask
 
         $freshRun = $run->fresh(['historyEvents']) ?? $run;
         $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
-        $openSignalWaitsById = self::openSignalWaitsById($freshRun);
+        $advanceableSignalWaitsById = self::advanceableSignalWaitsById(
+            $freshRun,
+            $includeReceivedProjectedSignalWait,
+        );
+        $unprojectedSignalContract = self::unprojectedSignalContract($freshRun);
         $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
         $firstEligibleSignal = null;
 
         foreach ($signals as $signal) {
-            if (! $signal instanceof WorkflowSignal || ! self::signalCanAdvanceOpenWait(
+            if (! $signal instanceof WorkflowSignal || ! self::signalCanAdvanceRun(
                 $signal,
                 $hasAdvanceableConditionWait,
-                $openSignalWaitsById,
+                $advanceableSignalWaitsById,
+                $unprojectedSignalContract,
             )) {
                 continue;
             }
@@ -168,10 +179,11 @@ final class PendingMessageTask
         return $task;
     }
 
-    private static function signalCanAdvanceOpenWait(
+    private static function signalCanAdvanceRun(
         WorkflowSignal $signal,
         bool $hasAdvanceableConditionWait,
-        array $openSignalWaitsById,
+        array $advanceableSignalWaitsById,
+        ?array $unprojectedSignalContract,
     ): bool {
         if ($hasAdvanceableConditionWait) {
             return true;
@@ -179,8 +191,35 @@ final class PendingMessageTask
 
         $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
 
-        return $signalWaitId !== null
-            && ($openSignalWaitsById[$signalWaitId] ?? null) === $signal->signal_name;
+        if ($signalWaitId !== null
+            && ($advanceableSignalWaitsById[$signalWaitId] ?? null) === $signal->signal_name
+        ) {
+            return true;
+        }
+
+        if ($unprojectedSignalContract === null) {
+            return false;
+        }
+
+        $declaredSignals = $unprojectedSignalContract['signals'] ?? [];
+
+        return ($unprojectedSignalContract['source'] ?? null) === RunCommandContract::SOURCE_DURABLE_HISTORY
+            && is_array($declaredSignals)
+            && in_array($signal->signal_name, $declaredSignals, true);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function unprojectedSignalContract(WorkflowRun $run): ?array
+    {
+        if (WorkflowExecutionGate::blockedReason($run)
+            !== WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE
+        ) {
+            return null;
+        }
+
+        return RunCommandContract::forRun($run);
     }
 
     private static function hasAdvanceableConditionWait(WorkflowRun $run): bool
@@ -197,12 +236,20 @@ final class PendingMessageTask
     /**
      * @return array<string, string>
      */
-    private static function openSignalWaitsById(WorkflowRun $run): array
+    private static function advanceableSignalWaitsById(
+        WorkflowRun $run,
+        bool $includeReceivedProjectedSignalWait,
+    ): array
     {
         $waits = [];
 
         foreach (SignalWaits::forRun($run) as $wait) {
-            if (($wait['status'] ?? null) !== 'open') {
+            $isOpen = ($wait['status'] ?? null) === 'open';
+            $isReceived = $includeReceivedProjectedSignalWait
+                && ($wait['status'] ?? null) === 'resolved'
+                && ($wait['source_status'] ?? null) === 'received';
+
+            if (! $isOpen && ! $isReceived) {
                 continue;
             }
 

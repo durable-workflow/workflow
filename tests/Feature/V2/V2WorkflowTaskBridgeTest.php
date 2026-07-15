@@ -25,6 +25,7 @@ use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
@@ -60,9 +61,11 @@ use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\PendingMessageTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -5043,6 +5046,128 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->count());
     }
 
+    public function testPollReturnsDeclaredExternalSignalWithoutProjectedLocalWait(): void
+    {
+        $run = $this->createWaitingRun();
+        $this->makeDefinitionUnavailableWithDurableCommandContract($run);
+
+        $unknown = $this->recordReceivedSignal($run, 'not-declared', 'unknown-signal-wait');
+        $declared = $this->recordReceivedSignal($run, 'advance', 'declared-signal-wait');
+
+        $task = PendingMessageTask::createForRun($run);
+
+        $this->assertNotNull($task);
+        $this->assertSame($declared->id, $task->payload['workflow_signal_id'] ?? null);
+        $this->assertNotSame($unknown->id, $task->payload['workflow_signal_id'] ?? null);
+
+        $polled = $this->bridge->poll('redis', 'default');
+
+        $this->assertCount(1, $polled);
+        $this->assertSame($task->id, $polled[0]['task_id']);
+    }
+
+    public function testPollDoesNotReturnUnprojectedSignalWithoutDurableCommandContract(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = $this->makeDefinitionUnavailable($run);
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+        ]);
+        $signal = $this->recordReceivedSignal($run, 'advance', 'unprojected-signal-without-contract');
+
+        $this->assertNull(PendingMessageTask::createForRun($run));
+        $this->assertSame([], $this->bridge->poll('redis', 'default'));
+        $this->assertSame(SignalStatus::Received, $signal->fresh()?->status);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+    }
+
+    public function testDeclaredExternalSignalTaskCompletesBeforeQueuedUpdateTaskIsPolled(): void
+    {
+        $run = $this->createWaitingRun();
+        $this->makeDefinitionUnavailableWithDurableCommandContract($run);
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $signal = $this->recordReceivedSignal($run, 'advance', 'external-signal-before-update');
+
+        $updateCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [true],
+            ]),
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $updateCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'run',
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [true]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $updateCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $updateCommand->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'arguments' => $update->arguments,
+            'ordering_state' => 'queued',
+            'queued_behind_command_id' => $signal->workflow_command_id,
+            'queued_behind_command_sequence' => $signal->command_sequence,
+            'queued_behind_command_type' => 'signal',
+        ], null, $updateCommand);
+
+        $signalTask = PendingMessageTask::createForRun($run);
+
+        $this->assertNotNull($signalTask);
+        $this->assertSame($signal->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('payload->workflow_update_id', $update->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $firstPoll = $this->bridge->poll('redis', 'default');
+
+        $this->assertCount(1, $firstPoll);
+        $this->assertSame($signalTask->id, $firstPoll[0]['task_id']);
+        $this->assertTrue($this->bridge->claimStatus($signalTask->id, 'external-order-worker')['claimed']);
+
+        $signalCompletion = $this->bridge->complete($signalTask->id, []);
+
+        $this->assertTrue($signalCompletion['completed']);
+        $this->assertCount(1, $signalCompletion['created_task_ids']);
+        $signal->refresh();
+        $this->assertSame('applied', $signal->status->value);
+        $this->assertNotNull(WorkflowCommand::query()->whereKey($signal->workflow_command_id)->value('applied_at'));
+
+        /** @var WorkflowTask $updateTask */
+        $updateTask = WorkflowTask::query()->findOrFail($signalCompletion['created_task_ids'][0]);
+        $this->assertSame(TaskStatus::Ready, $updateTask->status);
+        $this->assertSame('update', $updateTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame($update->id, $updateTask->payload['workflow_update_id'] ?? null);
+
+        $secondPoll = $this->bridge->poll('redis', 'default');
+
+        $this->assertCount(1, $secondPoll);
+        $this->assertSame($updateTask->id, $secondPoll[0]['task_id']);
+    }
+
     public function testRequestIdIdempotencyColumnIsReservedForUpdateCommands(): void
     {
         $run = $this->createWaitingRun();
@@ -8898,6 +9023,58 @@ SQL);
         ], null, $signalCommand);
 
         return $signal;
+    }
+
+    private function makeDefinitionUnavailableWithDurableCommandContract(WorkflowRun $run): void
+    {
+        $instance = $this->makeDefinitionUnavailable($run);
+        $workflowClass = (string) $run->workflow_class;
+        $workflowType = (string) $run->workflow_type;
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'declared_queries' => [],
+            'declared_query_contracts' => [],
+            'declared_signals' => ['advance'],
+            'declared_signal_contracts' => [[
+                'name' => 'advance',
+                'parameters' => [],
+            ]],
+            'declared_updates' => ['approve'],
+            'declared_update_contracts' => [[
+                'name' => 'approve',
+                'parameters' => [],
+            ]],
+            'declared_entry_method' => 'handle',
+            'declared_entry_mode' => 'canonical',
+            'declared_entry_declaring_class' => $workflowClass,
+        ]);
+    }
+
+    private function makeDefinitionUnavailable(WorkflowRun $run): WorkflowInstance
+    {
+        $workflowClass = 'Missing\\ExternalWorkerWorkflow';
+        $workflowType = 'tests.external-worker-workflow';
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        $instance->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ])->save();
+        $run->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ])->save();
+
+        $this->assertSame(
+            WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE,
+            WorkflowExecutionGate::blockedReason($run->fresh()),
+        );
+
+        return $instance;
     }
 
     private function createWaitingRun(?string $namespace = null): WorkflowRun
