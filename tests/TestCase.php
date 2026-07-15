@@ -11,12 +11,17 @@ use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Orchestra\Testbench\Concerns\WithLaravelMigrations;
 use Orchestra\Testbench\TestCase as BaseTestCase;
+use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\Support\TestDatabaseServiceProvider;
+use Throwable;
+use Workflow\Models\StoredWorkflow;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
+use Workflow\WorkflowStub;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -31,6 +36,8 @@ abstract class TestCase extends BaseTestCase
 
     private const WATCHDOG_THROTTLE_TTL_SECONDS = 600;
 
+    private const WORKER_OUTPUT_LIMIT_BYTES = 8_192;
+
     /**
      * Keep this harness's traits out of Testbench's cache for tests that extend
      * Orchestra directly in the same PHPUnit process.
@@ -39,7 +46,15 @@ abstract class TestCase extends BaseTestCase
      */
     protected static ?array $cachedTestCaseUses = null;
 
-    private static $workers = [];
+    /**
+     * @var array<int, Process>
+     */
+    private static array $workers = [];
+
+    /**
+     * @var array<int, array{stdout: string, stderr: string}>
+     */
+    private static array $workerOutput = [];
 
     public static function setUpBeforeClass(): void
     {
@@ -191,6 +206,61 @@ abstract class TestCase extends BaseTestCase
         $this->assertSame(self::normalizeJsonObject($expected), self::normalizeJsonObject($actual));
     }
 
+    /**
+     * @param callable(WorkflowStub): bool $condition
+     */
+    protected function waitForWorkflow(
+        WorkflowStub $workflow,
+        callable $condition,
+        string $expectedState,
+        float $timeoutSeconds = 30.0,
+    ): void {
+        if ($timeoutSeconds <= 0) {
+            throw new InvalidArgumentException('Workflow polling timeout must be greater than zero.');
+        }
+
+        $deadline = hrtime(true) + (int) ($timeoutSeconds * 1_000_000_000);
+
+        do {
+            $workerDiagnostics = self::workerDiagnostics();
+
+            foreach ($workerDiagnostics as $worker) {
+                if (! $worker['running']) {
+                    $this->failWorkflowPolling(
+                        $workflow,
+                        sprintf(
+                            'Queue worker %d exited while waiting for workflow to reach %s.',
+                            $worker['worker'],
+                            $expectedState,
+                        ),
+                        $workerDiagnostics,
+                    );
+                }
+            }
+
+            if ($condition($workflow)) {
+                return;
+            }
+
+            $remainingNanoseconds = $deadline - hrtime(true);
+            if ($remainingNanoseconds <= 0) {
+                break;
+            }
+
+            usleep((int) min(50_000, max(1, (int) ceil($remainingNanoseconds / 1_000))));
+        } while (true);
+
+        $this->failWorkflowPolling(
+            $workflow,
+            sprintf(
+                'Timed out after %.3f seconds waiting for workflow to reach %s.',
+                $timeoutSeconds,
+                $expectedState,
+            ),
+            self::workerDiagnostics(),
+        );
+    }
+
     protected static function stopWorkers(): void
     {
         foreach (self::$workers as $worker) {
@@ -198,6 +268,7 @@ abstract class TestCase extends BaseTestCase
         }
 
         self::$workers = [];
+        self::$workerOutput = [];
     }
 
     private static function normalizeJsonObject(array $value): array
@@ -220,11 +291,118 @@ abstract class TestCase extends BaseTestCase
         $registrations->setValue(null, []);
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $workers
+     */
+    private function failWorkflowPolling(WorkflowStub $workflow, string $failure, array $workers): void
+    {
+        $diagnostics = $this->workflowPollingDiagnostics($workflow);
+        $diagnostics['workers'] = $workers;
+
+        // A failed worker may still hold a workflow lock or leave its peer
+        // consuming the next test's jobs. Stop both before failure teardown.
+        self::stopWorkers();
+
+        $encodedDiagnostics = json_encode(
+            $diagnostics,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE,
+        );
+
+        $this->fail(sprintf(
+            '%s Durable diagnostics: %s',
+            $failure,
+            $encodedDiagnostics === false ? 'unavailable' : $encodedDiagnostics,
+        ));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workflowPollingDiagnostics(WorkflowStub $workflow): array
+    {
+        $workflowId = (string) $workflow->id();
+
+        try {
+            $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
+
+            if (! is_string($model) || ! is_a($model, StoredWorkflow::class, true)) {
+                throw new RuntimeException('The configured stored workflow model is invalid.');
+            }
+
+            /** @var StoredWorkflow|null $rootWorkflow */
+            $rootWorkflow = $model::query()
+                ->find($workflow->id());
+            $activeWorkflow = $rootWorkflow?->active();
+
+            if ($rootWorkflow === null || $activeWorkflow === null) {
+                throw new RuntimeException('The durable workflow row could not be loaded.');
+            }
+
+            $connection = $activeWorkflow->effectiveConnection() ?? (string) config('queue.default');
+            $queue = $activeWorkflow->effectiveQueue()
+                ?? (string) config("queue.connections.{$connection}.queue", 'default');
+
+            $latestLog = $activeWorkflow->logs()
+                ->reorder('id', 'desc')
+                ->first(['id', 'index', 'class', 'created_at']);
+            $latestSignal = $activeWorkflow->signals()
+                ->reorder('id', 'desc')
+                ->first(['id', 'method', 'created_at']);
+            $latestException = $activeWorkflow->exceptions()
+                ->reorder('id', 'desc')
+                ->first(['id', 'class', 'created_at']);
+
+            try {
+                $queuedJobs = Queue::connection($connection)
+                    ->size($queue);
+            } catch (Throwable $exception) {
+                $queuedJobs = 'unavailable: ' . $exception->getMessage();
+            }
+
+            return [
+                'workflow' => [
+                    'id' => $workflowId,
+                    'class' => $rootWorkflow->class,
+                    'status' => $rootWorkflow->getRawOriginal('status'),
+                ],
+                'run' => [
+                    'id' => (string) $activeWorkflow->getKey(),
+                    'status' => $activeWorkflow->getRawOriginal('status'),
+                ],
+                'task' => [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'queued_jobs' => $queuedJobs,
+                ],
+                'history' => [
+                    'logs' => $activeWorkflow->logs()
+                        ->count(),
+                    'latest_log' => $latestLog?->only(['id', 'index', 'class', 'created_at']),
+                    'signals' => $activeWorkflow->signals()
+                        ->count(),
+                    'latest_signal' => $latestSignal?->only(['id', 'method', 'created_at']),
+                    'exceptions' => $activeWorkflow->exceptions()
+                        ->count(),
+                    'latest_exception' => $latestException?->only(['id', 'class', 'created_at']),
+                ],
+            ];
+        } catch (Throwable $exception) {
+            return [
+                'workflow' => [
+                    'id' => $workflowId,
+                ],
+                'diagnostic_error' => $exception->getMessage(),
+            ];
+        }
+    }
+
     private static function startWorkers(): void
     {
         if (self::$workers !== []) {
             return;
         }
+
+        self::$workerOutput = [];
 
         $environment = getenv();
         $workerEnv = array_merge(
@@ -234,14 +412,66 @@ abstract class TestCase extends BaseTestCase
         );
 
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
+            self::$workerOutput[$i] = [
+                'stdout' => '',
+                'stderr' => '',
+            ];
             self::$workers[$i] = new Process(
-                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
+                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work', '--quiet'],
                 null,
                 $workerEnv,
             );
-            self::$workers[$i]->disableOutput();
-            self::$workers[$i]->start();
+            self::$workers[$i]->start(
+                static fn (string $type, string $buffer) => self::captureWorkerOutput($i, $type, $buffer),
+            );
         }
+    }
+
+    private static function captureWorkerOutput(int $worker, string $type, string $buffer): void
+    {
+        $stream = $type === Process::ERR ? 'stderr' : 'stdout';
+        $output = (self::$workerOutput[$worker][$stream] ?? '') . $buffer;
+
+        if (strlen($output) > self::WORKER_OUTPUT_LIMIT_BYTES) {
+            $marker = '[earlier worker output truncated]' . PHP_EOL;
+            $output = $marker . substr($output, -(self::WORKER_OUTPUT_LIMIT_BYTES - strlen($marker)));
+        }
+
+        self::$workerOutput[$worker][$stream] = $output;
+    }
+
+    /**
+     * @return array<int, array{
+     *     worker: int,
+     *     running: bool,
+     *     exit_code: int|null,
+     *     exit_status: string|null,
+     *     stdout: string,
+     *     stderr: string
+     * }>
+     */
+    private static function workerDiagnostics(): array
+    {
+        $diagnostics = [];
+
+        foreach (self::$workers as $index => $worker) {
+            $running = $worker->isRunning();
+            $output = self::$workerOutput[$index] ?? [
+                'stdout' => '',
+                'stderr' => '',
+            ];
+
+            $diagnostics[] = [
+                'worker' => $index,
+                'running' => $running,
+                'exit_code' => $running ? null : $worker->getExitCode(),
+                'exit_status' => $running ? null : $worker->getExitCodeText(),
+                'stdout' => $output['stdout'],
+                'stderr' => $output['stderr'],
+            ];
+        }
+
+        return $diagnostics;
     }
 
     private static function flushRedis(): void
