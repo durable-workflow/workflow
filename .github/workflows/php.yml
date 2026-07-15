@@ -11,9 +11,49 @@ concurrency:
   group: build-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # During the 2.0 alpha bootstrap, Forgejo pull requests run only the
+  # structural candidate gate. Removing this setting (or setting it to false)
+  # does not weaken routine GitHub target-branch qualification.
+  ALPHA_BOOTSTRAP_FORGEJO_STRUCTURAL_GATE: 'true'
+
 jobs:
+  route:
+    name: Resolve portable build route
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      route: ${{ steps.route.outputs.route }}
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 1
+
+    - name: Resolve build route
+      id: route
+      env:
+        BUILD_SERVER_URL: ${{ github.server_url }}
+        BUILD_EVENT_NAME: ${{ github.event_name }}
+      run: >-
+        php scripts/ci/resolve-build-route.php
+        --server-url="$BUILD_SERVER_URL"
+        --event-name="$BUILD_EVENT_NAME"
+        --alpha-bootstrap="${ALPHA_BOOTSTRAP_FORGEJO_STRUCTURAL_GATE:-}"
+        >> "$GITHUB_OUTPUT"
+
+    - name: Verify fail-safe build routes
+      run: php scripts/ci/resolve-build-route.php --self-test
+
+    - name: Verify complete feature inventories
+      run: php scripts/ci/verify-feature-shards.php
+
+    - name: Validate workflow YAML syntax
+      run: yq eval-all '.' .github/workflows/*.yml >/dev/null
+
   quality:
-    if: ${{ github.event_name == 'pull_request' || github.server_url == 'https://github.com' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'bounded' || needs.route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -43,7 +83,8 @@ jobs:
       run: vendor/bin/phpstan analyse src tests
 
   pr-unit-contracts:
-    if: ${{ github.event_name == 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'bounded' }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -79,7 +120,8 @@ jobs:
           --log-junit build/test-results/pr-unit-contracts.xml
 
   pr-feature-mysql:
-    if: ${{ github.event_name == 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'bounded' }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -240,7 +282,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-mysql:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -347,12 +390,16 @@ jobs:
           > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
+        started_at=$(date +%s)
         set +e
         timeout --foreground 10m xargs -a /tmp/mysql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
+        elapsed=$(( $(date +%s) - started_at ))
         set -e
+        printf 'mysql shard=%s exit=%s elapsed_seconds=%s\n' '${{ matrix.shard }}' "$status" "$elapsed" \
+          | tee "build/test-results/mysql-shard-${{ matrix.shard }}-elapsed.txt"
         if [ -f "build/test-results/mysql-shard-${{ matrix.shard }}.xml" ]; then
           php scripts/ci/summarize-junit-times.php \
             --input="build/test-results/mysql-shard-${{ matrix.shard }}.xml" \
@@ -364,6 +411,19 @@ jobs:
         DB_CONNECTION: mysql
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
+
+    - name: Emit MySQL shard diagnostics
+      if: ${{ always() }}
+      env:
+        SUITE_OUTCOME: ${{ steps.mysql_suite.outcome }}
+      run: |
+        cat "build/test-results/mysql-shard-${{ matrix.shard }}-elapsed.txt" 2>/dev/null || true
+        cat "build/test-results/mysql-shard-${{ matrix.shard }}-timing.md" 2>/dev/null || true
+        if [ "$SUITE_OUTCOME" != "success" ]; then
+          echo "MySQL shard ${{ matrix.shard }} failed; assigned files:"
+          cat "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt" 2>/dev/null || true
+          tail -n 300 vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log 2>/dev/null || true
+        fi
 
     - name: Upload MySQL feature timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
@@ -380,7 +440,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-postgresql:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -480,12 +541,16 @@ jobs:
           > /tmp/pgsql-shard-files
         cat /tmp/pgsql-shard-files
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
+        started_at=$(date +%s)
         set +e
         timeout --foreground 10m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
+        elapsed=$(( $(date +%s) - started_at ))
         set -e
+        printf 'postgresql shard=%s exit=%s elapsed_seconds=%s\n' '${{ matrix.shard }}' "$status" "$elapsed" \
+          | tee "build/test-results/pgsql-shard-${{ matrix.shard }}-elapsed.txt"
         if [ -f "build/test-results/pgsql-shard-${{ matrix.shard }}.xml" ]; then
           php scripts/ci/summarize-junit-times.php \
             --input="build/test-results/pgsql-shard-${{ matrix.shard }}.xml" \
@@ -505,6 +570,19 @@ jobs:
         # than a silent hang.
         PGOPTIONS: "-c synchronous_commit=off -c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
+    - name: Emit PostgreSQL shard diagnostics
+      if: ${{ always() }}
+      env:
+        SUITE_OUTCOME: ${{ steps.pgsql_suite.outcome }}
+      run: |
+        cat "build/test-results/pgsql-shard-${{ matrix.shard }}-elapsed.txt" 2>/dev/null || true
+        cat "build/test-results/pgsql-shard-${{ matrix.shard }}-timing.md" 2>/dev/null || true
+        if [ "$SUITE_OUTCOME" != "success" ]; then
+          echo "PostgreSQL shard ${{ matrix.shard }} failed; assigned files:"
+          cat "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt" 2>/dev/null || true
+          tail -n 300 vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log 2>/dev/null || true
+        fi
+
     - name: Upload PostgreSQL feature timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
       uses: actions/upload-artifact@v4
@@ -520,7 +598,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-mariadb:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
 
     services:
@@ -613,7 +692,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   coverage:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+    needs: route
+    if: ${{ needs.route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
 
     services:
@@ -638,11 +718,18 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Create SQLite database on tmpfs
+    - name: Create SQLite database on fast temporary storage
       run: |
-        coverage_db="/dev/shm/workflow-coverage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.sqlite"
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          temporary_root=/dev/shm
+        else
+          temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        fi
+        run_token="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        coverage_db="${temporary_root}/workflow-coverage-${run_token}.sqlite"
         touch "$coverage_db"
         echo "COVERAGE_DB_PATH=$coverage_db" >> "$GITHUB_ENV"
+        echo "TMPDIR=$temporary_root" >> "$GITHUB_ENV"
 
     - name: Resolve service endpoint and export coverage test defaults
       env:
@@ -683,7 +770,6 @@ jobs:
         DB_CONNECTION: sqlite
         DB_DATABASE: ${{ env.COVERAGE_DB_PATH }}
         QUEUE_CONNECTION: sync
-        TMPDIR: /dev/shm
         XDEBUG_MODE: coverage
 
     - name: Upload coverage resource metrics
@@ -694,6 +780,7 @@ jobs:
         path: build/test-results/coverage-resource-metrics.md
 
     - name: Upload coverage to Codecov
+      if: ${{ github.server_url == 'https://github.com' }}
       uses: codecov/codecov-action@v5
       with:
         files: ./coverage.xml
@@ -708,6 +795,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     needs:
+    - route
     - quality
     - pr-unit-contracts
     - pr-feature-mysql
@@ -718,8 +806,19 @@ jobs:
     if: always()
 
     steps:
+    - name: Require a recognized build route
+      env:
+        BUILD_ROUTE: ${{ needs.route.outputs.route }}
+        ROUTE_JOB_RESULT: ${{ needs.route.result }}
+      run: |
+        test "$ROUTE_JOB_RESULT" = "success"
+        case "$BUILD_ROUTE" in
+          bounded|complete|structural|local-sentinel) ;;
+          *) echo "Unrecognized or unavailable build route: $BUILD_ROUTE" >&2; exit 1 ;;
+        esac
+
     - name: Check bounded pull-request gate
-      if: ${{ github.event_name == 'pull_request' }}
+      if: ${{ needs.route.outputs.route == 'bounded' }}
       run: |
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "success"
@@ -728,10 +827,10 @@ jobs:
         test "${{ needs.feature-mariadb.result }}" = "skipped"
         test "${{ needs.feature-postgresql.result }}" = "skipped"
         test "${{ needs.coverage.result }}" = "skipped"
-        echo "Bounded pull-request validation succeeded; the full release matrix is intentionally deferred to the landed SHA."
+        echo "Bounded external pull-request validation succeeded."
 
-    - name: Check full release matrix
-      if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+    - name: Check complete public matrix
+      if: ${{ needs.route.outputs.route == 'complete' }}
       run: |
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "skipped"
@@ -742,8 +841,8 @@ jobs:
         test "${{ needs.coverage.result }}" = "success"
         echo "The complete public release matrix succeeded for this SHA."
 
-    - name: Check local landed-SHA sentinel
-      if: ${{ github.server_url != 'https://github.com' && github.event_name != 'pull_request' }}
+    - name: Check structural candidate gate
+      if: ${{ needs.route.outputs.route == 'structural' }}
       run: |
         test "${{ needs.quality.result }}" = "skipped"
         test "${{ needs.pr-unit-contracts.result }}" = "skipped"
@@ -752,4 +851,16 @@ jobs:
         test "${{ needs.feature-mariadb.result }}" = "skipped"
         test "${{ needs.feature-postgresql.result }}" = "skipped"
         test "${{ needs.coverage.result }}" = "skipped"
-        echo "Local landed-SHA sentinel succeeded; public GitHub owns the full release matrix."
+        echo "Structural candidate validation succeeded without starting broad deterministic tests."
+
+    - name: Check local landed-SHA sentinel
+      if: ${{ needs.route.outputs.route == 'local-sentinel' }}
+      run: |
+        test "${{ needs.quality.result }}" = "skipped"
+        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mariadb.result }}" = "skipped"
+        test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage.result }}" = "skipped"
+        echo "Local landed-SHA sentinel succeeded."
