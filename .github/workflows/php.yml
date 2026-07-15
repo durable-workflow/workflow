@@ -7,9 +7,15 @@ on:
     branches: [v2]
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   quality:
+    if: ${{ github.event_name == 'pull_request' || github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 13
 
     steps:
     - uses: actions/checkout@v6
@@ -36,7 +42,202 @@ jobs:
     - name: Run static analysis via PHPStan
       run: vendor/bin/phpstan analyse src tests
 
+  pr-unit-contracts:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+          fetch-depth: 10
+
+    - name: Cache Composer packages
+      uses: actions/cache@v5
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve bounded pull-request test selection
+      run: >-
+        php scripts/ci/select-pr-tests.php
+        --config=.github/pr-test-selection.json
+        --weights=.github/feature-test-timings.json
+        --weight-profile=mysql
+        --output-dir=build/pr-selection
+
+    - name: Run database-independent unit contracts
+      run: |
+        mkdir -p build/test-results
+        xargs -a build/pr-selection/unit-files.txt \
+          vendor/bin/phpunit --testdox \
+          --log-junit build/test-results/pr-unit-contracts.xml
+
+  pr-feature-mysql:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
+        ports:
+        - 3306
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+          fetch-depth: 20
+
+    - name: Resolve changed files
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        mkdir -p build/pr-selection
+        if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] \
+          && git cat-file -e "${BASE_SHA}^{commit}" \
+          && git cat-file -e "${HEAD_SHA}^{commit}"; then
+          git diff --name-only --diff-filter=ACMRT "$BASE_SHA" "$HEAD_SHA" \
+            > build/pr-selection/changed-files.txt
+        else
+          : > build/pr-selection/changed-files.txt
+          echo "Changed-file targeting unavailable; using the high-signal fallback."
+        fi
+
+    - name: Resolve bounded pull-request test selection
+      run: >-
+        php scripts/ci/select-pr-tests.php
+        --config=.github/pr-test-selection.json
+        --weights=.github/feature-test-timings.json
+        --weight-profile=mysql
+        --changed-files=build/pr-selection/changed-files.txt
+        --output-dir=build/pr-selection
+
+    - name: Cache Composer packages
+      uses: actions/cache@v5
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_PASSWORD="
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
+
+    - name: Create MySQL database
+      run: mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+
+    - name: Run bounded MySQL smoke selection
+      id: pr_mysql_suite
+      run: |
+        mkdir -p build/test-results
+        cat build/pr-selection/summary.txt
+        set +e
+        timeout --foreground 8m bash -euo pipefail -c '
+          filter=$(cat build/pr-selection/mysql-fallback-filter.txt)
+          xargs -a build/pr-selection/mysql-fallback-files.txt \
+            vendor/bin/phpunit --testdox --testsuite feature \
+            --filter "$filter" \
+            --log-junit build/test-results/pr-smoke-fallback.xml
+
+          if [ -s build/pr-selection/mysql-changed-files.txt ]; then
+            xargs -a build/pr-selection/mysql-changed-files.txt \
+              vendor/bin/phpunit --testdox --testsuite feature \
+              --log-junit build/test-results/pr-smoke-changed.xml
+          fi
+        '
+        status=$?
+        set -e
+
+        for report in build/test-results/pr-smoke-*.xml; do
+          [ -f "$report" ] || continue
+          name=$(basename "$report" .xml)
+          php scripts/ci/summarize-junit-times.php \
+            --input="$report" \
+            --output="build/test-results/${name}-timing.md" \
+            --csv="build/test-results/${name}-timing.csv"
+          cat "build/test-results/${name}-timing.md"
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "build/test-results/${name}-timing.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        done
+
+        exit "$status"
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Upload pull-request MySQL smoke timing report
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: pr-feature-timing-mysql
+        path: |
+          build/pr-selection/*
+          build/test-results/pr-smoke-*
+
+    - name: Upload laravel.log if pull-request MySQL smoke fails
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pr_mysql_suite.outcome == 'failure') }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: laravel-log-pr-mysql
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
   feature-mysql:
+    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -174,6 +375,7 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-postgresql:
+    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -312,6 +514,7 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-mariadb:
+    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     services:
@@ -404,6 +607,7 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   coverage:
+    if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     services:
@@ -477,8 +681,11 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     needs:
     - quality
+    - pr-unit-contracts
+    - pr-feature-mysql
     - feature-mysql
     - feature-mariadb
     - feature-postgresql
@@ -486,10 +693,38 @@ jobs:
     if: always()
 
     steps:
-    - name: Check required jobs
+    - name: Check bounded pull-request gate
+      if: ${{ github.event_name == 'pull_request' }}
       run: |
         test "${{ needs.quality.result }}" = "success"
+        test "${{ needs.pr-unit-contracts.result }}" = "success"
+        test "${{ needs.pr-feature-mysql.result }}" = "success"
+        test "${{ needs.feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mariadb.result }}" = "skipped"
+        test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage.result }}" = "skipped"
+        echo "Bounded pull-request validation succeeded; the full release matrix is intentionally deferred to the landed SHA."
+
+    - name: Check full release matrix
+      if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
+      run: |
+        test "${{ needs.quality.result }}" = "success"
+        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
         test "${{ needs.feature-mysql.result }}" = "success"
         test "${{ needs.feature-mariadb.result }}" = "success"
         test "${{ needs.feature-postgresql.result }}" = "success"
         test "${{ needs.coverage.result }}" = "success"
+        echo "The complete public release matrix succeeded for this SHA."
+
+    - name: Check local landed-SHA sentinel
+      if: ${{ github.server_url != 'https://github.com' && github.event_name != 'pull_request' }}
+      run: |
+        test "${{ needs.quality.result }}" = "skipped"
+        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mariadb.result }}" = "skipped"
+        test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage.result }}" = "skipped"
+        echo "Local landed-SHA sentinel succeeded; public GitHub owns the full release matrix."

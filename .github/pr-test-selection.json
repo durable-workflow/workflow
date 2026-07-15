@@ -1,0 +1,37 @@
+{
+  "changed_feature_budget_seconds": 120,
+  "unknown_feature_weight_seconds": 30,
+  "unit_contracts": [
+    "tests/Unit/Serializers/ExternalStorageEnvelopeTest.php",
+    "tests/Unit/V2/CompiledWorkflowDefinitionTest.php",
+    "tests/Unit/V2/ExternalPayloadStorageTest.php",
+    "tests/Unit/V2/PlatformProtocolSpecsTest.php",
+    "tests/Unit/V2/StartOptionsTest.php",
+    "tests/Unit/V2/VersionMarkerWireFormatTest.php",
+    "tests/Unit/V2/WorkflowFiberRunnerTest.php",
+    "tests/Unit/V2/WorkflowInstanceIdTest.php",
+    "tests/Unit/V2/WorkflowStepHistoryTest.php"
+  ],
+  "mysql_smoke": [
+    {
+      "behavior": "durable-dispatch",
+      "file": "tests/Feature/V2/V2TaskDispatchTest.php",
+      "test": "testTaskDispatchPersistsSuccessOnlyAfterAfterCommitPublicationRuns"
+    },
+    {
+      "behavior": "signal-update-order",
+      "file": "tests/Feature/V2/V2UpdateWorkflowTest.php",
+      "test": "testAcceptedUpdateQueuesBehindEarlierSignalAndReplaysInCommandOrder"
+    },
+    {
+      "behavior": "query-replay",
+      "file": "tests/Feature/V2/V2QueryWorkflowTest.php",
+      "test": "testQueriesReplayCommittedHistoryAndForwardArguments"
+    },
+    {
+      "behavior": "persisted-payload",
+      "file": "tests/Feature/V2/V2ActivityArgumentCodecTest.php",
+      "test": "testActivityArgumentsUseStoredCodecInsteadOfSniffFallback"
+    }
+  ]
+}
