@@ -71,24 +71,67 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
             self::markTestSkipped('getrusage() is not available on this platform');
         }
 
-        // Burn a small, predictable amount of CPU so getrusage() reports
-        // non-zero accumulated time for this PHP process.
-        $sum = 0;
-        for ($i = 0; $i < 200_000; $i++) {
-            $sum += $i;
-        }
-        self::assertGreaterThan(0, $sum);
+        $startedAt = time() - 3_600;
+        $usageBefore = getrusage();
+        $sampledAtBefore = microtime(true);
 
-        // A heartbeat from a worker that booted an hour ago: even if this
-        // PHP process has burned a few hundred milliseconds of CPU
-        // overall, dividing by 3600 wall-clock seconds must keep
-        // cpu_percent in single digits — far from the 100% the bug
-        // would produce when the wall-clock denominator was the
-        // first-call cached "now".
-        $metrics = WorkerHeartbeatTelemetry::processMetrics(startedAt: time() - 3600);
+        $metrics = WorkerHeartbeatTelemetry::processMetrics(startedAt: $startedAt);
+
+        $sampledAtAfter = microtime(true);
+        $usageAfter = getrusage();
+
+        self::assertIsArray($usageBefore);
+        self::assertIsArray($usageAfter);
 
         self::assertArrayHasKey('cpu_percent', $metrics);
-        self::assertGreaterThanOrEqual(0.0, $metrics['cpu_percent']);
-        self::assertLessThan(10.0, $metrics['cpu_percent']);
+        self::assertGreaterThanOrEqual(
+            self::roundedCpuLowerBound($usageBefore, $sampledAtAfter - $startedAt),
+            $metrics['cpu_percent'],
+        );
+        self::assertLessThanOrEqual(
+            self::roundedCpuUpperBound($usageAfter, $sampledAtBefore - $startedAt),
+            $metrics['cpu_percent'],
+        );
+    }
+
+    /**
+     * @param array<string, int> $usage
+     */
+    private static function cpuSeconds(array $usage): float
+    {
+        $userSeconds = (int) ($usage['ru_utime.tv_sec'] ?? 0)
+            + ((int) ($usage['ru_utime.tv_usec'] ?? 0)) / 1_000_000;
+        $systemSeconds = (int) ($usage['ru_stime.tv_sec'] ?? 0)
+            + ((int) ($usage['ru_stime.tv_usec'] ?? 0)) / 1_000_000;
+
+        return $userSeconds + $systemSeconds;
+    }
+
+    /**
+     * @param array<string, int> $usage
+     */
+    private static function roundedCpuLowerBound(array $usage, float $wallSeconds): float
+    {
+        $percentage = self::cpuPercentage($usage, $wallSeconds);
+
+        return floor($percentage * 100) / 100;
+    }
+
+    /**
+     * @param array<string, int> $usage
+     */
+    private static function roundedCpuUpperBound(array $usage, float $wallSeconds): float
+    {
+        $percentage = self::cpuPercentage($usage, $wallSeconds);
+
+        return ceil($percentage * 100) / 100;
+    }
+
+    /**
+     * @param array<string, int> $usage
+     */
+    private static function cpuPercentage(array $usage, float $wallSeconds): float
+    {
+        return min(100.0, max(0.0, (self::cpuSeconds($usage) / max(0.001, $wallSeconds)) * 100.0));
     }
 }

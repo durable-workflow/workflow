@@ -87,6 +87,8 @@ final class FunctionsTest extends TestCase
 
     public function testNowFunction(): void
     {
+        $this->travelTo(\now()->startOfSecond());
+
         $workflow = WorkflowStub::make(TestNowWorkflow::class);
         $workflow->start();
 
@@ -97,7 +99,8 @@ final class FunctionsTest extends TestCase
         $workflow->resume();
 
         $output = $workflow->output();
-        $this->assertSame(1, $output);
+        $this->assertIsNumeric($output);
+        $this->assertSame(1.0, (float) $output);
     }
 
     public function testSecondsFunction(): void

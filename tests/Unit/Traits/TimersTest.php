@@ -355,7 +355,7 @@ final class TimersTest extends TestCase
         $this->assertNull($result);
 
         Bus::assertDispatched(Timer::class, function ($job) use ($now) {
-            $delaySeconds = $job->delay->diffInSeconds($now);
+            $delaySeconds = $now->diffInSeconds($job->delay);
             $this->assertLessThanOrEqual(900, $delaySeconds);
             $this->assertGreaterThanOrEqual(899, $delaySeconds);
             return true;

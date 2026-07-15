@@ -104,8 +104,8 @@ final class CommandPayloadPreviewTest extends TestCase
         ];
         $stored = ExternalPayloads::encodeStoredEnvelope($envelope);
 
-        $this->assertSame($envelope, CommandPayloadPreview::previewWithCodec($stored, 'avro'));
-        $this->assertSame($envelope, CommandPayloadPreview::preview($stored));
+        $this->assertSameJsonObject($envelope, CommandPayloadPreview::previewWithCodec($stored, 'avro'));
+        $this->assertSameJsonObject($envelope, CommandPayloadPreview::preview($stored));
     }
 
     public function testPreviewWithCodecReturnsNullForEmptyOrNonStringInput(): void

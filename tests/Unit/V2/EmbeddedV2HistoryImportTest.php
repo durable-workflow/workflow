@@ -160,13 +160,13 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertIsString($activity->result);
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $activity->arguments);
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $activity->result);
-        $this->assertSame($arguments, ExternalPayloads::storedEnvelope($activity->arguments));
-        $this->assertSame($result, ExternalPayloads::storedEnvelope($activity->result));
+        $this->assertSameJsonObject($arguments, ExternalPayloads::storedEnvelope($activity->arguments));
+        $this->assertSameJsonObject($result, ExternalPayloads::storedEnvelope($activity->result));
 
         $export = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
 
-        $this->assertSame($arguments, $export['activities'][0]['arguments']);
-        $this->assertSame($result, $export['activities'][0]['result']);
+        $this->assertSameJsonObject($arguments, $export['activities'][0]['arguments']);
+        $this->assertSameJsonObject($result, $export['activities'][0]['result']);
     }
 
     public function testItImportsExternalizedRunCommandSignalAndUpdatePayloadEnvelopesWithoutDroppingReferences(): void
@@ -280,11 +280,11 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         /** @var WorkflowUpdate $update */
         $update = WorkflowUpdate::query()->where('workflow_command_id', $updateCommandId)->firstOrFail();
 
-        $this->assertSame($runArguments, ExternalPayloads::storedEnvelope($run->arguments));
-        $this->assertSame($commandPayload, ExternalPayloads::storedEnvelope($command->payload));
-        $this->assertSame($signalArguments, ExternalPayloads::storedEnvelope($signal->arguments));
-        $this->assertSame($updateArguments, ExternalPayloads::storedEnvelope($update->arguments));
-        $this->assertSame($updateResult, ExternalPayloads::storedEnvelope($update->result));
+        $this->assertSameJsonObject($runArguments, ExternalPayloads::storedEnvelope($run->arguments));
+        $this->assertSameJsonObject($commandPayload, ExternalPayloads::storedEnvelope($command->payload));
+        $this->assertSameJsonObject($signalArguments, ExternalPayloads::storedEnvelope($signal->arguments));
+        $this->assertSameJsonObject($updateArguments, ExternalPayloads::storedEnvelope($update->arguments));
+        $this->assertSameJsonObject($updateResult, ExternalPayloads::storedEnvelope($update->result));
 
         $detail = RunDetailView::forRun($run->fresh());
         $detailCommand = collect($detail['commands'])->firstWhere('id', $commandId);
@@ -298,21 +298,21 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertIsArray($detailUpdateCommand);
         $this->assertIsArray($detailSignal);
         $this->assertIsArray($detailUpdate);
-        $this->assertSame($runArguments, $detail['arguments']);
-        $this->assertSame($commandPayload, $detailCommand['payload']);
+        $this->assertSameJsonObject($runArguments, $detail['arguments']);
+        $this->assertSameJsonObject($commandPayload, $detailCommand['payload']);
         $this->assertNull($detailCommand['target_name']);
         $this->assertSame([], $detailCommand['validation_errors']);
-        $this->assertSame(
+        $this->assertSameJsonObject(
             $this->externalStorageEnvelope($codec, 'import-signal-command-payload'),
             $detailSignalCommand['payload']
         );
-        $this->assertSame(
+        $this->assertSameJsonObject(
             $this->externalStorageEnvelope($codec, 'import-update-command-payload'),
             $detailUpdateCommand['payload']
         );
-        $this->assertSame($signalArguments, $detailSignal['arguments']);
-        $this->assertSame($updateArguments, $detailUpdate['arguments']);
-        $this->assertSame($updateResult, $detailUpdate['result']);
+        $this->assertSameJsonObject($signalArguments, $detailSignal['arguments']);
+        $this->assertSameJsonObject($updateArguments, $detailUpdate['arguments']);
+        $this->assertSameJsonObject($updateResult, $detailUpdate['result']);
 
         WorkflowSignal::query()->where('workflow_command_id', $signalCommandId)->delete();
         WorkflowUpdate::query()->where('workflow_command_id', $updateCommandId)->delete();
@@ -322,13 +322,13 @@ final class EmbeddedV2HistoryImportTest extends TestCase
 
         $this->assertIsArray($fallbackSignal);
         $this->assertIsArray($fallbackUpdate);
-        $this->assertSame(
+        $this->assertSameJsonObject(
             $this->externalStorageEnvelope($codec, 'import-signal-command-payload'),
             $fallbackSignal['arguments']
         );
         $this->assertNull($fallbackSignal['name']);
         $this->assertSame([], $fallbackSignal['validation_errors']);
-        $this->assertSame(
+        $this->assertSameJsonObject(
             $this->externalStorageEnvelope($codec, 'import-update-command-payload'),
             $fallbackUpdate['arguments']
         );
