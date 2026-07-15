@@ -8,6 +8,7 @@ use Tests\Fixtures\TestTimerQueryWorkflow;
 use Tests\Fixtures\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\WorkflowStub;
 
 final class TimerWorkflowTest extends TestCase
@@ -20,7 +21,7 @@ final class TimerWorkflowTest extends TestCase
 
         $workflow->start(0);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertLessThan(5, $now->diffInSeconds(now()));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -35,7 +36,9 @@ final class TimerWorkflowTest extends TestCase
 
         $workflow->start(5);
 
-        while ($workflow->running());
+        // The workflow deliberately waits five seconds; allow bounded queue
+        // scheduling overhead without falling back to the global test timeout.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
         $this->assertGreaterThanOrEqual(5, $now->diffInSeconds(now()));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -48,7 +51,12 @@ final class TimerWorkflowTest extends TestCase
 
         $workflow->start(10);
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the ten-second timer to enter its waiting state',
+            15.0,
+        );
 
         $status = $workflow->getStatus();
 

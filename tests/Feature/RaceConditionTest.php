@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use RuntimeException;
 use Tests\Fixtures\TestStressParentWorkflow;
 use Tests\TestCase;
 use Workflow\States\WorkflowCompletedStatus;
@@ -20,21 +19,9 @@ class RaceConditionTest extends TestCase
         $workflow = WorkflowStub::make(TestStressParentWorkflow::class);
         $workflow->start($runId, $children, $actPerChild);
 
-        $deadline = now()
-            ->addSeconds(120);
-
-        while ($workflow->running() && now()->lt($deadline)) {
-            usleep(50000);
-            $workflow->fresh();
-        }
-
-        if ($workflow->running()) {
-            throw new RuntimeException(sprintf(
-                'Race run %d did not complete before timeout. Current status: %s',
-                $runId,
-                (string) $workflow->status()
-            ));
-        }
+        // This stress case deliberately dispatches 100 children and 1,000
+        // activities, so retain its original two-minute completion budget.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 120.0);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame([

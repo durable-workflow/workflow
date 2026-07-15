@@ -15,7 +15,7 @@ final class DispatchWorkflowInTransactionTest extends TestCase
     public function testRaceCondition(): void
     {
         $workflow = null;
-        $start = now();
+        $startedAt = hrtime(true);
 
         DB::transaction(static function () use (&$workflow) {
             $workflow = WorkflowStub::make(TestSimpleWorkflow::class);
@@ -43,7 +43,15 @@ final class DispatchWorkflowInTransactionTest extends TestCase
          *
          * the exception is silently caught in src/Workflow.php:115
          */
-        while ($workflow->running() && $workflow->exceptions()->isEmpty() && now()->diffInSeconds($start) < 15);
+        $elapsedSeconds = (hrtime(true) - $startedAt) / 1_000_000_000;
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => ! $workflow->running()
+                || $workflow->exceptions()
+                    ->isNotEmpty(),
+            'a terminal state or durable exception after transaction commit',
+            max(0.001, 15.0 - $elapsedSeconds),
+        );
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertEmpty($workflow->exceptions());

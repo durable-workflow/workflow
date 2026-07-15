@@ -20,7 +20,7 @@ final class FailingWorkflowTest extends TestCase
 
         $workflow->start(shouldFail: true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNull($workflow->output());
@@ -32,7 +32,7 @@ final class FailingWorkflowTest extends TestCase
         $workflow->fresh()
             ->start(shouldFail: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());

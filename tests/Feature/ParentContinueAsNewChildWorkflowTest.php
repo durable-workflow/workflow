@@ -17,7 +17,7 @@ final class ParentContinueAsNewChildWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertEquals(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertEquals('parent_child_workflow_3', $workflow->output());

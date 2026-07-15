@@ -20,7 +20,7 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start(shouldTimeout: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertLessThan(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -35,7 +35,8 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start(shouldTimeout: true);
 
-        while ($workflow->running());
+        // The awaited predicate deliberately times out after five seconds.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
         $this->assertGreaterThanOrEqual(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -48,7 +49,8 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        // Include the intentional one-second timeout and the replayed activity.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 10.0);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertFalse($workflow->output());

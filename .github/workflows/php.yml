@@ -242,6 +242,7 @@ jobs:
   feature-mysql:
     if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
@@ -333,7 +334,7 @@ jobs:
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
-      timeout-minutes: 65
+      timeout-minutes: 12
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
@@ -347,7 +348,7 @@ jobs:
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
         set +e
-        timeout --foreground 60m xargs -a /tmp/mysql-shard-files \
+        timeout --foreground 10m xargs -a /tmp/mysql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
@@ -381,11 +382,12 @@ jobs:
   feature-postgresql:
     if: ${{ github.server_url == 'https://github.com' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1]
+        shard: [0, 1, 2, 3]
 
     services:
       postgres:
@@ -465,13 +467,13 @@ jobs:
 
     - name: Run feature test suite (PostgreSQL shard ${{ matrix.shard }})
       id: pgsql_suite
-      timeout-minutes: 65
+      timeout-minutes: 12
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=2 \
+          --shards=4 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
@@ -479,7 +481,7 @@ jobs:
         cat /tmp/pgsql-shard-files
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
         set +e
-        timeout --foreground 60m xargs -a /tmp/pgsql-shard-files \
+        timeout --foreground 10m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
@@ -497,11 +499,10 @@ jobs:
         XDEBUG_MODE: off
         # Safety net kept after #427: libpq honors PGOPTIONS on every
         # connection, so any runaway query or lock wait fails loudly inside
-        # the step budget instead of consuming the whole 60m timeout. The
-        # numbers are well above legitimate test cost (the suite runs in
-        # ~13m) but well below the step budget, so a future regression
-        # surfaces with the offending SQL in laravel.log rather than a
-        # silent hang.
+        # the bounded shard budget. The numbers are well above legitimate
+        # individual query cost but well below the step budget, so a future
+        # regression surfaces with the offending SQL in laravel.log rather
+        # than a silent hang.
         PGOPTIONS: "-c synchronous_commit=off -c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
     - name: Upload PostgreSQL feature timing report

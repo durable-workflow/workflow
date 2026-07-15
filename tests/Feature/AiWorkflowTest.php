@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use Tests\Fixtures\TestAiWorkflow;
 use Tests\TestCase;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\WorkflowStub;
 
 final class AiWorkflowTest extends TestCase
@@ -16,29 +17,39 @@ final class AiWorkflowTest extends TestCase
         $workflow = WorkflowStub::make(TestAiWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the AI workflow to await its first message',
+        );
+
         $workflow->send('Hello');
 
         $message = null;
-        $attempts = 0;
-        do {
-            sleep(3);
-            $message = $workflow->receive();
-            $attempts++;
-        } while ($message === null && $attempts < 10);
+        $this->waitForWorkflow(
+            $workflow,
+            static function (WorkflowStub $workflow) use (&$message): bool {
+                $message = $workflow->receive();
+
+                return $message !== null;
+            },
+            'the first AI response to be available',
+        );
 
         $this->assertSame('Echo: Hello', $message);
 
-        sleep(1);
         $workflow->send('World');
 
         $message = null;
-        $attempts = 0;
-        do {
-            sleep(3);
-            $message = $workflow->receive();
-            $attempts++;
-        } while ($message === null && $attempts < 10);
+        $this->waitForWorkflow(
+            $workflow,
+            static function (WorkflowStub $workflow) use (&$message): bool {
+                $message = $workflow->receive();
+
+                return $message !== null;
+            },
+            'the second AI response to be available',
+        );
 
         $this->assertSame('Echo: World', $message);
 

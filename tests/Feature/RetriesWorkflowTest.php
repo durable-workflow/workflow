@@ -16,7 +16,9 @@ final class RetriesWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        // Three failed activity attempts include one- and two-second queue
+        // backoffs before Laravel marks the activity exhausted.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
         $this->assertSame(4, $workflow->exceptions()->count());
     }

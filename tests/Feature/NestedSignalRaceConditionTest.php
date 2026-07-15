@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use RuntimeException;
 use Tests\Fixtures\TestNestedSignalLeafWorkflow;
 use Tests\Fixtures\TestNestedSignalParentWorkflow;
 use Tests\TestCase;
@@ -26,21 +25,20 @@ final class NestedSignalRaceConditionTest extends TestCase
         $workflow = WorkflowStub::make(TestNestedSignalParentWorkflow::class);
         $workflow->start($runId, $middleCount, $leafCount);
 
-        $creationDeadline = now()
-            ->addSeconds(30);
         $leafIds = [];
-        while (now()->lt($creationDeadline)) {
-            $leafIds = StoredWorkflow::query()
-                ->where('class', TestNestedSignalLeafWorkflow::class)
-                ->pluck('id')
-                ->all();
+        $this->waitForWorkflow(
+            $workflow,
+            static function (WorkflowStub $_workflow) use (&$leafIds, $expectedLeafCount): bool {
+                $leafIds = StoredWorkflow::query()
+                    ->where('class', TestNestedSignalLeafWorkflow::class)
+                    ->pluck('id')
+                    ->all();
 
-            if (count($leafIds) === $expectedLeafCount) {
-                break;
-            }
-
-            usleep(50000);
-        }
+                return count($leafIds) === $expectedLeafCount;
+            },
+            'all nested leaf workflows to be created',
+            30.0,
+        );
 
         $this->assertCount($expectedLeafCount, $leafIds, 'Timed out waiting for all nested leaf workflows');
 
@@ -50,20 +48,9 @@ final class NestedSignalRaceConditionTest extends TestCase
             }
         }
 
-        $completionDeadline = now()
-            ->addSeconds(120);
-        while ($workflow->running() && now()->lt($completionDeadline)) {
-            usleep(50000);
-            $workflow->fresh();
-        }
-
-        if ($workflow->running()) {
-            throw new RuntimeException(sprintf(
-                'Nested signal run %d did not complete before timeout. Current status: %s',
-                $runId,
-                (string) $workflow->status()
-            ));
-        }
+        // This stress case deliberately fans out to 36 child workflows and
+        // 144 duplicate signals, so retain its original two-minute budget.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 120.0);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame([

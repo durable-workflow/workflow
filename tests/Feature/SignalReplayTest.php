@@ -4,15 +4,25 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestActivityAwaitActivityAwaitWorkflow;
 use Tests\Fixtures\TestActivityThenAwaitWorkflow;
 use Tests\Fixtures\TestActivityThrowsAwaitRetryWorkflow;
+use Tests\Fixtures\TestChatBotAnswerActivity;
+use Tests\Fixtures\TestChatBotAskActivity;
 use Tests\Fixtures\TestChatBotWorkflow;
 use Tests\Fixtures\TestMultipleAwaitsWorkflow;
 use Tests\Fixtures\TestMultiStageApprovalWorkflow;
 use Tests\Fixtures\TestPureAwaitWorkflow;
+use Tests\Fixtures\TestRequestExecutiveApprovalActivity;
+use Tests\Fixtures\TestRequestFinanceApprovalActivity;
+use Tests\Fixtures\TestRequestLegalApprovalActivity;
+use Tests\Fixtures\TestRequestManagerApprovalActivity;
 use Tests\TestCase;
+use Workflow\Exception;
+use Workflow\Signal;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\WorkflowStub;
 
 final class SignalReplayTest extends TestCase
@@ -22,10 +32,14 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestPureAwaitWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the pure await workflow to begin waiting',
+        );
         $workflow->approve(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -36,10 +50,15 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestActivityThenAwaitWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestActivity::class),
+            'the activity before the approval await to finish',
+        );
         $workflow->approve(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -50,12 +69,22 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestMultipleAwaitsWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the first approval await',
+        );
         $workflow->approveFirst(true);
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', Signal::class)
+                ->count() >= 1,
+            'the first approval signal to be durable',
+        );
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('both_approved', $workflow->output());
@@ -66,12 +95,24 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestActivityAwaitActivityAwaitWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', TestActivity::class)
+                ->count() >= 1,
+            'the first activity to finish',
+        );
         $workflow->approveFirst(true);
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', TestActivity::class)
+                ->count() >= 2,
+            'the second activity to finish',
+        );
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('completed', $workflow->output());
@@ -85,7 +126,7 @@ final class SignalReplayTest extends TestCase
         $workflow->approveFirst(true);
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('both_approved', $workflow->output());
@@ -96,10 +137,15 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestActivityThrowsAwaitRetryWorkflow::class);
         $workflow->start();
 
-        sleep(3);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', Exception::class),
+            'the caught activity exception before retry',
+        );
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -110,16 +156,32 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestMultiStageApprovalWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestRequestManagerApprovalActivity::class),
+            'the manager approval request',
+        );
         $workflow->approveManager(true);
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestRequestFinanceApprovalActivity::class)
+                && $workflow->logs()
+                    ->contains('class', TestRequestLegalApprovalActivity::class),
+            'the finance and legal approval requests',
+        );
         $workflow->approveFinance(true);
-        sleep(1);
         $workflow->approveLegal(true);
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestRequestExecutiveApprovalActivity::class),
+            'the executive approval request',
+        );
         $workflow->approveExecutive(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -130,21 +192,50 @@ final class SignalReplayTest extends TestCase
         $workflow = WorkflowStub::make(TestChatBotWorkflow::class);
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestChatBotAskActivity::class),
+            'the first chatbot question',
+        );
         $workflow->send('Unknown');
 
-        sleep(2);
-        $message = $workflow->receive();
+        $message = null;
+        $this->waitForWorkflow(
+            $workflow,
+            static function (WorkflowStub $workflow) use (&$message): bool {
+                $message = $workflow->receive();
+
+                return $message !== null;
+            },
+            'the first chatbot response',
+        );
         $this->assertSame('You said: Unknown', $message);
 
-        sleep(2);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', TestChatBotAskActivity::class)
+                ->count() >= 2
+                && $workflow->logs()
+                    ->contains('class', TestChatBotAnswerActivity::class),
+            'the second chatbot question',
+        );
         $workflow->send('User');
 
-        sleep(2);
-        $message = $workflow->receive();
+        $message = null;
+        $this->waitForWorkflow(
+            $workflow,
+            static function (WorkflowStub $workflow) use (&$message): bool {
+                $message = $workflow->receive();
+
+                return $message !== null;
+            },
+            'the second chatbot response',
+        );
         $this->assertSame('You said: User', $message);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('completed', $workflow->output());

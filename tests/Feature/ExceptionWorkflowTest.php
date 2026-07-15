@@ -21,7 +21,7 @@ final class ExceptionWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -39,7 +39,7 @@ final class ExceptionWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNotNull($workflow->exceptions()->first());
@@ -56,7 +56,7 @@ final class ExceptionWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNotNull($workflow->exceptions()->first());

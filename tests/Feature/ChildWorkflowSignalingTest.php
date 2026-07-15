@@ -10,6 +10,7 @@ use Tests\Fixtures\TestParentWorkflowWithContextCheck;
 use Tests\Fixtures\TestParentWorkflowWithMultipleChildren;
 use Tests\TestCase;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\WorkflowStub;
 
 final class ChildWorkflowSignalingTest extends TestCase
@@ -19,7 +20,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowSignalingChildDirectly::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('direct_signaling_approved', $parentWorkflow->output());
@@ -30,7 +31,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowWithContextCheck::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('success', $parentWorkflow->output());
@@ -41,14 +42,17 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentSignalingChildViaSignal::class);
         $parentWorkflow->start();
 
-        sleep(3);
+        $this->waitForWorkflow(
+            $parentWorkflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the parent to await its forwarding signal',
+        );
 
         $parentWorkflow->forwardApproval('approved');
 
-        $timeout = 10;
-        while ($parentWorkflow->running() && $timeout-- > 0) {
-            sleep(1);
-        }
+        // This path includes both parent and child dispatches, so retain its
+        // original ten-second completion budget.
+        $this->waitForWorkflow($parentWorkflow, timeoutSeconds: 10.0);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('forwarded_approved', $parentWorkflow->output());
@@ -59,7 +63,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowWithMultipleChildren::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('child1_first|child2_second|child3_third', $parentWorkflow->output());

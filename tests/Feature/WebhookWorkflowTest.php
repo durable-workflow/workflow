@@ -10,6 +10,7 @@ use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Signal;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\Webhooks;
 use Workflow\WorkflowStub;
 
@@ -39,13 +40,21 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow = WorkflowStub::load(1);
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the webhook workflow to await cancellation',
+        );
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the webhook workflow cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -71,9 +80,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow = WorkflowStub::load(1);
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -140,9 +153,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the signed webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -195,9 +212,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the token-authenticated webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());

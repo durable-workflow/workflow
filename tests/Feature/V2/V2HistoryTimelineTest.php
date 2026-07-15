@@ -57,7 +57,12 @@ final class V2HistoryTimelineTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 timeline workflow to complete',
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
@@ -331,7 +336,12 @@ final class V2HistoryTimelineTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->failed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->failed(),
+            'the v2 timeline workflow to fail',
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
@@ -407,11 +417,21 @@ final class V2HistoryTimelineTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 timeline workflow to begin waiting',
+        );
 
         $workflow->signal('name-provided', 'Taylor');
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 timeline workflow to complete',
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
@@ -509,11 +529,21 @@ final class V2HistoryTimelineTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 timeline workflow to begin waiting',
+        );
 
         $workflow->signal('name-provided', 'Taylor');
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 timeline workflow to complete',
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
@@ -840,7 +870,12 @@ final class V2HistoryTimelineTest extends TestCase
 
         $this->assertNotNull($parentRunId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 timeline workflow to complete',
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($parentRunId);
@@ -989,21 +1024,6 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('signal', $timeline[3]['kind']);
         $this->assertSame('Waiting for signal finish.', $timeline[3]['summary']);
         $this->assertSame(2, $timeline[3]['workflow_sequence']);
-    }
-
-    private function waitFor(callable $condition): void
-    {
-        $deadline = microtime(true) + 30;
-
-        while (microtime(true) < $deadline) {
-            if ($condition()) {
-                return;
-            }
-
-            usleep(100000);
-        }
-
-        $this->fail('Timed out waiting for workflow to settle.');
     }
 
     private function drainReadyTasks(): void

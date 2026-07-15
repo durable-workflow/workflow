@@ -24,9 +24,13 @@ final class WorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -43,11 +47,16 @@ final class WorkflowTest extends TestCase
 
         $workflow->start(shouldAssert: true);
 
-        sleep(5);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->contains('class', TestOtherActivity::class),
+            'the first activity to finish before cancellation',
+        );
 
         $workflow->cancel();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -69,11 +78,9 @@ final class WorkflowTest extends TestCase
             'test' => 'data',
         ]);
 
-        sleep(1);
-
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -87,11 +94,16 @@ final class WorkflowTest extends TestCase
             'test' => 'data',
         ]);
 
-        sleep(3);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->exceptions()
+                ->isNotEmpty(),
+            'the first activity exception before the late retry signal',
+        );
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -105,11 +117,9 @@ final class WorkflowTest extends TestCase
             'test' => 'data',
         ]);
 
-        sleep(1);
-
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -123,11 +133,16 @@ final class WorkflowTest extends TestCase
             'test' => 'data',
         ]);
 
-        sleep(3);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->exceptions()
+                ->isNotEmpty(),
+            'the leader activity exception before the late retry signal',
+        );
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());

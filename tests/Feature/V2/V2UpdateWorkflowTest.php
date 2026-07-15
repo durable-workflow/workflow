@@ -84,7 +84,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $this->runReadyWorkflowTask($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 update workflow to complete',
+        );
 
         $this->assertSame([
             'stage' => 'completed',
@@ -126,7 +131,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-alias');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $update = $workflow->attemptUpdate('mark-approved', true, 'api');
 
@@ -182,7 +192,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-aliased-method');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $result = $workflow->applyApproval(true, 'console');
 
@@ -204,7 +219,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-aliased-reject');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $result = $workflow->attemptUpdate('applyApproval', true, 'api');
 
@@ -218,7 +238,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $update = $workflow->attemptUpdate('approve', true, 'api');
 
@@ -331,7 +356,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $this->assertSame(3, $signal->commandSequence());
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->completed(),
+            'the v2 update workflow to complete',
+        );
 
         $this->assertSame([
             'approved' => true,
@@ -355,7 +385,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
             'compatibility' => 'build-timeout-test',
@@ -434,7 +469,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
             'compatibility' => 'build-inspect-timeout',
@@ -484,7 +524,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $update = $workflow->submitUpdate('approve', true, 'repair-test');
 
@@ -542,7 +587,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $update = $workflow->submitUpdate('approve', true, 'watchdog');
         $runId = $workflow->runId();
@@ -637,7 +687,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
             'compatibility' => 'build-timeout-test',
@@ -1456,7 +1511,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $result = $workflow->submitUpdate('explode', 'boom');
 
@@ -1545,7 +1605,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $workflow->start();
 
         $this->runReadyWorkflowTask($workflow->runId());
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->refresh()
+                ->status() === 'waiting',
+            'the v2 update workflow to begin waiting',
+        );
 
         $result = $workflow->submitUpdate('explode', 'boom');
 
@@ -1934,24 +1999,6 @@ final class V2UpdateWorkflowTest extends TestCase
     {
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
         TaskWatchdog::runPass(respectThrottle: false);
-    }
-
-    private function waitFor(callable $condition): void
-    {
-        // CI runners occasionally need more than 5s for real-queue v2
-        // update tests to settle — projector repair pass latency plus
-        // GitHub Actions load. 30s stays a hard upper bound.
-        $startedAt = microtime(true);
-
-        while ((microtime(true) - $startedAt) < 30) {
-            if ($condition()) {
-                return;
-            }
-
-            usleep(100000);
-        }
-
-        $this->fail('Condition was not met within 30 seconds.');
     }
 
     /**

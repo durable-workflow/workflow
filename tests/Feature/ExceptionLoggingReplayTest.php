@@ -24,13 +24,25 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $workflow->start();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', Exception::class)
+                ->count() >= 1,
+            'the first retry exception to be durable',
+        );
         $workflow->requestRetry();
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->logs()
+                ->where('class', Exception::class)
+                ->count() >= 2,
+            'the second retry exception to be durable',
+        );
         $workflow->requestRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')
@@ -53,7 +65,7 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')
@@ -70,7 +82,7 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')

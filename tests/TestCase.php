@@ -19,8 +19,15 @@ use Symfony\Component\Process\Process;
 use Tests\Support\TestDatabaseServiceProvider;
 use Throwable;
 use Workflow\Models\StoredWorkflow;
+use Workflow\V2\Models\WorkflowCommand as V2WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent as V2WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance as V2WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun as V2WorkflowRun;
+use Workflow\V2\Models\WorkflowTask as V2WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate as V2WorkflowUpdate;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
+use Workflow\V2\WorkflowStub as V2WorkflowStub;
 use Workflow\WorkflowStub;
 
 abstract class TestCase extends BaseTestCase
@@ -54,7 +61,7 @@ abstract class TestCase extends BaseTestCase
     /**
      * @var array<int, array{stdout: string, stderr: string}>
      */
-    private static array $workerOutput = [];
+    private static array $workerOutputFiles = [];
 
     public static function setUpBeforeClass(): void
     {
@@ -207,18 +214,21 @@ abstract class TestCase extends BaseTestCase
     }
 
     /**
-     * @param callable(WorkflowStub): bool $condition
+     * @template TWorkflow of WorkflowStub|V2WorkflowStub
+     * @param TWorkflow $workflow
+     * @param (callable(TWorkflow): bool)|null $condition
      */
     protected function waitForWorkflow(
-        WorkflowStub $workflow,
-        callable $condition,
-        string $expectedState,
+        WorkflowStub|V2WorkflowStub $workflow,
+        ?callable $condition = null,
+        string $expectedState = 'a terminal state',
         float $timeoutSeconds = 30.0,
     ): void {
         if ($timeoutSeconds <= 0) {
             throw new InvalidArgumentException('Workflow polling timeout must be greater than zero.');
         }
 
+        $condition ??= static fn (WorkflowStub|V2WorkflowStub $workflow): bool => ! $workflow->running();
         $deadline = hrtime(true) + (int) ($timeoutSeconds * 1_000_000_000);
 
         do {
@@ -264,11 +274,20 @@ abstract class TestCase extends BaseTestCase
     protected static function stopWorkers(): void
     {
         foreach (self::$workers as $worker) {
-            $worker->stop(3);
+            try {
+                $worker->stop(3);
+            } catch (Throwable) {
+                // Continue stopping peers and removing output files.
+            }
+        }
+
+        foreach (self::$workerOutputFiles as $files) {
+            @unlink($files['stdout']);
+            @unlink($files['stderr']);
         }
 
         self::$workers = [];
-        self::$workerOutput = [];
+        self::$workerOutputFiles = [];
     }
 
     private static function normalizeJsonObject(array $value): array
@@ -294,8 +313,11 @@ abstract class TestCase extends BaseTestCase
     /**
      * @param array<int, array<string, mixed>> $workers
      */
-    private function failWorkflowPolling(WorkflowStub $workflow, string $failure, array $workers): void
-    {
+    private function failWorkflowPolling(
+        WorkflowStub|V2WorkflowStub $workflow,
+        string $failure,
+        array $workers,
+    ): void {
         $diagnostics = $this->workflowPollingDiagnostics($workflow);
         $diagnostics['workers'] = $workers;
 
@@ -318,8 +340,12 @@ abstract class TestCase extends BaseTestCase
     /**
      * @return array<string, mixed>
      */
-    private function workflowPollingDiagnostics(WorkflowStub $workflow): array
+    private function workflowPollingDiagnostics(WorkflowStub|V2WorkflowStub $workflow): array
     {
+        if ($workflow instanceof V2WorkflowStub) {
+            return $this->v2WorkflowPollingDiagnostics($workflow);
+        }
+
         $workflowId = (string) $workflow->id();
 
         try {
@@ -372,6 +398,9 @@ abstract class TestCase extends BaseTestCase
                 'task' => [
                     'connection' => $connection,
                     'queue' => $queue,
+                    'status' => is_int($queuedJobs)
+                        ? ($queuedJobs > 0 ? 'queued' : 'no queued job')
+                        : 'unavailable',
                     'queued_jobs' => $queuedJobs,
                 ],
                 'history' => [
@@ -396,13 +425,163 @@ abstract class TestCase extends BaseTestCase
         }
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function v2WorkflowPollingDiagnostics(V2WorkflowStub $workflow): array
+    {
+        $workflowId = $workflow->id();
+        $runId = $workflow->runId();
+
+        try {
+            /** @var V2WorkflowInstance|null $instance */
+            $instance = V2WorkflowInstance::query()
+                ->find($workflowId);
+            /** @var V2WorkflowRun|null $run */
+            $run = $runId === null
+                ? $instance?->currentRun()
+                    ->first()
+                : V2WorkflowRun::query()
+                    ->find($runId);
+
+            if ($instance === null || $run === null) {
+                throw new RuntimeException('The durable v2 workflow instance or run could not be loaded.');
+            }
+
+            $connection = is_string($run->connection) && $run->connection !== ''
+                ? $run->connection
+                : (string) config('queue.default');
+            $queue = is_string($run->queue) && $run->queue !== ''
+                ? $run->queue
+                : (string) config("queue.connections.{$connection}.queue", 'default');
+
+            try {
+                $queuedJobs = Queue::connection($connection)
+                    ->size($queue);
+            } catch (Throwable $exception) {
+                $queuedJobs = 'unavailable: ' . $exception->getMessage();
+            }
+
+            $taskQuery = V2WorkflowTask::query()
+                ->where('workflow_run_id', $run->id);
+            /** @var V2WorkflowTask|null $latestTask */
+            $latestTask = (clone $taskQuery)
+                ->latest('created_at')
+                ->latest('id')
+                ->first();
+            $taskStatuses = (clone $taskQuery)
+                ->get(['status'])
+                ->countBy(static fn (V2WorkflowTask $task): string => (string) $task->getRawOriginal('status'))
+                ->all();
+
+            /** @var V2WorkflowHistoryEvent|null $latestHistoryEvent */
+            $latestHistoryEvent = V2WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->latest('sequence')
+                ->first();
+            /** @var V2WorkflowCommand|null $latestCommand */
+            $latestCommand = V2WorkflowCommand::query()
+                ->where('workflow_run_id', $run->id)
+                ->latest('command_sequence')
+                ->latest('created_at')
+                ->first();
+            /** @var V2WorkflowUpdate|null $latestUpdate */
+            $latestUpdate = V2WorkflowUpdate::query()
+                ->where('workflow_run_id', $run->id)
+                ->latest('command_sequence')
+                ->latest('created_at')
+                ->first();
+
+            return [
+                'workflow' => [
+                    'id' => $workflowId,
+                    'class' => $instance->workflow_class,
+                    'type' => $instance->workflow_type,
+                    'current_run_id' => $instance->current_run_id,
+                ],
+                'run' => [
+                    'id' => (string) $run->getKey(),
+                    'number' => $run->run_number,
+                    'status' => $run->getRawOriginal('status'),
+                    'last_history_sequence' => $run->last_history_sequence,
+                    'last_command_sequence' => $run->last_command_sequence,
+                    'last_progress_at' => $run->last_progress_at,
+                    'closed_at' => $run->closed_at,
+                ],
+                'task' => [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'status' => $taskStatuses,
+                    'queued_jobs' => $queuedJobs,
+                    'latest' => $latestTask === null ? null : [
+                        'id' => (string) $latestTask->getKey(),
+                        'type' => $latestTask->getRawOriginal('task_type'),
+                        'status' => $latestTask->getRawOriginal('status'),
+                        'attempt_count' => $latestTask->attempt_count,
+                        'repair_count' => $latestTask->repair_count,
+                        'available_at' => $latestTask->available_at,
+                        'leased_at' => $latestTask->leased_at,
+                        'lease_owner' => $latestTask->lease_owner,
+                        'lease_expires_at' => $latestTask->lease_expires_at,
+                        'last_dispatch_attempt_at' => $latestTask->last_dispatch_attempt_at,
+                        'last_dispatched_at' => $latestTask->last_dispatched_at,
+                        'last_dispatch_error' => $latestTask->last_dispatch_error,
+                        'last_claim_failed_at' => $latestTask->last_claim_failed_at,
+                        'last_claim_error' => $latestTask->last_claim_error,
+                    ],
+                ],
+                'history' => [
+                    'events' => V2WorkflowHistoryEvent::query()
+                        ->where('workflow_run_id', $run->id)
+                        ->count(),
+                    'latest' => $latestHistoryEvent === null ? null : [
+                        'id' => (string) $latestHistoryEvent->getKey(),
+                        'sequence' => $latestHistoryEvent->sequence,
+                        'type' => $latestHistoryEvent->getRawOriginal('event_type'),
+                        'task_id' => $latestHistoryEvent->workflow_task_id,
+                        'command_id' => $latestHistoryEvent->workflow_command_id,
+                        'recorded_at' => $latestHistoryEvent->recorded_at,
+                    ],
+                ],
+                'command' => $latestCommand === null ? null : [
+                    'id' => (string) $latestCommand->getKey(),
+                    'sequence' => $latestCommand->command_sequence,
+                    'type' => $latestCommand->getRawOriginal('command_type'),
+                    'status' => $latestCommand->getRawOriginal('status'),
+                    'outcome' => $latestCommand->getRawOriginal('outcome'),
+                    'target_name' => $latestCommand->target_name,
+                    'rejection_reason' => $latestCommand->rejection_reason,
+                ],
+                'update' => $latestUpdate === null ? null : [
+                    'id' => (string) $latestUpdate->getKey(),
+                    'command_id' => $latestUpdate->workflow_command_id,
+                    'sequence' => $latestUpdate->command_sequence,
+                    'name' => $latestUpdate->update_name,
+                    'status' => $latestUpdate->getRawOriginal('status'),
+                    'outcome' => $latestUpdate->getRawOriginal('outcome'),
+                    'rejection_reason' => $latestUpdate->rejection_reason,
+                ],
+            ];
+        } catch (Throwable $exception) {
+            return [
+                'workflow' => [
+                    'id' => $workflowId,
+                ],
+                'run' => [
+                    'id' => $runId,
+                ],
+                'diagnostic_error' => $exception->getMessage(),
+            ];
+        }
+    }
+
     private static function startWorkers(): void
     {
         if (self::$workers !== []) {
             return;
         }
 
-        self::$workerOutput = [];
+        self::$workerOutputFiles = [];
 
         $environment = getenv();
         $workerEnv = array_merge(
@@ -411,33 +590,78 @@ abstract class TestCase extends BaseTestCase
             array_filter($_ENV, 'is_string'),
         );
 
-        for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-            self::$workerOutput[$i] = [
-                'stdout' => '',
-                'stderr' => '',
-            ];
-            self::$workers[$i] = new Process(
-                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work', '--quiet'],
-                null,
-                $workerEnv,
-            );
-            self::$workers[$i]->start(
-                static fn (string $type, string $buffer) => self::captureWorkerOutput($i, $type, $buffer),
-            );
+        try {
+            for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
+                self::$workerOutputFiles[$i] = self::createWorkerOutputFiles($i);
+                $output = self::$workerOutputFiles[$i];
+                $command = sprintf(
+                    'exec %s %s queue:work --quiet >> %s 2>> %s',
+                    escapeshellarg(PHP_BINARY),
+                    escapeshellarg(__DIR__ . '/../vendor/bin/testbench'),
+                    escapeshellarg($output['stdout']),
+                    escapeshellarg($output['stderr']),
+                );
+                self::$workers[$i] = new Process(['/bin/sh', '-c', $command], null, $workerEnv);
+                self::$workers[$i]->start();
+            }
+        } catch (Throwable $exception) {
+            self::stopWorkers();
+
+            throw $exception;
         }
     }
 
-    private static function captureWorkerOutput(int $worker, string $type, string $buffer): void
+    /**
+     * @return array{stdout: string, stderr: string}
+     */
+    private static function createWorkerOutputFiles(int $worker): array
     {
-        $stream = $type === Process::ERR ? 'stderr' : 'stdout';
-        $output = (self::$workerOutput[$worker][$stream] ?? '') . $buffer;
+        $directory = is_dir('/dev/shm') && is_writable('/dev/shm')
+            ? '/dev/shm'
+            : sys_get_temp_dir();
+        $stdout = tempnam($directory, sprintf('workflow-worker-%d-stdout-', $worker));
+        $stderr = tempnam($directory, sprintf('workflow-worker-%d-stderr-', $worker));
 
-        if (strlen($output) > self::WORKER_OUTPUT_LIMIT_BYTES) {
-            $marker = '[earlier worker output truncated]' . PHP_EOL;
-            $output = $marker . substr($output, -(self::WORKER_OUTPUT_LIMIT_BYTES - strlen($marker)));
+        if ($stdout === false || $stderr === false) {
+            if (is_string($stdout)) {
+                @unlink($stdout);
+            }
+
+            if (is_string($stderr)) {
+                @unlink($stderr);
+            }
+
+            throw new RuntimeException('Unable to create queue worker output files.');
         }
 
-        self::$workerOutput[$worker][$stream] = $output;
+        return [
+            'stdout' => $stdout,
+            'stderr' => $stderr,
+        ];
+    }
+
+    private static function readWorkerOutput(string $path): string
+    {
+        if (! is_file($path)) {
+            return '[worker output unavailable]';
+        }
+
+        clearstatcache(true, $path);
+        $size = filesize($path);
+
+        if ($size === false || $size <= self::WORKER_OUTPUT_LIMIT_BYTES) {
+            $output = file_get_contents($path, false, null, 0, self::WORKER_OUTPUT_LIMIT_BYTES);
+
+            return $output === false ? '[worker output unavailable]' : $output;
+        }
+
+        $marker = '[earlier worker output truncated]' . PHP_EOL;
+        $tailLength = self::WORKER_OUTPUT_LIMIT_BYTES - strlen($marker);
+        $output = file_get_contents($path, false, null, $size - $tailLength, $tailLength);
+
+        return $output === false
+            ? '[worker output unavailable]'
+            : $marker . $output;
     }
 
     /**
@@ -456,9 +680,9 @@ abstract class TestCase extends BaseTestCase
 
         foreach (self::$workers as $index => $worker) {
             $running = $worker->isRunning();
-            $output = self::$workerOutput[$index] ?? [
-                'stdout' => '',
-                'stderr' => '',
+            $files = self::$workerOutputFiles[$index] ?? [
+                'stdout' => '/dev/null',
+                'stderr' => '/dev/null',
             ];
 
             $diagnostics[] = [
@@ -466,8 +690,8 @@ abstract class TestCase extends BaseTestCase
                 'running' => $running,
                 'exit_code' => $running ? null : $worker->getExitCode(),
                 'exit_status' => $running ? null : $worker->getExitCodeText(),
-                'stdout' => $output['stdout'],
-                'stderr' => $output['stderr'],
+                'stdout' => self::readWorkerOutput($files['stdout']),
+                'stderr' => self::readWorkerOutput($files['stderr']),
             ];
         }
 
