@@ -1,0 +1,105 @@
+name: Release plan recovery
+
+run-name: Recover Workflow from ${{ inputs.plan_tag || 'latest public release plan' }}
+
+on:
+  schedule:
+    - cron: '11 * * * *'
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag; empty selects the newest public plan
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  attestations: read
+  contents: write
+
+concurrency:
+  group: release-plan-recovery-workflow-${{ inputs.plan_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Recover exact Workflow release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: packagist
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Discover plan and verify release authority
+        id: recovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          arguments=(
+            resolve
+            --component workflow
+            --plan-output release-plan.json
+            --evidence release-recovery-evidence.json
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            arguments+=(--allow-empty)
+          elif [ -n "$REQUESTED_PLAN_TAG" ]; then
+            arguments+=(--plan-tag "$REQUESTED_PLAN_TAG")
+          fi
+          python scripts/ci/component-release-recovery.py "${arguments[@]}"
+
+      - name: Create the exact source tag
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT" >/dev/null
+          fi
+
+      - name: Wait for Packagist source identity
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci/component-release-recovery.py verify \
+            --component workflow --plan release-plan.json --registry-only \
+            --attempts 30 --sleep 20 --evidence registry-publication-evidence.json
+
+      - name: Create the source GitHub Release
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --prerelease --generate-notes \
+              --title "$RELEASE_TAG"
+          fi
+
+      - name: Verify completed public release
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci/component-release-recovery.py verify \
+            --component workflow --plan release-plan.json \
+            --attempts 3 --sleep 5 --evidence release-completion-evidence.json
+
+      - name: Retain recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-recovery-evidence.json
+            registry-publication-evidence.json
+            release-completion-evidence.json
+          if-no-files-found: warn
