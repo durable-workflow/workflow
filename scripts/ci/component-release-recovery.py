@@ -783,11 +783,12 @@ def base_state(component: str, tag: str | None = None, plan: dict[str, Any] | No
 def resolve_component(
     client: PublicClient,
     component_name: str,
-    requested_tag: str | None,
+    tag: str,
+    record_commit: str,
+    plan: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, str]]:
     if component_name not in COMPONENTS:
         raise RecoveryError(f"unknown release component: {component_name}")
-    tag, record_commit, plan = discover_plan(client, requested_tag)
     branches, recovery_workflows = verify_plan_authority(client, plan)
     component = COMPONENTS[component_name]
     identity = plan["components"][component_name]
@@ -920,13 +921,13 @@ def main() -> int:
                 )
             )
         elif args.command == "resolve":
-            tag: str | None = None
+            tag: str | None = args.plan_tag
+            record_commit: str | None = None
             plan: dict[str, Any] | None = None
             try:
-                state, outputs = resolve_component(client, args.component, args.plan_tag)
-                tag = outputs["plan_tag"]
-                plan = discover_plan(client, tag)[2]
+                tag, record_commit, plan = discover_plan(client, args.plan_tag)
                 args.plan_output.write_bytes(canonical_json(plan))
+                state, outputs = resolve_component(client, args.component, tag, record_commit, plan)
                 args.evidence.write_bytes(canonical_json(state))
                 write_output(args.github_output, outputs)
             except RecoveryError as error:
@@ -948,6 +949,8 @@ def main() -> int:
                     write_output(args.github_output, {"action": "none"})
                     return 0
                 failure = base_state(args.component, tag, plan)
+                if record_commit is not None:
+                    failure["plan_record_commit"] = record_commit
                 failure.update(
                     {
                         "phase": error.phase,
