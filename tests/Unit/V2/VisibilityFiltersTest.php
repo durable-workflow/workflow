@@ -576,6 +576,38 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame(['01JVISSEARCHATTR0MATCH0001'], $ids);
     }
 
+    public function testSearchAttributeFiltersMatchKeywordListsSelectively(): void
+    {
+        $this->createSearchAttributeSummary(
+            '01JVISSEARCHLIST0MATCH0001',
+            'search-list-match',
+            [
+                'tags' => ['php', 'laravel'],
+            ],
+        );
+        $this->createSearchAttributeSummary(
+            '01JVISSEARCHLIST00MISS0001',
+            'search-list-miss',
+            [
+                'tags' => ['rust'],
+            ],
+        );
+
+        $filteredIds = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'search_attributes' => [
+                'tags' => 'php',
+            ],
+        ])->pluck('id')
+            ->all();
+        $scopedIds = WorkflowRunSummary::query()
+            ->withSearchAttribute('tags', 'php')
+            ->pluck('id')
+            ->all();
+
+        $this->assertSame(['01JVISSEARCHLIST0MATCH0001'], $filteredIds);
+        $this->assertSame(['01JVISSEARCHLIST0MATCH0001'], $scopedIds);
+    }
+
     public function testNormalizeHandlesSearchAttributes(): void
     {
         $filters = VisibilityFilters::normalize([
@@ -699,7 +731,7 @@ final class VisibilityFiltersTest extends TestCase
     }
 
     /**
-     * @param array<string, string>|null $searchAttributes
+     * @param array<string, string|list<string>>|null $searchAttributes
      */
     private function createSearchAttributeSummary(string $runId, string $instanceId, ?array $searchAttributes): void
     {
@@ -733,12 +765,17 @@ final class VisibilityFiltersTest extends TestCase
         ]);
 
         foreach ($searchAttributes ?? [] as $key => $value) {
+            $isKeywordList = is_array($value);
+
             WorkflowSearchAttribute::query()->create([
                 'workflow_run_id' => $runId,
                 'workflow_instance_id' => $instanceId,
                 'key' => $key,
-                'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
-                'value_keyword' => $value,
+                'type' => $isKeywordList
+                    ? WorkflowSearchAttribute::TYPE_KEYWORD_LIST
+                    : WorkflowSearchAttribute::TYPE_KEYWORD,
+                'value_keyword' => $isKeywordList ? null : $value,
+                'value_keyword_list' => $isKeywordList ? $value : null,
                 'upserted_at_sequence' => 1,
             ]);
         }

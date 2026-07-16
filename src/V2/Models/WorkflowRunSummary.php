@@ -11,6 +11,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RepairBlockedReason;
+use Workflow\V2\Support\SearchAttributeValueFilter;
 use Workflow\V2\Support\WorkflowTaskProblem;
 
 class WorkflowRunSummary extends Model
@@ -223,30 +224,7 @@ class WorkflowRunSummary extends Model
     {
         return $query->whereHas('searchAttributes', static function ($q) use ($key, $value) {
             $q->where('key', $key);
-
-            // Route to appropriate typed column
-            if (is_bool($value)) {
-                $q->where('value_bool', $value);
-            } elseif (is_int($value)) {
-                $q->where('value_int', $value);
-            } elseif (is_float($value)) {
-                $q->where('value_float', $value);
-            } elseif ($value instanceof \DateTimeInterface) {
-                $q->where('value_datetime', $value);
-            } elseif (is_string($value) && mb_strlen($value) <= 255) {
-                $q->where(static function ($q) use ($value): void {
-                    $q->where('value_keyword', $value)
-                        ->orWhereJsonContains('value_keyword_list', $value);
-                });
-            } elseif (is_array($value) && array_is_list($value)) {
-                foreach ($value as $entry) {
-                    if (is_string($entry)) {
-                        $q->whereJsonContains('value_keyword_list', $entry);
-                    }
-                }
-            } else {
-                $q->where('value_string', $value);
-            }
+            SearchAttributeValueFilter::apply($q, $value);
         });
     }
 }

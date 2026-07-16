@@ -373,32 +373,7 @@ final class VisibilityFilters
         foreach ($normalized['search_attributes'] ?? [] as $key => $value) {
             $query->whereHas('searchAttributes', static function ($q) use ($key, $value) {
                 $q->where('key', $key);
-
-                // Route to appropriate typed column based on value type
-                // This uses the indexes: workflow_search_attrs_key_{keyword,int,float,bool,datetime}
-                if (is_bool($value)) {
-                    $q->where('value_bool', $value);
-                } elseif (is_int($value)) {
-                    $q->where('value_int', $value);
-                } elseif (is_float($value)) {
-                    $q->where('value_float', $value);
-                } elseif ($value instanceof \DateTimeInterface) {
-                    $q->where('value_datetime', $value);
-                } elseif (is_string($value) && mb_strlen($value) <= 255) {
-                    $q->where(static function ($q) use ($value): void {
-                        $q->where('value_keyword', $value)
-                            ->orWhereJsonContains('value_keyword_list', $value);
-                    });
-                } elseif (is_array($value) && array_is_list($value)) {
-                    foreach ($value as $entry) {
-                        if (is_string($entry)) {
-                            $q->whereJsonContains('value_keyword_list', $entry);
-                        }
-                    }
-                } else {
-                    // Long strings use value_string (not indexed, but rare in filters)
-                    $q->where('value_string', $value);
-                }
+                SearchAttributeValueFilter::apply($q, $value);
             });
         }
 
