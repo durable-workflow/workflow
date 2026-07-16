@@ -16,24 +16,35 @@ use Workflow\V2\Models\WorkflowRun;
 final class ActivityAttemptSnapshots
 {
     /**
+     * @param bool $useDurableHistory Merge typed history snapshots into the mutable attempt projections.
      * @return array<string, list<array<string, mixed>>>
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, bool $useDurableHistory = true): array
     {
-        $run->loadMissing(['activityExecutions.attempts', 'historyEvents']);
+        $relations = ['activityExecutions.attempts'];
+
+        if ($useDurableHistory) {
+            $relations[] = 'historyEvents';
+        }
+
+        $run->loadMissing($relations);
 
         $states = [];
 
-        foreach (self::attemptEvents($run) as $event) {
-            $snapshot = self::fromEvent($event);
-            $activityId = is_array($snapshot) ? self::stringValue($snapshot['activity_execution_id'] ?? null) : null;
-            $attemptId = is_array($snapshot) ? self::stringValue($snapshot['id'] ?? null) : null;
+        if ($useDurableHistory) {
+            foreach (self::attemptEvents($run) as $event) {
+                $snapshot = self::fromEvent($event);
+                $activityId = is_array($snapshot) ? self::stringValue(
+                    $snapshot['activity_execution_id'] ?? null
+                ) : null;
+                $attemptId = is_array($snapshot) ? self::stringValue($snapshot['id'] ?? null) : null;
 
-            if ($activityId === null || $attemptId === null) {
-                continue;
+                if ($activityId === null || $attemptId === null) {
+                    continue;
+                }
+
+                $states[$activityId][$attemptId] = self::merge($states[$activityId][$attemptId] ?? [], $snapshot);
             }
-
-            $states[$activityId][$attemptId] = self::merge($states[$activityId][$attemptId] ?? [], $snapshot);
         }
 
         foreach ($run->activityExecutions as $execution) {

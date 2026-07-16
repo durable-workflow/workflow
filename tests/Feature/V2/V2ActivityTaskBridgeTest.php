@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -433,6 +434,88 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertCount(1, $activities);
         $this->assertSame(['World'], $activities[0]['arguments']);
         $this->assertSame($result, $activities[0]['result']);
+    }
+
+    public function testRunActivityViewCanReadProjectionsWithoutLoadingDurableHistory(): void
+    {
+        [$run, $execution] = $this->createActivityExecution();
+        $codec = CodecRegistry::defaultCodec();
+
+        $execution->forceFill([
+            'status' => ActivityStatus::Completed->value,
+            'attempt_count' => 1,
+            'result' => Serializer::serializeWithCodec($codec, 'projection-result'),
+            'closed_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityCompleted, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => 1,
+            'payload_codec' => $codec,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $projectionRun = $run->fresh();
+        DB::enableQueryLog();
+
+        try {
+            $projectedActivities = RunActivityView::activitiesForRun($projectionRun, useDurableHistory: false);
+            $historySelects = array_values(array_filter(
+                DB::getQueryLog(),
+                static function (array $query): bool {
+                    $sql = strtolower((string) ($query['query'] ?? ''));
+
+                    return str_starts_with(ltrim($sql), 'select')
+                        && str_contains($sql, 'workflow_history_events');
+                },
+            ));
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+
+        $this->assertSame([], $historySelects);
+        $this->assertFalse($projectionRun->relationLoaded('historyEvents'));
+        $this->assertCount(1, $projectedActivities);
+        $this->assertSame('unsupported', $projectedActivities[0]['status']);
+        $this->assertSame(ActivityStatus::Completed->value, $projectedActivities[0]['row_status']);
+        $this->assertSame(
+            RunActivityView::UNSUPPORTED_TERMINAL_REASON,
+            $projectedActivities[0]['history_unsupported_reason'],
+        );
+        $this->assertNull($projectedActivities[0]['result']);
+
+        $completeActivities = RunActivityView::activitiesForRun($run->fresh());
+
+        $this->assertCount(1, $completeActivities);
+        $this->assertSame('completed', $completeActivities[0]['status']);
+        $this->assertSame(RunActivityView::HISTORY_AUTHORITY_TYPED, $completeActivities[0]['history_authority']);
+        $this->assertSame('projection-result', $completeActivities[0]['result']);
+    }
+
+    public function testProjectionOnlyActivityViewDoesNotManufactureHistoryOnlyActivities(): void
+    {
+        [$run, $execution] = $this->createActivityExecution();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $execution->delete();
+
+        $this->assertSame([], RunActivityView::activitiesForRun($run->fresh(), useDurableHistory: false));
+
+        $completeActivities = RunActivityView::activitiesForRun($run->fresh());
+
+        $this->assertCount(1, $completeActivities);
+        $this->assertSame(RunActivityView::HISTORY_AUTHORITY_TYPED, $completeActivities[0]['history_authority']);
     }
 
     public function testCompleteRecordsActivityResult(): void

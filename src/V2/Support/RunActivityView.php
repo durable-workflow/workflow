@@ -25,11 +25,14 @@ final class RunActivityView
     public const UNSUPPORTED_TERMINAL_REASON = 'terminal_activity_row_without_typed_history';
 
     /**
+     * Typed history is the default authority. Callers rendering bounded
+     * projection-backed views may disable it to avoid loading durable history.
+     *
      * @return list<array<string, mixed>>
      */
-    public static function activitiesForRun(WorkflowRun $run): array
+    public static function activitiesForRun(WorkflowRun $run, bool $useDurableHistory = true): array
     {
-        return self::activityStates($run);
+        return self::activityStates($run, $useDurableHistory);
     }
 
     /**
@@ -105,36 +108,44 @@ final class RunActivityView
     /**
      * @return list<array<string, mixed>>
      */
-    private static function activityStates(WorkflowRun $run): array
+    private static function activityStates(WorkflowRun $run, bool $useDurableHistory = true): array
     {
-        $run->loadMissing(['activityExecutions.attempts', 'historyEvents']);
+        $relations = ['activityExecutions.attempts'];
+
+        if ($useDurableHistory) {
+            $relations[] = 'historyEvents';
+        }
+
+        $run->loadMissing($relations);
 
         $states = [];
         $executions = $run->activityExecutions->keyBy('id');
-        $attemptsByActivityId = ActivityAttemptSnapshots::forRun($run);
+        $attemptsByActivityId = ActivityAttemptSnapshots::forRun($run, $useDurableHistory);
 
-        foreach (self::activityEvents($run) as $event) {
-            $snapshot = ActivitySnapshot::fromEvent($event);
-            $activityId = is_array($snapshot) && is_string($snapshot['id'] ?? null)
-                ? $snapshot['id']
-                : null;
+        if ($useDurableHistory) {
+            foreach (self::activityEvents($run) as $event) {
+                $snapshot = ActivitySnapshot::fromEvent($event);
+                $activityId = is_array($snapshot) && is_string($snapshot['id'] ?? null)
+                    ? $snapshot['id']
+                    : null;
 
-            if ($activityId === null) {
-                continue;
+                if ($activityId === null) {
+                    continue;
+                }
+
+                $state = $states[$activityId] ?? [
+                    'id' => $activityId,
+                ];
+                $eventTypes = is_array($state['history_event_types'] ?? null)
+                    ? $state['history_event_types']
+                    : [];
+                $eventTypes[] = $event->event_type->value;
+
+                $state['history_authority'] = self::HISTORY_AUTHORITY_TYPED;
+                $state['history_event_types'] = array_values(array_unique($eventTypes));
+
+                $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
             }
-
-            $state = $states[$activityId] ?? [
-                'id' => $activityId,
-            ];
-            $eventTypes = is_array($state['history_event_types'] ?? null)
-                ? $state['history_event_types']
-                : [];
-            $eventTypes[] = $event->event_type->value;
-
-            $state['history_authority'] = self::HISTORY_AUTHORITY_TYPED;
-            $state['history_event_types'] = array_values(array_unique($eventTypes));
-
-            $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
         }
 
         foreach ($run->activityExecutions as $execution) {
