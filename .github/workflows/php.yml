@@ -51,6 +51,9 @@ jobs:
     - name: Validate workflow YAML syntax
       run: yq eval-all '.' .github/workflows/*.yml >/dev/null
 
+    - name: Verify release recovery source contracts
+      run: python scripts/ci/test-component-release-recovery.py
+
   quality:
     needs: route
     if: ${{ needs.route.outputs.route == 'bounded' || needs.route.outputs.route == 'complete' }}

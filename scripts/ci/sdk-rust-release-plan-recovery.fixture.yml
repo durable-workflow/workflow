@@ -1,0 +1,165 @@
+name: Release plan recovery
+
+run-name: Recover Rust SDK from ${{ inputs.plan_tag || 'latest public release plan' }}
+
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag; empty selects the newest public plan
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  actions: write
+  attestations: read
+  contents: read
+
+concurrency:
+  group: release-plan-recovery-sdk-rust-${{ inputs.plan_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Discover exact Rust SDK release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      action: ${{ steps.recovery.outputs.action }}
+      plan: ${{ steps.recovery.outputs.plan }}
+      plan_tag: ${{ steps.recovery.outputs.plan_tag }}
+      version: ${{ steps.recovery.outputs.version }}
+      commit: ${{ steps.recovery.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Discover plan and verify upstream public artifacts
+        id: recovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          arguments=(
+            resolve
+            --component sdk-rust
+            --plan-output release-plan.json
+            --evidence release-recovery-evidence.json
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            arguments+=(--allow-empty)
+          elif [ -n "$REQUESTED_PLAN_TAG" ]; then
+            arguments+=(--plan-tag "$REQUESTED_PLAN_TAG")
+          fi
+          python scripts/ci/component-release-recovery.py "${arguments[@]}"
+
+      - name: Retain recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-rust-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-recovery-evidence.json
+          if-no-files-found: warn
+
+  publish:
+    name: Publish exact Rust SDK release
+    needs: discover
+    if: needs.discover.outputs.action == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-plan-publication
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
+
+      - name: Restore the immutable release plan
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-rust-release-recovery-${{ needs.discover.outputs.plan }}
+          path: recovery-input
+
+      - name: Create or verify the exact planned source tag
+        env:
+          PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: |
+          python scripts/ci/publish-planned-tag.py \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --plan-tag "$PLAN_TAG" \
+            --evidence release-tag-publication-evidence.json
+
+      - name: Start or resume repository-owned publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          select_publication_run() {
+            gh run list --workflow release.yml --limit 100 \
+              --json databaseId,displayTitle,headBranch,headSha,status,conclusion \
+              > publication-runs.json
+            python scripts/ci/component-release-recovery.py select-publication-run \
+              --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --runs publication-runs.json
+          }
+
+          decision="$(select_publication_run)"
+          IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
+          if [ "$publication_action" = dispatch ]; then
+            gh workflow run release.yml --ref "$RELEASE_TAG" \
+              -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG"
+            for attempt in {1..12}; do
+              decision="$(select_publication_run)"
+              IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
+              [ "$publication_action" != dispatch ] && break
+              [ "$attempt" -eq 12 ] || sleep 5
+            done
+            if [ "$publication_action" = dispatch ]; then
+              printf 'Publication dispatch did not become observable for %s at %s.\n' \
+                "$RELEASE_TAG" "$RELEASE_COMMIT" >&2
+              exit 1
+            fi
+          fi
+
+          if [ "$publication_action" = rerun ]; then
+            gh run rerun "$run_id"
+            publication_action=wait
+          fi
+          if [ "$publication_action" = wait ]; then
+            gh run watch "$run_id" --exit-status --interval 10
+          else
+            printf 'Durable publication run %s is %s/%s; no duplicate dispatch is needed.\n' \
+              "$run_id" "$status" "${conclusion:-pending}"
+          fi
+
+      - name: Verify crates.io source identity and the GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci/component-release-recovery.py verify \
+            --component sdk-rust --plan recovery-input/release-plan.json \
+            --attempts 6 --sleep 10 --evidence release-completion-evidence.json
+
+      - name: Retain publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-rust-release-publication-${{ needs.discover.outputs.plan }}
+          path: |
+            release-tag-publication-evidence.json
+            publication-runs.json
+            release-completion-evidence.json
+          if-no-files-found: warn

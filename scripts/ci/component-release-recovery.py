@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -35,6 +36,13 @@ PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
+
+# SHA-256 of durable-workflow/sdk-rust's release recovery workflow at main
+# commit 31e87f4aa13a7fd255fd277a62c43c96ee1532ab. The verifier normalizes only
+# CRLF line endings to LF before hashing. Exact source identity is the bounded
+# security contract because arbitrary shell execution cannot be proven safe by
+# source-pattern matching.
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "8938ed8a7b029c492c08b3243c649adbed013ac3cd3dec57f9e23f396e46d079"
 
 
 @dataclass(frozen=True)
@@ -290,6 +298,17 @@ def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str,
 
 def verify_recovery_workflow_source(name: str, source: str) -> None:
     component = COMPONENTS[name]
+    if name == "sdk-rust":
+        normalized_source = source.replace("\r\n", "\n").encode("utf-8")
+        actual_digest = hashlib.sha256(normalized_source).hexdigest()
+        if not hmac.compare_digest(actual_digest, SDK_RUST_RELEASE_RECOVERY_SHA256):
+            raise RecoveryError(
+                f"{component.repository} release recovery workflow does not match the approved "
+                "protected publication source identity",
+                "default-branch-preflight",
+            )
+        return
+
     if not re.search(r"(?m)^  schedule:\s*$", source) or not re.search(
         r"(?m)^  workflow_dispatch:\s*$", source
     ):
