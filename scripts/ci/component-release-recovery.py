@@ -42,7 +42,7 @@ BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
 # CRLF line endings to LF before hashing. Exact source identity is the bounded
 # security contract because arbitrary shell execution cannot be proven safe by
 # source-pattern matching.
-SDK_RUST_RELEASE_RECOVERY_SHA256 = "8938ed8a7b029c492c08b3243c649adbed013ac3cd3dec57f9e23f396e46d079"
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "d04219e3ffcc1c12a7a223efc832abee56c371b9dc60a7ef5a44a156b2ab4f64"
 
 
 @dataclass(frozen=True)

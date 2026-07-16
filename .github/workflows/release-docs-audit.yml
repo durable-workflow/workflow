@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload docs release audit evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docs-release-audit-evidence
           path: |

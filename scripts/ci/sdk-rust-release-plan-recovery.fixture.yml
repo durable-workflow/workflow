@@ -58,7 +58,7 @@ jobs:
 
       - name: Retain recovery evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-rust-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
           path: |
@@ -83,7 +83,7 @@ jobs:
           ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
 
       - name: Restore the immutable release plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-rust-release-recovery-${{ needs.discover.outputs.plan }}
           path: recovery-input
@@ -155,7 +155,7 @@ jobs:
 
       - name: Retain publication evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-rust-release-publication-${{ needs.discover.outputs.plan }}
           path: |

@@ -270,7 +270,7 @@ jobs:
 
     - name: Upload pull-request MySQL smoke timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: pr-feature-timing-mysql
         path: |
@@ -279,7 +279,7 @@ jobs:
 
     - name: Upload laravel.log if pull-request MySQL smoke fails
       if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pr_mysql_suite.outcome == 'failure') }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: laravel-log-pr-mysql
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
@@ -430,14 +430,14 @@ jobs:
 
     - name: Upload MySQL feature timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: feature-timing-mysql-${{ matrix.shard }}
         path: build/test-results/mysql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if MySQL tests fail
       if: ${{ github.server_url == 'https://github.com' && (failure() || steps.mysql_suite.outcome == 'failure') }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: laravel-log-mysql-${{ matrix.shard }}
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
@@ -588,14 +588,14 @@ jobs:
 
     - name: Upload PostgreSQL feature timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: feature-timing-postgresql-${{ matrix.shard }}
         path: build/test-results/pgsql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if PostgreSQL tests fail
       if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pgsql_suite.outcome == 'failure') }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: laravel-log-postgresql-${{ matrix.shard }}
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
@@ -689,7 +689,7 @@ jobs:
 
     - name: Upload Laravel log if MariaDB tests fail
       if: ${{ github.server_url == 'https://github.com' && failure() }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: laravel-log-mariadb
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
@@ -777,14 +777,14 @@ jobs:
 
     - name: Upload coverage resource metrics
       if: ${{ always() && github.server_url == 'https://github.com' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: coverage-resource-metrics
         path: build/test-results/coverage-resource-metrics.md
 
     - name: Upload coverage to Codecov
       if: ${{ github.server_url == 'https://github.com' }}
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v7
       with:
         files: ./coverage.xml
         fail_ci_if_error: false
