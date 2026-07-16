@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use LogicException;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
@@ -1335,24 +1336,33 @@ final class V2ScheduleTest extends TestCase
     {
         WorkflowStub::fake();
 
-        $schedule = ScheduleManager::create(
-            scheduleId: 'jitter-trigger-test',
-            workflowClass: TestScheduledWorkflow::class,
-            cronExpression: '0 * * * *',
-            jitterSeconds: 120,
-            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
-        );
+        $triggeredAt = Carbon::parse('2026-07-16 12:59:59 UTC');
+        Carbon::setTestNow($triggeredAt);
 
-        ScheduleManager::trigger($schedule);
-        $schedule->refresh();
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'jitter-trigger-test',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '0 * * * *',
+                jitterSeconds: 120,
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+            );
 
-        $canonical = $schedule->computeNextFireAt();
-        $storedNext = $schedule->next_fire_at;
+            ScheduleManager::trigger($schedule);
+            $schedule->refresh();
 
-        $this->assertNotNull($canonical);
-        $this->assertNotNull($storedNext);
-        $this->assertGreaterThanOrEqual($canonical->getTimestamp(), $storedNext->getTimestamp());
-        $this->assertLessThanOrEqual($canonical->getTimestamp() + 120, $storedNext->getTimestamp());
+            Carbon::setTestNow($triggeredAt->copy()->addSeconds(2));
+
+            $canonical = $schedule->computeNextFireAt($triggeredAt);
+            $storedNext = $schedule->next_fire_at;
+
+            $this->assertNotNull($canonical);
+            $this->assertNotNull($storedNext);
+            $this->assertGreaterThanOrEqual($canonical->getTimestamp(), $storedNext->getTimestamp());
+            $this->assertLessThanOrEqual($canonical->getTimestamp() + 120, $storedNext->getTimestamp());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testBackfillEnumerationIgnoresJitter(): void
