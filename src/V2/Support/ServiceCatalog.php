@@ -16,8 +16,9 @@ use Workflow\V2\Models\WorkflowServiceOperation;
  * Mirrors the namespace-scoping pattern used by ScheduleManager and
  * SelectedRunLocator: when a namespace is configured (e.g. via
  * `waterline.namespace`), out-of-scope catalog objects resolve to null instead
- * of leaking across namespace boundaries. Service-call scopes only refine rows
- * that already belong to the configured durable namespace.
+ * of leaking across namespace boundaries. Service-call visibility follows the
+ * durable caller and target namespace snapshots, while the owned scope follows
+ * the call row's durable namespace.
  */
 final class ServiceCatalog
 {
@@ -76,10 +77,10 @@ final class ServiceCatalog
     /**
      * Build a service-call query, optionally filtered to one of:
      *
-     *   - SCOPE_RELEVANT (default) - calls whose durable `namespace` matches.
-     *   - SCOPE_OWNED             - alias of the durable namespace view.
-     *   - SCOPE_CALLER            - namespace-owned calls initiated from the namespace.
-     *   - SCOPE_TARGET            - namespace-owned calls targeting the namespace.
+     *   - SCOPE_RELEVANT (default) - calls initiated from or targeting the namespace.
+     *   - SCOPE_OWNED             - calls whose durable `namespace` matches.
+     *   - SCOPE_CALLER            - calls initiated from the namespace.
+     *   - SCOPE_TARGET            - calls targeting the namespace.
      *
      * Status is the durable {@see \Workflow\V2\Enums\ServiceCallStatus}
      * value; a null status returns calls in any state.
@@ -99,19 +100,7 @@ final class ServiceCatalog
             ->orderByDesc('created_at')
             ->orderBy('id');
 
-        if ($namespace !== null) {
-            $query->where('namespace', $namespace);
-
-            $column = match ($scope) {
-                self::SCOPE_CALLER => 'caller_namespace',
-                self::SCOPE_TARGET => 'target_namespace',
-                default => null,
-            };
-
-            if ($column !== null) {
-                $query->where($column, $namespace);
-            }
-        }
+        $query = self::applyServiceCallScope($query, $namespace, $scope);
 
         if ($status !== null && $status !== '') {
             $query->where('status', $status);
@@ -167,12 +156,34 @@ final class ServiceCatalog
     {
         $model = ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class);
         $query = $model::query()->whereKey($id);
-        $query = self::applyNamespace($query, $namespace);
+        $query = self::applyServiceCallScope($query, $namespace, self::SCOPE_RELEVANT);
 
         /** @var WorkflowServiceCall|null $call */
         $call = $query->first();
 
         return $call;
+    }
+
+    /**
+     * @param Builder<WorkflowServiceCall> $query
+     * @return Builder<WorkflowServiceCall>
+     */
+    private static function applyServiceCallScope(Builder $query, ?string $namespace, string $scope): Builder
+    {
+        if ($namespace === null) {
+            return $query;
+        }
+
+        return match ($scope) {
+            self::SCOPE_OWNED => $query->where('namespace', $namespace),
+            self::SCOPE_CALLER => $query->where('caller_namespace', $namespace),
+            self::SCOPE_TARGET => $query->where('target_namespace', $namespace),
+            default => $query->where(static function (Builder $visibility) use ($namespace): void {
+                $visibility
+                    ->where('caller_namespace', $namespace)
+                    ->orWhere('target_namespace', $namespace);
+            }),
+        };
     }
 
     /**

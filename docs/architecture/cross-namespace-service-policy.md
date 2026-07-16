@@ -538,10 +538,11 @@ decides who may *open* it on the receiving side.
 ## Operator visibility
 
 Operator surfaces (Waterline, the CLI, and Cloud) are namespace
-scoped: a Waterline tenant configured for namespace `A` does not
-see calls whose `namespace` (the durable namespace recorded on the
-row) is `B`. Cross-namespace policy outcomes are exposed within
-that scope:
+scoped: a Waterline tenant configured for namespace `A` sees calls
+where `caller_namespace` or `target_namespace` is `A`, but does not
+see calls where neither side matches. The row's durable `namespace`
+remains target-owned and defines the explicit owned listing scope.
+Cross-namespace policy outcomes are exposed within that boundary:
 
 - `OperatorQueueVisibility::forNamespace($namespace)` continues to
   scope queue depth and lease counts to the configured namespace.
@@ -554,11 +555,11 @@ that scope:
   in their namespace sees the boundary outcomes of calls that ran or
   spawned work for that run, even when the *target_namespace*
   column points elsewhere.
-- Listing surfaces filter on `workflow_service_calls.namespace`
-  (the durable namespace column), then disclose rows whose
-  `caller_namespace` or `target_namespace` matches the configured
-  namespace. The unique-key invariants on
-  `workflow_service_endpoints`, `workflow_services`, and
+- Relevant listing surfaces disclose rows whose `caller_namespace`
+  or `target_namespace` matches the configured namespace. Caller and
+  target scopes match their respective columns, while the owned scope
+  matches `workflow_service_calls.namespace`. The unique-key invariants
+  on `workflow_service_endpoints`, `workflow_services`, and
   `workflow_service_operations` mean an endpoint name in one
   namespace never aliases an endpoint name in another; operators
   do not need to disambiguate by id.
@@ -571,8 +572,8 @@ that scope:
   contract because the rejection is the audit fact.
 
 A surface that recomputes outcome from in-memory state, that filters
-out rejected rows, or that exposes calls whose namespace does not
-match the configured namespace, is out of contract.
+out rejected rows, or that exposes calls where neither the caller nor
+target namespace matches the configured namespace, is out of contract.
 
 ## Interaction with adjacent contracts
 

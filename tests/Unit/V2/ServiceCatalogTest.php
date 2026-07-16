@@ -70,7 +70,7 @@ class ServiceCatalogTest extends TestCase
         $this->assertSame($operation->id, ServiceCatalog::findOperation($operation->id, 'shipping')->id);
     }
 
-    public function testFindServiceCallRequiresDurableNamespaceMatch(): void
+    public function testFindServiceCallAllowsCallerAndTargetNamespacesOnly(): void
     {
         $endpoint = $this->createEndpoint('shipping', 'invoices');
         $service = $this->createService($endpoint, 'shipping', 'inbox');
@@ -87,66 +87,58 @@ class ServiceCatalogTest extends TestCase
             $crossNamespaceCall->id,
             ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'shipping')->id
         );
-        $this->assertNull(ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'billing'));
+        $this->assertSame(
+            $crossNamespaceCall->id,
+            ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'billing')->id
+        );
         $this->assertNull(ServiceCatalog::findServiceCall($crossNamespaceCall->id, 'finance'));
         $this->assertSame($crossNamespaceCall->id, ServiceCatalog::findServiceCall($crossNamespaceCall->id, null)->id);
     }
 
-    public function testServiceCallsQueryHonorsScope(): void
+    public function testServiceCallsQueryHonorsCallerTargetRelevantAndOwnedScopes(): void
     {
         $endpoint = $this->createEndpoint('shipping', 'invoices');
         $service = $this->createService($endpoint, 'shipping', 'inbox');
         $operation = $this->createOperation($endpoint, $service, 'shipping', 'create');
 
-        $callerCall = $this->createServiceCall($endpoint, $service, $operation, [
-            'namespace' => 'billing',
-            'caller_namespace' => 'billing',
-            'target_namespace' => 'shipping',
-            'status' => ServiceCallStatus::Accepted->value,
-        ]);
-
-        $targetCall = $this->createServiceCall($endpoint, $service, $operation, [
-            'namespace' => 'billing',
-            'caller_namespace' => 'shipping',
-            'target_namespace' => 'billing',
-            'status' => ServiceCallStatus::Started->value,
-        ]);
-
-        $crossNamespaceCallerCall = $this->createServiceCall($endpoint, $service, $operation, [
+        $crossNamespaceCall = $this->createServiceCall($endpoint, $service, $operation, [
             'namespace' => 'shipping',
             'caller_namespace' => 'billing',
             'target_namespace' => 'shipping',
             'status' => ServiceCallStatus::Accepted->value,
         ]);
 
-        $ownedCall = $this->createServiceCall($endpoint, $service, $operation, [
-            'namespace' => 'billing',
-            'caller_namespace' => 'billing',
-            'target_namespace' => 'billing',
-            'status' => ServiceCallStatus::Completed->value,
-        ]);
-
-        $owned = ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_OWNED)->get();
-        $caller = ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_CALLER)->get();
-        $target = ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_TARGET)->get();
-        $relevant = ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_RELEVANT)->get();
-
-        $this->assertEqualsCanonicalizing(
-            [$ownedCall->id, $callerCall->id, $targetCall->id],
-            $owned->pluck('id')
-                ->all(),
+        $this->assertSame(
+            [$crossNamespaceCall->id],
+            ServiceCatalog::serviceCallsQuery('billing')->pluck('id')->all(),
         );
-        $this->assertEqualsCanonicalizing([$ownedCall->id, $callerCall->id], $caller->pluck('id') ->all());
-        $this->assertEqualsCanonicalizing([$ownedCall->id, $targetCall->id], $target->pluck('id') ->all());
-        $this->assertEqualsCanonicalizing(
-            [$ownedCall->id, $callerCall->id, $targetCall->id],
-            $relevant->pluck('id')
-                ->all(),
+        $this->assertSame(
+            [$crossNamespaceCall->id],
+            ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_CALLER)->pluck('id')->all(),
         );
-        $this->assertNotContains($crossNamespaceCallerCall->id, $owned->pluck('id')->all());
-        $this->assertNotContains($crossNamespaceCallerCall->id, $caller->pluck('id')->all());
-        $this->assertNotContains($crossNamespaceCallerCall->id, $target->pluck('id')->all());
-        $this->assertNotContains($crossNamespaceCallerCall->id, $relevant->pluck('id')->all());
+        $this->assertSame([], ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_TARGET)->get()->all());
+        $this->assertSame([], ServiceCatalog::serviceCallsQuery('billing', ServiceCatalog::SCOPE_OWNED)->get()->all());
+
+        $this->assertSame(
+            [$crossNamespaceCall->id],
+            ServiceCatalog::serviceCallsQuery('shipping', ServiceCatalog::SCOPE_RELEVANT)->pluck('id')->all(),
+        );
+        $this->assertSame(
+            [$crossNamespaceCall->id],
+            ServiceCatalog::serviceCallsQuery('shipping', ServiceCatalog::SCOPE_TARGET)->pluck('id')->all(),
+        );
+        $this->assertSame(
+            [$crossNamespaceCall->id],
+            ServiceCatalog::serviceCallsQuery('shipping', ServiceCatalog::SCOPE_OWNED)->pluck('id')->all(),
+        );
+        $this->assertSame(
+            [],
+            ServiceCatalog::serviceCallsQuery('shipping', ServiceCatalog::SCOPE_CALLER)->get()->all()
+        );
+
+        foreach (ServiceCatalog::SCOPES as $scope) {
+            $this->assertSame([], ServiceCatalog::serviceCallsQuery('finance', $scope)->get()->all());
+        }
     }
 
     public function testServiceCallsQueryFiltersByStatus(): void
