@@ -251,6 +251,107 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('server-worker-1', $task->lease_owner);
     }
 
+    public function testClaimProjectionPreservesReplayBlockedBooleanSelectors(): void
+    {
+        $blockedRun = $this->createWaitingRun();
+        /** @var WorkflowTask $blockedReadyTask */
+        $blockedReadyTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $blockedRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $blockedRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [
+                'replay_blocked' => true,
+                'replay_blocked_reason' => 'failure_resolution',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_error' => 'Boolean true blocks replay.',
+        ]);
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $blockedRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [
+                'replay_blocked' => false,
+                'replay_blocked_reason' => 'failure_resolution',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_error' => 'Boolean false does not block replay.',
+        ]);
+
+        $blockedClaim = $this->bridge->claimStatus($blockedReadyTask->id, 'blocked-worker');
+        $blockedSummary = WorkflowRunSummary::query()->findOrFail($blockedRun->id);
+
+        $this->assertTrue($blockedClaim['claimed']);
+        $this->assertSame('workflow_replay_blocked', $blockedSummary->liveness_state);
+        $this->assertSame('Boolean true blocks replay.', $blockedSummary->liveness_reason);
+        $this->assertTrue($blockedSummary->task_problem);
+
+        $problemRun = $this->createWaitingRun();
+        /** @var WorkflowTask $problemTask */
+        $problemTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $problemRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'replay_blocked' => true,
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $problemClaim = $this->bridge->claimStatus($problemTask->id, 'problem-worker');
+        $problemSummary = WorkflowRunSummary::query()->findOrFail($problemRun->id);
+
+        $this->assertTrue($problemClaim['claimed']);
+        $this->assertSame('workflow_task_leased', $problemSummary->liveness_state);
+        $this->assertTrue($problemSummary->task_problem);
+
+        $healthyRun = $this->createWaitingRun();
+        /** @var WorkflowTask $healthyTask */
+        $healthyTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $healthyRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'replay_blocked' => false,
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $healthyClaim = $this->bridge->claimStatus($healthyTask->id, 'healthy-worker');
+        $healthySummary = WorkflowRunSummary::query()->findOrFail($healthyRun->id);
+
+        $this->assertTrue($healthyClaim['claimed']);
+        $this->assertSame('workflow_task_leased', $healthySummary->liveness_state);
+        $this->assertFalse($healthySummary->task_problem);
+    }
+
     public function testConfiguredShortLeaseDrivesClaimRenewalRecoveryAndFencing(): void
     {
         $claimedAt = Carbon::parse('2026-07-14 21:44:11 UTC');

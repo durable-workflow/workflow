@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\V2\Enums\ActivityStatus;
@@ -791,12 +792,14 @@ final class RunSummaryProjector
 
     private static function claimReplayBlockedTask(WorkflowRun $run): ?WorkflowTask
     {
-        /** @var WorkflowTask|null $task */
-        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+        $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('workflow_run_id', $run->id)
             ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Failed->value)
-            ->whereJsonContains('payload->replay_blocked', true)
+            ->where('status', TaskStatus::Failed->value);
+        self::whereReplayBlocked($query);
+
+        /** @var WorkflowTask|null $task */
+        $task = $query
             ->orderByDesc('updated_at')
             ->orderByDesc('created_at')
             ->limit(1)
@@ -815,13 +818,13 @@ final class RunSummaryProjector
             ->where('workflow_run_id', $run->id)
             ->where('task_type', TaskType::Workflow->value)
             ->where(static function ($problem) use ($now, $redispatchCutoff): void {
-                $problem->where('repair_count', '>', 0)
-                    ->orWhereJsonContains('payload->replay_blocked', true)
-                    ->orWhere(static function ($leased) use ($now): void {
-                        $leased->where('status', TaskStatus::Leased->value)
-                            ->whereNotNull('lease_expires_at')
-                            ->where('lease_expires_at', '<=', $now);
-                    })
+                $problem->where('repair_count', '>', 0);
+                self::whereReplayBlocked($problem, 'or');
+                $problem->orWhere(static function ($leased) use ($now): void {
+                    $leased->where('status', TaskStatus::Leased->value)
+                        ->whereNotNull('lease_expires_at')
+                        ->where('lease_expires_at', '<=', $now);
+                })
                     ->orWhere(static function ($ready) use ($now, $redispatchCutoff): void {
                         $ready->where('status', TaskStatus::Ready->value)
                             ->where(static function ($readyProblem) use ($now, $redispatchCutoff): void {
@@ -885,6 +888,31 @@ final class RunSummaryProjector
                     });
             })
             ->exists();
+    }
+
+    /**
+     * Laravel 9's SQLite grammar cannot compile whereJsonContains(). Match the
+     * JSON boolean type directly so false and other scalar values stay healthy.
+     *
+     * @param Builder<WorkflowTask> $query
+     * @return Builder<WorkflowTask>
+     */
+    private static function whereReplayBlocked(Builder $query, string $boolean = 'and'): Builder
+    {
+        if ($query->getQuery()->getConnection()->getDriverName() !== 'sqlite') {
+            return $boolean === 'or'
+                ? $query->orWhereJsonContains('payload->replay_blocked', true)
+                : $query->whereJsonContains('payload->replay_blocked', true);
+        }
+
+        $payload = $query->getQuery()
+            ->getGrammar()
+            ->wrap('payload');
+        $sql = sprintf("json_type(%s, '$.replay_blocked') = 'true'", $payload);
+
+        return $boolean === 'or'
+            ? $query->orWhereRaw($sql)
+            : $query->whereRaw($sql);
     }
 
     private static function claimWaitId(?WorkflowRunSummary $summary, WorkflowTask $task): ?string
