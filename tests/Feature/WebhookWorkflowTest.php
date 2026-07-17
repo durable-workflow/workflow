@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Illuminate\Routing\Route as RoutingRoute;
+use Illuminate\Support\Facades\Route;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\TestCase;
@@ -25,6 +27,29 @@ final class WebhookWorkflowTest extends TestCase
         ]);
 
         Webhooks::routes('Tests\\Fixtures', __DIR__ . '/../Fixtures');
+    }
+
+    public function testWebhookRoutesCanBeSerializedForRouteCaching(): void
+    {
+        $routes = Route::getRoutes();
+        $routeNames = array_map(
+            static fn (RoutingRoute $route): ?string => $route->getName(),
+            $routes->getRoutes()
+        );
+
+        $this->assertContains('workflows.start.test-workflow', $routeNames);
+        $this->assertContains('workflows.signal.test-workflow.cancel', $routeNames);
+
+        foreach ($routes as $route) {
+            if (! str_starts_with((string) $route->getName(), 'workflows.')) {
+                continue;
+            }
+
+            /** @var RoutingRoute $route */
+            $route->prepareForSerialization();
+
+            $this->assertIsString(serialize($route));
+        }
     }
 
     public function testStart(): void
