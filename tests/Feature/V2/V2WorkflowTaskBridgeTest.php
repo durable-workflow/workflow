@@ -29,6 +29,7 @@ use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityExecution;
@@ -2603,7 +2604,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->sole();
 
         $this->assertSame($signal->id, $storedSignalReceived->payload['signal_id'] ?? null);
-        $this->assertArrayNotHasKey('arguments', $storedSignalReceived->payload);
+        $this->assertSame($signal->arguments, $storedSignalReceived->payload['arguments'] ?? null);
+        $this->assertSame($signal->payload_codec, $storedSignalReceived->payload['payload_codec'] ?? null);
         $this->assertArrayNotHasKey('workflow_sequence', $storedSignalReceived->payload);
 
         /** @var WorkflowTask $signalTask */
@@ -5284,6 +5286,134 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertCount(1, $secondPoll);
         $this->assertSame($updateTask->id, $secondPoll[0]['task_id']);
+    }
+
+    public function testInitiallyLeasedExternalRunAppliesDeclaredSignalsBeforeQueuedUpdate(): void
+    {
+        $run = $this->createWaitingRun();
+        $this->makeDefinitionUnavailableWithDurableCommandContract($run);
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $initialTask = $this->createLeasedTask($run);
+        $firstSignal = $this->recordReceivedSignal($run, 'advance', null, [3]);
+        $secondSignal = $this->recordReceivedSignal($run, 'advance', null, [5]);
+
+        $updateCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [13],
+            ]),
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $updateCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'run',
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [13]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $updateCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $updateCommand->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'arguments' => $update->arguments,
+            'ordering_state' => 'queued',
+            'queued_behind_command_id' => $secondSignal->workflow_command_id,
+            'queued_behind_command_sequence' => $secondSignal->command_sequence,
+            'queued_behind_command_type' => 'signal',
+        ], null, $updateCommand);
+
+        $initialCompletion = $this->bridge->complete($initialTask->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 300,
+        ]]);
+
+        $this->assertTrue($initialCompletion['completed']);
+
+        $firstTask = WorkflowTask::query()
+            ->whereIn('id', $initialCompletion['created_task_ids'])
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+        $this->assertSame($firstSignal->id, $firstTask->payload['workflow_signal_id'] ?? null);
+        $this->assertTrue($this->bridge->claimStatus($firstTask->id, 'leased-start-worker')['claimed']);
+
+        $firstCompletion = $this->bridge->complete($firstTask->id, []);
+
+        $this->assertTrue($firstCompletion['completed']);
+        $this->assertCount(1, $firstCompletion['created_task_ids']);
+
+        $secondTask = WorkflowTask::query()->findOrFail($firstCompletion['created_task_ids'][0]);
+        $this->assertSame($secondSignal->id, $secondTask->payload['workflow_signal_id'] ?? null);
+        $this->assertTrue($this->bridge->claimStatus($secondTask->id, 'leased-start-worker')['claimed']);
+
+        $secondCompletion = $this->bridge->complete($secondTask->id, []);
+
+        $this->assertTrue($secondCompletion['completed']);
+        $this->assertCount(1, $secondCompletion['created_task_ids']);
+
+        $updateTask = WorkflowTask::query()->findOrFail($secondCompletion['created_task_ids'][0]);
+        $this->assertSame($update->id, $updateTask->payload['workflow_update_id'] ?? null);
+        $this->assertTrue($this->bridge->claimStatus($updateTask->id, 'leased-start-worker')['claimed']);
+
+        $updateCompletion = $this->bridge->complete($updateTask->id, [[
+            'type' => 'complete_update',
+            'update_id' => $update->id,
+            'result' => Serializer::serializeWithCodec('avro', [
+                'accepted' => true,
+                'value' => 13,
+            ]),
+        ]]);
+
+        $this->assertTrue($updateCompletion['completed']);
+        $this->assertSame(
+            [SignalStatus::Applied, SignalStatus::Applied],
+            [$firstSignal->fresh()?->status, $secondSignal->fresh()?->status],
+        );
+        $completedUpdate = $update->fresh();
+
+        $this->assertSame(UpdateStatus::Completed, $completedUpdate?->status);
+        $this->assertSame(
+            [
+                'accepted' => true,
+                'value' => 13,
+            ],
+            Serializer::unserializeWithCodec('avro', (string) $completedUpdate?->result),
+        );
+
+        $receivedInputs = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): mixed => Serializer::unserializeWithCodec(
+                (string) ($event->payload['payload_codec'] ?? 'avro'),
+                (string) ($event->payload['arguments'] ?? ''),
+            ))
+            ->all();
+
+        $this->assertSame([[3], [5]], $receivedInputs);
+        $this->assertSame(
+            ['SignalApplied', 'SignalApplied', 'UpdateApplied', 'UpdateCompleted'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('event_type', ['SignalApplied', 'UpdateApplied', 'UpdateCompleted'])
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($type) => $type->value)
+                ->all(),
+        );
     }
 
     public function testRequestIdIdempotencyColumnIsReservedForUpdateCommands(): void
@@ -9141,7 +9271,8 @@ SQL);
     private function recordReceivedSignal(
         WorkflowRun $run,
         string $name = 'advance',
-        string $waitId = 'signal-wait-race',
+        ?string $waitId = 'signal-wait-race',
+        array $arguments = ['Ada'],
     ): WorkflowSignal {
         $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
 
@@ -9153,7 +9284,7 @@ SQL);
             'payload_codec' => 'avro',
             'payload' => Serializer::serializeWithCodec('avro', [
                 'name' => $name,
-                'arguments' => ['Ada'],
+                'arguments' => $arguments,
             ]),
             'accepted_at' => now(),
         ]);
@@ -9171,7 +9302,7 @@ SQL);
             'outcome' => 'signal_received',
             'command_sequence' => $signalCommand->command_sequence,
             'payload_codec' => 'avro',
-            'arguments' => Serializer::serializeWithCodec('avro', ['Ada']),
+            'arguments' => Serializer::serializeWithCodec('avro', $arguments),
             'received_at' => now(),
         ]);
 
@@ -9182,6 +9313,8 @@ SQL);
             'workflow_run_id' => $run->id,
             'signal_name' => $name,
             'signal_wait_id' => $waitId,
+            'arguments' => $signal->arguments,
+            'payload_codec' => $signal->payload_codec,
         ], null, $signalCommand);
 
         return $signal;

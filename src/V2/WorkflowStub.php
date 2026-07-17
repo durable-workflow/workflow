@@ -2428,6 +2428,12 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'signal_name' => $name,
                 'signal_wait_id' => $signalWaitId,
+                'arguments' => ExternalPayloads::historyValue(
+                    is_string($signal->arguments) ? $signal->arguments : null,
+                    is_string($signal->payload_codec) ? $signal->payload_codec : null,
+                    is_string($run->namespace) ? $run->namespace : null,
+                ),
+                'payload_codec' => $signal->payload_codec,
             ], static fn (mixed $value): bool => $value !== null), null, $command);
 
             if (! $this->hasOpenWorkflowTask($run->id)) {
@@ -2625,6 +2631,12 @@ final class WorkflowStub
                     'workflow_run_id' => $run->id,
                     'signal_name' => $name,
                     'signal_wait_id' => $signalWaitId,
+                    'arguments' => ExternalPayloads::historyValue(
+                        is_string($signal->arguments) ? $signal->arguments : null,
+                        is_string($signal->payload_codec) ? $signal->payload_codec : null,
+                        is_string($run->namespace) ? $run->namespace : null,
+                    ),
+                    'payload_codec' => $signal->payload_codec,
                 ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
 
                 if (! $this->hasOpenWorkflowTask($run->id)) {
@@ -2878,6 +2890,12 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'signal_name' => $name,
                 'signal_wait_id' => $signalWaitId,
+                'arguments' => ExternalPayloads::historyValue(
+                    is_string($signal->arguments) ? $signal->arguments : null,
+                    is_string($signal->payload_codec) ? $signal->payload_codec : null,
+                    is_string($run->namespace) ? $run->namespace : null,
+                ),
+                'payload_codec' => $signal->payload_codec,
             ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);

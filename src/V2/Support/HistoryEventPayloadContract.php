@@ -304,6 +304,8 @@ final class HistoryEventPayloadContract
             'workflow_run_id',
             'signal_name',
             'signal_wait_id',
+            'arguments',
+            'payload_codec',
         ],
         'SignalApplied' => ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id', 'sequence', 'value'],
         'SignalWaitOpened' => ['signal_name', 'signal_wait_id', 'sequence', 'timeout_seconds'],

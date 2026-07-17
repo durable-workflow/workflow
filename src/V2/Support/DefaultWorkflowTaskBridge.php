@@ -4702,12 +4702,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ?? CodecRegistry::defaultCodec();
         $namespace = is_string($run->namespace) ? $run->namespace : null;
 
-        if (! array_key_exists('arguments', $payload) || $payload['arguments'] === null) {
-            $payload['arguments'] = ExternalPayloads::wireEnvelope(
-                self::nonEmptyString($signal->arguments),
-                $codec,
-                $namespace,
-            );
+        $storedArguments = self::nonEmptyString($signal->arguments);
+
+        if ($storedArguments !== null) {
+            $payload['arguments'] = ExternalPayloads::wireEnvelope($storedArguments, $codec, $namespace);
         }
 
         if (! array_key_exists('payload_codec', $payload) || $payload['payload_codec'] === null) {

@@ -5,7 +5,9 @@
 - Standalone workers now receive accepted declared signals even when the host
   has no embedded workflow definition or local wait projection. Signal tasks
   retain command order ahead of queued updates, and QueueFake update completion
-  uses the configured workflow-run model query.
+  uses the configured workflow-run model query. Accepted signal inputs are also
+  persisted on their history event so public-history consumers observe the same
+  values as workers and query replay.
 - Workflow-task claims and renewals now resolve
   `workflows.v2.workflow_task_lease_seconds` at runtime across remote,
   queued, timer, local-activity, and repair-driven execution paths. Embedded

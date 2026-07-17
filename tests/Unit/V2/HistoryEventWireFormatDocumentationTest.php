@@ -106,6 +106,8 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'workflow_run_id',
             'signal_name',
             'signal_wait_id',
+            'arguments',
+            'payload_codec',
         ],
         'SignalApplied' => [
             'workflow_command_id',
