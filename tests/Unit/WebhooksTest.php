@@ -391,6 +391,26 @@ final class WebhooksTest extends TestCase
             'message' => 'Unauthorized',
         ]);
     }
+
+    public function testWebhookRoutesCanBeSerializedForRouteCaching()
+    {
+        $webhookRoutes = [];
+
+        foreach (Route::getRoutes() as $route) {
+            if (str_starts_with((string) $route->getName(), 'workflows.')) {
+                $webhookRoutes[] = $route;
+            }
+        }
+
+        $this->assertNotEmpty($webhookRoutes);
+
+        foreach ($webhookRoutes as $route) {
+            // Mirrors what `php artisan route:cache` does. Closures must only
+            // capture serializable values (no ReflectionMethod instances).
+            $route->prepareForSerialization();
+            serialize($route);
+        }
+    }
 }
 
 class TestClass
