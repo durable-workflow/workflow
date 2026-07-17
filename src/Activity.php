@@ -13,8 +13,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Str;
 use LimitIterator;
 use SplFileObject;
 use Throwable;
@@ -23,11 +21,13 @@ use Workflow\Middleware\ActivityMiddleware;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ActivityWithWebhookSupport;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\Traits\SerializesModels;
 
 class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 {
+    use ActivityWithWebhookSupport;
     use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
@@ -87,20 +87,6 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     public function workflowId()
     {
         return $this->storedWorkflow->id;
-    }
-
-    public function webhookUrl(string $signalMethod = ''): string
-    {
-        $workflow = Str::kebab(class_basename($this->storedWorkflow->class));
-
-        if ($signalMethod === '') {
-            return route("workflows.start.{$workflow}");
-        }
-
-        $signal = Str::kebab($signalMethod);
-        return route("workflows.signal.{$workflow}.{$signal}", [
-            'workflowId' => $this->storedWorkflow->id,
-        ]);
     }
 
     public function handle()
@@ -173,13 +159,5 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $workflow->queue(),
             $this::class
         );
-    }
-
-    public function heartbeat(): void
-    {
-        pcntl_alarm(max($this->timeout, 0));
-        if ($this->timeout) {
-            Cache::put($this->key, 1, $this->timeout);
-        }
     }
 }
