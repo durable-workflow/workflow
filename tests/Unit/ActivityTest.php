@@ -6,6 +6,7 @@ namespace Tests\Unit;
 
 use BadMethodCallException;
 use Exception;
+use Mockery;
 use Tests\Fixtures\TestExceptionActivity;
 use Tests\Fixtures\TestInvalidActivity;
 use Tests\Fixtures\TestNonRetryableExceptionActivity;
@@ -13,12 +14,14 @@ use Tests\Fixtures\TestNullableArgumentsActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
+use Workflow\Activity;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowCreatedStatus;
 use Workflow\States\WorkflowFailedStatus;
 use Workflow\Webhooks;
+use Workflow\WorkflowOptions;
 use Workflow\WorkflowStub;
 
 final class ActivityTest extends TestCase
@@ -40,7 +43,7 @@ final class ActivityTest extends TestCase
         $this->assertSame($activity->timeout, pcntl_alarm(0));
     }
 
-    public function testActivityUsesWorkflowOptionConnection(): void
+    public function testActivityUsesWorkflowConnectionAndQueueOptions(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
@@ -48,7 +51,7 @@ final class ActivityTest extends TestCase
             'arguments' => [],
             'options' => [
                 'connection' => 'sync',
-                'queue' => null,
+                'queue' => 'high',
             ],
         ]);
         $storedWorkflow->save();
@@ -56,6 +59,45 @@ final class ActivityTest extends TestCase
         $activity = new TestOtherActivity(0, now()->toDateTimeString(), $storedWorkflow, ['other']);
 
         $this->assertSame('sync', $activity->connection);
+        $this->assertSame('high', $activity->queue);
+    }
+
+    public function testActivityPreservesDefaultConnectionAndQueueWhenWorkflowOptionsAreNull(): void
+    {
+        $storedWorkflow = Mockery::mock(StoredWorkflow::class);
+        $storedWorkflow->shouldReceive('workflowOptions')
+            ->once()
+            ->andReturn(new WorkflowOptions());
+
+        $activity = new class(0, now()->toDateTimeString(), $storedWorkflow) extends Activity {
+            public $connection = 'redis';
+
+            public $queue = 'default';
+
+            public array $routingCalls = [];
+
+            public function onConnection($connection)
+            {
+                $this->routingCalls[] = ['connection', $connection];
+
+                return parent::onConnection($connection);
+            }
+
+            public function onQueue($queue)
+            {
+                $this->routingCalls[] = ['queue', $queue];
+
+                return parent::onQueue($queue);
+            }
+
+            public function execute(): void
+            {
+            }
+        };
+
+        $this->assertSame('redis', $activity->connection);
+        $this->assertSame('default', $activity->queue);
+        $this->assertSame([['connection', 'redis'], ['queue', 'default']], $activity->routingCalls);
     }
 
     public function testInvalidActivity(): void

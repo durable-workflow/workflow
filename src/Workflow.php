@@ -79,19 +79,12 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
         $connection = $this->storedWorkflow->effectiveConnection();
 
-        if ($connection !== null) {
-            $this->onConnection($connection);
-        } elseif (property_exists($this, 'connection')) {
-            $this->onConnection($this->connection);
-        }
+        // Give Psalm a base-typed receiver so Queueable is analyzed once per job base class.
+        self::initializeConnection($this, $connection);
 
         $queue = $this->storedWorkflow->effectiveQueue();
 
-        if ($queue !== null) {
-            $this->onQueue($queue);
-        } elseif (property_exists($this, 'queue')) {
-            $this->onQueue($this->queue);
-        }
+        self::initializeQueue($this, $queue);
 
         $this->afterCommit = true;
     }
@@ -311,6 +304,24 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                     $queue
                 );
             }
+        }
+    }
+
+    private static function initializeConnection(self $workflow, $connection): void
+    {
+        if ($connection !== null) {
+            $workflow->onConnection($connection);
+        } elseif (property_exists($workflow, 'connection')) {
+            $workflow->onConnection($workflow->connection);
+        }
+    }
+
+    private static function initializeQueue(self $workflow, $queue): void
+    {
+        if ($queue !== null) {
+            $workflow->onQueue($queue);
+        } elseif (property_exists($workflow, 'queue')) {
+            $workflow->onQueue($workflow->queue);
         }
     }
 

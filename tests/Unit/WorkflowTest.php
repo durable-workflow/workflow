@@ -334,20 +334,66 @@ final class WorkflowTest extends TestCase
         $this->assertSame('other', $childWorkflow->output());
     }
 
-    public function testConstructorUsesQueuePropertyWhenEffectiveQueueIsNull(): void
-    {
+    /**
+     * @dataProvider routingProvider
+     */
+    public function testConstructorInitializesRouting(
+        ?string $effectiveConnection,
+        ?string $effectiveQueue,
+        ?string $classConnection,
+        ?string $classQueue,
+        ?string $expectedConnection,
+        ?string $expectedQueue
+    ): void {
         $storedWorkflow = Mockery::mock(StoredWorkflow::class);
         $storedWorkflow->shouldReceive('effectiveConnection')
             ->once()
-            ->andReturn('sync');
+            ->andReturn($effectiveConnection);
         $storedWorkflow->shouldReceive('effectiveQueue')
             ->once()
-            ->andReturn(null);
+            ->andReturn($effectiveQueue);
 
-        $workflow = new Workflow($storedWorkflow);
+        $workflow = new class($storedWorkflow, $classConnection, $classQueue) extends Workflow {
+            public array $routingCalls = [];
 
-        $this->assertSame('sync', $workflow->connection);
-        $this->assertNull($workflow->queue);
+            public function __construct(StoredWorkflow $storedWorkflow, ?string $connection, ?string $queue)
+            {
+                $this->connection = $connection;
+                $this->queue = $queue;
+
+                parent::__construct($storedWorkflow);
+            }
+
+            public function onConnection($connection)
+            {
+                $this->routingCalls[] = ['connection', $connection];
+
+                return parent::onConnection($connection);
+            }
+
+            public function onQueue($queue)
+            {
+                $this->routingCalls[] = ['queue', $queue];
+
+                return parent::onQueue($queue);
+            }
+        };
+
+        $this->assertSame($expectedConnection, $workflow->connection);
+        $this->assertSame($expectedQueue, $workflow->queue);
+        $this->assertSame([
+            ['connection', $expectedConnection],
+            ['queue', $expectedQueue],
+        ], $workflow->routingCalls);
+    }
+
+    public static function routingProvider(): array
+    {
+        return [
+            'effective routing' => ['sync', 'high', null, null, 'sync', 'high'],
+            'mixed routing' => ['sync', null, null, null, 'sync', null],
+            'class defaults' => [null, null, 'redis', 'default', 'redis', 'default'],
+        ];
     }
 
     public function testThrowsWhenExecuteMethodIsMissing(): void
