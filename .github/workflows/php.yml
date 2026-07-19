@@ -12,10 +12,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # During the 2.0 alpha bootstrap, Forgejo pull requests run only the
-  # structural candidate gate. Removing this setting (or setting it to false)
-  # does not weaken routine GitHub target-branch qualification.
-  ALPHA_BOOTSTRAP_FORGEJO_STRUCTURAL_GATE: 'true'
+  # Pull requests from alternate CI servers may use lightweight structural
+  # admission. Removing this setting (or setting it to false) fails safe to
+  # bounded contribution checks without weakening GitHub qualification.
+  ALTERNATE_CI_STRUCTURAL_ADMISSION: 'true'
 
 jobs:
   route:
@@ -39,7 +39,7 @@ jobs:
         php scripts/ci/resolve-build-route.php
         --server-url="$BUILD_SERVER_URL"
         --event-name="$BUILD_EVENT_NAME"
-        --alpha-bootstrap="${ALPHA_BOOTSTRAP_FORGEJO_STRUCTURAL_GATE:-}"
+        --alternate-ci-structural-admission="${ALTERNATE_CI_STRUCTURAL_ADMISSION:-}"
         >> "$GITHUB_OUTPUT"
 
     - name: Verify fail-safe build routes

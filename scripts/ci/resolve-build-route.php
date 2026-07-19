@@ -7,7 +7,7 @@ const ROUTE_COMPLETE = 'complete';
 const ROUTE_STRUCTURAL = 'structural';
 const ROUTE_LOCAL_SENTINEL = 'local-sentinel';
 
-$options = getopt('', ['server-url:', 'event-name:', 'alpha-bootstrap::', 'self-test']);
+$options = getopt('', ['server-url:', 'event-name:', 'alternate-ci-structural-admission::', 'self-test']);
 
 if (isset($options['self-test'])) {
     self_test();
@@ -16,15 +16,15 @@ if (isset($options['self-test'])) {
 
 $serverUrl = option($options, 'server-url');
 $eventName = option($options, 'event-name');
-$alphaBootstrap = optional_option($options, 'alpha-bootstrap');
+$alternateCiStructuralAdmission = optional_option($options, 'alternate-ci-structural-admission');
 
-printf("route=%s\n", resolve_build_route($serverUrl, $eventName, $alphaBootstrap));
+printf("route=%s\n", resolve_build_route($serverUrl, $eventName, $alternateCiStructuralAdmission));
 
-function resolve_build_route(string $serverUrl, string $eventName, string $alphaBootstrap): string
+function resolve_build_route(string $serverUrl, string $eventName, string $alternateCiStructuralAdmission): string
 {
     $isGitHub = $serverUrl === 'https://github.com';
     $isPullRequest = $eventName === 'pull_request';
-    $isAlphaBootstrap = $alphaBootstrap === 'true';
+    $useStructuralAdmission = $alternateCiStructuralAdmission === 'true';
 
     if ($isGitHub && $isPullRequest) {
         return ROUTE_BOUNDED;
@@ -35,7 +35,7 @@ function resolve_build_route(string $serverUrl, string $eventName, string $alpha
     }
 
     if ($isPullRequest) {
-        return $isAlphaBootstrap ? ROUTE_STRUCTURAL : ROUTE_BOUNDED;
+        return $useStructuralAdmission ? ROUTE_STRUCTURAL : ROUTE_BOUNDED;
     }
 
     return ROUTE_LOCAL_SENTINEL;
@@ -72,16 +72,16 @@ function optional_option(array $options, string $name): string
 function self_test(): void
 {
     $cases = [
-        'GitHub pull requests remain bounded during alpha' => [
+        'GitHub pull requests remain bounded with alternate structural admission' => [
             'https://github.com', 'pull_request', 'true', ROUTE_BOUNDED,
         ],
-        'GitHub pushes run the complete gate during alpha' => [
+        'GitHub pushes run the complete gate with alternate structural admission' => [
             'https://github.com', 'push', 'true', ROUTE_COMPLETE,
         ],
-        'GitHub pushes run the complete gate after alpha' => [
+        'GitHub pushes run the complete gate without alternate structural admission' => [
             'https://github.com', 'push', 'false', ROUTE_COMPLETE,
         ],
-        'an absent alpha override fails safe on GitHub pushes' => [
+        'an absent alternate structural admission override fails safe on GitHub pushes' => [
             'https://github.com', 'push', '', ROUTE_COMPLETE,
         ],
         'manual GitHub runs always run the complete gate' => [
@@ -90,19 +90,19 @@ function self_test(): void
         'manual GitHub runs run the complete gate without an override' => [
             'https://github.com', 'workflow_dispatch', '', ROUTE_COMPLETE,
         ],
-        'Forgejo pull requests remain structural during alpha' => [
+        'alternate CI pull requests use structural admission when enabled' => [
             'https://code.example.test', 'pull_request', 'true', ROUTE_STRUCTURAL,
         ],
-        'Forgejo pull requests become bounded after alpha' => [
+        'alternate CI pull requests use bounded checks when structural admission is disabled' => [
             'https://code.example.test', 'pull_request', 'false', ROUTE_BOUNDED,
         ],
-        'Forgejo pushes remain lightweight sentinels' => [
+        'alternate CI pushes remain lightweight sentinels' => [
             'https://code.example.test', 'push', 'true', ROUTE_LOCAL_SENTINEL,
         ],
     ];
 
-    foreach ($cases as $description => [$serverUrl, $eventName, $alphaBootstrap, $expected]) {
-        $actual = resolve_build_route($serverUrl, $eventName, $alphaBootstrap);
+    foreach ($cases as $description => [$serverUrl, $eventName, $alternateCiStructuralAdmission, $expected]) {
+        $actual = resolve_build_route($serverUrl, $eventName, $alternateCiStructuralAdmission);
 
         if ($actual !== $expected) {
             fail("Route self-test failed: {$description}; expected {$expected}, got {$actual}.");
