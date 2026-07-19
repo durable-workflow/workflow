@@ -57,19 +57,12 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         $options = $this->storedWorkflow->workflowOptions();
         $connection = $options->connection;
 
-        if ($connection !== null) {
-            $this->onConnection($connection);
-        } elseif (property_exists($this, 'connection')) {
-            $this->onConnection($this->connection);
-        }
+        // Give Psalm a base-typed receiver so Queueable is analyzed once per job base class.
+        self::initializeConnection($this, $connection);
 
         $queue = $options->queue;
 
-        if ($queue !== null) {
-            $this->onQueue($queue);
-        } elseif (property_exists($this, 'queue')) {
-            $this->onQueue($this->queue);
-        }
+        self::initializeQueue($this, $queue);
 
         $this->afterCommit = true;
     }
@@ -180,6 +173,24 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         pcntl_alarm(max($this->timeout, 0));
         if ($this->timeout) {
             Cache::put($this->key, 1, $this->timeout);
+        }
+    }
+
+    private static function initializeConnection(self $activity, $connection): void
+    {
+        if ($connection !== null) {
+            $activity->onConnection($connection);
+        } elseif (property_exists($activity, 'connection')) {
+            $activity->onConnection($activity->connection);
+        }
+    }
+
+    private static function initializeQueue(self $activity, $queue): void
+    {
+        if ($queue !== null) {
+            $activity->onQueue($queue);
+        } elseif (property_exists($activity, 'queue')) {
+            $activity->onQueue($activity->queue);
         }
     }
 }
