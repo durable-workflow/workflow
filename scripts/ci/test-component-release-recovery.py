@@ -8,6 +8,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
@@ -23,6 +24,7 @@ jobs:
   recover:
     steps:
       - run: |
+          python recovery.py resolve --preparation-output release-preparation.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"
           select-publication-run \
@@ -39,6 +41,93 @@ def load_recovery_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class ReleasePreparationRecoveryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_module()
+
+    def candidate(self) -> dict[str, object]:
+        return {
+            "plan": "missing-preparation",
+            "channel": "alpha",
+            "components": {"workflow": {"version": "2.0.0-alpha.1", "commit": "a" * 40}},
+        }
+
+    def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
+        candidate = self.candidate()
+        tag = "release-plan/missing-preparation"
+        record_commit = "b" * 40
+        client = mock.Mock()
+        client.json.return_value = {
+            "tag_name": tag,
+            "draft": False,
+            "assets": [
+                {
+                    "name": "release-plan.json",
+                    "browser_download_url": "https://example.invalid/release-plan.json",
+                }
+            ],
+        }
+        client.bytes.return_value = self.recovery.canonical_json(candidate)
+        with (
+            mock.patch.object(self.recovery, "validate_plan"),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=record_commit),
+            mock.patch.object(
+                self.recovery,
+                "read_record",
+                side_effect=[candidate, self.recovery.NotFound("missing preparation")],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "verify_component",
+                side_effect=self.recovery.NotFound("release is incomplete"),
+            ),
+            self.assertRaisesRegex(self.recovery.RecoveryError, "only completed legacy releases"),
+        ):
+            self.recovery.discover_plan(client, tag, "workflow")
+
+    def test_missing_preparation_cannot_resolve_to_publish(self) -> None:
+        candidate = self.candidate()
+        with (
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=None),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "release preparation required before publishing workflow",
+            ),
+        ):
+            self.recovery.resolve_component(
+                mock.Mock(),
+                "workflow",
+                "release-plan/missing-preparation",
+                "b" * 40,
+                candidate,
+                None,
+            )
+
+    def test_completed_legacy_release_still_resolves_to_skip(self) -> None:
+        candidate = self.candidate()
+        identity = candidate["components"]["workflow"]
+        public_evidence = {"version": identity["version"], "commit": identity["commit"]}
+        with (
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=identity["commit"]),
+            mock.patch.object(self.recovery, "verify_component", return_value=public_evidence),
+        ):
+            state, outputs = self.recovery.resolve_component(
+                mock.Mock(),
+                "workflow",
+                "release-plan/missing-preparation",
+                "b" * 40,
+                candidate,
+                None,
+            )
+
+        self.assertEqual("skip", outputs["action"])
+        self.assertEqual("complete", state["phase"])
+        self.assertNotIn("release_preparation", state)
 
 
 class RecoveryWorkflowSourceTest(unittest.TestCase):

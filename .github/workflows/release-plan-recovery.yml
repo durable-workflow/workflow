@@ -40,6 +40,7 @@ jobs:
             resolve
             --component workflow
             --plan-output release-plan.json
+            --preparation-output release-preparation.json
             --evidence release-recovery-evidence.json
             --github-output "$GITHUB_OUTPUT"
           )
@@ -99,6 +100,7 @@ jobs:
           name: workflow-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
           path: |
             release-plan.json
+            release-preparation.json
             release-recovery-evidence.json
             registry-publication-evidence.json
             release-completion-evidence.json

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "durable-workflow.release-plan/v1"
+PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 STATE_SCHEMA = "durable-workflow.component-release-recovery/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 PLAN_TAG_PREFIX = "release-plan/"
@@ -36,13 +37,16 @@ PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
+MARKDOWN_MEDIA_TYPE = "text/markdown"
 
-# SHA-256 of durable-workflow/sdk-rust's release recovery workflow at main
-# commit 31e87f4aa13a7fd255fd277a62c43c96ee1532ab. The verifier normalizes only
+SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
+
+# SHA-256 of durable-workflow/sdk-rust's prepared-plan recovery workflow. The
+# verifier normalizes only
 # CRLF line endings to LF before hashing. Exact source identity is the bounded
 # security contract because arbitrary shell execution cannot be proven safe by
 # source-pattern matching.
-SDK_RUST_RELEASE_RECOVERY_SHA256 = "d04219e3ffcc1c12a7a223efc832abee56c371b9dc60a7ef5a44a156b2ab4f64"
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "58b452f99b60fc272afe1833352906659e3836457a844b285a13e9fc7b24dcbb"
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,95 @@ def validate_plan(plan: Any) -> None:
         raise RecoveryError("beta plans require an immutable beta authorization")
 
 
+def manifest_digest(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value)).hexdigest()
+
+
+def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None:
+    if not isinstance(preparation, dict) or set(preparation) != {
+        "schema",
+        "release_plan",
+        "components",
+    }:
+        raise RecoveryError("release preparation has an invalid top-level shape", "plan-discovery")
+    if preparation["schema"] != PREPARATION_SCHEMA or preparation["release_plan"] != {
+        "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+        "sha256": manifest_digest(plan),
+    }:
+        raise RecoveryError("release preparation names a different immutable plan", "plan-discovery")
+    components = preparation["components"]
+    if not isinstance(components, dict) or set(components) != set(COMPONENTS):
+        raise RecoveryError("release preparation does not cover the exact component tuple", "plan-discovery")
+    release_dates: set[str] = set()
+    for name, entry in components.items():
+        identity = plan["components"][name]
+        if not isinstance(entry, dict) or set(entry) != {
+            "version",
+            "source_commit",
+            "release_notes",
+        }:
+            raise RecoveryError(f"release preparation for {name} has an invalid shape", "plan-discovery")
+        if entry["version"] != identity["version"] or entry["source_commit"] != identity["commit"]:
+            raise RecoveryError(
+                f"release preparation for {name} names a different planned identity",
+                "plan-discovery",
+            )
+        notes = entry["release_notes"]
+        if not isinstance(notes, dict) or set(notes) != {
+            "format",
+            "heading",
+            "markdown",
+            "release_date",
+            "sha256",
+            "source",
+        }:
+            raise RecoveryError(f"release preparation for {name} has invalid release notes", "plan-discovery")
+        release_date = notes["release_date"]
+        try:
+            parsed_date = dt.date.fromisoformat(release_date)
+        except (TypeError, ValueError) as error:
+            raise RecoveryError(
+                f"release preparation for {name} has an invalid release date",
+                "plan-discovery",
+            ) from error
+        heading = f"## [{identity['version']}] - {parsed_date.isoformat()}"
+        markdown = notes["markdown"]
+        if (
+            notes["format"] != MARKDOWN_MEDIA_TYPE
+            or release_date != parsed_date.isoformat()
+            or notes["heading"] != heading
+            or not isinstance(markdown, str)
+            or not markdown.startswith(f"{heading}\n\n")
+            or not markdown.endswith("\n")
+            or notes["sha256"] != hashlib.sha256(markdown.encode()).hexdigest()
+        ):
+            raise RecoveryError(
+                f"release preparation for {name} has mismatched versioned note content",
+                "plan-discovery",
+            )
+        source = notes["source"]
+        expected_kind = "changelog-unreleased" if name in SOURCE_CHANGELOGS else "source-commit-message"
+        expected_source_url = (
+            f"https://github.com/{COMPONENTS[name].repository}/blob/{identity['commit']}/CHANGELOG.md"
+            if name in SOURCE_CHANGELOGS
+            else f"https://github.com/{COMPONENTS[name].repository}/commit/{identity['commit']}"
+        )
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"kind", "sha256", "url"}
+            or source["kind"] != expected_kind
+            or not re.fullmatch(r"[0-9a-f]{64}", str(source["sha256"]))
+            or source["url"] != expected_source_url
+        ):
+            raise RecoveryError(
+                f"release preparation for {name} has invalid note-source evidence",
+                "plan-discovery",
+            )
+        release_dates.add(release_date)
+    if len(release_dates) != 1:
+        raise RecoveryError("release preparation components do not share one release date", "plan-discovery")
+
+
 def resolve_tag(client: PublicClient, repository: str, tag: str) -> str | None:
     encoded = urllib.parse.quote(tag, safe="")
     try:
@@ -254,7 +347,11 @@ def read_record(client: PublicClient, tag: str, commit: str, filename: str) -> A
         raise RecoveryError(f"immutable record {tag}:{filename} is not valid JSON", "plan-discovery") from error
 
 
-def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str, str, dict[str, Any]]:
+def discover_plan(
+    client: PublicClient, requested_tag: str | None, component_name: str
+) -> tuple[str, str, dict[str, Any], dict[str, Any] | None]:
+    if component_name not in COMPONENTS:
+        raise RecoveryError(f"unknown release component: {component_name}", "plan-discovery")
     if requested_tag:
         tag = requested_tag
         if not tag.startswith(PLAN_TAG_PREFIX):
@@ -288,12 +385,42 @@ def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str,
     if tag != f"{PLAN_TAG_PREFIX}{plan['plan']}":
         raise RecoveryError("release plan tag and document identity differ", "plan-discovery")
     assets = {asset.get("name"): asset for asset in release.get("assets", [])}
-    if "release-plan.json" not in assets:
-        raise RecoveryError(f"release plan {tag} lacks its durable mirror asset", "plan-discovery")
-    mirror = client.bytes(assets["release-plan.json"]["browser_download_url"])
-    if mirror != canonical_json(plan):
-        raise RecoveryError(f"release plan {tag} mirror differs from immutable Git authority", "plan-discovery")
-    return tag, commit, plan
+    try:
+        preparation = read_record(client, tag, commit, "release-preparation.json")
+    except NotFound:
+        preparation = None
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+    records = [("release-plan.json", plan)]
+    if preparation is not None:
+        records.append(("release-preparation.json", preparation))
+    for filename, value in records:
+        if filename not in assets:
+            raise RecoveryError(
+                f"release plan {tag} lacks its durable {filename} mirror asset",
+                "plan-discovery",
+            )
+        mirror = client.bytes(assets[filename]["browser_download_url"])
+        if mirror != canonical_json(value):
+            raise RecoveryError(
+                f"release plan {tag} {filename} mirror differs from immutable Git authority",
+                "plan-discovery",
+            )
+    if preparation is None:
+        if "release-preparation.json" in assets:
+            raise RecoveryError(
+                f"release plan {tag} release-preparation.json mirror lacks immutable Git authority",
+                "plan-discovery",
+            )
+        try:
+            verify_component(client, component_name, plan["components"][component_name])
+        except NotFound as error:
+            raise RecoveryError(
+                f"release plan {tag} lacks immutable release-preparation.json; "
+                "only completed legacy releases may recover without it",
+                "plan-discovery",
+            ) from error
+    return tag, commit, plan, preparation
 
 
 def verify_recovery_workflow_source(name: str, source: str) -> None:
@@ -309,11 +436,13 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
             )
         return
 
-    if not re.search(r"(?m)^  schedule:\s*$", source) or not re.search(
-        r"(?m)^  workflow_dispatch:\s*$", source
+    if (
+        not re.search(r"(?m)^  schedule:\s*$", source)
+        or not re.search(r"(?m)^  workflow_dispatch:\s*$", source)
+        or "--preparation-output" not in source
     ):
         raise RecoveryError(
-            f"{component.repository} recovery workflow lacks scheduled or manual discovery",
+            f"{component.repository} recovery workflow lacks scheduled/manual prepared-plan discovery",
             "default-branch-preflight",
         )
     if component.release_workflow is None:
@@ -805,12 +934,17 @@ def resolve_component(
     tag: str,
     record_commit: str,
     plan: dict[str, Any],
+    preparation: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     if component_name not in COMPONENTS:
         raise RecoveryError(f"unknown release component: {component_name}")
     branches, recovery_workflows = verify_plan_authority(client, plan)
     component = COMPONENTS[component_name]
     identity = plan["components"][component_name]
+    prepared_identity = None
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+        prepared_identity = preparation["components"][component_name]
     upstream: dict[str, Any] = {}
     for dependency in component.dependencies:
         try:
@@ -827,22 +961,27 @@ def resolve_component(
             f"points to {existing_tag}, not {identity['commit']}",
             "tag-preflight",
         )
-    if existing_tag is None:
-        with contextlib.suppress(NotFound):
-            VERIFIERS[component.distribution](
-                client,
-                component,
-                identity["version"],
-                identity["commit"],
-            )
-    action = "publish"
     completed: dict[str, Any] | None = None
     if existing_tag is not None:
-        try:
+        with contextlib.suppress(NotFound):
             completed = verify_component(client, component_name, identity)
-            action = "skip"
-        except NotFound:
-            pass
+    if completed is not None:
+        action = "skip"
+    else:
+        if preparation is None:
+            raise RecoveryError(
+                f"release plan {tag} lacks release preparation required before publishing {component_name}",
+                "plan-discovery",
+            )
+        if existing_tag is None:
+            with contextlib.suppress(NotFound):
+                VERIFIERS[component.distribution](
+                    client,
+                    component,
+                    identity["version"],
+                    identity["commit"],
+                )
+        action = "publish"
     state = base_state(component_name, tag, plan)
     state.update(
         {
@@ -862,6 +1001,14 @@ def resolve_component(
             ),
         }
     )
+    if prepared_identity is not None:
+        state["release_preparation"] = {
+            "record_commit": record_commit,
+            "record_sha256": manifest_digest(preparation),
+            "release_date": prepared_identity["release_notes"]["release_date"],
+            "release_notes_sha256": prepared_identity["release_notes"]["sha256"],
+            "source": prepared_identity["release_notes"]["source"],
+        }
     outputs = {
         "action": action,
         "plan": str(plan["plan"]),
@@ -874,6 +1021,13 @@ def resolve_component(
         "release_workflow": component.release_workflow or "",
         "release_tag_input": component.release_tag_input or "",
     }
+    if prepared_identity is not None:
+        outputs.update(
+            {
+                "release_date": str(prepared_identity["release_notes"]["release_date"]),
+                "release_notes_sha256": str(prepared_identity["release_notes"]["sha256"]),
+            }
+        )
     return state, outputs
 
 
@@ -906,6 +1060,7 @@ def main() -> int:
     resolve.add_argument("--component", required=True, choices=sorted(COMPONENTS))
     resolve.add_argument("--plan-tag")
     resolve.add_argument("--plan-output", required=True, type=Path)
+    resolve.add_argument("--preparation-output", required=True, type=Path)
     resolve.add_argument("--evidence", required=True, type=Path)
     resolve.add_argument("--github-output", type=Path)
     resolve.add_argument("--allow-empty", action="store_true")
@@ -944,9 +1099,18 @@ def main() -> int:
             record_commit: str | None = None
             plan: dict[str, Any] | None = None
             try:
-                tag, record_commit, plan = discover_plan(client, args.plan_tag)
+                tag, record_commit, plan, preparation = discover_plan(client, args.plan_tag, args.component)
                 args.plan_output.write_bytes(canonical_json(plan))
-                state, outputs = resolve_component(client, args.component, tag, record_commit, plan)
+                if preparation is not None:
+                    args.preparation_output.write_bytes(canonical_json(preparation))
+                state, outputs = resolve_component(
+                    client,
+                    args.component,
+                    tag,
+                    record_commit,
+                    plan,
+                    preparation,
+                )
                 args.evidence.write_bytes(canonical_json(state))
                 write_output(args.github_output, outputs)
             except RecoveryError as error:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release-plan recovery now consumes immutable, exact-version release-note
+  preparation authority before publishing a newly recorded plan.
 - Standalone workers now receive accepted declared signals even when the host
   has no embedded workflow definition or local wait projection. Signal tasks
   retain command order ahead of queued updates, and QueueFake update completion
