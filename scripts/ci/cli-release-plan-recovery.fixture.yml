@@ -84,10 +84,15 @@ jobs:
       - name: Require repository publication credential
         env:
           CLI_RELEASE_DEPLOY_KEY: ${{ secrets.CLI_RELEASE_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -z "$CLI_RELEASE_DEPLOY_KEY" ]; then
             printf 'The release-plan-publication environment has no repository write deploy key.\n' >&2
+            exit 1
+          fi
+          if [ -z "$GH_TOKEN" ]; then
+            printf 'The protected publication job has no GitHub Actions credential.\n' >&2
             exit 1
           fi
 
@@ -119,6 +124,55 @@ jobs:
           RELEASE_TAG: ${{ needs.discover.outputs.version }}
           RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
         run: scripts/ci/verify-release-tag-source.sh
+
+      - name: Quarantine the exact tag-triggered publication run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: |
+          set -euo pipefail
+          cancel_requested=false
+          quarantined=false
+          retained_run_id=
+          for attempt in {1..12}; do
+            gh run list --workflow release.yml --event push --branch "$RELEASE_TAG" --limit 100 \
+              --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion,url,workflowName \
+              > tag-push-runs.json
+            decision="$(python scripts/ci/component-release-recovery.py select-tag-push-run \
+              --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --runs tag-push-runs.json)"
+            IFS=$'\t' read -r quarantine_action run_id status conclusion <<< "$decision"
+            if [ -n "$run_id" ]; then
+              if [ -n "$retained_run_id" ] && [ "$retained_run_id" != "$run_id" ]; then
+                printf 'Tag-push quarantine changed from run %s to run %s.\n' \
+                  "$retained_run_id" "$run_id" >&2
+                exit 1
+              fi
+              retained_run_id="$run_id"
+            fi
+            if [ "$quarantine_action" = cancel ] && [ "$cancel_requested" != true ]; then
+              gh run cancel "$run_id"
+              cancel_requested=true
+            elif [ "$quarantine_action" = complete ]; then
+              quarantined=true
+              break
+            fi
+            [ "$attempt" -eq 12 ] || sleep 5
+          done
+          if [ "$quarantined" != true ] || [ -z "$retained_run_id" ]; then
+            printf 'The exact tag-push publication run was not observed and cancelled.\n' >&2
+            exit 1
+          fi
+          gh run view "$retained_run_id" \
+            --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion,url,workflowName \
+            > tag-push-run.json
+          python scripts/ci/component-release-recovery.py retain-tag-push-run \
+            --repository "$GITHUB_REPOSITORY" \
+            --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --run-id "$retained_run_id" --run tag-push-run.json \
+            --evidence release-tag-push-quarantine-evidence.json
+
 
       - name: Start or resume the exact repository-owned publication run
         env:
@@ -218,6 +272,43 @@ jobs:
           fi
           retain_publication_run success
 
+      - name: Retain publication evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-release-publication-${{ needs.discover.outputs.plan }}
+          path: |
+            release-tag-publication-evidence.json
+            tag-push-runs.json
+            tag-push-run.json
+            release-tag-push-quarantine-evidence.json
+            publication-runs.json
+            publication-dispatch-request.json
+            publication-dispatch.json
+            publication-run.json
+            release-publication-run-evidence.json
+          if-no-files-found: warn
+
+  verify-publication:
+    name: Verify installable public CLI artifacts
+    needs: [discover, publish]
+    if: needs.discover.outputs.action == 'publish' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Restore the immutable release plan
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-release-recovery-${{ needs.discover.outputs.plan }}
+          path: recovery-input
+
       - name: Verify installable public CLI artifacts
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -226,17 +317,10 @@ jobs:
             --component cli --plan recovery-input/release-plan.json \
             --attempts 6 --sleep 10 --evidence release-completion-evidence.json
 
-      - name: Retain publication evidence
+      - name: Retain installability evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: cli-release-publication-${{ needs.discover.outputs.plan }}
-          path: |
-            release-tag-publication-evidence.json
-            publication-runs.json
-            publication-dispatch-request.json
-            publication-dispatch.json
-            publication-run.json
-            release-publication-run-evidence.json
-            release-completion-evidence.json
+          name: cli-release-verification-${{ needs.discover.outputs.plan }}
+          path: release-completion-evidence.json
           if-no-files-found: warn

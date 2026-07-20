@@ -250,3 +250,42 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         self.assertEqual(len(self.recovery.CLI_ASSETS), len(attestations))
         self.assertEqual("php", calls[-1][0])
 
+    def test_phar_execution_receives_no_workflow_credentials_or_other_secrets(self) -> None:
+        version = "0.1.94"
+        commit = "36bde75882980e834854a145c9ad0f61ceec4659"
+        phar_environment: dict[object, object] | None = None
+
+        def run(arguments: list[str], **kwargs: object) -> object:
+            nonlocal phar_environment
+            if Path(arguments[0]).name == "php":
+                environment = kwargs.get("env")
+                if isinstance(environment, dict):
+                    phar_environment = environment
+                return mock.Mock(
+                    returncode=0,
+                    stdout=f"dw {version} (commit {commit[:12]}, built 2026-07-20)",
+                    stderr="",
+                )
+            return mock.Mock(returncode=0, stdout="verified", stderr="")
+
+        inherited_secrets = {
+            "GITHUB_TOKEN": "github-token",
+            "GH_TOKEN": "gh-token",
+            "AWS_SECRET_ACCESS_KEY": "cloud-secret",
+            "DATABASE_URL": "postgres://user:password@example.invalid/database",
+        }
+        allowed_path = "/opt/php/bin:/usr/bin"
+        with (
+            mock.patch.dict(self.recovery.os.environ, {**inherited_secrets, "PATH": allowed_path}, clear=False),
+            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
+        ):
+            self.recovery.verify_cli(
+                self.release_client(version),
+                self.recovery.COMPONENTS["cli"],
+                version,
+                commit,
+            )
+
+        self.assertEqual({"PATH": allowed_path}, phar_environment)
+        self.assertTrue(inherited_secrets.keys().isdisjoint(phar_environment or {}))

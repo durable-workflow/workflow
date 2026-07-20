@@ -55,7 +55,7 @@ SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
 # SHA-256 of durable-workflow/cli's protected release recovery workflow.
 # Exact source identity is required because source-pattern matching cannot
 # prove that tag creation remains inside the protected repository authority.
-CLI_RELEASE_RECOVERY_SHA256 = "b4636ab25c27c07a3f4c1b95313abf3377447e82a9dc7632c1aa48abc3d5a97c"
+CLI_RELEASE_RECOVERY_SHA256 = "7ae7a13a8a292569d88ff33d79abdc70bccf666ff359d8da8cb1b62585efacfc"
 
 # SHA-256 of durable-workflow/sdk-rust's prepared-plan recovery workflow. The
 # verifier normalizes only
@@ -1109,7 +1109,11 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
         if shutil.which("php") is None:
             raise RecoveryError("PHP is required to verify CLI release source metadata", "registry-publication")
         phar_version = subprocess.run(
-            ["php", str(directory / "dw.phar"), "--version"], check=False, text=True, capture_output=True
+            ["php", str(directory / "dw.phar"), "--version"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", os.defpath)},
         )
         expected_identity = f"{version} (commit {commit[:12]},"
         if phar_version.returncode or expected_identity not in phar_version.stdout:
