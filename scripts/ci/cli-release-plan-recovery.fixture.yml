@@ -1,0 +1,242 @@
+name: Release plan recovery
+
+run-name: Recover CLI from ${{ inputs.plan_tag || 'latest public release plan' }}
+
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag; empty selects the newest public plan
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-plan-recovery-cli-${{ inputs.plan_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Discover exact CLI release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+      contents: read
+    outputs:
+      action: ${{ steps.recovery.outputs.action }}
+      plan: ${{ steps.recovery.outputs.plan }}
+      plan_tag: ${{ steps.recovery.outputs.plan_tag }}
+      version: ${{ steps.recovery.outputs.version }}
+      commit: ${{ steps.recovery.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Discover plan and verify upstream public artifacts
+        id: recovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          arguments=(
+            resolve
+            --component cli
+            --plan-output release-plan.json
+            --preparation-output release-preparation.json
+            --evidence release-recovery-evidence.json
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            arguments+=(--allow-empty)
+          elif [ -n "$REQUESTED_PLAN_TAG" ]; then
+            arguments+=(--plan-tag "$REQUESTED_PLAN_TAG")
+          fi
+          python scripts/ci/component-release-recovery.py "${arguments[@]}"
+
+      - name: Retain recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-preparation.json
+            release-recovery-evidence.json
+          if-no-files-found: warn
+
+  publish:
+    name: Publish exact CLI release
+    needs: discover
+    if: needs.discover.outputs.action == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release-plan-publication
+    permissions:
+      actions: write
+      attestations: read
+      contents: read
+    steps:
+      - name: Require repository publication credential
+        env:
+          CLI_RELEASE_DEPLOY_KEY: ${{ secrets.CLI_RELEASE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLI_RELEASE_DEPLOY_KEY" ]; then
+            printf 'The release-plan-publication environment has no repository write deploy key.\n' >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.CLI_RELEASE_DEPLOY_KEY }}
+
+      - name: Restore the immutable release plan
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-release-recovery-${{ needs.discover.outputs.plan }}
+          path: recovery-input
+
+      - name: Create or verify the exact planned source tag
+        env:
+          PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: |
+          python scripts/ci/publish-planned-tag.py \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --plan-tag "$PLAN_TAG" \
+            --plan recovery-input/release-plan.json \
+            --evidence release-tag-publication-evidence.json
+
+      - name: Verify the protected source tag through GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: scripts/ci/verify-release-tag-source.sh
+
+      - name: Start or resume the exact repository-owned publication run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            printf 'The protected publication job has no GitHub Actions credential.\n' >&2
+            exit 1
+          fi
+          publication_title="Release ${RELEASE_TAG} for ${PLAN_TAG}"
+
+          select_publication_run() {
+            gh run list --workflow release.yml --event workflow_dispatch --branch main --limit 100 \
+              --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion,url \
+              > publication-runs.json
+            python scripts/ci/component-release-recovery.py select-publication-run \
+              --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --required-event workflow_dispatch --required-head-branch main \
+              --required-display-title "$publication_title" --runs publication-runs.json
+          }
+
+          retain_publication_run() {
+            gh run view "$run_id" \
+              --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion,url,workflowName \
+              > publication-run.json
+            arguments=(
+              retain-publication-run
+              --repository "$GITHUB_REPOSITORY"
+              --release-tag "$RELEASE_TAG"
+              --release-commit "$RELEASE_COMMIT"
+              --control-ref main
+              --display-title "$publication_title"
+              --run-id "$run_id"
+              --run publication-run.json
+              --evidence release-publication-run-evidence.json
+            )
+            if [ "${1:-}" = resumed ]; then
+              arguments+=(--reject-completed-failure)
+            elif [ "${1:-}" = success ]; then
+              arguments+=(--require-success)
+            fi
+            python scripts/ci/component-release-recovery.py "${arguments[@]}"
+          }
+
+          decision="$(select_publication_run)"
+          IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
+          if [ "$publication_action" = dispatch ]; then
+            python - "$RELEASE_TAG" "$RELEASE_COMMIT" "$PLAN_TAG" > publication-dispatch-request.json <<'PY'
+          import json
+          import sys
+
+          tag, commit, plan = sys.argv[1:]
+          json.dump(
+              {
+                  "ref": "main",
+                  "inputs": {"tag": tag, "release_commit": commit, "release_plan": plan},
+              },
+              sys.stdout,
+              separators=(",", ":"),
+          )
+          PY
+            gh api --method POST \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" \
+              --input publication-dispatch-request.json > publication-dispatch.json
+            run_id="$(python scripts/ci/component-release-recovery.py validate-dispatch-response \
+              --repository "$GITHUB_REPOSITORY" --response publication-dispatch.json)"
+            publication_action=wait
+          elif [ "$publication_action" = rerun ]; then
+            retain_publication_run
+            gh run rerun "$run_id"
+            publication_action=wait
+          fi
+
+          retained=false
+          for attempt in {1..12}; do
+            if retain_publication_run resumed; then
+              retained=true
+              break
+            fi
+            [ "$attempt" -eq 12 ] || sleep 5
+          done
+          if [ "$retained" != true ]; then
+            printf 'Exact publication run %s did not become observable with the planned identity.\n' \
+              "$run_id" >&2
+            exit 1
+          fi
+
+          if [ "$publication_action" = wait ]; then
+            gh run watch "$run_id" --exit-status --interval 10
+          else
+            printf 'Exact publication run %s is already completed successfully.\n' "$run_id"
+          fi
+          retain_publication_run success
+
+      - name: Verify installable public CLI artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci/component-release-recovery.py verify \
+            --component cli --plan recovery-input/release-plan.json \
+            --attempts 6 --sleep 10 --evidence release-completion-evidence.json
+
+      - name: Retain publication evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-release-publication-${{ needs.discover.outputs.plan }}
+          path: |
+            release-tag-publication-evidence.json
+            publication-runs.json
+            publication-dispatch-request.json
+            publication-dispatch.json
+            publication-run.json
+            release-publication-run-evidence.json
+            release-completion-evidence.json
+          if-no-files-found: warn
