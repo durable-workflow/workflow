@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import email.utils
+import errno
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -21,6 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +42,12 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
 MARKDOWN_MEDIA_TYPE = "text/markdown"
+GITHUB_READ_MAX_ATTEMPTS = 5
+GITHUB_READ_RETRY_BASE_SECONDS = 2.0
+GITHUB_READ_RETRY_MAX_SECONDS = 120.0
+GITHUB_READ_REQUEST_TIMEOUT_SECONDS = 30.0
+GITHUB_READ_DEADLINE_SECONDS = 600.0
+INFRASTRUCTURE_EXIT_CODE = 75
 
 SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
 
@@ -130,13 +140,233 @@ class NotFound(RecoveryError):
     """A public API resource is absent."""
 
 
+class PublicInfrastructureError(RuntimeError):
+    """A bounded set of transient GitHub public-read attempts was exhausted."""
+
+    def __init__(
+        self,
+        endpoint_class: str,
+        attempts: int,
+        *,
+        reason: str,
+        failure: str | None = None,
+    ) -> None:
+        evidence = [
+            "classification=github-read-transient",
+            f"endpoint_class={endpoint_class}",
+            f"attempts={attempts}",
+            f"reason={reason}",
+        ]
+        if failure is not None:
+            evidence.append(failure)
+        super().__init__(f"GitHub public read transient failure exhausted ({', '.join(evidence)})")
+
+
+class _TransientGitHubRead(RuntimeError):
+    """One GitHub public-read attempt encountered retryable infrastructure."""
+
+    def __init__(self, evidence: str, headers: Mapping[str, str] | None = None) -> None:
+        self.evidence = evidence
+        self.headers = headers or {}
+        super().__init__(evidence)
+
+
 def canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
 
 
 class PublicClient:
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        max_attempts: int = GITHUB_READ_MAX_ATTEMPTS,
+        retry_base_seconds: float = GITHUB_READ_RETRY_BASE_SECONDS,
+        retry_max_seconds: float = GITHUB_READ_RETRY_MAX_SECONDS,
+        request_timeout_seconds: float = GITHUB_READ_REQUEST_TIMEOUT_SECONDS,
+        deadline_seconds: float = GITHUB_READ_DEADLINE_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+        now: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            max_attempts < 1
+            or retry_base_seconds < 0
+            or retry_max_seconds < retry_base_seconds
+            or request_timeout_seconds <= 0
+            or deadline_seconds <= 0
+        ):
+            raise ValueError("invalid GitHub public-read retry configuration")
         self.token = token
+        self.max_attempts = max_attempts
+        self.retry_base_seconds = retry_base_seconds
+        self.retry_max_seconds = retry_max_seconds
+        self.request_timeout_seconds = request_timeout_seconds
+        self.sleep = sleep
+        self.now = now
+        self.monotonic = monotonic
+        self.deadline = monotonic() + deadline_seconds
+
+    @staticmethod
+    def _github_endpoint_class(url: str) -> str | None:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        if host == "api.github.com":
+            path = parsed.path
+            endpoint_classes = (
+                ("/releases", "releases-api"),
+                ("/git/", "git-api"),
+                ("/contents/", "contents-api"),
+                ("/commits/", "commits-api"),
+                ("/actions/", "actions-api"),
+                ("/environments/", "environments-api"),
+            )
+            for marker, endpoint_class in endpoint_classes:
+                if marker in path:
+                    return endpoint_class
+            if path.startswith("/users/"):
+                return "users-api"
+            return "repositories-api"
+        if host == "github.com" or host.endswith(".github.com") or host.endswith(".githubusercontent.com"):
+            return "github-download"
+        return None
+
+    @staticmethod
+    def _error_detail(error: urllib.error.HTTPError) -> str:
+        try:
+            return error.read(1024).decode(errors="replace")
+        except OSError:
+            return "response body unavailable"
+
+    @staticmethod
+    def _is_rate_limited(error: urllib.error.HTTPError, detail: str) -> bool:
+        headers = error.headers or {}
+        return error.code == 429 or (
+            error.code == 403
+            and (
+                headers.get("Retry-After") is not None
+                or headers.get("X-RateLimit-Remaining") == "0"
+                or "rate limit" in detail.lower()
+            )
+        )
+
+    @staticmethod
+    def _transport_name(error: BaseException) -> str | None:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(
+            reason,
+            ConnectionError | TimeoutError | http.client.IncompleteRead | http.client.RemoteDisconnected,
+        ):
+            return type(reason).__name__
+        if isinstance(reason, OSError) and reason.errno in {
+            errno.ECONNABORTED,
+            errno.ECONNRESET,
+            errno.EPIPE,
+            errno.ETIMEDOUT,
+        }:
+            return type(reason).__name__
+        return None
+
+    def _server_retry_delay(self, headers: Mapping[str, str]) -> float | None:
+        delays: list[float] = []
+        retry_after = headers.get("Retry-After")
+        if retry_after:
+            try:
+                delays.append(float(retry_after))
+            except ValueError:
+                try:
+                    retry_at = email.utils.parsedate_to_datetime(retry_after)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=dt.UTC)
+                    delays.append(retry_at.timestamp() - self.now())
+        rate_limit_reset = headers.get("X-RateLimit-Reset")
+        if rate_limit_reset:
+            with contextlib.suppress(ValueError):
+                delays.append(float(rate_limit_reset) - self.now())
+        return max((delay for delay in delays if delay > 0), default=None)
+
+    def _retry_delay(self, attempt: int, failure: _TransientGitHubRead) -> float:
+        backoff = min(self.retry_base_seconds * (2 ** (attempt - 1)), self.retry_max_seconds)
+        return max(backoff, self._server_retry_delay(failure.headers) or 0)
+
+    def _remaining_time(self) -> float:
+        return self.deadline - self.monotonic()
+
+    def _run(
+        self,
+        url: str,
+        operation: Callable[[urllib.response.addinfourl], Any],
+        *,
+        headers: dict[str, str] | None,
+        accept: str | None,
+    ) -> Any:
+        endpoint_class = self._github_endpoint_class(url)
+        attempt_limit = self.max_attempts if endpoint_class is not None else 1
+        request_headers = {"User-Agent": "durable-workflow-release-recovery/1", **(headers or {})}
+        if accept:
+            request_headers["Accept"] = accept
+        if self.token and urllib.parse.urlsplit(url).hostname == "api.github.com":
+            request_headers["Authorization"] = f"Bearer {self.token}"
+            request_headers["X-GitHub-Api-Version"] = "2022-11-28"
+
+        for attempt in range(1, attempt_limit + 1):
+            if endpoint_class is not None and self._remaining_time() <= 0:
+                raise PublicInfrastructureError(endpoint_class, attempt - 1, reason="workflow-deadline")
+            timeout = (
+                min(self.request_timeout_seconds, self._remaining_time())
+                if endpoint_class is not None
+                else 60
+            )
+            request = urllib.request.Request(url, headers=request_headers)
+            failure: _TransientGitHubRead | None = None
+            try:
+                response = urllib.request.urlopen(request, timeout=timeout)
+                result = operation(response)
+                if endpoint_class is not None and self._remaining_time() <= 0:
+                    raise PublicInfrastructureError(endpoint_class, attempt, reason="workflow-deadline")
+                return result
+            except urllib.error.HTTPError as error:
+                detail = self._error_detail(error)
+                if endpoint_class is not None and (500 <= error.code <= 599 or self._is_rate_limited(error, detail)):
+                    failure = _TransientGitHubRead(f"status={error.code}", error.headers)
+                elif error.code == 404:
+                    raise NotFound(f"public resource is absent: {url}") from error
+                else:
+                    raise RecoveryError(f"public request failed ({error.code}) for {url}: {detail}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.IncompleteRead) as error:
+                transport = self._transport_name(error)
+                if endpoint_class is not None and transport is not None:
+                    failure = _TransientGitHubRead(f"transport={transport}")
+                else:
+                    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+                    raise RecoveryError(f"public request failed for {url}: {reason}") from error
+
+            assert endpoint_class is not None and failure is not None
+            if attempt == attempt_limit:
+                raise PublicInfrastructureError(
+                    endpoint_class,
+                    attempt,
+                    reason="retry-exhausted",
+                    failure=failure.evidence,
+                )
+            delay = self._retry_delay(attempt, failure)
+            if delay >= self._remaining_time():
+                raise PublicInfrastructureError(
+                    endpoint_class,
+                    attempt,
+                    reason="workflow-deadline",
+                    failure=failure.evidence,
+                )
+            print(
+                f"GitHub public read retry: endpoint_class={endpoint_class} "
+                f"attempt={attempt}/{attempt_limit} {failure.evidence} delay={delay:g}s",
+                file=sys.stderr,
+            )
+            self.sleep(delay)
+        raise AssertionError("GitHub public-read retry loop ended unexpectedly")
 
     def request(
         self,
@@ -145,43 +375,37 @@ class PublicClient:
         headers: dict[str, str] | None = None,
         accept: str | None = None,
     ) -> urllib.response.addinfourl:
-        request_headers = {"User-Agent": "durable-workflow-release-recovery/1", **(headers or {})}
-        if accept:
-            request_headers["Accept"] = accept
-        if self.token and urllib.parse.urlsplit(url).hostname == "api.github.com":
-            request_headers["Authorization"] = f"Bearer {self.token}"
-            request_headers["X-GitHub-Api-Version"] = "2022-11-28"
-        request = urllib.request.Request(url, headers=request_headers)
-        try:
-            return urllib.request.urlopen(request, timeout=60)
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                raise NotFound(f"public resource is absent: {url}") from error
-            detail = error.read(1024).decode(errors="replace")
-            raise RecoveryError(f"public request failed ({error.code}) for {url}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise RecoveryError(f"public request failed for {url}: {error.reason}") from error
+        return self._run(url, lambda response: response, headers=headers, accept=accept)
 
     def json(self, url: str, *, headers: dict[str, str] | None = None, accept: str | None = None) -> Any:
-        with self.request(url, headers=headers, accept=accept) as response:
-            try:
-                return json.load(response)
-            except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                raise RecoveryError(f"public endpoint did not return valid JSON: {url}") from error
+        def read_json(response: urllib.response.addinfourl) -> Any:
+            with response:
+                try:
+                    return json.load(response)
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    raise RecoveryError(f"public endpoint did not return valid JSON: {url}") from error
+
+        return self._run(url, read_json, headers=headers, accept=accept)
 
     def bytes(self, url: str, *, headers: dict[str, str] | None = None, accept: str | None = None) -> bytes:
-        with self.request(url, headers=headers, accept=accept) as response:
-            return response.read()
+        def read_bytes(response: urllib.response.addinfourl) -> bytes:
+            with response:
+                return response.read()
+
+        return self._run(url, read_bytes, headers=headers, accept=accept)
 
     def download(self, url: str, path: Path, *, expected_sha256: str | None = None) -> dict[str, Any]:
-        digest = hashlib.sha256()
-        size = 0
-        with self.request(url) as response, path.open("wb") as destination:
-            while chunk := response.read(1024 * 1024):
-                digest.update(chunk)
-                destination.write(chunk)
-                size += len(chunk)
-        actual = digest.hexdigest()
+        def download_once(response: urllib.response.addinfourl) -> tuple[str, int]:
+            digest = hashlib.sha256()
+            size = 0
+            with response, path.open("wb") as destination:
+                while chunk := response.read(1024 * 1024):
+                    digest.update(chunk)
+                    destination.write(chunk)
+                    size += len(chunk)
+            return digest.hexdigest(), size
+
+        actual, size = self._run(url, download_once, headers=None, accept=None)
         if expected_sha256 and actual != expected_sha256.lower():
             raise RecoveryError(f"download digest mismatch for {url}: expected {expected_sha256}, got {actual}")
         return {"url": url, "size": size, "sha256": actual}
@@ -1194,6 +1418,9 @@ def main() -> int:
                 )
                 args.evidence.write_bytes(canonical_json(state))
                 raise
+    except PublicInfrastructureError as error:
+        print(f"release recovery infrastructure failed: {error}", file=sys.stderr)
+        return INFRASTRUCTURE_EXIT_CODE
     except RecoveryError as error:
         print(f"release recovery error: {error}", file=sys.stderr)
         return 1

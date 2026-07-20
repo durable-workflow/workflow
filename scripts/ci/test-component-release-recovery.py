@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -41,6 +43,134 @@ def load_recovery_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/durable-workflow/.github/releases",
+        status,
+        "request failed",
+        headers,
+        io.BytesIO(body),
+    )
+
+
+def load_recovery_for_retry_tests():
+    loaded = globals().get("recovery")
+    if loaded is not None:
+        return loaded
+    loader = globals().get("load_recovery_module")
+    if not callable(loader):
+        raise RuntimeError("release recovery module loader is unavailable")
+    return loader()
+
+
+class PublicClientRetryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_for_retry_tests()
+
+    def test_retries_service_failures_connection_resets_and_timeouts(self) -> None:
+        failures = (
+            ("service", github_http_error(503, **{"Retry-After": "4"}), 4),
+            ("connection-reset", urllib.error.URLError(ConnectionResetError("reset")), 1),
+            ("timeout", urllib.error.URLError(TimeoutError("timed out")), 1),
+        )
+
+        for label, failure, expected_delay in failures:
+            with self.subTest(label=label):
+                sleeps: list[float] = []
+                client = self.recovery.PublicClient(
+                    max_attempts=2,
+                    retry_base_seconds=1,
+                    sleep=sleeps.append,
+                )
+                with mock.patch.object(
+                    self.recovery.urllib.request,
+                    "urlopen",
+                    side_effect=[failure, io.BytesIO(b"[]")],
+                ) as open_url:
+                    self.assertEqual(
+                        [],
+                        client.json(
+                            "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"
+                        ),
+                    )
+
+                self.assertEqual([expected_delay], sleeps)
+                self.assertEqual(2, open_url.call_count)
+
+    def test_authentication_is_terminal_even_with_rate_limit_guidance(self) -> None:
+        sleeps: list[float] = []
+        client = self.recovery.PublicClient(max_attempts=3, sleep=sleeps.append)
+        error = github_http_error(
+            401,
+            b"Bad credentials: API rate limit exceeded",
+            **{"Retry-After": "20", "X-RateLimit-Remaining": "0"},
+        )
+
+        with (
+            mock.patch.object(self.recovery.urllib.request, "urlopen", side_effect=error) as open_url,
+            self.assertRaisesRegex(self.recovery.RecoveryError, r"public request failed \(401\)"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual([], sleeps)
+        self.assertEqual(1, open_url.call_count)
+
+    def test_authorization_requires_explicit_rate_limit_guidance(self) -> None:
+        client = self.recovery.PublicClient(
+            max_attempts=2,
+            sleep=lambda _delay: self.fail("ordinary authorization failure was retried"),
+        )
+        with (
+            mock.patch.object(
+                self.recovery.urllib.request,
+                "urlopen",
+                side_effect=github_http_error(403, b"Resource not accessible"),
+            ) as open_url,
+            self.assertRaisesRegex(self.recovery.RecoveryError, r"public request failed \(403\)"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+        self.assertEqual(1, open_url.call_count)
+
+        sleeps: list[float] = []
+        client = self.recovery.PublicClient(max_attempts=2, retry_base_seconds=1, sleep=sleeps.append)
+        with mock.patch.object(
+            self.recovery.urllib.request,
+            "urlopen",
+            side_effect=[
+                github_http_error(
+                    403,
+                    b"API rate limit exceeded",
+                    **{"X-RateLimit-Remaining": "0"},
+                ),
+                io.BytesIO(b"[]"),
+            ],
+        ) as open_url:
+            self.assertEqual(
+                [],
+                client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"),
+            )
+        self.assertEqual([1], sleeps)
+        self.assertEqual(2, open_url.call_count)
+
+    def test_retry_exhaustion_has_a_distinct_infrastructure_classification(self) -> None:
+        client = self.recovery.PublicClient(max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
+        with (
+            mock.patch.object(
+                self.recovery.urllib.request,
+                "urlopen",
+                side_effect=[github_http_error(503), github_http_error(502)],
+            ) as open_url,
+            self.assertRaisesRegex(
+                self.recovery.PublicInfrastructureError,
+                r"classification=github-read-transient, endpoint_class=releases-api, "
+                r"attempts=2, reason=retry-exhausted, status=502",
+            ),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+        self.assertEqual(2, open_url.call_count)
 
 
 class ReleasePreparationRecoveryTest(unittest.TestCase):
