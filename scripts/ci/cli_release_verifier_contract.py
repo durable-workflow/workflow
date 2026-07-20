@@ -45,6 +45,30 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
             self.recovery.verify_recovery_workflow_source("cli", mutated)
         self.assertEqual("default-branch-preflight", caught.exception.phase)
 
+    def test_artifact_execution_jobs_cannot_retain_checkout_credentials(self) -> None:
+        def job_source(name: str) -> str:
+            lines = CURRENT_CLI_RECOVERY_WORKFLOW.splitlines()
+            start = lines.index(f"  {name}:") + 1
+            end = next(
+                (
+                    index
+                    for index, line in enumerate(lines[start:], start=start)
+                    if line.startswith("  ") and not line.startswith("   ")
+                ),
+                len(lines),
+            )
+            return "\n".join(lines[start:end])
+
+        non_persistent_checkout = """      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false"""
+        discover_job = job_source("discover")
+        verification_job = job_source("verify-publication")
+        self.assertIn(non_persistent_checkout, discover_job)
+        self.assertIn("resolve\n            --component cli", discover_job)
+        self.assertIn(non_persistent_checkout, verification_job)
+        self.assertIn("component-release-recovery.py verify", verification_job)
+
 
 class CliReleaseAuthorityTest(unittest.TestCase):
     @classmethod
@@ -289,3 +313,82 @@ class CliReleaseAuthorityTest(unittest.TestCase):
 
         self.assertEqual({"PATH": allowed_path}, phar_environment)
         self.assertTrue(inherited_secrets.keys().isdisjoint(phar_environment or {}))
+
+    def test_completed_plan_skip_executes_phar_with_the_isolated_environment(self) -> None:
+        version = "0.1.94"
+        commit = "36bde75882980e834854a145c9ad0f61ceec4659"
+        plan = {
+            "plan": "completed-cli-recovery",
+            "channel": "alpha",
+            "components": {
+                "server": {"version": "1.0.0", "commit": "a" * 40},
+                "cli": {"version": version, "commit": commit},
+            },
+        }
+        phar_environment: dict[object, object] | None = None
+
+        def run(arguments: list[str], **kwargs: object) -> object:
+            nonlocal phar_environment
+            if Path(arguments[0]).name == "php":
+                environment = kwargs.get("env")
+                if isinstance(environment, dict):
+                    phar_environment = environment
+                return mock.Mock(
+                    returncode=0,
+                    stdout=f"dw {version} (commit {commit[:12]}, built 2026-07-20)",
+                    stderr="",
+                )
+            return mock.Mock(returncode=0, stdout="verified", stderr="")
+
+        client = self.release_client(version)
+
+        def verify_completed_component(
+            verifier_client: mock.Mock,
+            component_name: str,
+            identity: dict[str, str],
+        ) -> dict[str, object]:
+            if component_name == "server":
+                return {"version": identity["version"], "commit": identity["commit"]}
+            self.assertEqual("cli", component_name)
+            distribution = self.recovery.verify_cli(
+                verifier_client,
+                self.recovery.COMPONENTS[component_name],
+                identity["version"],
+                identity["commit"],
+            )
+            return {
+                "version": identity["version"],
+                "commit": identity["commit"],
+                "distribution": distribution,
+                "github_release": distribution,
+            }
+
+        allowed_path = "/opt/php/bin:/usr/bin"
+        with (
+            mock.patch.dict(
+                self.recovery.os.environ,
+                {
+                    "GITHUB_TOKEN": "checkout-token",
+                    "RUNNER_TEMP": "/runner/temp",
+                    "PATH": allowed_path,
+                },
+                clear=False,
+            ),
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=commit),
+            mock.patch.object(self.recovery, "verify_component", side_effect=verify_completed_component),
+            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
+        ):
+            state, outputs = self.recovery.resolve_component(
+                client,
+                "cli",
+                "release-plan/completed-cli-recovery",
+                "b" * 40,
+                plan,
+                None,
+            )
+
+        self.assertEqual("skip", outputs["action"])
+        self.assertEqual("complete", state["phase"])
+        self.assertEqual({"PATH": allowed_path}, phar_environment)
