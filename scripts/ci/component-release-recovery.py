@@ -34,6 +34,7 @@ PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 STATE_SCHEMA = "durable-workflow.component-release-recovery/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 PLAN_TAG_PREFIX = "release-plan/"
+CONTINUITY_TAG_PREFIX = "beta-continuity/"
 FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -1152,6 +1153,26 @@ def base_state(component: str, tag: str | None = None, plan: dict[str, Any] | No
     }
 
 
+def scheduled_continuity_pause(client: PublicClient, plan: dict[str, Any]) -> dict[str, str] | None:
+    accepted_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/accepted"
+    accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
+    if accepted_commit is None:
+        return None
+    accepted_plan = read_record(client, accepted_tag, accepted_commit, "release-plan.json")
+    validate_plan(accepted_plan)
+    if canonical_json(accepted_plan) != canonical_json(plan):
+        raise RecoveryError("continuity acceptance record names a different release plan", "continuity-gate")
+    resumed_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/resumed"
+    resumed_commit = resolve_tag(client, CONTROL_REPOSITORY, resumed_tag)
+    if resumed_commit is not None:
+        resumed_plan = read_record(client, resumed_tag, resumed_commit, "release-plan.json")
+        validate_plan(resumed_plan)
+        if canonical_json(resumed_plan) != canonical_json(plan):
+            raise RecoveryError("continuity resume record names a different release plan", "continuity-gate")
+        return None
+    return {"accepted_tag": accepted_tag, "accepted_commit": accepted_commit, "resumed_tag": resumed_tag}
+
+
 def resolve_component(
     client: PublicClient,
     component_name: str,
@@ -1327,6 +1348,32 @@ def main() -> int:
                 args.plan_output.write_bytes(canonical_json(plan))
                 if preparation is not None:
                     args.preparation_output.write_bytes(canonical_json(preparation))
+                continuity_pause = scheduled_continuity_pause(client, plan) if args.plan_tag is None else None
+                if continuity_pause is not None:
+                    paused = base_state(args.component, tag, plan)
+                    paused.update(
+                        {
+                            "phase": "continuity-gate",
+                            "outcome": "paused",
+                            "plan_record_commit": record_commit,
+                            "continuity": continuity_pause,
+                            "resume_action": (
+                                f"Wait for {continuity_pause['resumed_tag']} or explicitly recover exact plan {tag}"
+                            ),
+                        }
+                    )
+                    args.evidence.write_bytes(canonical_json(paused))
+                    write_output(
+                        args.github_output,
+                        {
+                            "action": "none",
+                            "plan": str(plan["plan"]),
+                            "channel": str(plan["channel"]),
+                            "plan_tag": tag,
+                            "plan_record_commit": record_commit,
+                        },
+                    )
+                    return 0
                 state, outputs = resolve_component(
                     client,
                     args.component,

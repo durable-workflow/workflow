@@ -65,6 +65,40 @@ def load_recovery_for_retry_tests():
     return loader()
 
 
+class ContinuityGateTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_for_retry_tests()
+
+    def test_scheduled_recovery_pauses_until_remote_resume(self) -> None:
+        plan = {"plan": "workspace-unavailable-test"}
+        with (
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=["a" * 40, None],
+            ),
+            mock.patch.object(self.recovery, "read_record", return_value=plan),
+            mock.patch.object(self.recovery, "validate_plan"),
+        ):
+            paused = self.recovery.scheduled_continuity_pause(mock.Mock(), plan)
+
+        self.assertEqual(
+            "beta-continuity/workspace-unavailable-test/resumed",
+            paused["resumed_tag"],
+        )
+        with (
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=["a" * 40, "b" * 40],
+            ),
+            mock.patch.object(self.recovery, "read_record", return_value=plan),
+            mock.patch.object(self.recovery, "validate_plan"),
+        ):
+            self.assertIsNone(self.recovery.scheduled_continuity_pause(mock.Mock(), plan))
+
+
 class PublicClientRetryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
