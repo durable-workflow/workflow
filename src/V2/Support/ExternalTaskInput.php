@@ -49,7 +49,7 @@ final class ExternalTaskInput
         $workflow = self::parseWorkflow(self::requireMap($envelope, 'workflow'), $kind);
         $lease = self::parseLease(self::requireMap($envelope, 'lease'));
         $payloads = self::parsePayloads(self::requireMap($envelope, 'payloads'));
-        $headers = self::requireMap($envelope, 'headers');
+        $headers = self::requireMap($envelope, 'headers', allowEmptyList: true);
 
         if ($kind === self::KIND_ACTIVITY_TASK) {
             return new self(
@@ -243,14 +243,14 @@ final class ExternalTaskInput
      * @param  array<string, mixed>  $value
      * @return array<string, mixed>
      */
-    private static function requireMap(array $value, string $key): array
+    private static function requireMap(array $value, string $key, bool $allowEmptyList = false): array
     {
         if (! array_key_exists($key, $value)) {
             throw new ExternalTaskInputException(sprintf('External task input is missing required field [%s].', $key));
         }
 
         $item = $value[$key];
-        if (! is_array($item) || array_is_list($item)) {
+        if (! is_array($item) || (array_is_list($item) && (! $allowEmptyList || $item !== []))) {
             throw new ExternalTaskInputException(sprintf('External task input field [%s] must be an object.', $key));
         }
 

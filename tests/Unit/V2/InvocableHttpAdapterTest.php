@@ -49,6 +49,28 @@ final class InvocableHttpAdapterTest extends TestCase
         );
     }
 
+    public function testAcceptsAnEmptyObjectForExternalTaskHeaders(): void
+    {
+        $input = $this->activityInput([4200, 'USD']);
+        $input['headers'] = (object) [];
+        $adapter = new InvocableHttpAdapter(
+            [
+                'billing.charge-card' => static fn (int $amount, string $currency): array => [
+                    'approved' => true,
+                    'amount' => $amount,
+                    'currency' => $currency,
+                ],
+            ],
+            resultCodec: 'json',
+        );
+
+        $response = $adapter->handle(json_encode($input, JSON_THROW_ON_ERROR));
+
+        $this->assertSame(200, $response['status']);
+        $body = json_decode($response['body'], associative: true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('succeeded', $body['outcome']['status']);
+    }
+
     public function testReturnsHttpFourHundredForInvalidJsonBody(): void
     {
         $adapter = new InvocableHttpAdapter([]);
