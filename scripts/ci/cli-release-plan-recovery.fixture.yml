@@ -35,7 +35,7 @@ jobs:
       version: ${{ steps.recovery.outputs.version }}
       commit: ${{ steps.recovery.outputs.commit }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
 
@@ -62,7 +62,7 @@ jobs:
 
       - name: Retain recovery evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: cli-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
           path: |
@@ -74,7 +74,9 @@ jobs:
   publish:
     name: Publish exact CLI release
     needs: discover
-    if: needs.discover.outputs.action == 'publish'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.discover.outputs.action == 'publish'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: release-plan-publication
@@ -98,13 +100,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
           ssh-key: ${{ secrets.CLI_RELEASE_DEPLOY_KEY }}
 
       - name: Restore the immutable release plan
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: cli-release-recovery-${{ needs.discover.outputs.plan }}
           path: recovery-input
@@ -276,7 +278,7 @@ jobs:
 
       - name: Retain publication evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: cli-release-publication-${{ needs.discover.outputs.plan }}
           path: |
@@ -301,12 +303,12 @@ jobs:
       attestations: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
 
       - name: Restore the immutable release plan
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: cli-release-recovery-${{ needs.discover.outputs.plan }}
           path: recovery-input
@@ -321,7 +323,7 @@ jobs:
 
       - name: Retain installability evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: cli-release-verification-${{ needs.discover.outputs.plan }}
           path: release-completion-evidence.json

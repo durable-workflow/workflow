@@ -59,7 +59,7 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
             )
             return "\n".join(lines[start:end])
 
-        non_persistent_checkout = """      - uses: actions/checkout@v6
+        non_persistent_checkout = """      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false"""
         discover_job = job_source("discover")
