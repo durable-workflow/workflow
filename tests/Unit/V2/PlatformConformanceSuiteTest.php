@@ -33,7 +33,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $authority = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame($authority, PlatformConformanceSuite::manifest());
-        $this->assertSame(32, $authority['version']);
+        $this->assertSame(33, $authority['version']);
         $this->assertSame(PlatformConformanceSuite::VERSION, $authority['version']);
         $this->assertSame(PlatformConformanceSuite::SCHEMA, $authority['schema']);
         $this->assertSame(SurfaceStabilityContract::SCHEMA, $authority['surface_stability_authority']);
@@ -128,9 +128,9 @@ final class PlatformConformanceSuiteTest extends TestCase
         $contracts = $category['required_scenario_contracts'];
         $artifact = [
             'package' => 'durable-workflow',
-            'version' => '2.0.0-beta.4',
+            'version' => '2.0.0-beta.5',
             'source' => 'crates.io',
-            'cargo_requirement' => '=2.0.0-beta.4',
+            'cargo_requirement' => '=2.0.0-beta.5',
         ];
 
         $this->assertStringContainsString('Rust SDK', $manifest['targets']['official_sdk']['description']);

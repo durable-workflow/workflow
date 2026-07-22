@@ -30,7 +30,7 @@ There's also a [sample application](https://github.com/durable-workflow/sample-a
 Install the embedded Laravel runtime:
 
 ```bash
-composer require durable-workflow/workflow:2.0.0-beta.4@beta
+composer require durable-workflow/workflow:2.0.0-beta.5@beta
 ```
 
 This package owns Laravel service-provider integration, migrations, Eloquent
@@ -117,7 +117,7 @@ Use it when your workflows and activities run within a Laravel application and y
 For standalone or polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and install the [PHP SDK](https://github.com/durable-workflow/sdk-php) in framework-neutral PHP applications and remote workers:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-beta.4@beta
+composer require durable-workflow/sdk:2.0.0-beta.5@beta
 ```
 
 The standalone server allows PHP, Python, Rust, and other supported SDKs to participate in the same workflow system.

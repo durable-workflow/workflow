@@ -22,9 +22,9 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 32;
+    public const VERSION = 33;
 
-    public const MIRROR_SHA256 = '4acdcb70da1cebb77a44edb7cce68ef1d0315159d289c94af2f57f526c3cbbea';
+    public const MIRROR_SHA256 = 'd809264b6394935c0c4b3c30e6ba50252fba0c6743a81a2c747c39a28830277d';
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 

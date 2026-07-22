@@ -172,9 +172,9 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame(
             [
                 'package' => 'durable-workflow/sdk',
-                'release_line' => '2.0.0-beta.4',
-                'product_train' => '2.0.0-beta.4',
-                'supported_server_versions' => '2.0.0-beta.4',
+                'release_line' => '2.0.0-beta.5',
+                'product_train' => '2.0.0-beta.5',
+                'supported_server_versions' => '2.0.0-beta.5',
                 'worker_protocol_version' => '1.13',
                 'control_plane_version' => '2',
             ],
@@ -184,10 +184,10 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame(
             [
                 'package' => 'durable-workflow',
-                'release_line' => '2.0.0-beta.4',
-                'registry_version' => '2.0.0b4',
-                'product_train' => '2.0.0-beta.4',
-                'supported_server_versions' => '2.0.0-beta.4',
+                'release_line' => '2.0.0-beta.5',
+                'registry_version' => '2.0.0b5',
+                'product_train' => '2.0.0-beta.5',
+                'supported_server_versions' => '2.0.0-beta.5',
                 'worker_protocol_version' => '1.1',
                 'control_plane_version' => '2',
             ],
@@ -201,9 +201,9 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame(
             [
                 'package' => 'durable-workflow',
-                'release_line' => '2.0.0-beta.4',
-                'product_train' => '2.0.0-beta.4',
-                'supported_server_versions' => '2.0.0-beta.4',
+                'release_line' => '2.0.0-beta.5',
+                'product_train' => '2.0.0-beta.5',
+                'supported_server_versions' => '2.0.0-beta.5',
                 'worker_protocol_version' => '1.2',
                 'control_plane_version' => '2',
             ],
