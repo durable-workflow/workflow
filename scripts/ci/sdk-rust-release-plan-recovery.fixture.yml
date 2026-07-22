@@ -28,8 +28,12 @@ jobs:
     timeout-minutes: 10
     outputs:
       action: ${{ steps.recovery.outputs.action }}
+      artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
+      artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
       plan: ${{ steps.recovery.outputs.plan }}
       plan_tag: ${{ steps.recovery.outputs.plan_tag }}
+      source-run-attempt: ${{ github.run_attempt }}
+      source-run-id: ${{ github.run_id }}
       version: ${{ steps.recovery.outputs.version }}
       commit: ${{ steps.recovery.outputs.commit }}
     steps:
@@ -67,10 +71,31 @@ jobs:
             release-recovery-evidence.json
           if-no-files-found: warn
 
+      - name: Package the privileged publication handoff as one immutable file
+        run: |
+          handoff=()
+          for file in release-plan.json release-preparation.json release-recovery-evidence.json; do
+            [ ! -f "$file" ] || handoff+=("$file")
+          done
+          if [ "${#handoff[@]}" -eq 0 ]; then
+            printf 'release recovery produced no handoff evidence\n' >&2
+            exit 1
+          fi
+          tar -cf release-recovery-handoff.tar "${handoff[@]}"
+
+      - name: Bind the privileged publication handoff identity and digest
+        id: privileged-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          archive: false
+          if-no-files-found: error
+          path: release-recovery-handoff.tar
+
   publish:
     name: Publish exact Rust SDK release
     needs: discover
     if: >-
+      github.repository == 'durable-workflow/sdk-rust' &&
       github.ref == 'refs/heads/main' &&
       needs.discover.outputs.action == 'publish'
     runs-on: ubuntu-latest
@@ -83,13 +108,70 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
-          ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Restore the immutable release plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
-          name: sdk-rust-release-recovery-${{ needs.discover.outputs.plan }}
-          path: recovery-input
+          artifact-ids: ${{ needs.discover.outputs.artifact-id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-release-recovery
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.discover.outputs.source-run-id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-release-recovery
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.discover.outputs.artifact-digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.discover.outputs.artifact-id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.discover.outputs.source-run-attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.discover.outputs.source-run-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
+
+      - name: Configure repository publication credential
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          clean: false
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
+
+      - name: Extract the validated release recovery handoff
+        run: |
+          mkdir recovery-input
+          tar -xf isolated-release-recovery/release-recovery-handoff.tar -C recovery-input
 
       - name: Create or verify the exact planned source tag
         env:
@@ -111,19 +193,21 @@ jobs:
           set -euo pipefail
 
           select_publication_run() {
-            gh run list --workflow release.yml --limit 100 \
-              --json databaseId,displayTitle,headBranch,headSha,status,conclusion \
+            gh run list --workflow release.yml --event workflow_dispatch --branch main --limit 100 \
+              --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion \
               > publication-runs.json
             python scripts/ci/component-release-recovery.py select-publication-run \
               --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --release-plan "$PLAN_TAG" \
               --runs publication-runs.json
           }
 
           decision="$(select_publication_run)"
           IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
           if [ "$publication_action" = dispatch ]; then
-            gh workflow run release.yml --ref "$RELEASE_TAG" \
-              -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG"
+            gh workflow run release.yml --ref main \
+              -f release_tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT" \
+              -f release_plan="$PLAN_TAG"
             for attempt in {1..12}; do
               decision="$(select_publication_run)"
               IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"

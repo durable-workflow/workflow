@@ -41,6 +41,11 @@ jobs:
           gh workflow run release.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
 """
 
+GENERIC_MAIN_RECOVERY_WORKFLOW = GENERIC_RECOVERY_WORKFLOW.replace(
+    '--ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"',
+    '--ref main -f tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT"',
+)
+
 
 def load_recovery_module():
     spec = importlib.util.spec_from_file_location("component_release_recovery_test", RECOVERY_SCRIPT)
@@ -458,8 +463,8 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 1,
             ),
             "run identity includes an unapproved field": source.replace(
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion",
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion,event",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion,actor",
                 1,
             ),
         }
@@ -570,6 +575,14 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
 
     def test_other_components_keep_the_contents_api_contract(self) -> None:
         self.recovery.verify_recovery_workflow_source("server", GENERIC_RECOVERY_WORKFLOW)
+        self.recovery.verify_recovery_workflow_source("server", GENERIC_MAIN_RECOVERY_WORKFLOW)
+
+        missing_commit = GENERIC_MAIN_RECOVERY_WORKFLOW.replace(
+            ' -f release_commit="$RELEASE_COMMIT"',
+            "",
+        )
+        with self.assertRaises(self.recovery.RecoveryError):
+            self.recovery.verify_recovery_workflow_source("server", missing_commit)
 
         protected_only = GENERIC_RECOVERY_WORKFLOW.replace(
             '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',

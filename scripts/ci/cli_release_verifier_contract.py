@@ -38,12 +38,24 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
             CURRENT_CLI_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
         )
 
-    def test_cli_workflow_pin_rejects_any_source_mutation(self) -> None:
-        mutated = CURRENT_CLI_RECOVERY_WORKFLOW.replace("timeout-minutes: 45", "timeout-minutes: 44", 1)
-        self.assertNotEqual(CURRENT_CLI_RECOVERY_WORKFLOW, mutated)
-        with self.assertRaises(self.recovery.RecoveryError) as caught:
-            self.recovery.verify_recovery_workflow_source("cli", mutated)
-        self.assertEqual("default-branch-preflight", caught.exception.phase)
+    def test_cli_workflow_pin_rejects_modified_or_unprotected_source(self) -> None:
+        variants = {
+            "modified": CURRENT_CLI_RECOVERY_WORKFLOW.replace("timeout-minutes: 45", "timeout-minutes: 44", 1),
+            "unprotected discovery": CURRENT_CLI_RECOVERY_WORKFLOW.replace(
+                "    if: >-\n"
+                "      github.event_name != 'workflow_dispatch' ||\n"
+                "      github.ref == 'refs/heads/main'\n",
+                "",
+                1,
+            ),
+        }
+
+        for label, variant in variants.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(CURRENT_CLI_RECOVERY_WORKFLOW, variant)
+                with self.assertRaises(self.recovery.RecoveryError) as caught:
+                    self.recovery.verify_recovery_workflow_source("cli", variant)
+                self.assertEqual("default-branch-preflight", caught.exception.phase)
 
     def test_artifact_execution_jobs_cannot_retain_checkout_credentials(self) -> None:
         def job_source(name: str) -> str:

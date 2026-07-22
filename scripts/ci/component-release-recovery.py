@@ -59,14 +59,14 @@ SOURCE_PRODUCT_TRAINS = {
 # SHA-256 of durable-workflow/cli's protected release recovery workflow.
 # Exact source identity is required because source-pattern matching cannot
 # prove that tag creation remains inside the protected repository authority.
-CLI_RELEASE_RECOVERY_SHA256 = "adb0f4d27fd4f933227de5bd04e1fbe438f14c9f7ca85c300d47cc304a669b00"
+CLI_RELEASE_RECOVERY_SHA256 = "3b3d1be70f3624fc3e0785986e0e483a0a6d2b56c1e2561667a17afa8b74a2f7"
 
 # SHA-256 of durable-workflow/sdk-rust's prepared-plan recovery workflow. The
 # verifier normalizes only
 # CRLF line endings to LF before hashing. Exact source identity is the bounded
 # security contract because arbitrary shell execution cannot be proven safe by
 # source-pattern matching.
-SDK_RUST_RELEASE_RECOVERY_SHA256 = "58684e7002d4674f2a6e819bb3c4aea18279bf17a4c8e90abc1d777d63034b0f"
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "c43b0e100c388301af12b9f5e9354955ff6c31b3156b4a0b66a8c3379516645c"
 
 
 @dataclass(frozen=True)
@@ -693,7 +693,7 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
         return
 
     dispatch = re.search(
-        rf'gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+"\$RELEASE_TAG"',
+        rf'gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+(?P<ref>"\$RELEASE_TAG"|main)',
         source,
     )
     tag_ref_at = source.find('-f ref="refs/tags/$RELEASE_TAG"')
@@ -705,19 +705,27 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
         or tag_commit_at < 0
         or selector_at < tag_commit_at
         or selector_at > dispatch.start()
-        or "databaseId,displayTitle,headBranch,headSha,status,conclusion" not in source
+        or (
+            "databaseId,displayTitle,headBranch,headSha,status,conclusion" not in source
+            and "databaseId,event,displayTitle,headBranch,headSha,status,conclusion" not in source
+        )
         or '--release-tag "$RELEASE_TAG"' not in source
         or '--release-commit "$RELEASE_COMMIT"' not in source
     ):
         raise RecoveryError(
             f"{component.repository} publication must create or verify the declared source tag "
-            "before dispatching in its exact tag context",
+            "before dispatching its exact tag and commit identity",
             "default-branch-preflight",
         )
     release_input = f'-f {component.release_tag_input}="$RELEASE_TAG"'
     if source.find(release_input, dispatch.start()) < 0:
         raise RecoveryError(
             f"{component.repository} publication must retain the declared release tag input",
+            "default-branch-preflight",
+        )
+    if dispatch.group("ref") == "main" and source.find('-f release_commit="$RELEASE_COMMIT"', dispatch.start()) < 0:
+        raise RecoveryError(
+            f"{component.repository} main-branch publication must retain the declared release commit input",
             "default-branch-preflight",
         )
 
