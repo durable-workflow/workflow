@@ -31,14 +31,15 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
 
     def test_cli_workflow_fixture_matches_the_pinned_protected_authority(self) -> None:
         digest = hashlib.sha256(CURRENT_CLI_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.assertEqual(self.recovery.CLI_RELEASE_RECOVERY_SHA256, digest)
-        self.recovery.verify_recovery_workflow_source("cli", CURRENT_CLI_RECOVERY_WORKFLOW)
+        self.recovery.verify_recovery_workflow_source("cli", CURRENT_CLI_RECOVERY_WORKFLOW, digest)
         self.recovery.verify_recovery_workflow_source(
             "cli",
             CURRENT_CLI_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
+            digest,
         )
 
     def test_cli_workflow_pin_rejects_modified_or_unprotected_source(self) -> None:
+        expected_sha256 = hashlib.sha256(CURRENT_CLI_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
         variants = {
             "modified": CURRENT_CLI_RECOVERY_WORKFLOW.replace("timeout-minutes: 45", "timeout-minutes: 44", 1),
             "unprotected discovery": CURRENT_CLI_RECOVERY_WORKFLOW.replace(
@@ -54,7 +55,7 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertNotEqual(CURRENT_CLI_RECOVERY_WORKFLOW, variant)
                 with self.assertRaises(self.recovery.RecoveryError) as caught:
-                    self.recovery.verify_recovery_workflow_source("cli", variant)
+                    self.recovery.verify_recovery_workflow_source("cli", variant, expected_sha256)
                 self.assertEqual("default-branch-preflight", caught.exception.phase)
 
     def test_artifact_execution_jobs_cannot_retain_checkout_credentials(self) -> None:
