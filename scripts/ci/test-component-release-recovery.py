@@ -6,13 +6,17 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import sys
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest
+from cli_release_verifier_contract import (  # noqa: F401
+    CliRecoveryWorkflowSourceTest,
+    CliReleaseAuthorityTest,
+)
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
@@ -220,6 +224,30 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
             "channel": "alpha",
             "components": {"workflow": {"version": "2.0.0-alpha.1", "commit": "a" * 40}},
         }
+
+    def test_source_product_train_is_bound_to_the_planned_identity(self) -> None:
+        identity = {"version": "2.0.0-beta.3", "commit": "a" * 40}
+        client = mock.Mock()
+        client.bytes.return_value = json.dumps(
+            {
+                "name": "durable-workflow/workflow",
+                "extra": {"durable-workflow": {"product-train": identity["version"]}},
+            }
+        ).encode()
+
+        evidence = self.recovery.source_product_train_evidence(client, "workflow", identity)
+
+        self.assertEqual(identity["version"], evidence["product_train"])
+        self.assertEqual(identity["commit"], evidence["source_commit"])
+        client.bytes.assert_called_once_with(
+            "https://api.github.com/repos/durable-workflow/workflow/contents/composer.json?ref="
+            + identity["commit"],
+            accept="application/vnd.github.raw+json",
+        )
+
+        client.bytes.return_value = client.bytes.return_value.replace(b"beta.3", b"beta.2")
+        with self.assertRaisesRegex(self.recovery.RecoveryError, "not planned version 2.0.0-beta.3"):
+            self.recovery.source_product_train_evidence(client, "workflow", identity)
 
     def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
         candidate = self.candidate()

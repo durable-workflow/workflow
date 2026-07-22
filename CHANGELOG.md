@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Joined Workflow to the synchronized Durable Workflow `2.0.0-beta.3`
+  product train. This is the only supported 2.0 prerelease baseline; earlier
+  alphas and beta tuples remain historical and receive no compatibility shim.
+- Platform conformance Rust signal/query scenarios now install the exact
+  `durable-workflow =2.0.0-beta.3` crates.io artifact from that train.
+
 - Release-plan recovery now consumes immutable, exact-version release-note
   preparation authority before publishing a newly recorded plan.
 - Standalone workers now receive accepted declared signals even when the host

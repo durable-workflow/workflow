@@ -71,6 +71,9 @@
         "durable-workflow/sdk": "Framework-neutral client and remote-worker SDK for the standalone Durable Workflow server."
     },
     "extra": {
+        "durable-workflow": {
+            "product-train": "2.0.0-beta.3"
+        },
         "laravel": {
             "providers": [
                 "Workflow\\Providers\\WorkflowServiceProvider"

@@ -12,7 +12,7 @@ and release-authority page:
 - <https://durable-workflow.github.io/docs/2.0/compatibility>
 - machine-readable mirror: `surface_stability_contract` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.surface-stability.contract`, version `3`.
+  `durable-workflow.v2.surface-stability.contract`, version `4`.
 
 The companion platform-wide normative protocol-spec catalog — *which*
 surface has *which* machine-readable spec, *what format* the spec uses,

@@ -114,10 +114,11 @@ Composer package pins, documented environment setup, workflow/activity
 files, the queue worker, and `php artisan app:quickstart-workflow` must
 reach `status=completed` and `output=Hello, Laravel!` within 10 minutes.
 Suite version 29 adds Rust worker signal/query cells and makes replayed
-workflow-instance state a separate mandatory cell. That replay cell pins
-the published crates.io `durable-workflow` crate at exactly `0.1.2` and
-must prove running, cold-restarted, restored, and completed state through
-Rust, PHP, and Python callers without query-side mutation.
+workflow-instance state a separate mandatory cell. Suite version 31 binds
+every Rust signal/query cell to the synchronized product train by pinning the
+published crates.io `durable-workflow` crate at exactly `2.0.0-beta.3`. The
+replay cell must prove running, cold-restarted, restored, and completed state
+through Rust, PHP, and Python callers without query-side mutation.
 Skew refusal matrix coverage is stable in suite version 15 and later and
 is required for every target that claims the server, SDK, CLI, worker,
 or Waterline compatibility surface.
@@ -171,7 +172,7 @@ Required scenarios:
   Python package, PHP package, Rust crate, and Waterline package are
   resolved from published channels; no local source checkout is used as
   the artifact under test. Rust cells use crates.io package
-  `durable-workflow` with the exact Cargo requirement `=0.1.2`.
+  `durable-workflow` with the exact Cargo requirement `=2.0.0-beta.3`.
 - `python_worker_cli_and_sdk_baseline` — a Python-authored workflow
   exposes `increment`, `set`, and `current` handlers through CLI and
   Python SDK clients.
@@ -208,7 +209,7 @@ Required scenarios:
 - `query_during_replay` — a query waits for replay consistency and does
   not run against stale state.
 - `rust_replayed_instance_state_query_after_cold_restart` — using the
-  exact published crates.io `durable-workflow =0.1.2` crate, start and
+  exact published crates.io `durable-workflow =2.0.0-beta.3` crate, start and
   query a running Rust workflow, stop the worker, start a fresh Rust
   worker process, restore the workflow instance from durable history,
   complete the restored workflow, and query the terminal state. Rust,

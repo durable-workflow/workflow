@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.suite",
-  "version": 30,
+  "version": 31,
   "authority_doc": "docs/platform-conformance.md",
   "authority_url": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
   "surface_stability_authority": "durable-workflow.v2.surface-stability.contract",
@@ -240,9 +240,9 @@
           "worker_runtime": "sdk-rust",
           "artifact": {
             "package": "durable-workflow",
-            "version": "0.1.2",
+            "version": "2.0.0-beta.3",
             "source": "crates.io",
-            "cargo_requirement": "=0.1.2"
+            "cargo_requirement": "=2.0.0-beta.3"
           },
           "query_state_model": "snapshot_derived_transport_state",
           "caller_paths": [
@@ -255,9 +255,9 @@
           "worker_runtime": "sdk-python",
           "artifact": {
             "package": "durable-workflow",
-            "version": "0.1.2",
+            "version": "2.0.0-beta.3",
             "source": "crates.io",
-            "cargo_requirement": "=0.1.2"
+            "cargo_requirement": "=2.0.0-beta.3"
           },
           "rust_role": "client",
           "caller_paths": [
@@ -268,9 +268,9 @@
           "worker_runtime": "sdk-php",
           "artifact": {
             "package": "durable-workflow",
-            "version": "0.1.2",
+            "version": "2.0.0-beta.3",
             "source": "crates.io",
-            "cargo_requirement": "=0.1.2"
+            "cargo_requirement": "=2.0.0-beta.3"
           },
           "rust_role": "client",
           "caller_paths": [
@@ -281,9 +281,9 @@
           "worker_runtime": "sdk-rust",
           "artifact": {
             "package": "durable-workflow",
-            "version": "0.1.2",
+            "version": "2.0.0-beta.3",
             "source": "crates.io",
-            "cargo_requirement": "=0.1.2"
+            "cargo_requirement": "=2.0.0-beta.3"
           },
           "query_state_model": "snapshot_derived_transport_state",
           "required_assertions": [
@@ -304,9 +304,9 @@
           "worker_runtime": "sdk-rust",
           "artifact": {
             "package": "durable-workflow",
-            "version": "0.1.2",
+            "version": "2.0.0-beta.3",
             "source": "crates.io",
-            "cargo_requirement": "=0.1.2"
+            "cargo_requirement": "=2.0.0-beta.3"
           },
           "query_state_model": "replayed_workflow_instance_state",
           "lifecycle": [

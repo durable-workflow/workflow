@@ -51,6 +51,10 @@ GITHUB_READ_DEADLINE_SECONDS = 600.0
 INFRASTRUCTURE_EXIT_CODE = 75
 
 SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
+SOURCE_PRODUCT_TRAINS = {
+    "workflow": ("durable-workflow/workflow", "composer.json"),
+    "waterline": ("durable-workflow/waterline", "composer.json"),
+}
 
 # SHA-256 of durable-workflow/cli's protected release recovery workflow.
 # Exact source identity is required because source-pattern matching cannot
@@ -1204,6 +1208,50 @@ def scheduled_continuity_pause(client: PublicClient, plan: dict[str, Any]) -> di
     return {"accepted_tag": accepted_tag, "accepted_commit": accepted_commit, "resumed_tag": resumed_tag}
 
 
+def source_product_train_evidence(
+    client: PublicClient,
+    component_name: str,
+    identity: dict[str, str],
+) -> dict[str, str]:
+    specification = SOURCE_PRODUCT_TRAINS.get(component_name)
+    if specification is None:
+        raise RecoveryError(f"{component_name} has no source-bound product-train authority")
+    package, path = specification
+    raw = client.bytes(
+        f"https://api.github.com/repos/{COMPONENTS[component_name].repository}/contents/"
+        f"{path}?ref={identity['commit']}",
+        accept="application/vnd.github.raw+json",
+    )
+    try:
+        manifest = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryError(
+            f"{component_name} source product-train authority is not valid UTF-8 JSON",
+            "source-identity",
+        ) from error
+    if not isinstance(manifest, dict):
+        raise RecoveryError(
+            f"{component_name} source product-train authority is not a JSON object",
+            "source-identity",
+        )
+    extra = manifest.get("extra")
+    durable_metadata = extra.get("durable-workflow", {}) if isinstance(extra, dict) else {}
+    declared_train = durable_metadata.get("product-train") if isinstance(durable_metadata, dict) else None
+    if manifest.get("name") != package or declared_train != identity["version"]:
+        raise RecoveryError(
+            f"{component_name} source declares product train {declared_train or '<missing>'}, "
+            f"not planned version {identity['version']}",
+            "source-identity",
+        )
+    return {
+        "package": package,
+        "path": path,
+        "product_train": declared_train,
+        "source_commit": identity["commit"],
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
 def resolve_component(
     client: PublicClient,
     component_name: str,
@@ -1258,6 +1306,9 @@ def resolve_component(
                     identity["commit"],
                 )
         action = "publish"
+    source_train = None
+    if action == "publish" and plan["channel"] == "beta" and component_name in SOURCE_PRODUCT_TRAINS:
+        source_train = source_product_train_evidence(client, component_name, identity)
     state = base_state(component_name, tag, plan)
     state.update(
         {
@@ -1285,6 +1336,8 @@ def resolve_component(
             "release_notes_sha256": prepared_identity["release_notes"]["sha256"],
             "source": prepared_identity["release_notes"]["source"],
         }
+    if source_train is not None:
+        state["source_product_train"] = source_train
     outputs = {
         "action": action,
         "plan": str(plan["plan"]),

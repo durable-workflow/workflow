@@ -29,7 +29,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $manifest = SurfaceStabilityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.surface-stability.contract', $manifest['schema']);
-        $this->assertSame(3, $manifest['version']);
+        $this->assertSame(4, $manifest['version']);
         $this->assertSame('https://durable-workflow.github.io/docs/2.0/compatibility', $manifest['authority_url']);
     }
 
@@ -160,7 +160,7 @@ final class SurfaceStabilityContractTest extends TestCase
         );
     }
 
-    public function testOfficialSdkContractIncludesPhpAndRustPackageAuthorities(): void
+    public function testOfficialSdkContractIncludesProductTrainPackageAuthorities(): void
     {
         $manifest = SurfaceStabilityContract::manifest();
         $officialSdks = $manifest['surface_families']['official_sdks'];
@@ -172,12 +172,26 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame(
             [
                 'package' => 'durable-workflow/sdk',
-                'release_line' => '0.1.x',
-                'supported_server_versions' => '>=0.2,<0.3',
+                'release_line' => '2.0.0-beta.3',
+                'product_train' => '2.0.0-beta.3',
+                'supported_server_versions' => '2.0.0-beta.3',
                 'worker_protocol_version' => '1.13',
                 'control_plane_version' => '2',
             ],
             $officialSdks['package_compatibility']['php_sdk'],
+        );
+
+        $this->assertSame(
+            [
+                'package' => 'durable-workflow',
+                'release_line' => '2.0.0-beta.3',
+                'registry_version' => '2.0.0b3',
+                'product_train' => '2.0.0-beta.3',
+                'supported_server_versions' => '2.0.0-beta.3',
+                'worker_protocol_version' => '1.1',
+                'control_plane_version' => '2',
+            ],
+            $officialSdks['package_compatibility']['python_sdk'],
         );
 
         $this->assertSame(
@@ -187,8 +201,9 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame(
             [
                 'package' => 'durable-workflow',
-                'release_line' => '0.1.x',
-                'supported_server_versions' => '>=0.2,<0.3',
+                'release_line' => '2.0.0-beta.3',
+                'product_train' => '2.0.0-beta.3',
+                'supported_server_versions' => '2.0.0-beta.3',
                 'worker_protocol_version' => '1.2',
                 'control_plane_version' => '2',
             ],
@@ -205,7 +220,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertArrayHasKey('install_docs_aligned', $check['gates']);
         $this->assertArrayHasKey('package_metadata_aligned', $check['gates']);
         $this->assertArrayHasKey('rust_sdk_protocol_authority_aligned', $check['gates']);
-        $this->assertArrayHasKey('version_history_aligned', $check['gates']);
+        $this->assertArrayHasKey('release_notes_aligned', $check['gates']);
 
         $this->assertStringContainsString(
             'check-compatibility-authority.js',
@@ -247,7 +262,7 @@ final class SurfaceStabilityContractTest extends TestCase
                 'docs_authority_aligned',
                 'install_docs_aligned',
                 'package_metadata_aligned',
-                'version_history_aligned',
+                'release_notes_aligned',
             ],
             $check['enforcement']['human_checks'],
         );

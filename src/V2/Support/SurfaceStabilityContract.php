@@ -28,7 +28,7 @@ final class SurfaceStabilityContract
 {
     public const SCHEMA = 'durable-workflow.v2.surface-stability.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/compatibility';
 
@@ -87,7 +87,7 @@ final class SurfaceStabilityContract
                 'breaking_change_release' => 'major',
             ],
             self::STABILITY_PRERELEASE => [
-                'meaning' => 'Public surface that is feature-complete but still allowed to change before the matching `1.0.0` / `2.0.0` cut. Breaking changes ship in clearly labelled prerelease versions and are called out in the version-history page.',
+                'meaning' => 'Public surface that is feature-complete but still allowed to change before the matching `1.0.0` / `2.0.0` cut. Breaking changes ship in clearly labelled prerelease versions and are called out in release notes.',
                 'breaking_change_release' => 'prerelease_minor',
             ],
             self::STABILITY_EXPERIMENTAL => [
@@ -135,7 +135,7 @@ final class SurfaceStabilityContract
                     'dropping a previously supported SDK or CLI version range',
                 ],
                 'requirements' => [
-                    'announce in the version-history page at least one minor release before cutting the major',
+                    'announce in release notes at least one minor release before cutting the major',
                     'add the new surface alongside the old surface in a previous minor where feasible',
                     'document the migration path on the migration guide before publish',
                 ],
@@ -220,15 +220,26 @@ final class SurfaceStabilityContract
                 'package_compatibility' => [
                     'php_sdk' => [
                         'package' => 'durable-workflow/sdk',
-                        'release_line' => '0.1.x',
-                        'supported_server_versions' => '>=0.2,<0.3',
+                        'release_line' => '2.0.0-beta.3',
+                        'product_train' => '2.0.0-beta.3',
+                        'supported_server_versions' => '2.0.0-beta.3',
                         'worker_protocol_version' => '1.13',
+                        'control_plane_version' => '2',
+                    ],
+                    'python_sdk' => [
+                        'package' => 'durable-workflow',
+                        'release_line' => '2.0.0-beta.3',
+                        'registry_version' => '2.0.0b3',
+                        'product_train' => '2.0.0-beta.3',
+                        'supported_server_versions' => '2.0.0-beta.3',
+                        'worker_protocol_version' => '1.1',
                         'control_plane_version' => '2',
                     ],
                     'rust_sdk' => [
                         'package' => 'durable-workflow',
-                        'release_line' => '0.1.x',
-                        'supported_server_versions' => '>=0.2,<0.3',
+                        'release_line' => '2.0.0-beta.3',
+                        'product_train' => '2.0.0-beta.3',
+                        'supported_server_versions' => '2.0.0-beta.3',
                         'worker_protocol_version' => '1.2',
                         'control_plane_version' => '2',
                     ],
@@ -297,11 +308,11 @@ final class SurfaceStabilityContract
                 'install_docs_aligned' => 'Release reviewers confirm docs/installation.md and package install snippets do not claim a stability level different from the one this manifest assigns to the relevant SDK.',
                 'package_metadata_aligned' => 'Release reviewers confirm package prerelease tags match the `stability_level` for the SDK family they belong to.',
                 'rust_sdk_protocol_authority_aligned' => 'Docs CI verifies the current Rust artifact release line, released crate metadata when available, server negotiation contract, worker-protocol OpenAPI and AsyncAPI, and published-crate validation workflow contract agree.',
-                'version_history_aligned' => 'Release reviewers confirm the dated version-history snapshots do not introduce stability claims that contradict this manifest.',
+                'release_notes_aligned' => 'Release reviewers confirm release notes do not introduce stability claims that contradict this manifest.',
             ],
             'enforcement' => [
                 'machine' => 'Docs site CI runs scripts/check-compatibility-authority.js for the JSON, prerelease tuple, Rust, and worker-protocol contracts, then check-compatibility-authority.test.js for negotiation drift and successor-tuple token rendering. It does not treat editorial Markdown as machine contract data.',
-                'human' => 'Release reviewers confirm docs_authority_aligned, install_docs_aligned, package_metadata_aligned, and version_history_aligned before tagging; those editorial checks are not performed by scripts/check-compatibility-authority.js.',
+                'human' => 'Release reviewers confirm docs_authority_aligned, install_docs_aligned, package_metadata_aligned, and release_notes_aligned before tagging; those editorial checks are not performed by scripts/check-compatibility-authority.js.',
                 'machine_commands' => [
                     'node scripts/check-compatibility-authority.js',
                     'node scripts/check-compatibility-authority.test.js',
@@ -322,7 +333,7 @@ final class SurfaceStabilityContract
                     'docs_authority_aligned',
                     'install_docs_aligned',
                     'package_metadata_aligned',
-                    'version_history_aligned',
+                    'release_notes_aligned',
                 ],
             ],
         ];

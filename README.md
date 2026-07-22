@@ -30,7 +30,7 @@ There's also a [sample application](https://github.com/durable-workflow/sample-a
 Install the embedded Laravel runtime:
 
 ```bash
-composer require durable-workflow/workflow:^2.0@alpha
+composer require durable-workflow/workflow:2.0.0-beta.3@beta
 ```
 
 This package owns Laravel service-provider integration, migrations, Eloquent
@@ -117,7 +117,7 @@ Use it when your workflows and activities run within a Laravel application and y
 For standalone or polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and install the [PHP SDK](https://github.com/durable-workflow/sdk-php) in framework-neutral PHP applications and remote workers:
 
 ```bash
-composer require durable-workflow/sdk:^0.1.1
+composer require durable-workflow/sdk:2.0.0-beta.3@beta
 ```
 
 The standalone server allows PHP, Python, Rust, and other supported SDKs to participate in the same workflow system.
@@ -127,15 +127,6 @@ The standalone server allows PHP, Python, Rust, and other supported SDKs to part
 | Embedded Laravel | `durable-workflow/workflow` | The Laravel application owns durable state and queue execution. |
 | Standalone server host | `durable-workflow/workflow` inside `durable-workflow/server` | The server hosts Workflow's engine contracts and persistence. |
 | Standalone PHP client or remote worker | `durable-workflow/sdk` | The SDK owns authentication, transport, protocol types, client operations, and worker polling. |
-
-### Migrating an alpha standalone worker
-
-Remove direct use of `Workflow\V2\Client\*` and `Workflow\V2\Worker\*`, then
-install `durable-workflow/sdk`. Create a `DurableWorkflow\Client` for
-standalone-server operations and a `DurableWorkflow\Worker` for remote task
-execution. The removed alpha namespaces have no aliases or compatibility
-wrappers; embedded Laravel workflow and activity classes remain supported by
-this package.
 
 ## Sponsors
 
