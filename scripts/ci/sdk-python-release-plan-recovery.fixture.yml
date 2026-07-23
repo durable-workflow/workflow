@@ -1,0 +1,116 @@
+name: Release plan recovery
+
+run-name: Recover Python SDK from ${{ inputs.plan_tag || 'latest public release plan' }}
+
+on:
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag; empty selects the newest public plan
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  attestations: read
+  contents: read
+
+concurrency:
+  group: release-plan-recovery-sdk-python-${{ inputs.plan_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Recover exact Python SDK release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      attestations: read
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - name: Discover plan and verify upstream public artifacts
+        id: recovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          arguments=(
+            resolve
+            --component sdk-python
+            --plan-output release-plan.json
+            --preparation-output release-preparation.json
+            --evidence release-recovery-evidence.json
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            arguments+=(--allow-empty)
+          elif [ -n "$REQUESTED_PLAN_TAG" ]; then
+            arguments+=(--plan-tag "$REQUESTED_PLAN_TAG")
+          fi
+          python scripts/ci/component-release-recovery.py "${arguments[@]}"
+
+      - name: Create the exact source tag
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT" >/dev/null
+          fi
+
+      - name: Start or resume repository-owned publication
+        if: steps.recovery.outputs.action == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ steps.recovery.outputs.plan_tag }}
+          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+        run: |
+          set -euo pipefail
+          decision=
+          for attempt in 1 2 3 4 5 6; do
+            gh run list --workflow publish.yml --event workflow_dispatch --branch main --limit 100 \
+              --json databaseId,displayTitle,headBranch,headSha,status,conclusion \
+              > publication-runs.json
+            decision="$(python scripts/ci/component-release-recovery.py select-publication-run \
+              --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --release-plan "$PLAN_TAG" \
+              --runs publication-runs.json)"
+            IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
+            if [ "$publication_action" != dispatch ]; then
+              break
+            fi
+            if [ "$attempt" -lt 6 ]; then
+              sleep 5
+            fi
+          done
+          if [ "$publication_action" = dispatch ]; then
+            gh workflow run publish.yml --ref main \
+              -f release_tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT" \
+              -f release_plan="$PLAN_TAG" -f publish=true
+          else
+            printf 'Durable publication run %s is %s/%s; no duplicate dispatch is needed.\n' \
+              "$run_id" "$status" "${conclusion:-pending}"
+          fi
+
+      - name: Retain recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: sdk-python-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-preparation.json
+            release-recovery-evidence.json
+            publication-runs.json
+          if-no-files-found: warn

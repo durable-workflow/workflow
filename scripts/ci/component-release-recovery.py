@@ -44,7 +44,9 @@ FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
+VERSION_PATTERN = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
 MARKDOWN_MEDIA_TYPE = "text/markdown"
@@ -61,6 +63,7 @@ SOURCE_PRODUCT_TRAINS = {
     "waterline": ("durable-workflow/waterline", "composer.json"),
 }
 
+
 @dataclass(frozen=True)
 class Component:
     repository: str
@@ -73,8 +76,24 @@ class Component:
 
 
 COMPONENTS = {
-    "workflow": Component("durable-workflow/workflow", "v2", "composer", "durable-workflow/workflow", (), None, None),
-    "sdk-php": Component("durable-workflow/sdk-php", "main", "composer", "durable-workflow/sdk", (), None, None),
+    "workflow": Component(
+        "durable-workflow/workflow",
+        "v2",
+        "composer",
+        "durable-workflow/workflow",
+        (),
+        None,
+        None,
+    ),
+    "sdk-php": Component(
+        "durable-workflow/sdk-php",
+        "main",
+        "composer",
+        "durable-workflow/sdk",
+        (),
+        None,
+        None,
+    ),
     "waterline": Component(
         "durable-workflow/waterline",
         "v2",
@@ -94,7 +113,13 @@ COMPONENTS = {
         "tag",
     ),
     "cli": Component(
-        "durable-workflow/cli", "main", "github-release", "durable-workflow/cli", ("server",), "release.yml", "tag"
+        "durable-workflow/cli",
+        "main",
+        "github-release",
+        "durable-workflow/cli",
+        ("server",),
+        "release.yml",
+        "tag",
     ),
     "sdk-python": Component(
         "durable-workflow/sdk-python",
@@ -161,7 +186,9 @@ class PublicInfrastructureError(RuntimeError):
         ]
         if failure is not None:
             evidence.append(failure)
-        super().__init__(f"GitHub public read transient failure exhausted ({', '.join(evidence)})")
+        super().__init__(
+            f"GitHub public read transient failure exhausted ({', '.join(evidence)})"
+        )
 
 
 class _TransientGitHubRead(RuntimeError):
@@ -174,7 +201,9 @@ class _TransientGitHubRead(RuntimeError):
 
 
 def canonical_json(value: Any) -> bytes:
-    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
+    return (
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+    ).encode()
 
 
 class PublicClient:
@@ -229,7 +258,11 @@ class PublicClient:
             if path.startswith("/users/"):
                 return "users-api"
             return "repositories-api"
-        if host == "github.com" or host.endswith(".github.com") or host.endswith(".githubusercontent.com"):
+        if (
+            host == "github.com"
+            or host.endswith(".github.com")
+            or host.endswith(".githubusercontent.com")
+        ):
             return "github-download"
         return None
 
@@ -257,7 +290,10 @@ class PublicClient:
         reason = error.reason if isinstance(error, urllib.error.URLError) else error
         if isinstance(
             reason,
-            ConnectionError | TimeoutError | http.client.IncompleteRead | http.client.RemoteDisconnected,
+            ConnectionError
+            | TimeoutError
+            | http.client.IncompleteRead
+            | http.client.RemoteDisconnected,
         ):
             return type(reason).__name__
         if isinstance(reason, OSError) and reason.errno in {
@@ -291,7 +327,9 @@ class PublicClient:
         return max((delay for delay in delays if delay > 0), default=None)
 
     def _retry_delay(self, attempt: int, failure: _TransientGitHubRead) -> float:
-        backoff = min(self.retry_base_seconds * (2 ** (attempt - 1)), self.retry_max_seconds)
+        backoff = min(
+            self.retry_base_seconds * (2 ** (attempt - 1)), self.retry_max_seconds
+        )
         return max(backoff, self._server_retry_delay(failure.headers) or 0)
 
     def _remaining_time(self) -> float:
@@ -307,7 +345,10 @@ class PublicClient:
     ) -> Any:
         endpoint_class = self._github_endpoint_class(url)
         attempt_limit = self.max_attempts if endpoint_class is not None else 1
-        request_headers = {"User-Agent": "durable-workflow-release-recovery/1", **(headers or {})}
+        request_headers = {
+            "User-Agent": "durable-workflow-release-recovery/1",
+            **(headers or {}),
+        }
         if accept:
             request_headers["Accept"] = accept
         if self.token and urllib.parse.urlsplit(url).hostname == "api.github.com":
@@ -316,7 +357,9 @@ class PublicClient:
 
         for attempt in range(1, attempt_limit + 1):
             if endpoint_class is not None and self._remaining_time() <= 0:
-                raise PublicInfrastructureError(endpoint_class, attempt - 1, reason="workflow-deadline")
+                raise PublicInfrastructureError(
+                    endpoint_class, attempt - 1, reason="workflow-deadline"
+                )
             timeout = (
                 min(self.request_timeout_seconds, self._remaining_time())
                 if endpoint_class is not None
@@ -328,23 +371,42 @@ class PublicClient:
                 response = urllib.request.urlopen(request, timeout=timeout)
                 result = operation(response)
                 if endpoint_class is not None and self._remaining_time() <= 0:
-                    raise PublicInfrastructureError(endpoint_class, attempt, reason="workflow-deadline")
+                    raise PublicInfrastructureError(
+                        endpoint_class, attempt, reason="workflow-deadline"
+                    )
                 return result
             except urllib.error.HTTPError as error:
                 detail = self._error_detail(error)
-                if endpoint_class is not None and (500 <= error.code <= 599 or self._is_rate_limited(error, detail)):
-                    failure = _TransientGitHubRead(f"status={error.code}", error.headers)
+                if endpoint_class is not None and (
+                    500 <= error.code <= 599 or self._is_rate_limited(error, detail)
+                ):
+                    failure = _TransientGitHubRead(
+                        f"status={error.code}", error.headers
+                    )
                 elif error.code == 404:
                     raise NotFound(f"public resource is absent: {url}") from error
                 else:
-                    raise RecoveryError(f"public request failed ({error.code}) for {url}: {detail}") from error
-            except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.IncompleteRead) as error:
+                    raise RecoveryError(
+                        f"public request failed ({error.code}) for {url}: {detail}"
+                    ) from error
+            except (
+                urllib.error.URLError,
+                ConnectionError,
+                TimeoutError,
+                http.client.IncompleteRead,
+            ) as error:
                 transport = self._transport_name(error)
                 if endpoint_class is not None and transport is not None:
                     failure = _TransientGitHubRead(f"transport={transport}")
                 else:
-                    reason = error.reason if isinstance(error, urllib.error.URLError) else error
-                    raise RecoveryError(f"public request failed for {url}: {reason}") from error
+                    reason = (
+                        error.reason
+                        if isinstance(error, urllib.error.URLError)
+                        else error
+                    )
+                    raise RecoveryError(
+                        f"public request failed for {url}: {reason}"
+                    ) from error
 
             assert endpoint_class is not None and failure is not None
             if attempt == attempt_limit:
@@ -379,24 +441,40 @@ class PublicClient:
     ) -> urllib.response.addinfourl:
         return self._run(url, lambda response: response, headers=headers, accept=accept)
 
-    def json(self, url: str, *, headers: dict[str, str] | None = None, accept: str | None = None) -> Any:
+    def json(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        accept: str | None = None,
+    ) -> Any:
         def read_json(response: urllib.response.addinfourl) -> Any:
             with response:
                 try:
                     return json.load(response)
                 except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                    raise RecoveryError(f"public endpoint did not return valid JSON: {url}") from error
+                    raise RecoveryError(
+                        f"public endpoint did not return valid JSON: {url}"
+                    ) from error
 
         return self._run(url, read_json, headers=headers, accept=accept)
 
-    def bytes(self, url: str, *, headers: dict[str, str] | None = None, accept: str | None = None) -> bytes:
+    def bytes(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        accept: str | None = None,
+    ) -> bytes:
         def read_bytes(response: urllib.response.addinfourl) -> bytes:
             with response:
                 return response.read()
 
         return self._run(url, read_bytes, headers=headers, accept=accept)
 
-    def download(self, url: str, path: Path, *, expected_sha256: str | None = None) -> dict[str, Any]:
+    def download(
+        self, url: str, path: Path, *, expected_sha256: str | None = None
+    ) -> dict[str, Any]:
         def download_once(response: urllib.response.addinfourl) -> tuple[str, int]:
             digest = hashlib.sha256()
             size = 0
@@ -409,43 +487,71 @@ class PublicClient:
 
         actual, size = self._run(url, download_once, headers=None, accept=None)
         if expected_sha256 and actual != expected_sha256.lower():
-            raise RecoveryError(f"download digest mismatch for {url}: expected {expected_sha256}, got {actual}")
+            raise RecoveryError(
+                f"download digest mismatch for {url}: expected {expected_sha256}, got {actual}"
+            )
         return {"url": url, "size": size, "sha256": actual}
 
 
 def validate_plan(plan: Any) -> None:
     if not isinstance(plan, dict):
         raise RecoveryError("release plan must be a JSON object")
-    expected = {"schema", "plan", "channel", "foundation", "components", "beta_authorization"}
+    expected = {
+        "schema",
+        "plan",
+        "channel",
+        "foundation",
+        "components",
+        "beta_authorization",
+    }
     if set(plan) != expected or plan.get("schema") != SCHEMA:
-        raise RecoveryError("release plan does not satisfy the channel-aware v1 contract")
+        raise RecoveryError(
+            "release plan does not satisfy the channel-aware v1 contract"
+        )
     if not isinstance(plan["plan"], str) or not PLAN_PATTERN.fullmatch(plan["plan"]):
         raise RecoveryError("release plan has an invalid identity")
     if plan["channel"] not in {"alpha", "beta"}:
         raise RecoveryError("release plan channel must be alpha or beta")
     if plan["foundation"] != {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}:
-        raise RecoveryError("release plan does not name the proven immutable candidate foundation")
+        raise RecoveryError(
+            "release plan does not name the proven immutable candidate foundation"
+        )
     components = plan["components"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
         raise RecoveryError("release plan must contain the exact seven-component tuple")
     for name, identity in components.items():
         if not isinstance(identity, dict) or set(identity) != {"version", "commit"}:
-            raise RecoveryError(f"components.{name} must contain only version and commit")
-        if not isinstance(identity["version"], str) or not VERSION_PATTERN.fullmatch(identity["version"]):
+            raise RecoveryError(
+                f"components.{name} must contain only version and commit"
+            )
+        if not isinstance(identity["version"], str) or not VERSION_PATTERN.fullmatch(
+            identity["version"]
+        ):
             raise RecoveryError(f"components.{name}.version is not exact SemVer")
-        if not isinstance(identity["commit"], str) or not COMMIT_PATTERN.fullmatch(identity["commit"]):
-            raise RecoveryError(f"components.{name}.commit is not a full source identity")
-    channel_pattern = ALPHA_VERSION_PATTERN if plan["channel"] == "alpha" else BETA_VERSION_PATTERN
+        if not isinstance(identity["commit"], str) or not COMMIT_PATTERN.fullmatch(
+            identity["commit"]
+        ):
+            raise RecoveryError(
+                f"components.{name}.commit is not a full source identity"
+            )
+    channel_pattern = (
+        ALPHA_VERSION_PATTERN if plan["channel"] == "alpha" else BETA_VERSION_PATTERN
+    )
     for name in ("workflow", "waterline"):
         if not channel_pattern.fullmatch(components[name]["version"]):
-            raise RecoveryError(f"{name} does not have an exact 2.0.0-{plan['channel']}.N identity")
+            raise RecoveryError(
+                f"{name} does not have an exact 2.0.0-{plan['channel']}.N identity"
+            )
     authorization = plan["beta_authorization"]
     if plan["channel"] == "alpha" and authorization is not None:
         raise RecoveryError("alpha plans cannot claim beta authorization")
     if plan["channel"] == "beta" and (
         not isinstance(authorization, dict)
         or set(authorization) != {"tag", "commit"}
-        or not re.fullmatch(r"beta-authorization/[a-z0-9][a-z0-9._-]{0,55}", str(authorization.get("tag", "")))
+        or not re.fullmatch(
+            r"beta-authorization/[a-z0-9][a-z0-9._-]{0,55}",
+            str(authorization.get("tag", "")),
+        )
         or not COMMIT_PATTERN.fullmatch(str(authorization.get("commit", "")))
     ):
         raise RecoveryError("beta plans require an immutable beta authorization")
@@ -461,15 +567,22 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
         "release_plan",
         "components",
     }:
-        raise RecoveryError("release preparation has an invalid top-level shape", "plan-discovery")
+        raise RecoveryError(
+            "release preparation has an invalid top-level shape", "plan-discovery"
+        )
     if preparation["schema"] != PREPARATION_SCHEMA or preparation["release_plan"] != {
         "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
         "sha256": manifest_digest(plan),
     }:
-        raise RecoveryError("release preparation names a different immutable plan", "plan-discovery")
+        raise RecoveryError(
+            "release preparation names a different immutable plan", "plan-discovery"
+        )
     components = preparation["components"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
-        raise RecoveryError("release preparation does not cover the exact component tuple", "plan-discovery")
+        raise RecoveryError(
+            "release preparation does not cover the exact component tuple",
+            "plan-discovery",
+        )
     release_dates: set[str] = set()
     for name, entry in components.items():
         identity = plan["components"][name]
@@ -478,8 +591,13 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
             "source_commit",
             "release_notes",
         }:
-            raise RecoveryError(f"release preparation for {name} has an invalid shape", "plan-discovery")
-        if entry["version"] != identity["version"] or entry["source_commit"] != identity["commit"]:
+            raise RecoveryError(
+                f"release preparation for {name} has an invalid shape", "plan-discovery"
+            )
+        if (
+            entry["version"] != identity["version"]
+            or entry["source_commit"] != identity["commit"]
+        ):
             raise RecoveryError(
                 f"release preparation for {name} names a different planned identity",
                 "plan-discovery",
@@ -493,7 +611,10 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
             "sha256",
             "source",
         }:
-            raise RecoveryError(f"release preparation for {name} has invalid release notes", "plan-discovery")
+            raise RecoveryError(
+                f"release preparation for {name} has invalid release notes",
+                "plan-discovery",
+            )
         release_date = notes["release_date"]
         try:
             parsed_date = dt.date.fromisoformat(release_date)
@@ -518,7 +639,11 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
                 "plan-discovery",
             )
         source = notes["source"]
-        expected_kind = "changelog-unreleased" if name in SOURCE_CHANGELOGS else "source-commit-message"
+        expected_kind = (
+            "changelog-unreleased"
+            if name in SOURCE_CHANGELOGS
+            else "source-commit-message"
+        )
         expected_source_url = (
             f"https://github.com/{COMPONENTS[name].repository}/blob/{identity['commit']}/CHANGELOG.md"
             if name in SOURCE_CHANGELOGS
@@ -537,13 +662,18 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
             )
         release_dates.add(release_date)
     if len(release_dates) != 1:
-        raise RecoveryError("release preparation components do not share one release date", "plan-discovery")
+        raise RecoveryError(
+            "release preparation components do not share one release date",
+            "plan-discovery",
+        )
 
 
 def resolve_tag(client: PublicClient, repository: str, tag: str) -> str | None:
     encoded = urllib.parse.quote(tag, safe="")
     try:
-        ref = client.json(f"https://api.github.com/repos/{repository}/git/ref/tags/{encoded}")
+        ref = client.json(
+            f"https://api.github.com/repos/{repository}/git/ref/tags/{encoded}"
+        )
     except NotFound:
         return None
     target = ref.get("object", {})
@@ -551,17 +681,27 @@ def resolve_tag(client: PublicClient, repository: str, tag: str) -> str | None:
     while target.get("type") == "tag":
         sha = target.get("sha")
         if not isinstance(sha, str) or sha in seen:
-            raise RecoveryError(f"invalid annotated tag chain for {repository}@{tag}", "tag-preflight")
+            raise RecoveryError(
+                f"invalid annotated tag chain for {repository}@{tag}", "tag-preflight"
+            )
         seen.add(sha)
-        target = client.json(f"https://api.github.com/repos/{repository}/git/tags/{sha}").get("object", {})
-    if target.get("type") != "commit" or not COMMIT_PATTERN.fullmatch(str(target.get("sha", ""))):
-        raise RecoveryError(f"tag {repository}@{tag} does not resolve to a commit", "tag-preflight")
+        target = client.json(
+            f"https://api.github.com/repos/{repository}/git/tags/{sha}"
+        ).get("object", {})
+    if target.get("type") != "commit" or not COMMIT_PATTERN.fullmatch(
+        str(target.get("sha", ""))
+    ):
+        raise RecoveryError(
+            f"tag {repository}@{tag} does not resolve to a commit", "tag-preflight"
+        )
     return str(target["sha"])
 
 
 def read_record(client: PublicClient, tag: str, commit: str, filename: str) -> Any:
     if resolve_tag(client, CONTROL_REPOSITORY, tag) != commit:
-        raise RecoveryError(f"immutable record {tag} does not resolve to {commit}", "plan-discovery")
+        raise RecoveryError(
+            f"immutable record {tag} does not resolve to {commit}", "plan-discovery"
+        )
     encoded_filename = urllib.parse.quote(filename, safe="/")
     raw = client.bytes(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{encoded_filename}?ref={commit}",
@@ -570,31 +710,42 @@ def read_record(client: PublicClient, tag: str, commit: str, filename: str) -> A
     try:
         return json.loads(raw)
     except json.JSONDecodeError as error:
-        raise RecoveryError(f"immutable record {tag}:{filename} is not valid JSON", "plan-discovery") from error
+        raise RecoveryError(
+            f"immutable record {tag}:{filename} is not valid JSON", "plan-discovery"
+        ) from error
 
 
 def discover_plan(
     client: PublicClient, requested_tag: str | None, component_name: str
 ) -> tuple[str, str, dict[str, Any], dict[str, Any] | None]:
     if component_name not in COMPONENTS:
-        raise RecoveryError(f"unknown release component: {component_name}", "plan-discovery")
+        raise RecoveryError(
+            f"unknown release component: {component_name}", "plan-discovery"
+        )
     if requested_tag:
         tag = requested_tag
         if not tag.startswith(PLAN_TAG_PREFIX):
-            raise RecoveryError(f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery")
+            raise RecoveryError(
+                f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery"
+            )
         try:
             release = client.json(
                 f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
             )
         except NotFound as error:
-            raise RecoveryError(f"release plan {tag} has no durable GitHub Release", "plan-discovery") from error
+            raise RecoveryError(
+                f"release plan {tag} has no durable GitHub Release", "plan-discovery"
+            ) from error
     else:
-        releases = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100")
+        releases = client.json(
+            f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100"
+        )
         release = next(
             (
                 item
                 for item in releases
-                if not item.get("draft") and str(item.get("tag_name", "")).startswith(PLAN_TAG_PREFIX)
+                if not item.get("draft")
+                and str(item.get("tag_name", "")).startswith(PLAN_TAG_PREFIX)
             ),
             None,
         )
@@ -609,7 +760,9 @@ def discover_plan(
     plan = read_record(client, tag, commit, "release-plan.json")
     validate_plan(plan)
     if tag != f"{PLAN_TAG_PREFIX}{plan['plan']}":
-        raise RecoveryError("release plan tag and document identity differ", "plan-discovery")
+        raise RecoveryError(
+            "release plan tag and document identity differ", "plan-discovery"
+        )
     assets = {asset.get("name"): asset for asset in release.get("assets", [])}
     try:
         preparation = read_record(client, tag, commit, "release-preparation.json")
@@ -649,22 +802,65 @@ def discover_plan(
     return tag, commit, plan, preparation
 
 
+_QUALIFIED_AUTHORITY_CONSTRUCTOR = object()
+
+
+@dataclass(frozen=True, init=False)
+class QualifiedRecoveryWorkflowAuthority:
+    """Workflow identities read from one successfully qualified authority revision."""
+
+    workflows: Mapping[str, Mapping[str, str]]
+    source: Mapping[str, Any]
+
+    def __init__(
+        self,
+        workflows: Mapping[str, Mapping[str, str]],
+        source: Mapping[str, Any],
+        *,
+        _constructor: object,
+    ) -> None:
+        if _constructor is not _QUALIFIED_AUTHORITY_CONSTRUCTOR:
+            raise RecoveryWorkflowAuthorityError(
+                "recovery workflow authority was not produced by qualified loading"
+            )
+        object.__setattr__(self, "workflows", workflows)
+        object.__setattr__(self, "source", source)
+
+    def workflow(self, name: str) -> Mapping[str, str]:
+        try:
+            return self.workflows[name]
+        except KeyError as error:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery workflow is absent from the qualified authority"
+            ) from error
+
+
 def load_recovery_workflow_authority(
     client: PublicClient,
-) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
+) -> QualifiedRecoveryWorkflowAuthority:
     identities = {
         name: (component.repository, component.default_branch)
         for name, component in COMPONENTS.items()
     }
     try:
-        return load_qualified_authority(client, identities)
+        workflows, source = load_qualified_authority(client, identities)
     except RecoveryWorkflowAuthorityError as error:
         raise RecoveryError(str(error), "default-branch-preflight") from error
+    return QualifiedRecoveryWorkflowAuthority(
+        workflows,
+        source,
+        _constructor=_QUALIFIED_AUTHORITY_CONSTRUCTOR,
+    )
 
 
-def verify_recovery_workflow_source(name: str, source: str, expected_sha256: str) -> str:
+def verify_recovery_workflow_source(
+    authority: QualifiedRecoveryWorkflowAuthority,
+    name: str,
+    source: str,
+) -> str:
     try:
-        return verify_workflow_source(name, source, expected_sha256)
+        expected = authority.workflow(name)
+        return verify_workflow_source(name, source, expected["sha256"])
     except RecoveryWorkflowAuthorityError as error:
         raise RecoveryError(str(error), "default-branch-preflight") from error
 
@@ -674,10 +870,17 @@ def select_publication_run(
     release_commit: str,
     runs: Any,
 ) -> dict[str, Any]:
-    if not VERSION_PATTERN.fullmatch(release_tag) or not COMMIT_PATTERN.fullmatch(release_commit):
-        raise RecoveryError("publication run selection requires an exact release identity", "publication")
+    if not VERSION_PATTERN.fullmatch(release_tag) or not COMMIT_PATTERN.fullmatch(
+        release_commit
+    ):
+        raise RecoveryError(
+            "publication run selection requires an exact release identity",
+            "publication",
+        )
     if not isinstance(runs, list):
-        raise RecoveryError("publication run metadata must be a JSON array", "publication")
+        raise RecoveryError(
+            "publication run metadata must be a JSON array", "publication"
+        )
 
     exact_runs: list[dict[str, Any]] = []
     for run in runs:
@@ -688,7 +891,9 @@ def select_publication_run(
                 f"publication run {run.get('databaseId')} for {release_tag} is bound to a different source commit",
                 "publication",
             )
-        if not isinstance(run.get("databaseId"), int) or not isinstance(run.get("status"), str):
+        if not isinstance(run.get("databaseId"), int) or not isinstance(
+            run.get("status"), str
+        ):
             raise RecoveryError("publication run metadata is incomplete", "publication")
         exact_runs.append(run)
 
@@ -696,15 +901,26 @@ def select_publication_run(
     action = "wait"
     if selected is None:
         selected = next(
-            (run for run in exact_runs if run["status"] == "completed" and run.get("conclusion") == "success"),
+            (
+                run
+                for run in exact_runs
+                if run["status"] == "completed" and run.get("conclusion") == "success"
+            ),
             None,
         )
         action = "complete"
     if selected is None:
-        selected = next((run for run in exact_runs if run["status"] == "completed"), None)
+        selected = next(
+            (run for run in exact_runs if run["status"] == "completed"), None
+        )
         action = "rerun"
     if selected is None:
-        return {"action": "dispatch", "run_id": None, "status": None, "conclusion": None}
+        return {
+            "action": "dispatch",
+            "run_id": None,
+            "status": None,
+            "conclusion": None,
+        }
     return {
         "action": action,
         "run_id": selected["databaseId"],
@@ -716,10 +932,15 @@ def select_publication_run(
 def verify_plan_authority(
     client: PublicClient, plan: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-    foundation = read_record(client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json")
+    foundation = read_record(
+        client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json"
+    )
     if foundation.get("candidate") != "beta-continuity-foundation":
-        raise RecoveryError("immutable candidate foundation has an unexpected identity", "plan-preflight")
-    authority, authority_source = load_recovery_workflow_authority(client)
+        raise RecoveryError(
+            "immutable candidate foundation has an unexpected identity",
+            "plan-preflight",
+        )
+    authority = load_recovery_workflow_authority(client)
     branches: dict[str, str] = {}
     recovery_workflows: dict[str, dict[str, Any]] = {}
     for name, component in COMPONENTS.items():
@@ -731,12 +952,15 @@ def verify_plan_authority(
                 "default-branch-preflight",
             )
         branches[name] = str(actual)
-        expected = authority[name]
+        expected = authority.workflow(name)
         expected_path = expected["path"]
         workflow = client.json(
             f"https://api.github.com/repos/{component.repository}/actions/workflows/release-plan-recovery.yml"
         )
-        if workflow.get("path") != expected_path or workflow.get("state") != expected["state"]:
+        if (
+            workflow.get("path") != expected_path
+            or workflow.get("state") != expected["state"]
+        ):
             raise RecoveryError(
                 f"{component.repository} does not expose an active {expected_path} on its default branch",
                 "default-branch-preflight",
@@ -746,9 +970,9 @@ def verify_plan_authority(
             f"?ref={component.default_branch}",
             accept="application/vnd.github.raw+json",
         ).decode("utf-8")
-        source_sha256 = verify_recovery_workflow_source(name, source, expected["sha256"])
+        source_sha256 = verify_recovery_workflow_source(authority, name, source)
         recovery_workflows[name] = {
-            "authority": authority_source,
+            "authority": authority.source,
             "default_branch": component.default_branch,
             "path": expected_path,
             "sha256": source_sha256,
@@ -758,7 +982,12 @@ def verify_plan_authority(
         }
     authorization = plan["beta_authorization"]
     if authorization is not None:
-        record = read_record(client, authorization["tag"], authorization["commit"], "beta-authorization.json")
+        record = read_record(
+            client,
+            authorization["tag"],
+            authorization["commit"],
+            "beta-authorization.json",
+        )
         expected = {
             "schema": "durable-workflow.beta-authorization/v1",
             "channel": "beta",
@@ -767,12 +996,15 @@ def verify_plan_authority(
         }
         if record != expected:
             raise RecoveryError(
-                "beta authorization names a different candidate or component tuple", "channel-authorization"
+                "beta authorization names a different candidate or component tuple",
+                "channel-authorization",
             )
     return branches, recovery_workflows
 
 
-def require_source_tag(client: PublicClient, name: str, identity: dict[str, str]) -> str:
+def require_source_tag(
+    client: PublicClient, name: str, identity: dict[str, str]
+) -> str:
     component = COMPONENTS[name]
     source = resolve_tag(client, component.repository, identity["version"])
     if source is None:
@@ -788,26 +1020,50 @@ def require_source_tag(client: PublicClient, name: str, identity: dict[str, str]
     return source
 
 
-def verify_github_release(client: PublicClient, name: str, version: str) -> dict[str, Any]:
+def verify_github_release(
+    client: PublicClient, name: str, version: str
+) -> dict[str, Any]:
     component = COMPONENTS[name]
     encoded = urllib.parse.quote(version, safe="")
     try:
-        release = client.json(f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}")
+        release = client.json(
+            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}"
+        )
     except NotFound as error:
-        raise NotFound(f"GitHub Release {component.repository}@{version} is absent", "github-release") from error
+        raise NotFound(
+            f"GitHub Release {component.repository}@{version} is absent",
+            "github-release",
+        ) from error
     if release.get("draft") or release.get("tag_name") != version:
-        raise RecoveryError(f"GitHub Release {component.repository}@{version} is not public", "github-release")
+        raise RecoveryError(
+            f"GitHub Release {component.repository}@{version} is not public",
+            "github-release",
+        )
     return {"id": release.get("id"), "url": release.get("html_url")}
 
 
-def verify_composer(client: PublicClient, component: Component, version: str, commit: str) -> dict[str, Any]:
-    encoded = "/".join(urllib.parse.quote(part, safe="") for part in component.package.split("/"))
+def verify_composer(
+    client: PublicClient, component: Component, version: str, commit: str
+) -> dict[str, Any]:
+    encoded = "/".join(
+        urllib.parse.quote(part, safe="") for part in component.package.split("/")
+    )
     url = f"https://repo.packagist.org/p2/{encoded}.json"
     payload = client.json(url)
     releases = payload.get("packages", {}).get(component.package, [])
-    release = next((item for item in releases if str(item.get("version", "")).lstrip("v") == version.lstrip("v")), None)
+    release = next(
+        (
+            item
+            for item in releases
+            if str(item.get("version", "")).lstrip("v") == version.lstrip("v")
+        ),
+        None,
+    )
     if release is None:
-        raise NotFound(f"Packagist does not expose {component.package}@{version}", "registry-publication")
+        raise NotFound(
+            f"Packagist does not expose {component.package}@{version}",
+            "registry-publication",
+        )
     source = release.get("source", {}).get("reference")
     dist = release.get("dist", {}).get("reference")
     if source != commit or dist != commit:
@@ -815,23 +1071,37 @@ def verify_composer(client: PublicClient, component: Component, version: str, co
             f"Packagist identity for {component.package}@{version} is {source}/{dist}, not {commit}",
             "registry-publication",
         )
-    return {"kind": "composer", "registry": url, "source_reference": source, "dist_reference": dist}
+    return {
+        "kind": "composer",
+        "registry": url,
+        "source_reference": source,
+        "dist_reference": dist,
+    }
 
 
-def oci_json(client: PublicClient, url: str, token: str, accept: str) -> tuple[Any, str | None]:
-    response = client.request(url, headers={"Authorization": f"Bearer {token}"}, accept=accept)
+def oci_json(
+    client: PublicClient, url: str, token: str, accept: str
+) -> tuple[Any, str | None]:
+    response = client.request(
+        url, headers={"Authorization": f"Bearer {token}"}, accept=accept
+    )
     with response:
         return json.load(response), response.headers.get("Docker-Content-Digest")
 
 
-def verify_oci(client: PublicClient, component: Component, version: str, commit: str) -> dict[str, Any]:
+def verify_oci(
+    client: PublicClient, component: Component, version: str, commit: str
+) -> dict[str, Any]:
     repository = component.package.split("/", 1)[1]
-    token_url = "https://auth.docker.io/token?service=registry.docker.io&scope=" + urllib.parse.quote(
-        f"repository:{repository}:pull"
+    token_url = (
+        "https://auth.docker.io/token?service=registry.docker.io&scope="
+        + urllib.parse.quote(f"repository:{repository}:pull")
     )
     token = client.json(token_url).get("token")
     if not token:
-        raise RecoveryError(f"Docker Hub did not grant public pull access to {component.package}:{version}")
+        raise RecoveryError(
+            f"Docker Hub did not grant public pull access to {component.package}:{version}"
+        )
     accept = ", ".join(
         (
             "application/vnd.oci.image.index.v1+json",
@@ -844,12 +1114,19 @@ def verify_oci(client: PublicClient, component: Component, version: str, commit:
     try:
         manifest, digest = oci_json(client, url, str(token), accept)
     except NotFound as error:
-        raise NotFound(f"Docker Hub does not expose {component.package}:{version}", "registry-publication") from error
+        raise NotFound(
+            f"Docker Hub does not expose {component.package}:{version}",
+            "registry-publication",
+        ) from error
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest or "")):
-        raise RecoveryError(f"Docker Hub image {component.package}:{version} has no immutable digest")
+        raise RecoveryError(
+            f"Docker Hub image {component.package}:{version} has no immutable digest"
+        )
     descriptors = manifest.get("manifests")
     if not isinstance(descriptors, list):
-        raise RecoveryError(f"Docker Hub image {component.package}:{version} is not multi-platform")
+        raise RecoveryError(
+            f"Docker Hub image {component.package}:{version} is not multi-platform"
+        )
     platforms: set[str] = set()
     for descriptor in descriptors:
         platform = descriptor.get("platform", {})
@@ -863,7 +1140,9 @@ def verify_oci(client: PublicClient, component: Component, version: str, commit:
             accept,
         )
         if child_digest != descriptor["digest"]:
-            raise RecoveryError(f"Docker Hub platform digest changed for {component.package}:{version}")
+            raise RecoveryError(
+                f"Docker Hub platform digest changed for {component.package}:{version}"
+            )
         config_digest = child.get("config", {}).get("digest")
         config = client.json(
             f"https://registry-1.docker.io/v2/{repository}/blobs/{config_digest}",
@@ -871,13 +1150,24 @@ def verify_oci(client: PublicClient, component: Component, version: str, commit:
         )
         labels = config.get("config", {}).get("Labels") or {}
         if labels.get("org.opencontainers.image.revision") != commit:
-            raise RecoveryError(f"Docker Hub image {component.package}:{version} names a different source commit")
+            raise RecoveryError(
+                f"Docker Hub image {component.package}:{version} names a different source commit"
+            )
         if labels.get("dev.durable-workflow.release.tag") != version:
-            raise RecoveryError(f"Docker Hub image {component.package}:{version} names a different release tag")
+            raise RecoveryError(
+                f"Docker Hub image {component.package}:{version} names a different release tag"
+            )
         platforms.add(label)
     if platforms != {"linux/amd64", "linux/arm64"}:
-        raise RecoveryError(f"Docker Hub image {component.package}:{version} lacks required Linux platforms")
-    return {"kind": "oci", "image": f"{component.package}:{version}", "digest": digest, "platforms": sorted(platforms)}
+        raise RecoveryError(
+            f"Docker Hub image {component.package}:{version} lacks required Linux platforms"
+        )
+    return {
+        "kind": "oci",
+        "image": f"{component.package}:{version}",
+        "digest": digest,
+        "platforms": sorted(platforms),
+    }
 
 
 def archive_files(path: Path, *, zipped: bool = False) -> dict[str, bytes]:
@@ -890,7 +1180,10 @@ def archive_files(path: Path, *, zipped: bool = False) -> dict[str, bytes]:
         return files
     with tarfile.open(path, "r:*") as archive:
         for member in archive.getmembers():
-            if member.isfile() and (extracted := archive.extractfile(member)) is not None:
+            if (
+                member.isfile()
+                and (extracted := archive.extractfile(member)) is not None
+            ):
                 files[member.name] = extracted.read()
     return files
 
@@ -903,25 +1196,39 @@ def strip_root(files: dict[str, bytes]) -> dict[str, bytes]:
     }
 
 
-def verify_pypi(client: PublicClient, component: Component, version: str, commit: str) -> dict[str, Any]:
+def verify_pypi(
+    client: PublicClient, component: Component, version: str, commit: str
+) -> dict[str, Any]:
     package = urllib.parse.quote(component.package, safe="")
     encoded_version = urllib.parse.quote(version, safe="")
     url = f"https://pypi.org/pypi/{package}/{encoded_version}/json"
     try:
         payload = client.json(url)
     except NotFound as error:
-        raise NotFound(f"PyPI does not expose {component.package}=={version}", "registry-publication") from error
+        raise NotFound(
+            f"PyPI does not expose {component.package}=={version}",
+            "registry-publication",
+        ) from error
     files = [item for item in payload.get("urls", []) if not item.get("yanked")]
     sdist = next((item for item in files if item.get("packagetype") == "sdist"), None)
     wheels = [item for item in files if item.get("packagetype") == "bdist_wheel"]
     if sdist is None or not wheels:
-        raise RecoveryError(f"PyPI release {component.package}=={version} lacks a wheel or source archive")
+        raise RecoveryError(
+            f"PyPI release {component.package}=={version} lacks a wheel or source archive"
+        )
     with tempfile.TemporaryDirectory(prefix="release-recovery-pypi-") as temporary:
         directory = Path(temporary)
         source_path = directory / "source.tar.gz"
         sdist_path = directory / str(sdist["filename"])
-        client.download(f"https://github.com/{component.repository}/archive/{commit}.tar.gz", source_path)
-        client.download(sdist["url"], sdist_path, expected_sha256=sdist.get("digests", {}).get("sha256"))
+        client.download(
+            f"https://github.com/{component.repository}/archive/{commit}.tar.gz",
+            source_path,
+        )
+        client.download(
+            sdist["url"],
+            sdist_path,
+            expected_sha256=sdist.get("digests", {}).get("sha256"),
+        )
         source_files = strip_root(archive_files(source_path))
         sdist_files = strip_root(archive_files(sdist_path))
         compared = 0
@@ -931,24 +1238,35 @@ def verify_pypi(client: PublicClient, component: Component, version: str, commit
             if name == "setup.cfg" and name not in source_files:
                 continue
             if source_files.get(name) != content:
-                raise RecoveryError(f"PyPI source file {name} differs from source commit {commit}")
+                raise RecoveryError(
+                    f"PyPI source file {name} differs from source commit {commit}"
+                )
             compared += 1
         if not compared:
-            raise RecoveryError(f"PyPI release {component.package}=={version} has no comparable source files")
+            raise RecoveryError(
+                f"PyPI release {component.package}=={version} has no comparable source files"
+            )
     return {"kind": "pypi", "registry": url, "source_files_compared": compared}
 
 
-def verify_crate(client: PublicClient, component: Component, version: str, commit: str) -> dict[str, Any]:
+def verify_crate(
+    client: PublicClient, component: Component, version: str, commit: str
+) -> dict[str, Any]:
     package = urllib.parse.quote(component.package, safe="")
     encoded_version = urllib.parse.quote(version, safe="")
     url = f"https://crates.io/api/v1/crates/{package}/{encoded_version}"
     try:
         payload = client.json(url)
     except NotFound as error:
-        raise NotFound(f"crates.io does not expose {component.package}@{version}", "registry-publication") from error
+        raise NotFound(
+            f"crates.io does not expose {component.package}@{version}",
+            "registry-publication",
+        ) from error
     published = payload.get("version", {})
     if published.get("num") != version or published.get("yanked"):
-        raise RecoveryError(f"crates.io release {component.package}@{version} is not active")
+        raise RecoveryError(
+            f"crates.io release {component.package}@{version} is not active"
+        )
     checksum = published.get("checksum")
     with tempfile.TemporaryDirectory(prefix="release-recovery-crate-") as temporary:
         archive_path = Path(temporary) / f"{component.package}-{version}.crate"
@@ -958,13 +1276,29 @@ def verify_crate(client: PublicClient, component: Component, version: str, commi
             expected_sha256=checksum,
         )
         with tarfile.open(archive_path, "r:gz") as archive:
-            members = [member for member in archive.getmembers() if member.name.endswith("/.cargo_vcs_info.json")]
-            if len(members) != 1 or (extracted := archive.extractfile(members[0])) is None:
+            members = [
+                member
+                for member in archive.getmembers()
+                if member.name.endswith("/.cargo_vcs_info.json")
+            ]
+            if (
+                len(members) != 1
+                or (extracted := archive.extractfile(members[0])) is None
+            ):
                 raise RecoveryError("published crate has no unique source identity")
             vcs = json.load(extracted)
-    if vcs.get("git", {}).get("sha1") != commit or vcs.get("git", {}).get("dirty", False):
-        raise RecoveryError(f"crates.io archive for {component.package}@{version} names a different source commit")
-    return {"kind": "crates.io", "registry": url, "checksum": checksum, "source_commit": commit}
+    if vcs.get("git", {}).get("sha1") != commit or vcs.get("git", {}).get(
+        "dirty", False
+    ):
+        raise RecoveryError(
+            f"crates.io archive for {component.package}@{version} names a different source commit"
+        )
+    return {
+        "kind": "crates.io",
+        "registry": url,
+        "checksum": checksum,
+        "source_commit": commit,
+    }
 
 
 def parse_checksums(raw: bytes) -> dict[str, str]:
@@ -972,7 +1306,9 @@ def parse_checksums(raw: bytes) -> dict[str, str]:
     try:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as error:
-        raise RecoveryError("CLI SHA256SUMS is not valid UTF-8", "registry-publication") from error
+        raise RecoveryError(
+            "CLI SHA256SUMS is not valid UTF-8", "registry-publication"
+        ) from error
     for line in lines:
         match = re.fullmatch(r"([0-9a-fA-F]{64})\s+[*]?([^/\s]+)", line.strip())
         if match:
@@ -980,16 +1316,24 @@ def parse_checksums(raw: bytes) -> dict[str, str]:
     return checksums
 
 
-def verify_cli(client: PublicClient, component: Component, version: str, commit: str) -> dict[str, Any]:
+def verify_cli(
+    client: PublicClient, component: Component, version: str, commit: str
+) -> dict[str, Any]:
     encoded = urllib.parse.quote(version, safe="")
     try:
-        release = client.json(f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}")
+        release = client.json(
+            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}"
+        )
     except NotFound as error:
-        raise NotFound(f"CLI GitHub Release {version} is absent", "registry-publication") from error
+        raise NotFound(
+            f"CLI GitHub Release {version} is absent", "registry-publication"
+        ) from error
     assets = {asset.get("name"): asset for asset in release.get("assets", [])}
     missing = CLI_ASSETS - set(assets)
     if release.get("draft") or release.get("tag_name") != version or missing:
-        raise RecoveryError(f"CLI GitHub Release {version} is incomplete; missing assets: {sorted(missing)}")
+        raise RecoveryError(
+            f"CLI GitHub Release {version} is incomplete; missing assets: {sorted(missing)}"
+        )
 
     checksum_asset = assets["SHA256SUMS"]
     checksum_raw = client.bytes(checksum_asset["browser_download_url"])
@@ -1005,10 +1349,20 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
     verified_assets: list[dict[str, Any]] = []
     signer_workflow = f"{component.repository}/.github/workflows/release.yml"
     attestation_modes = [
-        ("exact-tag", ["--source-ref", f"refs/tags/{version}", "--source-digest", commit],
-         {"mode": "exact-tag", "ref": f"refs/tags/{version}", "commit": commit}),
-        ("qualified-main-workflow", ["--source-ref", "refs/heads/main", "--signer-workflow", signer_workflow],
-         {"mode": "qualified-main-workflow", "ref": "refs/heads/main", "workflow": signer_workflow}),
+        (
+            "exact-tag",
+            ["--source-ref", f"refs/tags/{version}", "--source-digest", commit],
+            {"mode": "exact-tag", "ref": f"refs/tags/{version}", "commit": commit},
+        ),
+        (
+            "qualified-main-workflow",
+            ["--source-ref", "refs/heads/main", "--signer-workflow", signer_workflow],
+            {
+                "mode": "qualified-main-workflow",
+                "ref": "refs/heads/main",
+                "workflow": signer_workflow,
+            },
+        ),
     ]
     selected_attestation_mode: tuple[str, list[str], dict[str, str]] | None = None
     with tempfile.TemporaryDirectory(prefix="release-recovery-cli-") as temporary:
@@ -1045,11 +1399,27 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
                 "registry-publication",
             )
         for asset_path in downloaded_paths:
-            base_arguments = ["gh", "attestation", "verify", str(asset_path), "--repo", component.repository]
-            candidates = attestation_modes if selected_attestation_mode is None else [selected_attestation_mode]
+            base_arguments = [
+                "gh",
+                "attestation",
+                "verify",
+                str(asset_path),
+                "--repo",
+                component.repository,
+            ]
+            candidates = (
+                attestation_modes
+                if selected_attestation_mode is None
+                else [selected_attestation_mode]
+            )
             failures: list[str] = []
             for mode in candidates:
-                process = subprocess.run([*base_arguments, *mode[1]], check=False, text=True, capture_output=True)
+                process = subprocess.run(
+                    [*base_arguments, *mode[1]],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                )
                 if process.returncode == 0:
                     selected_attestation_mode = mode
                     break
@@ -1062,7 +1432,10 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
 
         assert selected_attestation_mode is not None
         if shutil.which("php") is None:
-            raise RecoveryError("PHP is required to verify CLI release source metadata", "registry-publication")
+            raise RecoveryError(
+                "PHP is required to verify CLI release source metadata",
+                "registry-publication",
+            )
         phar_version = subprocess.run(
             ["php", str(directory / "dw.phar"), "--version"],
             check=False,
@@ -1073,7 +1446,8 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
         expected_identity = f"{version} (commit {commit[:12]},"
         if phar_version.returncode or expected_identity not in phar_version.stdout:
             raise RecoveryError(
-                f"CLI PHAR for {version} does not embed planned source commit {commit}", "registry-publication"
+                f"CLI PHAR for {version} does not embed planned source commit {commit}",
+                "registry-publication",
             )
 
     return {
@@ -1082,7 +1456,10 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
         "url": release.get("html_url"),
         "build_attestations_verified": True,
         "build_attestation_authority": selected_attestation_mode[2],
-        "package_source": {"commit": commit, "embedded_phar_identity": phar_version.stdout.strip()},
+        "package_source": {
+            "commit": commit,
+            "embedded_phar_identity": phar_version.stdout.strip(),
+        },
         "assets": verified_assets,
     }
 
@@ -1096,10 +1473,14 @@ VERIFIERS = {
 }
 
 
-def verify_component(client: PublicClient, name: str, identity: dict[str, str]) -> dict[str, Any]:
+def verify_component(
+    client: PublicClient, name: str, identity: dict[str, str]
+) -> dict[str, Any]:
     component = COMPONENTS[name]
     require_source_tag(client, name, identity)
-    distribution = VERIFIERS[component.distribution](client, component, identity["version"], identity["commit"])
+    distribution = VERIFIERS[component.distribution](
+        client, component, identity["version"], identity["commit"]
+    )
     github_release = (
         distribution
         if component.distribution == "github-release"
@@ -1113,11 +1494,19 @@ def verify_component(client: PublicClient, name: str, identity: dict[str, str]) 
     }
 
 
-def verify_distribution(client: PublicClient, name: str, identity: dict[str, str]) -> dict[str, Any]:
+def verify_distribution(
+    client: PublicClient, name: str, identity: dict[str, str]
+) -> dict[str, Any]:
     component = COMPONENTS[name]
     require_source_tag(client, name, identity)
-    distribution = VERIFIERS[component.distribution](client, component, identity["version"], identity["commit"])
-    return {"version": identity["version"], "commit": identity["commit"], "distribution": distribution}
+    distribution = VERIFIERS[component.distribution](
+        client, component, identity["version"], identity["commit"]
+    )
+    return {
+        "version": identity["version"],
+        "commit": identity["commit"],
+        "distribution": distribution,
+    }
 
 
 def write_output(path: Path | None, values: dict[str, str]) -> None:
@@ -1128,35 +1517,56 @@ def write_output(path: Path | None, values: dict[str, str]) -> None:
             output.write(f"{key}={value}\n")
 
 
-def base_state(component: str, tag: str | None = None, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+def base_state(
+    component: str, tag: str | None = None, plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "schema": STATE_SCHEMA,
         "component": component,
         "release_plan_tag": tag,
         "plan": plan.get("plan") if plan else None,
         "channel": plan.get("channel") if plan else None,
-        "observed_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "observed_at": dt.datetime.now(dt.UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
     }
 
 
-def scheduled_continuity_pause(client: PublicClient, plan: dict[str, Any]) -> dict[str, str] | None:
+def scheduled_continuity_pause(
+    client: PublicClient, plan: dict[str, Any]
+) -> dict[str, str] | None:
     accepted_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/accepted"
     accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
     if accepted_commit is None:
         return None
-    accepted_plan = read_record(client, accepted_tag, accepted_commit, "release-plan.json")
+    accepted_plan = read_record(
+        client, accepted_tag, accepted_commit, "release-plan.json"
+    )
     validate_plan(accepted_plan)
     if canonical_json(accepted_plan) != canonical_json(plan):
-        raise RecoveryError("continuity acceptance record names a different release plan", "continuity-gate")
+        raise RecoveryError(
+            "continuity acceptance record names a different release plan",
+            "continuity-gate",
+        )
     resumed_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/resumed"
     resumed_commit = resolve_tag(client, CONTROL_REPOSITORY, resumed_tag)
     if resumed_commit is not None:
-        resumed_plan = read_record(client, resumed_tag, resumed_commit, "release-plan.json")
+        resumed_plan = read_record(
+            client, resumed_tag, resumed_commit, "release-plan.json"
+        )
         validate_plan(resumed_plan)
         if canonical_json(resumed_plan) != canonical_json(plan):
-            raise RecoveryError("continuity resume record names a different release plan", "continuity-gate")
+            raise RecoveryError(
+                "continuity resume record names a different release plan",
+                "continuity-gate",
+            )
         return None
-    return {"accepted_tag": accepted_tag, "accepted_commit": accepted_commit, "resumed_tag": resumed_tag}
+    return {
+        "accepted_tag": accepted_tag,
+        "accepted_commit": accepted_commit,
+        "resumed_tag": resumed_tag,
+    }
 
 
 def source_product_train_evidence(
@@ -1166,7 +1576,9 @@ def source_product_train_evidence(
 ) -> dict[str, str]:
     specification = SOURCE_PRODUCT_TRAINS.get(component_name)
     if specification is None:
-        raise RecoveryError(f"{component_name} has no source-bound product-train authority")
+        raise RecoveryError(
+            f"{component_name} has no source-bound product-train authority"
+        )
     package, path = specification
     raw = client.bytes(
         f"https://api.github.com/repos/{COMPONENTS[component_name].repository}/contents/"
@@ -1186,8 +1598,14 @@ def source_product_train_evidence(
             "source-identity",
         )
     extra = manifest.get("extra")
-    durable_metadata = extra.get("durable-workflow", {}) if isinstance(extra, dict) else {}
-    declared_train = durable_metadata.get("product-train") if isinstance(durable_metadata, dict) else None
+    durable_metadata = (
+        extra.get("durable-workflow", {}) if isinstance(extra, dict) else {}
+    )
+    declared_train = (
+        durable_metadata.get("product-train")
+        if isinstance(durable_metadata, dict)
+        else None
+    )
     if manifest.get("name") != package or declared_train != identity["version"]:
         raise RecoveryError(
             f"{component_name} source declares product train {declared_train or '<missing>'}, "
@@ -1223,10 +1641,13 @@ def resolve_component(
     upstream: dict[str, Any] = {}
     for dependency in component.dependencies:
         try:
-            upstream[dependency] = verify_component(client, dependency, plan["components"][dependency])
+            upstream[dependency] = verify_component(
+                client, dependency, plan["components"][dependency]
+            )
         except NotFound as error:
             raise RecoveryError(
-                f"{component_name} is waiting for upstream {dependency}: {error}", "upstream-publication"
+                f"{component_name} is waiting for upstream {dependency}: {error}",
+                "upstream-publication",
             ) from error
 
     existing_tag = resolve_tag(client, component.repository, identity["version"])
@@ -1258,7 +1679,11 @@ def resolve_component(
                 )
         action = "publish"
     source_train = None
-    if action == "publish" and plan["channel"] == "beta" and component_name in SOURCE_PRODUCT_TRAINS:
+    if (
+        action == "publish"
+        and plan["channel"] == "beta"
+        and component_name in SOURCE_PRODUCT_TRAINS
+    ):
         source_train = source_product_train_evidence(client, component_name, identity)
     state = base_state(component_name, tag, plan)
     state.update(
@@ -1269,7 +1694,10 @@ def resolve_component(
             "default_branches": branches,
             "recovery_workflows": recovery_workflows,
             "upstream": upstream,
-            "source_tag": {"status": "present" if existing_tag else "absent", "commit": existing_tag},
+            "source_tag": {
+                "status": "present" if existing_tag else "absent",
+                "commit": existing_tag,
+            },
             "declared_identity": identity,
             "public_evidence": completed,
             "resume_action": (
@@ -1308,7 +1736,9 @@ def resolve_component(
         outputs.update(
             {
                 "release_date": str(prepared_identity["release_notes"]["release_date"]),
-                "release_notes_sha256": str(prepared_identity["release_notes"]["sha256"]),
+                "release_notes_sha256": str(
+                    prepared_identity["release_notes"]["sha256"]
+                ),
             }
         )
     return state, outputs
@@ -1330,7 +1760,10 @@ def verify_with_retry(
         except NotFound as error:
             last_error = error
             if attempt < attempts:
-                print(f"waiting for public artifact ({attempt}/{attempts}): {error}", file=sys.stderr)
+                print(
+                    f"waiting for public artifact ({attempt}/{attempts}): {error}",
+                    file=sys.stderr,
+                )
                 time.sleep(sleep_seconds)
     assert last_error is not None
     raise last_error
@@ -1369,8 +1802,12 @@ def main() -> int:
             try:
                 runs = json.loads(args.runs.read_bytes())
             except (OSError, json.JSONDecodeError) as error:
-                raise RecoveryError(f"cannot read publication run metadata: {error}", "publication") from error
-            selection = select_publication_run(args.release_tag, args.release_commit, runs)
+                raise RecoveryError(
+                    f"cannot read publication run metadata: {error}", "publication"
+                ) from error
+            selection = select_publication_run(
+                args.release_tag, args.release_commit, runs
+            )
             print(
                 "\t".join(
                     str(selection.get(field) or "")
@@ -1382,11 +1819,17 @@ def main() -> int:
             record_commit: str | None = None
             plan: dict[str, Any] | None = None
             try:
-                tag, record_commit, plan, preparation = discover_plan(client, args.plan_tag, args.component)
+                tag, record_commit, plan, preparation = discover_plan(
+                    client, args.plan_tag, args.component
+                )
                 args.plan_output.write_bytes(canonical_json(plan))
                 if preparation is not None:
                     args.preparation_output.write_bytes(canonical_json(preparation))
-                continuity_pause = scheduled_continuity_pause(client, plan) if args.plan_tag is None else None
+                continuity_pause = (
+                    scheduled_continuity_pause(client, plan)
+                    if args.plan_tag is None
+                    else None
+                )
                 if continuity_pause is not None:
                     paused = base_state(args.component, tag, plan)
                     paused.update(
@@ -1463,11 +1906,15 @@ def main() -> int:
                 raise
         else:
             if args.attempts < 1 or args.sleep < 0:
-                raise RecoveryError("retry attempts must be positive and sleep must be non-negative")
+                raise RecoveryError(
+                    "retry attempts must be positive and sleep must be non-negative"
+                )
             try:
                 plan = json.loads(args.plan.read_bytes())
             except (OSError, json.JSONDecodeError) as error:
-                raise RecoveryError(f"cannot read canonical release plan: {error}") from error
+                raise RecoveryError(
+                    f"cannot read canonical release plan: {error}"
+                ) from error
             validate_plan(plan)
             try:
                 public = verify_with_retry(
@@ -1478,7 +1925,9 @@ def main() -> int:
                     args.sleep,
                     registry_only=args.registry_only,
                 )
-                state = base_state(args.component, f"{PLAN_TAG_PREFIX}{plan['plan']}", plan)
+                state = base_state(
+                    args.component, f"{PLAN_TAG_PREFIX}{plan['plan']}", plan
+                )
                 state.update(
                     {
                         "phase": "complete",
@@ -1489,7 +1938,9 @@ def main() -> int:
                 )
                 args.evidence.write_bytes(canonical_json(state))
             except RecoveryError as error:
-                state = base_state(args.component, f"{PLAN_TAG_PREFIX}{plan['plan']}", plan)
+                state = base_state(
+                    args.component, f"{PLAN_TAG_PREFIX}{plan['plan']}", plan
+                )
                 state.update(
                     {
                         "phase": error.phase,

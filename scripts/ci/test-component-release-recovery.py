@@ -26,36 +26,32 @@ from recovery_workflow_authority import (
 )
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
-RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
+RUST_WORKFLOW_FIXTURE = Path(__file__).with_name(
+    "sdk-rust-release-plan-recovery.fixture.yml"
+)
+SERVER_WORKFLOW_FIXTURE = Path(__file__).with_name(
+    "server-release-plan-recovery.fixture.yml"
+)
+PYTHON_WORKFLOW_FIXTURE = Path(__file__).with_name(
+    "sdk-python-release-plan-recovery.fixture.yml"
+)
 
 # This is the complete public sdk-rust workflow identified by the verifier's
 # pinned digest, not a reduced semantic approximation of its shell commands.
 CURRENT_RUST_RECOVERY_WORKFLOW = RUST_WORKFLOW_FIXTURE.read_text()
-
-GENERIC_RECOVERY_WORKFLOW = r"""on:
-  schedule:
-  workflow_dispatch:
-jobs:
-  recover:
-    steps:
-      - run: |
-          python recovery.py resolve --preparation-output release-preparation.json
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"
-          select-publication-run \
-            --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT"
-          gh run list --json databaseId,displayTitle,headBranch,headSha,status,conclusion
-          gh workflow run release.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
-"""
-
-GENERIC_MAIN_RECOVERY_WORKFLOW = GENERIC_RECOVERY_WORKFLOW.replace(
-    '--ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"',
-    '--ref main -f tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT"',
-)
+CURRENT_SERVER_RECOVERY_WORKFLOW = SERVER_WORKFLOW_FIXTURE.read_text()
+CURRENT_PYTHON_RECOVERY_WORKFLOW = PYTHON_WORKFLOW_FIXTURE.read_text()
+CURRENT_PUBLIC_WORKFLOW_SHA256 = {
+    "sdk-rust": "c43b0e100c388301af12b9f5e9354955ff6c31b3156b4a0b66a8c3379516645c",
+    "server": "d8425e770a753dab9b73e468405f7089e362967a398789a71eb50de96ab0eb2b",
+    "sdk-python": "2e409f834a8f1390252f0b795cb563ff3f2d3ae441104d467b6fe9655dbf5bc4",
+}
 
 
 def load_recovery_module():
-    spec = importlib.util.spec_from_file_location("component_release_recovery_test", RECOVERY_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "component_release_recovery_test", RECOVERY_SCRIPT
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -63,7 +59,9 @@ def load_recovery_module():
     return module
 
 
-def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
+def github_http_error(
+    status: int, body: bytes = b"error", **headers: str
+) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         "https://api.github.com/repos/durable-workflow/.github/releases",
         status,
@@ -144,26 +142,37 @@ class QualifiedAuthorityConsumerTest(unittest.TestCase):
                     return {"sha": AUTHORITY_COMMIT}
                 if url == qualification_runs_url(AUTHORITY_COMMIT):
                     return {"total_count": len(runs), "workflow_runs": runs}
-                raise AssertionError(f"peer source was read before authority qualification: {url}")
+                raise AssertionError(
+                    f"peer source was read before authority qualification: {url}"
+                )
 
             def bytes(self, url: str, *, accept: str | None = None) -> bytes:
                 self.requests.append(("bytes", url))
                 if url != authority_url(AUTHORITY_COMMIT):
-                    raise AssertionError(f"peer source was read before authority qualification: {url}")
+                    raise AssertionError(
+                        f"peer source was read before authority qualification: {url}"
+                    )
                 return authority_raw
 
         return Client(), authority_raw
 
     def test_green_qualification_binds_manifest_bytes_and_revision(self) -> None:
         client, authority_raw = self.client([qualification_run()])
-        workflows, source = self.recovery.load_recovery_workflow_authority(client)
+        authority = self.recovery.load_recovery_workflow_authority(client)
 
-        self.assertEqual(set(self.recovery.COMPONENTS), set(workflows))
-        self.assertEqual(AUTHORITY_COMMIT, source["commit"])
-        self.assertEqual(hashlib.sha256(authority_raw).hexdigest(), source["sha256"])
-        self.assertEqual(AUTHORITY_COMMIT, source["qualification"]["head_sha"])
-        self.assertEqual(".github/workflows/beta-candidate.yml", source["qualification"]["path"])
-        self.assertEqual("main", source["qualification"]["head_branch"])
+        self.assertEqual(set(self.recovery.COMPONENTS), set(authority.workflows))
+        self.assertEqual(AUTHORITY_COMMIT, authority.source["commit"])
+        self.assertEqual(
+            hashlib.sha256(authority_raw).hexdigest(), authority.source["sha256"]
+        )
+        self.assertEqual(
+            AUTHORITY_COMMIT, authority.source["qualification"]["head_sha"]
+        )
+        self.assertEqual(
+            ".github/workflows/beta-candidate.yml",
+            authority.source["qualification"]["path"],
+        )
+        self.assertEqual("main", authority.source["qualification"]["head_branch"])
         self.assertEqual(
             [
                 ("json", authority_ref_url()),
@@ -173,13 +182,28 @@ class QualifiedAuthorityConsumerTest(unittest.TestCase):
             client.requests,
         )
 
+    def test_authority_cannot_be_constructed_outside_qualified_loading(self) -> None:
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryWorkflowAuthorityError,
+            "not produced by qualified loading",
+        ):
+            self.recovery.QualifiedRecoveryWorkflowAuthority(
+                {},
+                {},
+                _constructor=object(),
+            )
+
     def test_non_green_fails_before_authority_or_peer_source_reads(self) -> None:
         cases = (
             ("pending", [qualification_run("in_progress", None)], "pending"),
             ("failed", [qualification_run("completed", "failure")], "failed"),
             ("cancelled", [qualification_run("completed", "cancelled")], "cancelled"),
             ("absent", [], "absent"),
-            ("revision-mismatch", [qualification_run(head_sha="c" * 40)], "another commit"),
+            (
+                "revision-mismatch",
+                [qualification_run(head_sha="c" * 40)],
+                "another commit",
+            ),
             (
                 "wrong-workflow",
                 [qualification_run(path=".github/workflows/source-qualification.yml")],
@@ -237,7 +261,9 @@ class ContinuityGateTest(unittest.TestCase):
             mock.patch.object(self.recovery, "read_record", return_value=plan),
             mock.patch.object(self.recovery, "validate_plan"),
         ):
-            self.assertIsNone(self.recovery.scheduled_continuity_pause(mock.Mock(), plan))
+            self.assertIsNone(
+                self.recovery.scheduled_continuity_pause(mock.Mock(), plan)
+            )
 
 
 class PublicClientRetryTest(unittest.TestCase):
@@ -248,7 +274,11 @@ class PublicClientRetryTest(unittest.TestCase):
     def test_retries_service_failures_connection_resets_and_timeouts(self) -> None:
         failures = (
             ("service", github_http_error(503, **{"Retry-After": "4"}), 4),
-            ("connection-reset", urllib.error.URLError(ConnectionResetError("reset")), 1),
+            (
+                "connection-reset",
+                urllib.error.URLError(ConnectionResetError("reset")),
+                1,
+            ),
             ("timeout", urllib.error.URLError(TimeoutError("timed out")), 1),
         )
 
@@ -285,10 +315,16 @@ class PublicClientRetryTest(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(self.recovery.urllib.request, "urlopen", side_effect=error) as open_url,
-            self.assertRaisesRegex(self.recovery.RecoveryError, r"public request failed \(401\)"),
+            mock.patch.object(
+                self.recovery.urllib.request, "urlopen", side_effect=error
+            ) as open_url,
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError, r"public request failed \(401\)"
+            ),
         ):
-            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+            client.json(
+                "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"
+            )
 
         self.assertEqual([], sleeps)
         self.assertEqual(1, open_url.call_count)
@@ -296,7 +332,9 @@ class PublicClientRetryTest(unittest.TestCase):
     def test_authorization_requires_explicit_rate_limit_guidance(self) -> None:
         client = self.recovery.PublicClient(
             max_attempts=2,
-            sleep=lambda _delay: self.fail("ordinary authorization failure was retried"),
+            sleep=lambda _delay: self.fail(
+                "ordinary authorization failure was retried"
+            ),
         )
         with (
             mock.patch.object(
@@ -304,13 +342,19 @@ class PublicClientRetryTest(unittest.TestCase):
                 "urlopen",
                 side_effect=github_http_error(403, b"Resource not accessible"),
             ) as open_url,
-            self.assertRaisesRegex(self.recovery.RecoveryError, r"public request failed \(403\)"),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError, r"public request failed \(403\)"
+            ),
         ):
-            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+            client.json(
+                "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"
+            )
         self.assertEqual(1, open_url.call_count)
 
         sleeps: list[float] = []
-        client = self.recovery.PublicClient(max_attempts=2, retry_base_seconds=1, sleep=sleeps.append)
+        client = self.recovery.PublicClient(
+            max_attempts=2, retry_base_seconds=1, sleep=sleeps.append
+        )
         with mock.patch.object(
             self.recovery.urllib.request,
             "urlopen",
@@ -325,13 +369,19 @@ class PublicClientRetryTest(unittest.TestCase):
         ) as open_url:
             self.assertEqual(
                 [],
-                client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"),
+                client.json(
+                    "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"
+                ),
             )
         self.assertEqual([1], sleeps)
         self.assertEqual(2, open_url.call_count)
 
-    def test_retry_exhaustion_has_a_distinct_infrastructure_classification(self) -> None:
-        client = self.recovery.PublicClient(max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
+    def test_retry_exhaustion_has_a_distinct_infrastructure_classification(
+        self,
+    ) -> None:
+        client = self.recovery.PublicClient(
+            max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None
+        )
         with (
             mock.patch.object(
                 self.recovery.urllib.request,
@@ -344,7 +394,9 @@ class PublicClientRetryTest(unittest.TestCase):
                 r"attempts=2, reason=retry-exhausted, status=502",
             ),
         ):
-            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+            client.json(
+                "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"
+            )
         self.assertEqual(2, open_url.call_count)
 
 
@@ -357,7 +409,9 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
         return {
             "plan": "missing-preparation",
             "channel": "alpha",
-            "components": {"workflow": {"version": "2.0.0-alpha.1", "commit": "a" * 40}},
+            "components": {
+                "workflow": {"version": "2.0.0-alpha.1", "commit": "a" * 40}
+            },
         }
 
     def test_source_product_train_is_bound_to_the_planned_identity(self) -> None:
@@ -370,7 +424,9 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
             }
         ).encode()
 
-        evidence = self.recovery.source_product_train_evidence(client, "workflow", identity)
+        evidence = self.recovery.source_product_train_evidence(
+            client, "workflow", identity
+        )
 
         self.assertEqual(identity["version"], evidence["product_train"])
         self.assertEqual(identity["commit"], evidence["source_commit"])
@@ -380,11 +436,17 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
             accept="application/vnd.github.raw+json",
         )
 
-        client.bytes.return_value = client.bytes.return_value.replace(b"beta.3", b"beta.2")
-        with self.assertRaisesRegex(self.recovery.RecoveryError, "not planned version 2.0.0-beta.3"):
+        client.bytes.return_value = client.bytes.return_value.replace(
+            b"beta.3", b"beta.2"
+        )
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError, "not planned version 2.0.0-beta.3"
+        ):
             self.recovery.source_product_train_evidence(client, "workflow", identity)
 
-    def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
+    def test_discovery_rejects_missing_preparation_for_an_incomplete_release(
+        self,
+    ) -> None:
         candidate = self.candidate()
         tag = "release-plan/missing-preparation"
         record_commit = "b" * 40
@@ -413,14 +475,18 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
                 "verify_component",
                 side_effect=self.recovery.NotFound("release is incomplete"),
             ),
-            self.assertRaisesRegex(self.recovery.RecoveryError, "only completed legacy releases"),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError, "only completed legacy releases"
+            ),
         ):
             self.recovery.discover_plan(client, tag, "workflow")
 
     def test_missing_preparation_cannot_resolve_to_publish(self) -> None:
         candidate = self.candidate()
         with (
-            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(
+                self.recovery, "verify_plan_authority", return_value=({}, {})
+            ),
             mock.patch.object(self.recovery, "resolve_tag", return_value=None),
             self.assertRaisesRegex(
                 self.recovery.RecoveryError,
@@ -441,9 +507,15 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
         identity = candidate["components"]["workflow"]
         public_evidence = {"version": identity["version"], "commit": identity["commit"]}
         with (
-            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
-            mock.patch.object(self.recovery, "resolve_tag", return_value=identity["commit"]),
-            mock.patch.object(self.recovery, "verify_component", return_value=public_evidence),
+            mock.patch.object(
+                self.recovery, "verify_plan_authority", return_value=({}, {})
+            ),
+            mock.patch.object(
+                self.recovery, "resolve_tag", return_value=identity["commit"]
+            ),
+            mock.patch.object(
+                self.recovery, "verify_component", return_value=public_evidence
+            ),
         ):
             state, outputs = self.recovery.resolve_component(
                 mock.Mock(),
@@ -464,28 +536,71 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.recovery = load_recovery_module()
 
+    def qualified_authority(self):
+        workflows = {
+            name: {
+                "repository": component.repository,
+                "ref": f"refs/heads/{component.default_branch}",
+                "path": ".github/workflows/release-plan-recovery.yml",
+                "state": "active",
+                "sha256": CURRENT_PUBLIC_WORKFLOW_SHA256.get(
+                    name,
+                    hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                ),
+            }
+            for name, component in self.recovery.COMPONENTS.items()
+        }
+        source = {
+            "repository": "durable-workflow/.github",
+            "ref": "refs/heads/main",
+            "commit": AUTHORITY_COMMIT,
+            "path": "release-recovery/authority.json",
+            "sha256": "b" * 64,
+            "qualification": qualification_run(),
+        }
+        with mock.patch.object(
+            self.recovery,
+            "load_qualified_authority",
+            return_value=(workflows, source),
+        ):
+            return self.recovery.load_recovery_workflow_authority(mock.Mock())
+
     def assert_rejected(self, source: str) -> None:
         with self.assertRaises(self.recovery.RecoveryError) as caught:
             self.recovery.verify_recovery_workflow_source(
+                self.qualified_authority(),
                 "sdk-rust",
                 source,
-                hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest(),
+            )
+        self.assertEqual(caught.exception.phase, "default-branch-preflight")
+
+    def assert_contract_rejected(self, name: str, source: str) -> None:
+        with self.assertRaises(self.recovery.RecoveryError) as caught:
+            self.recovery.verify_recovery_workflow_source(
+                self.qualified_authority(),
+                name,
+                source,
             )
         self.assertEqual(caught.exception.phase, "default-branch-preflight")
 
     def test_accepts_only_the_current_protected_rust_workflow_identity(self) -> None:
-        digest = hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW, digest)
         self.recovery.verify_recovery_workflow_source(
+            self.qualified_authority(),
+            "sdk-rust",
+            CURRENT_RUST_RECOVERY_WORKFLOW,
+        )
+        self.recovery.verify_recovery_workflow_source(
+            self.qualified_authority(),
             "sdk-rust",
             CURRENT_RUST_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
-            digest,
         )
 
     def test_rejects_shell_semantic_bypasses_and_any_source_mutation(self) -> None:
         source = CURRENT_RUST_RECOVERY_WORKFLOW
         variants = {
-            "one-byte mutation": source.replace("timeout-minutes: 30", "timeout-minutes: 31", 1),
+            "one-byte mutation": source.replace(
+                "timeout-minutes: 30", "timeout-minutes: 31", 1
+            ),
             "one-line mutation": source + "\n",
             "readarray release tag mutation": source.replace(
                 "          select_publication_run() {",
@@ -515,7 +630,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         source = CURRENT_RUST_RECOVERY_WORKFLOW
         tag_step = "      - name: Create or verify the exact planned source tag"
         publication_step = "      - name: Start or resume repository-owned publication"
-        completion_step = "      - name: Verify crates.io source identity and the GitHub Release"
+        completion_step = (
+            "      - name: Verify crates.io source identity and the GitHub Release"
+        )
         exact_bindings = """          RELEASE_TAG: ${{ needs.discover.outputs.version }}
           RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}"""
         decoy_step = f"""      - name: Unrelated release identity
@@ -613,7 +730,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         publisher = r"""          python scripts/ci/publish-planned-tag.py \
             --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --plan-tag "$PLAN_TAG" \
             --evidence release-tag-publication-evidence.json"""
-        deferred_publisher = source.replace(publisher, "          echo tag-publication-deferred", 1).replace(
+        deferred_publisher = source.replace(
+            publisher, "          echo tag-publication-deferred", 1
+        ).replace(
             "      - name: Verify crates.io source identity and the GitHub Release",
             "      - name: Deferred source tag publication\n"
             "        run: |\n"
@@ -623,7 +742,7 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         )
         repository_token_creation = source.replace(
             "          python scripts/ci/publish-planned-tag.py",
-            "          gh api --method POST \"repos/$GITHUB_REPOSITORY/git/refs\"\n"
+            '          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"\n'
             "          python scripts/ci/publish-planned-tag.py",
             1,
         )
@@ -676,7 +795,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 "needs.discover.outputs.commit", "github.sha"
             ),
             "different selected workflow": source.replace(
-                "gh run list --workflow release.yml", "gh run list --workflow nightly.yml", 1
+                "gh run list --workflow release.yml",
+                "gh run list --workflow nightly.yml",
+                1,
             ),
             "different dispatched workflow": source.replace(
                 "gh workflow run release.yml", "gh workflow run nightly.yml", 1
@@ -688,7 +809,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 '--release-tag "$RELEASE_TAG"', '--release-tag "$GITHUB_REF_NAME"', 1
             ),
             "mismatched selector commit": source.replace(
-                '--release-commit "$RELEASE_COMMIT"', '--release-commit "$GITHUB_SHA"', 1
+                '--release-commit "$RELEASE_COMMIT"',
+                '--release-commit "$GITHUB_SHA"',
+                1,
             ),
             "mismatched dispatch tag": source.replace(
                 '-f release_tag="$RELEASE_TAG"', '-f release_tag="$GITHUB_REF_NAME"', 1
@@ -698,7 +821,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 "--component sdk-rust --plan mutable-release-plan.json",
                 1,
             ),
-            "broad contents permission": source.replace("contents: read", "contents: write", 1),
+            "broad contents permission": source.replace(
+                "contents: read", "contents: write", 1
+            ),
             "repository token tag creation": repository_token_creation,
         }
 
@@ -707,31 +832,94 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 self.assertNotEqual(variant, source)
                 self.assert_rejected(variant)
 
-    def test_other_components_keep_the_contents_api_contract(self) -> None:
-        tag_context_sha256 = hashlib.sha256(GENERIC_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        main_context_sha256 = hashlib.sha256(GENERIC_MAIN_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.recovery.verify_recovery_workflow_source(
-            "server", GENERIC_RECOVERY_WORKFLOW, tag_context_sha256
-        )
-        self.recovery.verify_recovery_workflow_source(
-            "server", GENERIC_MAIN_RECOVERY_WORKFLOW, main_context_sha256
-        )
+    def test_accepts_current_server_and_python_protected_main_shapes(self) -> None:
+        for name, source in (
+            ("server", CURRENT_SERVER_RECOVERY_WORKFLOW),
+            ("sdk-python", CURRENT_PYTHON_RECOVERY_WORKFLOW),
+        ):
+            with self.subTest(name):
+                self.recovery.verify_recovery_workflow_source(
+                    self.qualified_authority(),
+                    name,
+                    source,
+                )
 
-        missing_commit = GENERIC_MAIN_RECOVERY_WORKFLOW.replace(
-            ' -f release_commit="$RELEASE_COMMIT"',
-            "",
-        )
-        with self.assertRaises(self.recovery.RecoveryError):
-            self.recovery.verify_recovery_workflow_source(
-                "server", missing_commit, main_context_sha256
-            )
+    def test_rejects_ambiguous_protected_main_selector_variants(self) -> None:
+        for name, source in (
+            ("server", CURRENT_SERVER_RECOVERY_WORKFLOW),
+            ("sdk-python", CURRENT_PYTHON_RECOVERY_WORKFLOW),
+        ):
+            variants = {
+                "tag branch selector": source.replace(
+                    "--branch main", '--branch "$RELEASE_TAG"', 1
+                ),
+                "ambiguous branch selector": source.replace(
+                    "--branch main", '--branch main --branch "$RELEASE_TAG"', 1
+                ),
+                "missing event constraint": source.replace(
+                    "--event workflow_dispatch ", "", 1
+                ),
+                "missing branch constraint": source.replace("--branch main ", "", 1),
+                "commented run listing": source.replace(
+                    "            gh run list",
+                    "            # gh run list",
+                    1,
+                ),
+                "selector in unreachable branch": source.replace(
+                    '            decision="$(python',
+                    '            if false; then\n            decision="$(python',
+                    1,
+                ).replace(
+                    "            IFS=$'\\t'",
+                    "            fi\n            IFS=$'\\t'",
+                    1,
+                ),
+                "commit rebound before selection": source.replace(
+                    '            decision="$(python',
+                    '            RELEASE_COMMIT="$GITHUB_SHA"\n'
+                    '            decision="$(python',
+                    1,
+                ),
+                "different selected workflow": source.replace(
+                    "gh run list --workflow", "gh run list --workflow nightly.yml #", 1
+                ),
+                "incomplete selected run identity": source.replace(
+                    "databaseId,event,displayTitle,headBranch,headSha,status,conclusion",
+                    "databaseId,event,headBranch,headSha,status,conclusion",
+                    1,
+                ).replace(
+                    "databaseId,displayTitle,headBranch,headSha,status,conclusion",
+                    "databaseId,headBranch,headSha,status,conclusion",
+                    1,
+                ),
+                "missing selector tag": source.replace(
+                    '--release-tag "$RELEASE_TAG" ', "", 1
+                ),
+                "missing selector commit": source.replace(
+                    '--release-commit "$RELEASE_COMMIT" ', "", 1
+                ),
+                "missing selector plan": source.replace(
+                    '--release-plan "$PLAN_TAG" ', "", 1
+                ),
+                "missing dispatch commit": source.replace(
+                    ' -f release_commit="$RELEASE_COMMIT"', "", 1
+                ),
+                "commit mentioned only outside selector identity": source.replace(
+                    '--release-commit "$RELEASE_COMMIT" ', "", 1
+                ).replace(' -f release_commit="$RELEASE_COMMIT"', "", 1),
+                "missing dispatch plan": source.replace(
+                    '            -f release_plan="$PLAN_TAG"', "", 1
+                ),
+                "mutable prepared commit binding": source.replace(
+                    "RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}",
+                    "RELEASE_COMMIT: ${{ github.sha }}",
+                ),
+            }
 
-        protected_only = GENERIC_RECOVERY_WORKFLOW.replace(
-            '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
-            'python scripts/ci/publish-planned-tag.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"',
-        )
-        with self.assertRaises(self.recovery.RecoveryError):
-            self.recovery.verify_recovery_workflow_source("server", protected_only, tag_context_sha256)
+            for label, variant in variants.items():
+                with self.subTest(name=name, variant=label):
+                    self.assertNotEqual(source, variant)
+                    self.assert_contract_rejected(name, variant)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import sys
 import unittest
@@ -13,15 +12,54 @@ from unittest import mock
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 CLI_WORKFLOW_FIXTURE = Path(__file__).with_name("cli-release-plan-recovery.fixture.yml")
 CURRENT_CLI_RECOVERY_WORKFLOW = CLI_WORKFLOW_FIXTURE.read_text()
+CURRENT_CLI_RECOVERY_SHA256 = (
+    "3b3d1be70f3624fc3e0785986e0e483a0a6d2b56c1e2561667a17afa8b74a2f7"
+)
 
 
 def load_recovery_module():
-    spec = importlib.util.spec_from_file_location("component_release_recovery_cli_contract", RECOVERY_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "component_release_recovery_cli_contract", RECOVERY_SCRIPT
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def qualified_authority(recovery, name: str):
+    component = recovery.COMPONENTS[name]
+    workflows = {
+        name: {
+            "repository": component.repository,
+            "ref": f"refs/heads/{component.default_branch}",
+            "path": ".github/workflows/release-plan-recovery.yml",
+            "state": "active",
+            "sha256": CURRENT_CLI_RECOVERY_SHA256,
+        }
+    }
+    authority_source = {
+        "repository": "durable-workflow/.github",
+        "ref": "refs/heads/main",
+        "commit": "a" * 40,
+        "path": "release-recovery/authority.json",
+        "sha256": "b" * 64,
+        "qualification": {
+            "workflow": ".github/workflows/beta-candidate.yml",
+            "event": "push",
+            "head_branch": "main",
+            "head_sha": "a" * 40,
+            "status": "completed",
+            "conclusion": "success",
+        },
+    }
+    with mock.patch.object(
+        recovery,
+        "load_qualified_authority",
+        return_value=(workflows, authority_source),
+    ):
+        return recovery.load_recovery_workflow_authority(mock.Mock())
 
 
 class CliRecoveryWorkflowSourceTest(unittest.TestCase):
@@ -30,18 +68,24 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
         cls.recovery = load_recovery_module()
 
     def test_cli_workflow_fixture_matches_the_pinned_protected_authority(self) -> None:
-        digest = hashlib.sha256(CURRENT_CLI_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.recovery.verify_recovery_workflow_source("cli", CURRENT_CLI_RECOVERY_WORKFLOW, digest)
+        authority = qualified_authority(self.recovery, "cli")
         self.recovery.verify_recovery_workflow_source(
+            authority,
+            "cli",
+            CURRENT_CLI_RECOVERY_WORKFLOW,
+        )
+        self.recovery.verify_recovery_workflow_source(
+            authority,
             "cli",
             CURRENT_CLI_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
-            digest,
         )
 
     def test_cli_workflow_pin_rejects_modified_or_unprotected_source(self) -> None:
-        expected_sha256 = hashlib.sha256(CURRENT_CLI_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
+        authority = qualified_authority(self.recovery, "cli")
         variants = {
-            "modified": CURRENT_CLI_RECOVERY_WORKFLOW.replace("timeout-minutes: 45", "timeout-minutes: 44", 1),
+            "modified": CURRENT_CLI_RECOVERY_WORKFLOW.replace(
+                "timeout-minutes: 45", "timeout-minutes: 44", 1
+            ),
             "unprotected discovery": CURRENT_CLI_RECOVERY_WORKFLOW.replace(
                 "    if: >-\n"
                 "      github.event_name != 'workflow_dispatch' ||\n"
@@ -55,7 +99,11 @@ class CliRecoveryWorkflowSourceTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertNotEqual(CURRENT_CLI_RECOVERY_WORKFLOW, variant)
                 with self.assertRaises(self.recovery.RecoveryError) as caught:
-                    self.recovery.verify_recovery_workflow_source("cli", variant, expected_sha256)
+                    self.recovery.verify_recovery_workflow_source(
+                        authority,
+                        "cli",
+                        variant,
+                    )
                 self.assertEqual("default-branch-preflight", caught.exception.phase)
 
     def test_artifact_execution_jobs_cannot_retain_checkout_credentials(self) -> None:
@@ -106,10 +154,13 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             "assets": assets,
         }
         client.bytes.return_value = "".join(
-            f"{'a' * 64}  {name}\n" for name in sorted(self.recovery.CLI_ASSETS - {"SHA256SUMS"})
+            f"{'a' * 64}  {name}\n"
+            for name in sorted(self.recovery.CLI_ASSETS - {"SHA256SUMS"})
         ).encode()
 
-        def download(_url: str, path: Path, *, expected_sha256: str | None = None) -> dict[str, object]:
+        def download(
+            _url: str, path: Path, *, expected_sha256: str | None = None
+        ) -> dict[str, object]:
             path.write_bytes(b"artifact")
             return {"url": str(path), "size": 8, "sha256": expected_sha256}
 
@@ -130,11 +181,15 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     stderr="",
                 )
             if "--source-digest" in arguments:
-                return mock.Mock(returncode=1, stdout="", stderr="no exact-tag attestation")
+                return mock.Mock(
+                    returncode=1, stdout="", stderr="no exact-tag attestation"
+                )
             return mock.Mock(returncode=0, stdout="verified", stderr="")
 
         with (
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
         ):
             evidence = self.recovery.verify_cli(
@@ -144,17 +199,29 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 commit,
             )
 
-        attestations = [arguments for arguments in calls if arguments[:3] == ["gh", "attestation", "verify"]]
-        main_attestations = [arguments for arguments in attestations if "--signer-workflow" in arguments]
+        attestations = [
+            arguments
+            for arguments in calls
+            if arguments[:3] == ["gh", "attestation", "verify"]
+        ]
+        main_attestations = [
+            arguments for arguments in attestations if "--signer-workflow" in arguments
+        ]
         self.assertEqual(len(self.recovery.CLI_ASSETS), len(main_attestations))
         self.assertEqual(len(self.recovery.CLI_ASSETS) + 1, len(attestations))
         self.assertEqual("php", calls[-1][0])
         self.assertTrue(all(arguments[0] == "gh" for arguments in calls[:-1]))
-        self.assertEqual("qualified-main-workflow", evidence["build_attestation_authority"]["mode"])
-        self.assertEqual("refs/heads/main", evidence["build_attestation_authority"]["ref"])
+        self.assertEqual(
+            "qualified-main-workflow", evidence["build_attestation_authority"]["mode"]
+        )
+        self.assertEqual(
+            "refs/heads/main", evidence["build_attestation_authority"]["ref"]
+        )
         self.assertEqual(commit, evidence["package_source"]["commit"])
         for arguments in main_attestations:
-            self.assertIn("durable-workflow/cli/.github/workflows/release.yml", arguments)
+            self.assertIn(
+                "durable-workflow/cli/.github/workflows/release.yml", arguments
+            )
             self.assertNotIn("--source-digest", arguments)
 
     def test_future_ordinary_release_uses_observed_exact_tag_authority(self) -> None:
@@ -173,7 +240,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="verified", stderr="")
 
         with (
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
         ):
             evidence = self.recovery.verify_cli(
@@ -183,11 +252,17 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 commit,
             )
 
-        attestations = [arguments for arguments in calls if arguments[:3] == ["gh", "attestation", "verify"]]
+        attestations = [
+            arguments
+            for arguments in calls
+            if arguments[:3] == ["gh", "attestation", "verify"]
+        ]
         self.assertEqual(len(self.recovery.CLI_ASSETS), len(attestations))
         self.assertEqual("php", calls[-1][0])
         self.assertEqual("exact-tag", evidence["build_attestation_authority"]["mode"])
-        self.assertEqual(f"refs/tags/{version}", evidence["build_attestation_authority"]["ref"])
+        self.assertEqual(
+            f"refs/tags/{version}", evidence["build_attestation_authority"]["ref"]
+        )
         self.assertEqual(commit, evidence["build_attestation_authority"]["commit"])
         for arguments in attestations:
             self.assertIn("--source-digest", arguments)
@@ -204,7 +279,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             nonlocal attestation_count
             calls.append(arguments)
             if arguments[0] == "php":
-                self.fail("the PHAR executed before the complete asset set was authenticated")
+                self.fail(
+                    "the PHAR executed before the complete asset set was authenticated"
+                )
             if "--signer-workflow" in arguments:
                 return mock.Mock(returncode=0, stdout="verified under main", stderr="")
             attestation_count += 1
@@ -215,9 +292,13 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             )
 
         with (
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
-            self.assertRaisesRegex(self.recovery.RecoveryError, "exact-tag: authority differs"),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError, "exact-tag: authority differs"
+            ),
         ):
             self.recovery.verify_cli(
                 self.release_client(version),
@@ -242,7 +323,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             return mock.Mock(returncode=1, stdout="", stderr="attestation missing")
 
         with (
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
             self.assertRaisesRegex(self.recovery.RecoveryError, "attestation missing"),
         ):
@@ -272,9 +355,13 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="verified", stderr="")
 
         with (
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
-            self.assertRaisesRegex(self.recovery.RecoveryError, "does not embed planned source commit"),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError, "does not embed planned source commit"
+            ),
         ):
             self.recovery.verify_cli(
                 self.release_client(version),
@@ -287,7 +374,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         self.assertEqual(len(self.recovery.CLI_ASSETS), len(attestations))
         self.assertEqual("php", calls[-1][0])
 
-    def test_phar_execution_receives_no_workflow_credentials_or_other_secrets(self) -> None:
+    def test_phar_execution_receives_no_workflow_credentials_or_other_secrets(
+        self,
+    ) -> None:
         version = "0.1.94"
         commit = "36bde75882980e834854a145c9ad0f61ceec4659"
         phar_environment: dict[object, object] | None = None
@@ -313,8 +402,14 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         }
         allowed_path = "/opt/php/bin:/usr/bin"
         with (
-            mock.patch.dict(self.recovery.os.environ, {**inherited_secrets, "PATH": allowed_path}, clear=False),
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.dict(
+                self.recovery.os.environ,
+                {**inherited_secrets, "PATH": allowed_path},
+                clear=False,
+            ),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
         ):
             self.recovery.verify_cli(
@@ -327,7 +422,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         self.assertEqual({"PATH": allowed_path}, phar_environment)
         self.assertTrue(inherited_secrets.keys().isdisjoint(phar_environment or {}))
 
-    def test_completed_plan_skip_executes_phar_with_the_isolated_environment(self) -> None:
+    def test_completed_plan_skip_executes_phar_with_the_isolated_environment(
+        self,
+    ) -> None:
         version = "0.1.94"
         commit = "36bde75882980e834854a145c9ad0f61ceec4659"
         plan = {
@@ -387,10 +484,18 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 },
                 clear=False,
             ),
-            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(
+                self.recovery, "verify_plan_authority", return_value=({}, {})
+            ),
             mock.patch.object(self.recovery, "resolve_tag", return_value=commit),
-            mock.patch.object(self.recovery, "verify_component", side_effect=verify_completed_component),
-            mock.patch.object(self.recovery.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(
+                self.recovery,
+                "verify_component",
+                side_effect=verify_completed_component,
+            ),
+            mock.patch.object(
+                self.recovery.shutil, "which", return_value="/usr/bin/tool"
+            ),
             mock.patch.object(self.recovery.subprocess, "run", side_effect=run),
         ):
             state, outputs = self.recovery.resolve_component(
