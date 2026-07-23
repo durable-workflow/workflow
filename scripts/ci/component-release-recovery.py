@@ -39,7 +39,16 @@ PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 STATE_SCHEMA = "durable-workflow.component-release-recovery/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 PLAN_TAG_PREFIX = "release-plan/"
+COMPLETION_TAG_PREFIX = "release-candidate/"
+FAILURE_TAG_PREFIX = "release-plan-failure/"
 CONTINUITY_TAG_PREFIX = "beta-continuity/"
+CONTINUITY_EVIDENCE_SCHEMA = "durable-workflow.beta-continuity.evidence/v1"
+CONTINUITY_SUPERSESSION_REASON = "missing-post-acceptance-publication-trigger"
+SUPERSESSION_ENVIRONMENT = "release-plan-supersession"
+SUPERSESSION_WORKFLOW = ".github/workflows/release-plan-supersession.yml"
+SUPERSESSION_REASON = "published-version-source-conflict"
+SOURCE_MANIFEST_REASON = "source-manifest-version-conflict"
+OCCUPIED_SOURCE_MANIFEST_REASON = "occupied-source-manifest-version-conflict"
 FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -58,6 +67,17 @@ GITHUB_READ_DEADLINE_SECONDS = 600.0
 INFRASTRUCTURE_EXIT_CODE = 75
 
 SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
+SOURCE_MANIFESTS = {
+    "sdk-python": {"path": "pyproject.toml", "package": "durable-workflow"},
+    "sdk-rust": {"path": "Cargo.toml", "package": "durable-workflow"},
+}
+SUPERSESSION_ENVIRONMENT_URL = (
+    f"https://github.com/{CONTROL_REPOSITORY}/deployments/activity_log?"
+    f"environments_filter={SUPERSESSION_ENVIRONMENT}"
+)
+SUPERSESSION_ENVIRONMENT_API_URL = (
+    f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{SUPERSESSION_ENVIRONMENT}"
+)
 SOURCE_PRODUCT_TRAINS = {
     "workflow": ("durable-workflow/workflow", "composer.json"),
     "waterline": ("durable-workflow/waterline", "composer.json"),
@@ -561,6 +581,636 @@ def manifest_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+def is_immediate_version_successor(previous: str, successor: str) -> bool:
+    previous_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?", previous)
+    successor_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?", successor)
+    if previous_match is None or successor_match is None:
+        return False
+    previous_core = tuple(int(value) for value in previous_match.groups()[:3])
+    successor_core = tuple(int(value) for value in successor_match.groups()[:3])
+    previous_prerelease = previous_match.group(4)
+    successor_prerelease = successor_match.group(4)
+    if previous_prerelease is None:
+        return successor_prerelease is None and successor_core == (
+            previous_core[0],
+            previous_core[1],
+            previous_core[2] + 1,
+        )
+    previous_parts = previous_prerelease.rsplit(".", 1)
+    successor_parts = (successor_prerelease or "").rsplit(".", 1)
+    return (
+        successor_core == previous_core
+        and len(previous_parts) == 2
+        and len(successor_parts) == 2
+        and previous_parts[0] == successor_parts[0]
+        and previous_parts[1].isdigit()
+        and successor_parts[1].isdigit()
+        and int(successor_parts[1]) == int(previous_parts[1]) + 1
+    )
+
+
+def conflict_component_names(conflicts: Any) -> list[str]:
+    if not isinstance(conflicts, list):
+        raise RecoveryError("release plan failure conflicts must be a non-empty list", "plan-discovery")
+    names = [conflict.get("component") if isinstance(conflict, dict) else None for conflict in conflicts]
+    if (
+        not names
+        or any(not isinstance(name, str) or name not in COMPONENTS for name in names)
+        or len(names) != len(set(names))
+    ):
+        raise RecoveryError(
+            f"conflicting components must be unique names from {sorted(COMPONENTS)}",
+            "plan-discovery",
+        )
+    expected_order = [name for name in COMPONENTS if name in names]
+    if names != expected_order:
+        raise RecoveryError("conflicting components must follow release-plan component order", "plan-discovery")
+    return names
+
+
+def validate_successor_transition(
+    failed_plan: dict[str, Any],
+    successor_plan: dict[str, Any],
+    conflicts: list[Any],
+) -> None:
+    validate_plan(failed_plan)
+    validate_plan(successor_plan)
+    conflict_names = conflict_component_names(conflicts)
+    if successor_plan["plan"] == failed_plan["plan"]:
+        raise RecoveryError("a superseding release plan must use a new plan identity", "plan-discovery")
+    if successor_plan["channel"] != failed_plan["channel"]:
+        raise RecoveryError("a superseding release plan cannot change the release channel", "plan-discovery")
+    if successor_plan["foundation"] != failed_plan["foundation"]:
+        raise RecoveryError("a superseding release plan cannot change the candidate foundation", "plan-discovery")
+    for name, identity in failed_plan["components"].items():
+        successor_identity = successor_plan["components"][name]
+        if name not in conflict_names and successor_identity != identity:
+            raise RecoveryError(
+                f"superseding release plan changes unaffected component {name}",
+                "plan-discovery",
+            )
+    for conflict in conflicts:
+        name = conflict["component"]
+        failed_identity = failed_plan["components"][name]
+        successor_identity = successor_plan["components"][name]
+        if successor_identity == failed_identity:
+            raise RecoveryError(
+                f"superseding release plan leaves conflict unresolved for {name}",
+                "plan-discovery",
+            )
+        if conflict["reason"] == SUPERSESSION_REASON:
+            if successor_identity["commit"] != failed_identity["commit"]:
+                raise RecoveryError(
+                    f"superseding release plan must retain {name}'s conflicting planned commit",
+                    "plan-discovery",
+                )
+            if not is_immediate_version_successor(
+                failed_identity["version"],
+                successor_identity["version"],
+            ):
+                raise RecoveryError(
+                    f"superseding release plan must allocate {name}'s immediate next version",
+                    "plan-discovery",
+                )
+        elif conflict["reason"] == SOURCE_MANIFEST_REASON:
+            if successor_identity["version"] != failed_identity["version"]:
+                raise RecoveryError(
+                    f"superseding release plan must retain {name}'s intended version",
+                    "plan-discovery",
+                )
+            if successor_identity["commit"] == failed_identity["commit"]:
+                raise RecoveryError(
+                    f"superseding release plan must replace {name}'s incompatible source commit",
+                    "plan-discovery",
+                )
+        elif conflict["reason"] == OCCUPIED_SOURCE_MANIFEST_REASON:
+            if not is_immediate_version_successor(
+                failed_identity["version"],
+                successor_identity["version"],
+            ):
+                raise RecoveryError(
+                    f"superseding release plan must allocate {name}'s immediate next version",
+                    "plan-discovery",
+                )
+            if successor_identity["commit"] == failed_identity["commit"]:
+                raise RecoveryError(
+                    f"superseding release plan must replace {name}'s incompatible tagged source commit",
+                    "plan-discovery",
+                )
+        else:
+            raise RecoveryError(
+                f"release plan failure has an unsupported conflict reason for {name}",
+                "plan-discovery",
+            )
+
+
+def validate_environment_protection_evidence(protection: Any) -> None:
+    expected_keys = {
+        "custom_branch_policies",
+        "deployment_branch_policy",
+        "environment_id",
+        "environment_url",
+        "required_reviewer_rule_ids",
+    }
+    if not isinstance(protection, dict) or set(protection) != expected_keys:
+        raise RecoveryError(
+            "release plan failure environment protection evidence has an invalid shape",
+            "plan-discovery",
+        )
+    reviewer_rule_ids = protection["required_reviewer_rule_ids"]
+    branch_policy = protection["deployment_branch_policy"]
+    custom_policies = protection["custom_branch_policies"]
+    if (
+        type(protection["environment_id"]) is not int
+        or protection["environment_id"] < 1
+        or protection["environment_url"] != SUPERSESSION_ENVIRONMENT_URL
+        or not isinstance(reviewer_rule_ids, list)
+        or not reviewer_rule_ids
+        or any(type(rule_id) is not int or rule_id < 1 for rule_id in reviewer_rule_ids)
+        or reviewer_rule_ids != sorted(set(reviewer_rule_ids))
+    ):
+        raise RecoveryError(
+            "release plan failure lacks protected-environment reviewer evidence",
+            "plan-discovery",
+        )
+    if branch_policy != {"custom_branch_policies": True, "protected_branches": False}:
+        raise RecoveryError(
+            "release plan failure lacks the protected environment custom-branch policy",
+            "plan-discovery",
+        )
+    if (
+        not isinstance(custom_policies, list)
+        or len(custom_policies) != 1
+        or not isinstance(custom_policies[0], dict)
+        or set(custom_policies[0]) != {"id", "name"}
+        or type(custom_policies[0]["id"]) is not int
+        or custom_policies[0]["id"] < 1
+        or custom_policies[0]["name"] != "main"
+    ):
+        raise RecoveryError(
+            "release plan failure lacks the protected environment custom main-branch policy",
+            "plan-discovery",
+        )
+
+
+def validate_environment_approval_evidence(approval: Any, authorization: dict[str, Any]) -> None:
+    expected_keys = {"comment", "environments", "run_attempt", "run_id", "state", "user"}
+    if not isinstance(approval, dict) or set(approval) != expected_keys:
+        raise RecoveryError(
+            "release plan failure environment approval evidence has an invalid shape",
+            "plan-discovery",
+        )
+    environments = approval["environments"]
+    user = approval["user"]
+    protection = authorization["environment_protection"]
+    if (
+        approval["state"] != "approved"
+        or not isinstance(approval["comment"], str)
+        or approval["run_id"] != authorization["run_id"]
+        or approval["run_attempt"] != authorization["run_attempt"]
+        or not isinstance(environments, list)
+        or len(environments) != 1
+        or not isinstance(environments[0], dict)
+        or set(environments[0]) != {"html_url", "id", "name", "node_id", "url"}
+    ):
+        raise RecoveryError(
+            "release plan failure lacks an approved deployment bound to its workflow run",
+            "plan-discovery",
+        )
+    environment = environments[0]
+    if (
+        environment["id"] != protection["environment_id"]
+        or type(environment["id"]) is not int
+        or environment["name"] != SUPERSESSION_ENVIRONMENT
+        or environment["url"] != SUPERSESSION_ENVIRONMENT_API_URL
+        or environment["html_url"] != SUPERSESSION_ENVIRONMENT_URL
+        or not isinstance(environment["node_id"], str)
+        or not environment["node_id"]
+    ):
+        raise RecoveryError(
+            "release plan failure approval names the wrong protected environment",
+            "plan-discovery",
+        )
+    if not isinstance(user, dict) or set(user) != {"html_url", "id", "login", "node_id", "url"}:
+        raise RecoveryError(
+            "release plan failure approving user evidence has an invalid shape",
+            "plan-discovery",
+        )
+    login = user["login"]
+    if (
+        type(user["id"]) is not int
+        or user["id"] < 1
+        or not isinstance(user["node_id"], str)
+        or not user["node_id"]
+        or not isinstance(login, str)
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login)
+        or user["url"] != f"https://api.github.com/users/{login}"
+        or user["html_url"] != f"https://github.com/{login}"
+    ):
+        raise RecoveryError(
+            "release plan failure lacks a durable approving user identity",
+            "plan-discovery",
+        )
+
+
+def validate_source_manifest_evidence(
+    evidence: Any,
+    component_name: str,
+    identity: dict[str, str],
+    *,
+    must_match_version: bool,
+) -> None:
+    expected_keys = {"declared_version", "package", "path", "sha256", "source_commit", "url"}
+    specification = SOURCE_MANIFESTS.get(component_name)
+    if (
+        specification is None
+        or not isinstance(evidence, dict)
+        or set(evidence) != expected_keys
+        or evidence["path"] != specification["path"]
+        or evidence["package"] != specification["package"]
+        or evidence["source_commit"] != identity["commit"]
+        or not re.fullmatch(r"[0-9a-f]{64}", str(evidence["sha256"]))
+        or not isinstance(evidence["declared_version"], str)
+        or not VERSION_PATTERN.fullmatch(evidence["declared_version"])
+        or evidence["url"]
+        != (
+            f"https://github.com/{COMPONENTS[component_name].repository}/blob/"
+            f"{identity['commit']}/{specification['path']}"
+        )
+    ):
+        raise RecoveryError(
+            f"release plan failure has invalid source-manifest evidence for {component_name}",
+            "plan-discovery",
+        )
+    version_matches = evidence["declared_version"] == identity["version"]
+    if version_matches is not must_match_version:
+        state = "match" if must_match_version else "conflict with"
+        raise RecoveryError(
+            f"release plan failure source manifest does not {state} {component_name} version allocation",
+            "plan-discovery",
+        )
+
+
+def publication_absence_locations(
+    component_name: str,
+    version: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    component = COMPONENTS[component_name]
+    encoded_version = urllib.parse.quote(version, safe="")
+    release = {
+        "api_url": f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}",
+        "status": "absent",
+        "url": f"https://github.com/{component.repository}/releases/tag/{encoded_version}",
+    }
+    encoded_package = urllib.parse.quote(component.package, safe="")
+    if component.distribution == "pypi":
+        distribution = {
+            "api_url": f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json",
+            "kind": "pypi",
+            "status": "absent",
+            "url": f"https://pypi.org/project/{encoded_package}/{encoded_version}/",
+        }
+    elif component.distribution == "crates.io":
+        distribution = {
+            "api_url": f"https://crates.io/api/v1/crates/{encoded_package}/{encoded_version}",
+            "kind": "crates.io",
+            "status": "absent",
+            "url": f"https://crates.io/crates/{encoded_package}/{encoded_version}",
+        }
+    else:
+        raise RecoveryError(
+            f"{component_name} has no supported source-manifest distribution absence proof",
+            "plan-discovery",
+        )
+    return release, distribution
+
+
+def validate_occupied_source_manifest_evidence(
+    conflict: dict[str, Any],
+    component_name: str,
+    identity: dict[str, str],
+) -> None:
+    component = COMPONENTS[component_name]
+    source_tag = conflict["source_tag"]
+    if (
+        not isinstance(source_tag, dict)
+        or set(source_tag) != {"commit", "repository", "tag", "tag_object", "url"}
+        or source_tag["repository"] != component.repository
+        or source_tag["tag"] != identity["version"]
+        or source_tag["commit"] != identity["commit"]
+        or not COMMIT_PATTERN.fullmatch(str(source_tag["tag_object"]))
+        or source_tag["url"] != f"https://github.com/{component.repository}/tree/{identity['version']}"
+    ):
+        raise RecoveryError(
+            f"release plan failure does not prove {component_name}'s occupied planned source tag",
+            "plan-discovery",
+        )
+    expected_release, expected_distribution = publication_absence_locations(component_name, identity["version"])
+    if conflict["github_release"] != expected_release:
+        raise RecoveryError(
+            f"release plan failure lacks {component_name} GitHub Release absence evidence",
+            "plan-discovery",
+        )
+    if conflict["distribution"] != expected_distribution:
+        raise RecoveryError(
+            f"release plan failure lacks {component_name} distribution absence evidence",
+            "plan-discovery",
+        )
+
+
+def canonical_cli_embedded_identity(version: str, commit: str) -> str:
+    return f"dw {version.lstrip('v')} (commit {commit[:12]})"
+
+
+def require_distribution_identity(
+    distribution: dict[str, Any],
+    component_name: str,
+    version: str,
+    observed_commit: str,
+) -> None:
+    component = COMPONENTS[component_name]
+    if distribution.get("kind") != component.distribution:
+        raise RecoveryError("public distribution evidence has the wrong kind", "plan-discovery")
+    if component.distribution == "composer":
+        matches = (
+            distribution.get("source_reference") == observed_commit
+            and distribution.get("dist_reference") == observed_commit
+        )
+    elif component.distribution == "github-release":
+        package_source = distribution.get("package_source")
+        matches = (
+            isinstance(package_source, dict)
+            and set(package_source) == {"commit", "embedded_phar_identity"}
+            and package_source.get("commit") == observed_commit
+            and package_source.get("embedded_phar_identity")
+            == canonical_cli_embedded_identity(version, observed_commit)
+        )
+        authority = distribution.get("build_attestation_authority")
+        exact_tag_authority = {
+            "mode": "exact-tag",
+            "ref": f"refs/tags/{version}",
+            "commit": observed_commit,
+        }
+        qualified_main_authority = {
+            "mode": "qualified-main-workflow",
+            "ref": "refs/heads/main",
+            "workflow": f"{component.repository}/.github/workflows/release.yml",
+        }
+        if distribution.get("build_attestations_verified") is not True or authority not in (
+            exact_tag_authority,
+            qualified_main_authority,
+        ):
+            raise RecoveryError(
+                "public distribution evidence has an untrusted build attestation authority",
+                "plan-discovery",
+            )
+    elif component.distribution == "pypi":
+        source = distribution.get("source_identity")
+        matches = isinstance(source, dict) and source.get("source_commit") == observed_commit
+    elif component.distribution == "crates.io":
+        matches = distribution.get("archive_vcs_commit") == observed_commit
+    else:
+        configs = distribution.get("configs")
+        matches = (
+            isinstance(configs, list)
+            and bool(configs)
+            and all(
+                isinstance(config, dict)
+                and isinstance(config.get("labels"), dict)
+                and config["labels"].get("org.opencontainers.image.revision") == observed_commit
+                for config in configs
+            )
+        )
+    if not matches:
+        raise RecoveryError(
+            "public distribution evidence does not bind the observed source commit",
+            "plan-discovery",
+        )
+
+
+def validate_conflict_record(
+    conflict: Any,
+    failed_plan: dict[str, Any],
+    successor_plan: dict[str, Any],
+) -> None:
+    if not isinstance(conflict, dict):
+        raise RecoveryError(
+            "release plan failure conflict evidence has an invalid shape",
+            "plan-discovery",
+        )
+    component_name = conflict.get("component")
+    if component_name not in COMPONENTS:
+        raise RecoveryError(
+            "release plan failure names an unknown conflicting component",
+            "plan-discovery",
+        )
+    identity = failed_plan["components"][component_name]
+    successor_identity = successor_plan["components"][component_name]
+    common_identity_matches = (
+        conflict.get("version") == identity["version"]
+        and conflict.get("planned_commit") == identity["commit"]
+    )
+    reason = conflict.get("reason")
+    if reason == SUPERSESSION_REASON:
+        expected_keys = {
+            "component",
+            "version",
+            "planned_commit",
+            "observed_commit",
+            "reason",
+            "github_release",
+            "distribution",
+        }
+        if (
+            set(conflict) != expected_keys
+            or not common_identity_matches
+            or not COMMIT_PATTERN.fullmatch(str(conflict.get("observed_commit", "")))
+            or conflict["observed_commit"] == identity["commit"]
+        ):
+            raise RecoveryError(
+                "release plan failure conflict does not prove a different public source identity",
+                "plan-discovery",
+            )
+        release = conflict["github_release"]
+        if (
+            not isinstance(release, dict)
+            or set(release) != {"id", "url"}
+            or type(release["id"]) is not int
+            or release["id"] < 1
+            or not isinstance(release["url"], str)
+            or not release["url"].startswith(
+                f"https://github.com/{COMPONENTS[component_name].repository}/releases/"
+            )
+        ):
+            raise RecoveryError(
+                "release plan failure lacks durable GitHub Release evidence",
+                "plan-discovery",
+            )
+        distribution = conflict["distribution"]
+        if not isinstance(distribution, dict):
+            raise RecoveryError(
+                "release plan failure lacks matching distribution evidence",
+                "plan-discovery",
+            )
+        require_distribution_identity(
+            distribution,
+            component_name,
+            conflict["version"],
+            conflict["observed_commit"],
+        )
+    elif reason == SOURCE_MANIFEST_REASON:
+        expected_keys = {
+            "component",
+            "version",
+            "planned_commit",
+            "reason",
+            "source_manifest",
+            "successor_source_manifest",
+        }
+        if set(conflict) != expected_keys or not common_identity_matches:
+            raise RecoveryError(
+                "release plan failure manifest conflict evidence has an invalid shape",
+                "plan-discovery",
+            )
+        validate_source_manifest_evidence(
+            conflict["source_manifest"],
+            component_name,
+            identity,
+            must_match_version=False,
+        )
+        validate_source_manifest_evidence(
+            conflict["successor_source_manifest"],
+            component_name,
+            successor_identity,
+            must_match_version=True,
+        )
+    elif reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+        expected_keys = {
+            "component",
+            "version",
+            "planned_commit",
+            "reason",
+            "source_manifest",
+            "source_tag",
+            "github_release",
+            "distribution",
+            "successor_source_manifest",
+        }
+        if set(conflict) != expected_keys or not common_identity_matches:
+            raise RecoveryError(
+                "release plan failure occupied manifest conflict evidence has an invalid shape",
+                "plan-discovery",
+            )
+        validate_source_manifest_evidence(
+            conflict["source_manifest"],
+            component_name,
+            identity,
+            must_match_version=False,
+        )
+        validate_source_manifest_evidence(
+            conflict["successor_source_manifest"],
+            component_name,
+            successor_identity,
+            must_match_version=True,
+        )
+        validate_occupied_source_manifest_evidence(conflict, component_name, identity)
+    else:
+        raise RecoveryError(
+            f"release plan failure has an unsupported conflict reason for {component_name}",
+            "plan-discovery",
+        )
+
+
+def validate_supersession_record(
+    record: Any,
+    failed_plan: dict[str, Any],
+    failed_plan_commit: str,
+    successor_plan: dict[str, Any],
+) -> None:
+    expected = {
+        "schema",
+        "outcome",
+        "failed_plan",
+        "conflicts",
+        "successor_plan",
+        "authorization",
+    }
+    if not isinstance(record, dict) or set(record) != expected:
+        raise RecoveryError(
+            f"release plan failure record keys must be exactly {sorted(expected)}",
+            "plan-discovery",
+        )
+    expected_failed = {
+        "tag": f"{PLAN_TAG_PREFIX}{failed_plan['plan']}",
+        "commit": failed_plan_commit,
+        "sha256": manifest_digest(failed_plan),
+    }
+    if record["schema"] != "durable-workflow.release-plan-failure/v1":
+        raise RecoveryError(
+            "release plan failure record has an unsupported schema",
+            "plan-discovery",
+        )
+    if record["outcome"] != "terminal-failure" or record["failed_plan"] != expected_failed:
+        raise RecoveryError(
+            "release plan failure record does not terminate this exact immutable plan",
+            "plan-discovery",
+        )
+    expected_successor = {
+        "tag": f"{PLAN_TAG_PREFIX}{successor_plan['plan']}",
+        "sha256": manifest_digest(successor_plan),
+    }
+    if record["successor_plan"] != expected_successor:
+        raise RecoveryError(
+            "release plan failure record names a different successor plan",
+            "plan-discovery",
+        )
+    conflicts = record["conflicts"]
+    conflict_component_names(conflicts)
+    for conflict in conflicts:
+        validate_conflict_record(conflict, failed_plan, successor_plan)
+    validate_successor_transition(failed_plan, successor_plan, conflicts)
+
+    authorization = record["authorization"]
+    authorization_keys = {
+        "actor",
+        "environment",
+        "environment_approval",
+        "environment_protection",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "run_url",
+        "workflow_commit",
+        "workflow_ref",
+    }
+    if not isinstance(authorization, dict) or set(authorization) != authorization_keys:
+        raise RecoveryError(
+            "release plan failure authorization evidence has an invalid shape",
+            "plan-discovery",
+        )
+    protection = authorization["environment_protection"]
+    validate_environment_protection_evidence(protection)
+    workflow_ref = f"{CONTROL_REPOSITORY}/{SUPERSESSION_WORKFLOW}@refs/heads/main"
+    if (
+        authorization.get("repository") != CONTROL_REPOSITORY
+        or authorization.get("environment") != SUPERSESSION_ENVIRONMENT
+        or authorization.get("workflow_ref") != workflow_ref
+        or not COMMIT_PATTERN.fullmatch(str(authorization.get("workflow_commit", "")))
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", str(authorization.get("actor", "")))
+        or type(authorization.get("run_id")) is not int
+        or authorization["run_id"] < 1
+        or type(authorization.get("run_attempt")) is not int
+        or authorization["run_attempt"] < 1
+        or authorization.get("run_url")
+        != f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{authorization.get('run_id')}"
+    ):
+        raise RecoveryError(
+            "release plan failure was not authorized by the protected supersession workflow",
+            "plan-discovery",
+        )
+    validate_environment_approval_evidence(authorization["environment_approval"], authorization)
+
+
 def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None:
     if not isinstance(preparation, dict) or set(preparation) != {
         "schema",
@@ -715,82 +1365,386 @@ def read_record(client: PublicClient, tag: str, commit: str, filename: str) -> A
         ) from error
 
 
-def discover_plan(
-    client: PublicClient, requested_tag: str | None, component_name: str
-) -> tuple[str, str, dict[str, Any], dict[str, Any] | None]:
-    if component_name not in COMPONENTS:
-        raise RecoveryError(
-            f"unknown release component: {component_name}", "plan-discovery"
-        )
-    if requested_tag:
-        tag = requested_tag
-        if not tag.startswith(PLAN_TAG_PREFIX):
-            raise RecoveryError(
-                f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery"
-            )
-        try:
-            release = client.json(
-                f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
-            )
-        except NotFound as error:
-            raise RecoveryError(
-                f"release plan {tag} has no durable GitHub Release", "plan-discovery"
-            ) from error
-    else:
-        releases = client.json(
-            f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100"
-        )
-        release = next(
-            (
-                item
-                for item in releases
-                if not item.get("draft")
-                and str(item.get("tag_name", "")).startswith(PLAN_TAG_PREFIX)
-            ),
-            None,
-        )
-        if release is None:
-            raise RecoveryError("no public release plan is available", "plan-discovery")
-        tag = str(release["tag_name"])
-    if release.get("draft"):
-        raise RecoveryError(f"release plan {tag} is still a draft", "plan-discovery")
-    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
-    if commit is None:
-        raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
+def read_plan_authority(client: PublicClient, tag: str, commit: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     plan = read_record(client, tag, commit, "release-plan.json")
     validate_plan(plan)
     if tag != f"{PLAN_TAG_PREFIX}{plan['plan']}":
-        raise RecoveryError(
-            "release plan tag and document identity differ", "plan-discovery"
-        )
-    assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+        raise RecoveryError("release plan tag and document identity differ", "plan-discovery")
     try:
         preparation = read_record(client, tag, commit, "release-preparation.json")
     except NotFound:
         preparation = None
     if preparation is not None:
         validate_release_preparation(preparation, plan)
+    return plan, preparation
+
+
+def validate_release_mirrors(
+    client: PublicClient,
+    tag: str,
+    release: Any,
+    plan: dict[str, Any],
+    preparation: dict[str, Any] | None,
+) -> None:
+    if not isinstance(release, dict) or release.get("tag_name") != tag:
+        raise RecoveryError(f"release plan {tag} has invalid GitHub Release metadata", "plan-discovery")
+    if release.get("draft"):
+        raise RecoveryError(f"release plan {tag} is still a draft", "plan-discovery")
+    assets_value = release.get("assets")
+    if not isinstance(assets_value, list) or not all(isinstance(asset, dict) for asset in assets_value):
+        raise RecoveryError(f"release plan {tag} has malformed Release assets", "plan-discovery")
+    assets = {asset.get("name"): asset for asset in assets_value}
+    if len(assets) != len(assets_value):
+        raise RecoveryError(f"release plan {tag} has duplicate Release asset names", "plan-discovery")
     records = [("release-plan.json", plan)]
     if preparation is not None:
         records.append(("release-preparation.json", preparation))
     for filename, value in records:
-        if filename not in assets:
+        asset = assets.get(filename)
+        if not isinstance(asset, dict) or not isinstance(asset.get("browser_download_url"), str):
             raise RecoveryError(
                 f"release plan {tag} lacks its durable {filename} mirror asset",
                 "plan-discovery",
             )
-        mirror = client.bytes(assets[filename]["browser_download_url"])
+        mirror = client.bytes(asset["browser_download_url"])
         if mirror != canonical_json(value):
             raise RecoveryError(
                 f"release plan {tag} {filename} mirror differs from immutable Git authority",
                 "plan-discovery",
             )
-    if preparation is None:
-        if "release-preparation.json" in assets:
+    if preparation is None and "release-preparation.json" in assets:
+        raise RecoveryError(
+            f"release plan {tag} release-preparation.json mirror lacks immutable Git authority",
+            "plan-discovery",
+        )
+
+
+def immutable_plan_recorded_at(client: PublicClient, commit: str) -> dt.datetime:
+    value = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/commits/{commit}")
+    committer = value.get("committer") if isinstance(value, dict) else None
+    recorded_at = committer.get("date") if isinstance(committer, dict) else None
+    try:
+        parsed = dt.datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RecoveryError("release plan Git commit lacks an immutable recorded-at time", "plan-discovery") from error
+    if not isinstance(value, dict) or value.get("sha") != commit or parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RecoveryError("release plan Git commit has invalid immutable metadata", "plan-discovery")
+    return parsed.astimezone(dt.UTC)
+
+
+def list_release_plan_tags(client: PublicClient) -> list[str]:
+    url = f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{PLAN_TAG_PREFIX}"
+    refs = client.json(url)
+    if not isinstance(refs, list):
+        raise RecoveryError("GitHub did not return the immutable release-plan tag registry", "plan-discovery")
+    tags: list[str] = []
+    for ref in refs:
+        value = ref.get("ref") if isinstance(ref, dict) else None
+        tag = value.removeprefix("refs/tags/") if isinstance(value, str) else ""
+        if (
+            value != f"refs/tags/{tag}"
+            or not tag.startswith(PLAN_TAG_PREFIX)
+            or not PLAN_PATTERN.fullmatch(tag.removeprefix(PLAN_TAG_PREFIX))
+        ):
             raise RecoveryError(
-                f"release plan {tag} release-preparation.json mirror lacks immutable Git authority",
+                "GitHub returned a malformed immutable release-plan tag registry entry",
                 "plan-discovery",
             )
+        tags.append(tag)
+    if not tags:
+        raise RecoveryError("no public release plan is available", "plan-discovery")
+    if len(tags) != len(set(tags)):
+        raise RecoveryError("immutable release-plan tag registry contains duplicate authorities", "plan-discovery")
+    return tags
+
+
+def completion_manifest(
+    plan: dict[str, Any],
+    commit: str,
+    preparation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = {
+        "schema": "durable-workflow.release-candidate/v1",
+        "candidate": plan["plan"],
+        "channel": plan["channel"],
+        "release_plan": {
+            "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+            "commit": commit,
+            "sha256": manifest_digest(plan),
+        },
+        "components": plan["components"],
+    }
+    if preparation is not None:
+        result["release_preparation_sha256"] = manifest_digest(preparation)
+    return result
+
+
+def direct_plan_lifecycle(
+    client: PublicClient,
+    tag: str,
+    commit: str,
+    plan: dict[str, Any],
+    preparation: dict[str, Any] | None,
+) -> tuple[str, str | dict[str, Any] | None]:
+    completion_tag = f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}"
+    failure_tag = f"{FAILURE_TAG_PREFIX}{plan['plan']}"
+    completion_commit = resolve_tag(client, CONTROL_REPOSITORY, completion_tag)
+    failure_commit = resolve_tag(client, CONTROL_REPOSITORY, failure_tag)
+    if completion_commit is not None and failure_commit is not None:
+        raise RecoveryError(
+            f"release plan {tag} has conflicting completion and terminal-failure records",
+            "plan-discovery",
+        )
+    if completion_commit is not None:
+        completion = read_record(client, completion_tag, completion_commit, "release-candidate.json")
+        if completion != completion_manifest(plan, commit, preparation):
+            raise RecoveryError(
+                f"release plan {tag} has an invalid immutable completion record",
+                "plan-discovery",
+            )
+        return "completed", None
+    if failure_commit is not None:
+        failure = read_record(client, failure_tag, failure_commit, "release-plan-failure.json")
+        successor = read_record(client, failure_tag, failure_commit, "successor-release-plan.json")
+        validate_plan(successor)
+        validate_supersession_record(failure, plan, commit, successor)
+        expected_successor = {
+            "tag": f"{PLAN_TAG_PREFIX}{successor['plan']}",
+            "sha256": manifest_digest(successor),
+        }
+        return "superseded", {
+            **expected_successor,
+            "plan": successor,
+        }
+
+    interruption_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/interrupted"
+    interruption_commit = resolve_tag(client, CONTROL_REPOSITORY, interruption_tag)
+    if interruption_commit is None:
+        return "actionable", None
+    evidence = read_record(client, interruption_tag, interruption_commit, "continuity-evidence.json")
+    interrupted_plan = read_record(client, interruption_tag, interruption_commit, "release-plan.json")
+    digest = manifest_digest(plan)
+    if (
+        interrupted_plan != plan
+        or not isinstance(evidence, dict)
+        or evidence.get("schema") != CONTINUITY_EVIDENCE_SCHEMA
+        or evidence.get("phase") != "interrupted"
+        or evidence.get("outcome") != "intentionally-interrupted"
+        or evidence.get("release_plan") != {"tag": tag, "sha256": digest}
+        or evidence.get("plan_record") != {"tag": tag, "commit": commit, "sha256": digest}
+    ):
+        raise RecoveryError(
+            f"release plan {tag} has an invalid immutable interruption record",
+            "plan-discovery",
+        )
+    return "interrupted", interruption_tag
+
+
+def accepted_continuity_supersession(
+    client: PublicClient,
+    authority: dict[str, Any],
+) -> dict[str, str] | None:
+    plan = authority["plan"]
+    accepted_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/accepted"
+    accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
+    if accepted_commit is None:
+        return None
+    evidence = read_record(client, accepted_tag, accepted_commit, "continuity-evidence.json")
+    accepted_plan = read_record(client, accepted_tag, accepted_commit, "release-plan.json")
+    digest = manifest_digest(plan)
+    if (
+        accepted_plan != plan
+        or not isinstance(evidence, dict)
+        or evidence.get("schema") != CONTINUITY_EVIDENCE_SCHEMA
+        or evidence.get("phase") != "accepted"
+        or evidence.get("outcome") != "accepted"
+        or evidence.get("release_plan") != {"tag": authority["tag"], "sha256": digest}
+        or evidence.get("candidate_identity") != {"components": plan["components"], "plan_sha256": digest}
+    ):
+        raise RecoveryError(
+            f"release plan {authority['tag']} has an invalid immutable continuity acceptance",
+            "plan-discovery",
+        )
+    superseded = evidence.get("superseded_interruption")
+    if superseded is None:
+        return None
+    if (
+        not isinstance(superseded, dict)
+        or set(superseded) != {"commit", "evidence_sha256", "plan_sha256", "reason", "tag"}
+        or superseded.get("reason") != CONTINUITY_SUPERSESSION_REASON
+        or not COMMIT_PATTERN.fullmatch(str(superseded.get("commit", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(superseded.get("evidence_sha256", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(superseded.get("plan_sha256", "")))
+        or not str(superseded.get("tag", "")).startswith(CONTINUITY_TAG_PREFIX)
+    ):
+        raise RecoveryError(
+            f"release plan {authority['tag']} has an invalid superseded interruption identity",
+            "plan-discovery",
+        )
+    return dict(superseded)
+
+
+def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
+    authorities: list[dict[str, Any]] = []
+    for tag in list_release_plan_tags(client):
+        commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+        if commit is None:
+            raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
+        plan, preparation = read_plan_authority(client, tag, commit)
+        lifecycle, successor = direct_plan_lifecycle(client, tag, commit, plan, preparation)
+        authorities.append(
+            {
+                "tag": tag,
+                "commit": commit,
+                "recorded_at": immutable_plan_recorded_at(client, commit),
+                "plan": plan,
+                "preparation": preparation,
+                "lifecycle": lifecycle,
+                "successor": successor,
+            }
+        )
+
+    authorities.sort(key=lambda item: item["recorded_at"])
+    if len({item["recorded_at"] for item in authorities}) != len(authorities):
+        raise RecoveryError(
+            "release plans have ambiguous immutable Git recorded-at authority",
+            "plan-discovery",
+        )
+    by_tag = {item["tag"]: item for item in authorities}
+    continuity_successors: dict[str, list[str]] = {}
+    for successor in authorities:
+        superseded = accepted_continuity_supersession(client, successor)
+        if superseded is None:
+            continue
+        interruption_tag = superseded["tag"]
+        matches = [
+            item for item in authorities if item["lifecycle"] == "interrupted" and item["successor"] == interruption_tag
+        ]
+        if len(matches) != 1:
+            raise RecoveryError(
+                f"continuity successor {successor['tag']} names an unknown or ambiguous interruption",
+                "plan-discovery",
+            )
+        interrupted = matches[0]
+        interruption_commit = resolve_tag(client, CONTROL_REPOSITORY, interruption_tag)
+        interruption_evidence = read_record(
+            client,
+            interruption_tag,
+            superseded["commit"],
+            "continuity-evidence.json",
+        )
+        if (
+            interruption_commit != superseded["commit"]
+            or manifest_digest(interruption_evidence) != superseded["evidence_sha256"]
+            or manifest_digest(interrupted["plan"]) != superseded["plan_sha256"]
+            or successor["recorded_at"] <= interrupted["recorded_at"]
+        ):
+            raise RecoveryError(
+                f"continuity successor {successor['tag']} has conflicting interruption authority",
+                "plan-discovery",
+            )
+        continuity_successors.setdefault(interrupted["tag"], []).append(successor["tag"])
+
+    for interrupted_tag, successor_tags in continuity_successors.items():
+        interrupted = by_tag[interrupted_tag]
+        interrupted["lifecycle"] = "superseded"
+        successor_tag = min(
+            successor_tags,
+            key=lambda tag: by_tag[tag]["recorded_at"],
+        )
+        successor = by_tag[successor_tag]
+        interrupted["successor"] = {
+            "tag": successor_tag,
+            "sha256": manifest_digest(successor["plan"]),
+            "plan": successor["plan"],
+        }
+
+    for authority in authorities:
+        successor_identity = authority["successor"]
+        if authority["lifecycle"] != "superseded" or successor_identity is None:
+            continue
+        if not isinstance(successor_identity, dict):
+            raise RecoveryError(
+                f"superseded release plan {authority['tag']} has a malformed successor identity",
+                "plan-discovery",
+            )
+        successor_tag = successor_identity.get("tag")
+        successor = by_tag.get(successor_tag)
+        if successor is None:
+            if authority is authorities[-1]:
+                raise RecoveryError(
+                    f"latest release plan {authority['tag']} is superseded but its successor is not recorded",
+                    "plan-discovery",
+                )
+            raise RecoveryError(
+                f"superseded release plan {authority['tag']} has an incomplete successor authority",
+                "plan-discovery",
+            )
+        expected_successor_identity = {
+            "tag": successor["tag"],
+            "sha256": manifest_digest(successor["plan"]),
+            "plan": successor["plan"],
+        }
+        if successor_identity != expected_successor_identity:
+            raise RecoveryError(
+                f"superseded release plan {authority['tag']} has a conflicting successor identity",
+                "plan-discovery",
+            )
+        if successor["recorded_at"] <= authority["recorded_at"]:
+            raise RecoveryError(
+                f"superseded release plan {authority['tag']} names a non-successor Git authority",
+                "plan-discovery",
+            )
+
+    nonterminal_older = [item for item in authorities[:-1] if item["lifecycle"] in {"actionable", "interrupted"}]
+    if nonterminal_older:
+        raise RecoveryError(
+            f"release plan authority is ambiguous: {nonterminal_older[0]['tag']} remains "
+            f"{nonterminal_older[0]['lifecycle']} before {authorities[-1]['tag']}",
+            "plan-discovery",
+        )
+    selected = authorities[-1]
+    if selected["lifecycle"] == "superseded":
+        raise RecoveryError(
+            f"latest release plan {selected['tag']} is superseded and cannot be recovered",
+            "plan-discovery",
+        )
+    return selected
+
+
+def discover_plan(
+    client: PublicClient, requested_tag: str | None, component_name: str
+) -> tuple[str, str, dict[str, Any], dict[str, Any] | None]:
+    if component_name not in COMPONENTS:
+        raise RecoveryError(f"unknown release component: {component_name}", "plan-discovery")
+    if requested_tag:
+        tag = requested_tag
+        if not tag.startswith(PLAN_TAG_PREFIX):
+            raise RecoveryError(f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery")
+        try:
+            release = client.json(
+                f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+            )
+        except NotFound as error:
+            raise RecoveryError(f"release plan {tag} has no durable GitHub Release", "plan-discovery") from error
+        commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+        if commit is None:
+            raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
+        plan, preparation = read_plan_authority(client, tag, commit)
+    else:
+        selected = select_implicit_plan_authority(client)
+        tag = selected["tag"]
+        commit = selected["commit"]
+        plan = selected["plan"]
+        preparation = selected["preparation"]
+        try:
+            release = client.json(
+                f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+            )
+        except NotFound as error:
+            raise RecoveryError(f"release plan {tag} has no durable GitHub Release", "plan-discovery") from error
+    validate_release_mirrors(client, tag, release, plan, preparation)
+    if preparation is None:
         try:
             verify_component(client, component_name, plan["components"][component_name])
         except NotFound as error:
@@ -800,7 +1754,6 @@ def discover_plan(
                 "plan-discovery",
             ) from error
     return tag, commit, plan, preparation
-
 
 _QUALIFIED_AUTHORITY_CONSTRUCTOR = object()
 
