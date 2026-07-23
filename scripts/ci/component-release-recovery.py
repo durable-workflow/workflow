@@ -723,6 +723,7 @@ def validate_environment_protection_evidence(protection: Any) -> None:
     if (
         type(protection["environment_id"]) is not int
         or protection["environment_id"] < 1
+        or type(protection["environment_url"]) is not str
         or protection["environment_url"] != SUPERSESSION_ENVIRONMENT_URL
         or not isinstance(reviewer_rule_ids, list)
         or not reviewer_rule_ids
@@ -733,7 +734,14 @@ def validate_environment_protection_evidence(protection: Any) -> None:
             "release plan failure lacks protected-environment reviewer evidence",
             "plan-discovery",
         )
-    if branch_policy != {"custom_branch_policies": True, "protected_branches": False}:
+    if (
+        not isinstance(branch_policy, dict)
+        or set(branch_policy) != {"custom_branch_policies", "protected_branches"}
+        or type(branch_policy["custom_branch_policies"]) is not bool
+        or branch_policy["custom_branch_policies"] is not True
+        or type(branch_policy["protected_branches"]) is not bool
+        or branch_policy["protected_branches"] is not False
+    ):
         raise RecoveryError(
             "release plan failure lacks the protected environment custom-branch policy",
             "plan-discovery",
@@ -745,6 +753,7 @@ def validate_environment_protection_evidence(protection: Any) -> None:
         or set(custom_policies[0]) != {"id", "name"}
         or type(custom_policies[0]["id"]) is not int
         or custom_policies[0]["id"] < 1
+        or type(custom_policies[0]["name"]) is not str
         or custom_policies[0]["name"] != "main"
     ):
         raise RecoveryError(
@@ -764,8 +773,11 @@ def validate_environment_approval_evidence(approval: Any, authorization: dict[st
     user = approval["user"]
     protection = authorization["environment_protection"]
     if (
-        approval["state"] != "approved"
-        or not isinstance(approval["comment"], str)
+        type(approval["state"]) is not str
+        or approval["state"] != "approved"
+        or type(approval["comment"]) is not str
+        or type(approval["run_id"]) is not int
+        or type(approval["run_attempt"]) is not int
         or approval["run_id"] != authorization["run_id"]
         or approval["run_attempt"] != authorization["run_attempt"]
         or not isinstance(environments, list)
@@ -781,10 +793,13 @@ def validate_environment_approval_evidence(approval: Any, authorization: dict[st
     if (
         environment["id"] != protection["environment_id"]
         or type(environment["id"]) is not int
+        or type(environment["name"]) is not str
         or environment["name"] != SUPERSESSION_ENVIRONMENT
+        or type(environment["url"]) is not str
         or environment["url"] != SUPERSESSION_ENVIRONMENT_API_URL
+        or type(environment["html_url"]) is not str
         or environment["html_url"] != SUPERSESSION_ENVIRONMENT_URL
-        or not isinstance(environment["node_id"], str)
+        or type(environment["node_id"]) is not str
         or not environment["node_id"]
     ):
         raise RecoveryError(
@@ -1191,18 +1206,26 @@ def validate_supersession_record(
     protection = authorization["environment_protection"]
     validate_environment_protection_evidence(protection)
     workflow_ref = f"{CONTROL_REPOSITORY}/{SUPERSESSION_WORKFLOW}@refs/heads/main"
+    actor = authorization["actor"]
+    workflow_commit = authorization["workflow_commit"]
     if (
-        authorization.get("repository") != CONTROL_REPOSITORY
-        or authorization.get("environment") != SUPERSESSION_ENVIRONMENT
-        or authorization.get("workflow_ref") != workflow_ref
-        or not COMMIT_PATTERN.fullmatch(str(authorization.get("workflow_commit", "")))
-        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", str(authorization.get("actor", "")))
-        or type(authorization.get("run_id")) is not int
+        type(authorization["repository"]) is not str
+        or authorization["repository"] != CONTROL_REPOSITORY
+        or type(authorization["environment"]) is not str
+        or authorization["environment"] != SUPERSESSION_ENVIRONMENT
+        or type(authorization["workflow_ref"]) is not str
+        or authorization["workflow_ref"] != workflow_ref
+        or type(workflow_commit) is not str
+        or not COMMIT_PATTERN.fullmatch(workflow_commit)
+        or type(actor) is not str
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", actor)
+        or type(authorization["run_id"]) is not int
         or authorization["run_id"] < 1
-        or type(authorization.get("run_attempt")) is not int
+        or type(authorization["run_attempt"]) is not int
         or authorization["run_attempt"] < 1
-        or authorization.get("run_url")
-        != f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{authorization.get('run_id')}"
+        or type(authorization["run_url"]) is not str
+        or authorization["run_url"]
+        != f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{authorization['run_id']}"
     ):
         raise RecoveryError(
             "release plan failure was not authorized by the protected supersession workflow",
@@ -1646,12 +1669,14 @@ def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
         continuity_successors.setdefault(interrupted["tag"], []).append(successor["tag"])
 
     for interrupted_tag, successor_tags in continuity_successors.items():
+        if len(successor_tags) != 1:
+            raise RecoveryError(
+                f"release plan {interrupted_tag} has multiple continuity successors",
+                "plan-discovery",
+            )
         interrupted = by_tag[interrupted_tag]
         interrupted["lifecycle"] = "superseded"
-        successor_tag = min(
-            successor_tags,
-            key=lambda tag: by_tag[tag]["recorded_at"],
-        )
+        successor_tag = successor_tags[0]
         successor = by_tag[successor_tag]
         interrupted["successor"] = {
             "tag": successor_tag,

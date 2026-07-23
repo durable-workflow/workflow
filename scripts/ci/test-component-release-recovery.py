@@ -572,6 +572,100 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         self.assertEqual(tags[1], selected["tag"])
         self.assertEqual("completed", selected["lifecycle"])
 
+    def test_interrupted_plan_rejects_multiple_continuity_successors(self) -> None:
+        interrupted = lifecycle_plan(self.recovery)
+        interrupted["plan"] = "interrupted-plan"
+        first_successor = json.loads(json.dumps(interrupted))
+        first_successor["plan"] = "first-successor"
+        second_successor = json.loads(json.dumps(interrupted))
+        second_successor["plan"] = "second-successor"
+        tags = [
+            f"release-plan/{interrupted['plan']}",
+            f"release-plan/{first_successor['plan']}",
+            f"release-plan/{second_successor['plan']}",
+        ]
+        commits = {
+            tags[0]: "a" * 40,
+            tags[1]: "b" * 40,
+            tags[2]: "c" * 40,
+        }
+        recorded = {
+            commits[tags[0]]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            commits[tags[1]]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+            commits[tags[2]]: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+        }
+        interruption_tag = (
+            f"{self.recovery.CONTINUITY_TAG_PREFIX}{interrupted['plan']}/interrupted"
+        )
+        interruption_commit = "d" * 40
+        interruption_evidence = {"phase": "interrupted"}
+        superseded_interruption = {
+            "tag": interruption_tag,
+            "commit": interruption_commit,
+            "evidence_sha256": self.recovery.manifest_digest(
+                interruption_evidence
+            ),
+            "plan_sha256": self.recovery.manifest_digest(interrupted),
+            "reason": self.recovery.CONTINUITY_SUPERSESSION_REASON,
+        }
+
+        with (
+            mock.patch.object(
+                self.recovery,
+                "list_release_plan_tags",
+                return_value=tags,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=lambda _client, _repository, tag: (
+                    interruption_commit if tag == interruption_tag else commits[tag]
+                ),
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_plan_authority",
+                side_effect=[
+                    (interrupted, None),
+                    (first_successor, None),
+                    (second_successor, None),
+                ],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "direct_plan_lifecycle",
+                side_effect=[
+                    ("interrupted", interruption_tag),
+                    ("completed", None),
+                    ("completed", None),
+                ],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "accepted_continuity_supersession",
+                side_effect=[
+                    None,
+                    superseded_interruption,
+                    superseded_interruption,
+                ],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_record",
+                return_value=interruption_evidence,
+            ),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "multiple continuity successors",
+            ),
+        ):
+            self.recovery.select_implicit_plan_authority(mock.Mock())
+
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = lifecycle_plan(self.recovery)
         failed["plan"] = "failed-plan"
@@ -713,6 +807,69 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 failed,
                 None,
             )
+
+    def test_terminal_failure_rejects_malformed_authorization_scalar_types(self) -> None:
+        failed = lifecycle_plan(self.recovery)
+        failed["plan"] = "failed-plan"
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        failed_commit = "a" * 40
+        valid = supersession_record(
+            self.recovery,
+            failed,
+            successor,
+            failed_commit,
+        )
+        valid["authorization"]["run_id"] = 1
+        valid["authorization"]["run_url"] = (
+            "https://github.com/durable-workflow/.github/actions/runs/1"
+        )
+        valid["authorization"]["environment_approval"]["run_id"] = 1
+        cases = {
+            "boolean actor": (("authorization", "actor"), True),
+            "boolean approval run id": (
+                ("authorization", "environment_approval", "run_id"),
+                True,
+            ),
+            "boolean approval run attempt": (
+                ("authorization", "environment_approval", "run_attempt"),
+                True,
+            ),
+            "numeric custom branch policy": (
+                (
+                    "authorization",
+                    "environment_protection",
+                    "deployment_branch_policy",
+                    "custom_branch_policies",
+                ),
+                1,
+            ),
+            "numeric protected branch policy": (
+                (
+                    "authorization",
+                    "environment_protection",
+                    "deployment_branch_policy",
+                    "protected_branches",
+                ),
+                0,
+            ),
+        }
+
+        for label, (path, malformed_value) in cases.items():
+            with self.subTest(label=label):
+                malformed = json.loads(json.dumps(valid))
+                target = malformed
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = malformed_value
+                with self.assertRaises(self.recovery.RecoveryError):
+                    self.recovery.validate_supersession_record(
+                        malformed,
+                        failed,
+                        failed_commit,
+                        successor,
+                    )
 
 
 class ReleasePreparationRecoveryTest(unittest.TestCase):
