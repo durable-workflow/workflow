@@ -17,6 +17,13 @@ from cli_release_verifier_contract import (  # noqa: F401
     CliRecoveryWorkflowSourceTest,
     CliReleaseAuthorityTest,
 )
+from recovery_workflow_authority import (
+    SCHEMA as AUTHORITY_SCHEMA,
+    SOURCE_IDENTITY,
+    authority_ref_url,
+    authority_url,
+    qualification_runs_url,
+)
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
@@ -74,6 +81,129 @@ def load_recovery_for_retry_tests():
     if not callable(loader):
         raise RuntimeError("release recovery module loader is unavailable")
     return loader()
+
+
+AUTHORITY_COMMIT = "a" * 40
+
+
+def qualification_run(
+    status: str = "completed",
+    conclusion: str | None = "success",
+    *,
+    head_sha: str = AUTHORITY_COMMIT,
+    head_branch: str = "main",
+    path: str = ".github/workflows/beta-candidate.yml",
+) -> dict[str, object]:
+    return {
+        "id": 81,
+        "run_attempt": 2,
+        "name": "Beta candidate",
+        "workflow_id": 37,
+        "path": path,
+        "event": "push",
+        "head_branch": head_branch,
+        "head_sha": head_sha,
+        "status": status,
+        "conclusion": conclusion,
+        "url": "https://api.github.com/repos/durable-workflow/.github/actions/runs/81",
+        "html_url": "https://github.com/durable-workflow/.github/actions/runs/81",
+    }
+
+
+class QualifiedAuthorityConsumerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_for_retry_tests()
+
+    def authority(self) -> dict[str, object]:
+        return {
+            "schema": AUTHORITY_SCHEMA,
+            "source": SOURCE_IDENTITY,
+            "workflows": {
+                name: {
+                    "repository": component.repository,
+                    "ref": f"refs/heads/{component.default_branch}",
+                    "path": ".github/workflows/release-plan-recovery.yml",
+                    "state": "active",
+                    "sha256": "b" * 64,
+                }
+                for name, component in self.recovery.COMPONENTS.items()
+            },
+        }
+
+    def client(self, runs: list[dict[str, object]]):
+        authority_raw = json.dumps(self.authority()).encode("utf-8")
+
+        class Client:
+            def __init__(self) -> None:
+                self.requests: list[tuple[str, str]] = []
+
+            def json(self, url: str) -> dict[str, object]:
+                self.requests.append(("json", url))
+                if url == authority_ref_url():
+                    return {"sha": AUTHORITY_COMMIT}
+                if url == qualification_runs_url(AUTHORITY_COMMIT):
+                    return {"total_count": len(runs), "workflow_runs": runs}
+                raise AssertionError(f"peer source was read before authority qualification: {url}")
+
+            def bytes(self, url: str, *, accept: str | None = None) -> bytes:
+                self.requests.append(("bytes", url))
+                if url != authority_url(AUTHORITY_COMMIT):
+                    raise AssertionError(f"peer source was read before authority qualification: {url}")
+                return authority_raw
+
+        return Client(), authority_raw
+
+    def test_green_qualification_binds_manifest_bytes_and_revision(self) -> None:
+        client, authority_raw = self.client([qualification_run()])
+        workflows, source = self.recovery.load_recovery_workflow_authority(client)
+
+        self.assertEqual(set(self.recovery.COMPONENTS), set(workflows))
+        self.assertEqual(AUTHORITY_COMMIT, source["commit"])
+        self.assertEqual(hashlib.sha256(authority_raw).hexdigest(), source["sha256"])
+        self.assertEqual(AUTHORITY_COMMIT, source["qualification"]["head_sha"])
+        self.assertEqual(".github/workflows/beta-candidate.yml", source["qualification"]["path"])
+        self.assertEqual("main", source["qualification"]["head_branch"])
+        self.assertEqual(
+            [
+                ("json", authority_ref_url()),
+                ("json", qualification_runs_url(AUTHORITY_COMMIT)),
+                ("bytes", authority_url(AUTHORITY_COMMIT)),
+            ],
+            client.requests,
+        )
+
+    def test_non_green_fails_before_authority_or_peer_source_reads(self) -> None:
+        cases = (
+            ("pending", [qualification_run("in_progress", None)], "pending"),
+            ("failed", [qualification_run("completed", "failure")], "failed"),
+            ("cancelled", [qualification_run("completed", "cancelled")], "cancelled"),
+            ("absent", [], "absent"),
+            ("revision-mismatch", [qualification_run(head_sha="c" * 40)], "another commit"),
+            (
+                "wrong-workflow",
+                [qualification_run(path=".github/workflows/source-qualification.yml")],
+                "absent",
+            ),
+            ("wrong-ref", [qualification_run(head_branch="v2")], "absent"),
+            (
+                "wrong-path-ref",
+                [qualification_run(path=".github/workflows/beta-candidate.yml@v2")],
+                "absent",
+            ),
+        )
+        for label, runs, message in cases:
+            with self.subTest(state=label):
+                client, _authority_raw = self.client(runs)
+                with self.assertRaisesRegex(self.recovery.RecoveryError, message):
+                    self.recovery.load_recovery_workflow_authority(client)
+                self.assertEqual(
+                    [
+                        ("json", authority_ref_url()),
+                        ("json", qualification_runs_url(AUTHORITY_COMMIT)),
+                    ],
+                    client.requests,
+                )
 
 
 class ContinuityGateTest(unittest.TestCase):

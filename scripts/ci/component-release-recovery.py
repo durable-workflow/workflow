@@ -29,10 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from recovery_workflow_authority import (
-    SOURCE_IDENTITY as RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
     RecoveryWorkflowAuthorityError,
-    authority_url,
-    decode_authority,
+    load_qualified_authority,
     verify_workflow_source,
 )
 
@@ -651,14 +649,15 @@ def discover_plan(
     return tag, commit, plan, preparation
 
 
-def load_recovery_workflow_authority(client: PublicClient) -> dict[str, dict[str, str]]:
+def load_recovery_workflow_authority(
+    client: PublicClient,
+) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
     identities = {
         name: (component.repository, component.default_branch)
         for name, component in COMPONENTS.items()
     }
     try:
-        raw = client.bytes(authority_url(), accept="application/vnd.github.raw+json")
-        return decode_authority(raw, identities)
+        return load_qualified_authority(client, identities)
     except RecoveryWorkflowAuthorityError as error:
         raise RecoveryError(str(error), "default-branch-preflight") from error
 
@@ -720,7 +719,7 @@ def verify_plan_authority(
     foundation = read_record(client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json")
     if foundation.get("candidate") != "beta-continuity-foundation":
         raise RecoveryError("immutable candidate foundation has an unexpected identity", "plan-preflight")
-    authority = load_recovery_workflow_authority(client)
+    authority, authority_source = load_recovery_workflow_authority(client)
     branches: dict[str, str] = {}
     recovery_workflows: dict[str, dict[str, Any]] = {}
     for name, component in COMPONENTS.items():
@@ -749,7 +748,7 @@ def verify_plan_authority(
         ).decode("utf-8")
         source_sha256 = verify_recovery_workflow_source(name, source, expected["sha256"])
         recovery_workflows[name] = {
-            "authority": RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
+            "authority": authority_source,
             "default_branch": component.default_branch,
             "path": expected_path,
             "sha256": source_sha256,
@@ -1280,6 +1279,9 @@ def resolve_component(
             ),
         }
     )
+    authority_evidence = next(iter(recovery_workflows.values()), {}).get("authority")
+    if authority_evidence is not None:
+        state["recovery_workflow_authority"] = authority_evidence
     if prepared_identity is not None:
         state["release_preparation"] = {
             "record_commit": record_commit,
