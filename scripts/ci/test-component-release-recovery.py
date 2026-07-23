@@ -642,12 +642,17 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             mock.patch.object(
                 self.recovery,
                 "read_plan_authority",
-                side_effect=[(older, None), (newer, None)],
+                side_effect=[(older, None), (newer, None), (older, None), (newer, None)],
             ),
             mock.patch.object(
                 self.recovery,
                 "direct_plan_lifecycle",
-                side_effect=[("completed", None), ("completed", None)],
+                side_effect=[
+                    ("completed", None),
+                    ("completed", None),
+                    ("completed", None),
+                    ("completed", None),
+                ],
             ),
             mock.patch.object(
                 self.recovery,
@@ -664,6 +669,96 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(tags[1], selected["tag"])
         self.assertEqual("completed", selected["lifecycle"])
+
+    def test_convergence_rechecks_nonselected_lifecycle_authority(self) -> None:
+        older = {"tag": "release-plan/older", "lifecycle": "completed"}
+        changed_older = {**older, "lifecycle": "superseded"}
+        latest = {"tag": "release-plan/latest", "lifecycle": "actionable"}
+        current_snapshot = [changed_older, latest]
+
+        with mock.patch.object(
+            self.recovery,
+            "classify_implicit_plan_authority",
+            side_effect=[
+                (latest, [older, latest]),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+            ],
+        ) as classify:
+            selected = self.recovery.select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(4, classify.call_count)
+        self.assertEqual(current_snapshot, selected["authority_snapshot"])
+
+    def test_final_implicit_boundary_rejects_stale_publish_but_manual_recovery_does_not(self) -> None:
+        candidate = lifecycle_plan(self.recovery)
+        candidate_preparation = {
+            "components": {
+                "workflow": {
+                    "release_notes": {
+                        "release_date": "2026-07-23",
+                        "sha256": "c" * 64,
+                        "source": {},
+                    }
+                }
+            }
+        }
+        component = self.recovery.COMPONENTS["workflow"]
+        publication_preflight = mock.Mock(
+            side_effect=self.recovery.NotFound("not published")
+        )
+        implicit_authority = {
+            "authority_snapshot": [
+                {"tag": "release-plan/older", "lifecycle": "actionable"}
+            ]
+        }
+        current_snapshot = [
+            {"tag": "release-plan/older", "lifecycle": "superseded"},
+            {"tag": "release-plan/successor", "lifecycle": "actionable"},
+        ]
+
+        with (
+            mock.patch.object(self.recovery, "verify_plan_authority", return_value=({}, {})),
+            mock.patch.object(self.recovery, "validate_release_preparation"),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=None),
+            mock.patch.object(
+                self.recovery,
+                "classify_implicit_plan_authority",
+                return_value=(current_snapshot[-1], current_snapshot),
+            ) as classify,
+            mock.patch.dict(
+                self.recovery.VERIFIERS,
+                {component.distribution: publication_preflight},
+            ),
+        ):
+            with self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "refusing a stale recovery action",
+            ):
+                self.recovery.resolve_component(
+                    mock.Mock(),
+                    "workflow",
+                    "release-plan/older",
+                    "a" * 40,
+                    candidate,
+                    candidate_preparation,
+                    implicit_authority,
+                )
+
+            state, outputs = self.recovery.resolve_component(
+                mock.Mock(),
+                "workflow",
+                "release-plan/older",
+                "a" * 40,
+                candidate,
+                candidate_preparation,
+            )
+
+        self.assertEqual("publish", outputs["action"])
+        self.assertEqual("publication", state["phase"])
+        self.assertEqual(1, classify.call_count)
+        self.assertEqual(2, publication_preflight.call_count)
 
     def test_interrupted_plan_rejects_multiple_continuity_successors(self) -> None:
         interrupted = lifecycle_plan(self.recovery)
