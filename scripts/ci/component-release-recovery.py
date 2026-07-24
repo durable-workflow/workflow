@@ -44,6 +44,11 @@ FAILURE_TAG_PREFIX = "release-plan-failure/"
 CONTINUITY_TAG_PREFIX = "beta-continuity/"
 CONTINUITY_EVIDENCE_SCHEMA = "durable-workflow.beta-continuity.evidence/v1"
 CONTINUITY_SUPERSESSION_REASON = "missing-post-acceptance-publication-trigger"
+CONTINUITY_RESOLUTION_TAG_PREFIX = "release-plan-continuity-resolution/"
+CONTINUITY_RESOLUTION_SCHEMA = "durable-workflow.release-plan-continuity-resolution/v2"
+CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW = ".github/workflows/beta-candidate.yml"
+CONTINUITY_RESOLUTION_QUALIFICATION_EVENT = "push"
+CONTINUITY_RESOLUTION_QUALIFICATION_BRANCH = "main"
 SUPERSESSION_ENVIRONMENT = "release-plan-supersession"
 SUPERSESSION_WORKFLOW = ".github/workflows/release-plan-supersession.yml"
 SUPERSESSION_API_VERSION = "2026-03-10"
@@ -1700,6 +1705,108 @@ def list_release_plan_tags(client: PublicClient) -> list[str]:
     return tags
 
 
+def list_continuity_resolution_tags(client: PublicClient, interrupted_plan: str) -> list[str]:
+    prefix = f"{CONTINUITY_RESOLUTION_TAG_PREFIX}{interrupted_plan}/"
+    url = f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{prefix}"
+    refs = client.json(url)
+    if not isinstance(refs, list):
+        raise RecoveryError(
+            "GitHub did not return the immutable continuity-resolution tag registry",
+            "plan-discovery",
+        )
+    tags: list[str] = []
+    for ref in refs:
+        value = ref.get("ref") if isinstance(ref, dict) else None
+        tag = value.removeprefix("refs/tags/") if isinstance(value, str) else ""
+        digest = tag.removeprefix(prefix)
+        if value != f"refs/tags/{tag}" or not tag.startswith(prefix) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise RecoveryError(
+                "GitHub returned a malformed immutable continuity-resolution tag registry entry",
+                "plan-discovery",
+            )
+        tags.append(tag)
+    if len(tags) != len(set(tags)):
+        raise RecoveryError(
+            "immutable continuity-resolution tag registry contains duplicate authorities",
+            "plan-discovery",
+        )
+    return tags
+
+
+def validate_continuity_resolution_qualification(qualification: Any, client: PublicClient) -> dict[str, Any]:
+    expected = {
+        "repository": CONTROL_REPOSITORY,
+        "workflow": CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW,
+        "event": CONTINUITY_RESOLUTION_QUALIFICATION_EVENT,
+        "head_branch": CONTINUITY_RESOLUTION_QUALIFICATION_BRANCH,
+        "status": "completed",
+        "conclusion": "success",
+    }
+    if (
+        not isinstance(qualification, dict)
+        or set(qualification) != {*expected, "head_sha", "run_id", "run_attempt"}
+        or any(qualification.get(field) != value for field, value in expected.items())
+        or not COMMIT_PATTERN.fullmatch(str(qualification.get("head_sha", "")))
+        or type(qualification.get("run_id")) is not int
+        or qualification["run_id"] < 1
+        or type(qualification.get("run_attempt")) is not int
+        or qualification["run_attempt"] < 1
+    ):
+        raise RecoveryError(
+            "continuity successor resolution has invalid Beta candidate qualification",
+            "plan-discovery",
+        )
+    run_id = qualification["run_id"]
+    run_attempt = qualification["run_attempt"]
+    try:
+        run = client.json(
+            f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"
+        )
+    except NotFound as error:
+        raise RecoveryError(
+            "continuity successor resolution Beta candidate qualification is absent", "plan-discovery"
+        ) from error
+    if not isinstance(run, dict):
+        raise RecoveryError("continuity successor resolution Beta candidate qualification is absent", "plan-discovery")
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
+    if (
+        type(run.get("id")) is not int
+        or run.get("id") != run_id
+        or type(run.get("run_attempt")) is not int
+        or run.get("run_attempt") != run_attempt
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != CONTROL_REPOSITORY
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != CONTROL_REPOSITORY
+        or run.get("path")
+        not in {
+            CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW,
+            f"{CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW}@main",
+            f"{CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW}@refs/heads/main",
+        }
+        or run.get("event") != CONTINUITY_RESOLUTION_QUALIFICATION_EVENT
+        or run.get("head_branch") != CONTINUITY_RESOLUTION_QUALIFICATION_BRANCH
+    ):
+        raise RecoveryError(
+            "continuity successor resolution qualification is from an untrusted workflow",
+            "plan-discovery",
+        )
+    if run.get("head_sha") != qualification["head_sha"]:
+        raise RecoveryError(
+            "continuity successor resolution qualification is bound to another source revision", "plan-discovery"
+        )
+    if run.get("status") != "completed":
+        raise RecoveryError("continuity successor resolution Beta candidate qualification is pending", "plan-discovery")
+    if run.get("conclusion") == "cancelled":
+        raise RecoveryError(
+            "continuity successor resolution Beta candidate qualification was cancelled", "plan-discovery"
+        )
+    if run.get("conclusion") != "success":
+        raise RecoveryError("continuity successor resolution Beta candidate qualification failed", "plan-discovery")
+    return qualification
+
+
 def completion_manifest(
     plan: dict[str, Any],
     commit: str,
@@ -1786,7 +1893,7 @@ def direct_plan_lifecycle(
 def accepted_continuity_supersession(
     client: PublicClient,
     authority: dict[str, Any],
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     plan = authority["plan"]
     accepted_tag = f"{CONTINUITY_TAG_PREFIX}{plan['plan']}/accepted"
     accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
@@ -1824,7 +1931,83 @@ def accepted_continuity_supersession(
             f"release plan {authority['tag']} has an invalid superseded interruption identity",
             "plan-discovery",
         )
-    return dict(superseded)
+    return {
+        **superseded,
+        "continuity_claim": {
+            "plan": {
+                "tag": authority["tag"],
+                "commit": authority["commit"],
+                "sha256": digest,
+            },
+            "acceptance": {
+                "tag": accepted_tag,
+                "commit": accepted_commit,
+                "sha256": manifest_digest(evidence),
+            },
+        },
+    }
+
+
+def resolve_continuity_successor_fork(
+    client: PublicClient,
+    interrupted: dict[str, Any],
+    successors: list[dict[str, Any]],
+) -> str:
+    resolution_tags = list_continuity_resolution_tags(client, interrupted["plan"]["plan"])
+    if not resolution_tags:
+        raise RecoveryError(
+            f"release plan {interrupted['tag']} has multiple continuity successors",
+            "plan-discovery",
+        )
+    if len(resolution_tags) != 1:
+        raise RecoveryError(
+            f"release plan {interrupted['tag']} has multiple continuity successor resolutions",
+            "plan-discovery",
+        )
+    resolution_tag = resolution_tags[0]
+    resolution_commit = resolve_tag(client, CONTROL_REPOSITORY, resolution_tag)
+    if resolution_commit is None:
+        raise RecoveryError(f"continuity successor resolution {resolution_tag} is absent", "plan-discovery")
+    resolution = read_record(client, resolution_tag, resolution_commit, "continuity-successor-resolution.json")
+    first_supersession = successors[0]["supersession"]
+    expected_interruption = {
+        "plan": {
+            "tag": interrupted["tag"],
+            "commit": interrupted["commit"],
+            "sha256": manifest_digest(interrupted["plan"]),
+        },
+        "evidence": {
+            "tag": first_supersession["tag"],
+            "commit": first_supersession["commit"],
+            "sha256": first_supersession["evidence_sha256"],
+        },
+    }
+    expected_claims = sorted(
+        (successor["supersession"]["continuity_claim"] for successor in successors),
+        key=lambda claim: claim["plan"]["tag"],
+    )
+    selected = resolution.get("selected_successor") if isinstance(resolution, dict) else None
+    expected_tag = (
+        f"{CONTINUITY_RESOLUTION_TAG_PREFIX}{interrupted['plan']['plan']}/{manifest_digest(resolution)}"
+        if isinstance(resolution, dict)
+        else ""
+    )
+    if (
+        not isinstance(resolution, dict)
+        or set(resolution)
+        != {"interruption", "qualification", "schema", "selected_successor", "successor_claims"}
+        or resolution.get("schema") != CONTINUITY_RESOLUTION_SCHEMA
+        or resolution.get("interruption") != expected_interruption
+        or resolution.get("successor_claims") != expected_claims
+        or selected not in [claim["plan"] for claim in expected_claims]
+        or resolution_tag != expected_tag
+    ):
+        raise RecoveryError(
+            f"release plan {interrupted['tag']} has an invalid immutable continuity successor resolution",
+            "plan-discovery",
+        )
+    validate_continuity_resolution_qualification(resolution["qualification"], client)
+    return str(selected["tag"])
 
 
 def classify_implicit_plan_authority(
@@ -1857,7 +2040,7 @@ def classify_implicit_plan_authority(
             "plan-discovery",
         )
     by_tag = {item["tag"]: item for item in authorities}
-    continuity_successors: dict[str, list[str]] = {}
+    continuity_successors: dict[str, list[dict[str, Any]]] = {}
     for successor in authorities:
         superseded = accepted_continuity_supersession(client, successor)
         if superseded is None:
@@ -1889,17 +2072,18 @@ def classify_implicit_plan_authority(
                 f"continuity successor {successor['tag']} has conflicting interruption authority",
                 "plan-discovery",
             )
-        continuity_successors.setdefault(interrupted["tag"], []).append(successor["tag"])
+        continuity_successors.setdefault(interrupted["tag"], []).append(
+            {"tag": successor["tag"], "supersession": superseded}
+        )
 
-    for interrupted_tag, successor_tags in continuity_successors.items():
-        if len(successor_tags) != 1:
-            raise RecoveryError(
-                f"release plan {interrupted_tag} has multiple continuity successors",
-                "plan-discovery",
-            )
+    for interrupted_tag, successors in continuity_successors.items():
         interrupted = by_tag[interrupted_tag]
         interrupted["lifecycle"] = "superseded"
-        successor_tag = successor_tags[0]
+        successor_tag = (
+            successors[0]["tag"]
+            if len(successors) == 1
+            else resolve_continuity_successor_fork(client, interrupted, successors)
+        )
         successor = by_tag[successor_tag]
         interrupted["successor"] = {
             "tag": successor_tag,

@@ -87,6 +87,36 @@ def load_recovery_for_retry_tests():
 AUTHORITY_COMMIT = "a" * 40
 
 
+def continuity_resolution_qualification() -> dict[str, object]:
+    return {
+        "repository": "durable-workflow/.github",
+        "workflow": ".github/workflows/beta-candidate.yml",
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": "9" * 40,
+        "run_id": 987,
+        "run_attempt": 2,
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+
+def continuity_resolution_qualification_run() -> dict[str, object]:
+    qualification = continuity_resolution_qualification()
+    return {
+        "id": qualification["run_id"],
+        "run_attempt": qualification["run_attempt"],
+        "repository": {"full_name": "durable-workflow/.github"},
+        "head_repository": {"full_name": "durable-workflow/.github"},
+        "path": ".github/workflows/beta-candidate.yml@main",
+        "event": qualification["event"],
+        "head_branch": qualification["head_branch"],
+        "head_sha": qualification["head_sha"],
+        "status": qualification["status"],
+        "conclusion": qualification["conclusion"],
+    }
+
+
 
 def lifecycle_plan(module, channel: str = "alpha") -> dict[str, object]:
     prerelease = "alpha" if channel == "alpha" else "beta"
@@ -844,6 +874,11 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
             mock.patch.object(
                 self.recovery,
+                "list_continuity_resolution_tags",
+                return_value=[],
+            ),
+            mock.patch.object(
+                self.recovery,
                 "read_record",
                 return_value=interruption_evidence,
             ),
@@ -853,6 +888,100 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
+
+    def test_continuity_successor_fork_accepts_exact_digest_bound_resolution(self) -> None:
+        interrupted_plan = {"plan": "interrupted"}
+        interrupted = {
+            "tag": "release-plan/interrupted",
+            "commit": "a" * 40,
+            "plan": interrupted_plan,
+        }
+        interruption = {
+            "tag": "beta-continuity/interrupted/interrupted",
+            "commit": "b" * 40,
+            "evidence_sha256": "c" * 64,
+        }
+        successors = []
+        for index, name in enumerate(("first-successor", "second-successor"), start=1):
+            successors.append(
+                {
+                    "tag": f"release-plan/{name}",
+                    "supersession": {
+                        **interruption,
+                        "continuity_claim": {
+                            "plan": {
+                                "tag": f"release-plan/{name}",
+                                "commit": str(index) * 40,
+                                "sha256": str(index + 2) * 64,
+                            },
+                            "acceptance": {
+                                "tag": f"beta-continuity/{name}/accepted",
+                                "commit": str(index + 4) * 40,
+                                "sha256": str(index + 6) * 64,
+                            },
+                        },
+                    },
+                }
+            )
+        claims = [successor["supersession"]["continuity_claim"] for successor in successors]
+        resolution = {
+            "schema": self.recovery.CONTINUITY_RESOLUTION_SCHEMA,
+            "qualification": continuity_resolution_qualification(),
+            "interruption": {
+                "plan": {
+                    "tag": interrupted["tag"],
+                    "commit": interrupted["commit"],
+                    "sha256": self.recovery.manifest_digest(interrupted_plan),
+                },
+                "evidence": {
+                    "tag": interruption["tag"],
+                    "commit": interruption["commit"],
+                    "sha256": interruption["evidence_sha256"],
+                },
+            },
+            "successor_claims": claims,
+            "selected_successor": claims[1]["plan"],
+        }
+        resolution_tag = (
+            f"{self.recovery.CONTINUITY_RESOLUTION_TAG_PREFIX}interrupted/"
+            f"{self.recovery.manifest_digest(resolution)}"
+        )
+        client = mock.Mock()
+        client.json.return_value = continuity_resolution_qualification_run()
+        with (
+            mock.patch.object(
+                self.recovery,
+                "list_continuity_resolution_tags",
+                return_value=[resolution_tag],
+            ),
+            mock.patch.object(self.recovery, "resolve_tag", return_value="f" * 40),
+            mock.patch.object(self.recovery, "read_record", return_value=resolution),
+        ):
+            selected = self.recovery.resolve_continuity_successor_fork(
+                client,
+                interrupted,
+                successors,
+            )
+        self.assertEqual("release-plan/second-successor", selected)
+        valid_run = continuity_resolution_qualification_run()
+        failures = (
+            (None, "qualification is absent"),
+            ({**valid_run, "status": "in_progress", "conclusion": None}, "qualification is pending"),
+            ({**valid_run, "conclusion": "failure"}, "qualification failed"),
+            ({**valid_run, "conclusion": "cancelled"}, "qualification was cancelled"),
+            ({**valid_run, "head_sha": "8" * 40}, "another source revision"),
+            ({**valid_run, "path": ".github/workflows/untrusted.yml@main"}, "untrusted workflow"),
+        )
+        with (
+            mock.patch.object(self.recovery, "list_continuity_resolution_tags", return_value=[resolution_tag]),
+            mock.patch.object(self.recovery, "resolve_tag", return_value="f" * 40),
+            mock.patch.object(self.recovery, "read_record", return_value=resolution),
+        ):
+            for run, message in failures:
+                with self.subTest(qualification=message):
+                    client.json.return_value = run
+                    with self.assertRaisesRegex(self.recovery.RecoveryError, message):
+                        self.recovery.resolve_continuity_successor_fork(client, interrupted, successors)
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = lifecycle_plan(self.recovery)
