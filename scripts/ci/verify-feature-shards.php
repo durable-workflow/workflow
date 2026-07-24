@@ -92,7 +92,8 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
     $jobDefinition = workflow_job_definition($workflow, $job);
     $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS - 1));
     $requirements = [
-        'complete-gate routing' => "if: \${{ needs.route.outputs.route == 'complete' }}",
+        'complete-gate routing' => "needs.route.outputs.route == 'complete'",
+        'full qualification routing' => "needs.route.outputs.qualification == 'full'",
         'complete shard matrix' => "shard: [{$expectedMatrix}]",
         'splitter shard count' => '--shards=' . FEATURE_SHARDS,
         'weight profile' => "--weight-profile={$profile}",
@@ -108,20 +109,42 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
 function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): void
 {
     $routes = [
-        'quality' => "if: \${{ needs.route.outputs.route == 'bounded' || needs.route.outputs.route == 'complete' }}",
-        'pr-unit-contracts' => "if: \${{ needs.route.outputs.route == 'bounded' }}",
-        'pr-feature-mysql' => "if: \${{ needs.route.outputs.route == 'bounded' }}",
-        'feature-mysql' => "if: \${{ needs.route.outputs.route == 'complete' }}",
-        'feature-postgresql' => "if: \${{ needs.route.outputs.route == 'complete' }}",
-        'feature-mariadb' => "if: \${{ needs.route.outputs.route == 'complete' }}",
-        'coverage' => "if: \${{ needs.route.outputs.route == 'complete' }}",
+        'quality' => [
+            "needs.route.outputs.route == 'bounded'",
+            "needs.route.outputs.route == 'complete'",
+            "needs.route.outputs.qualification == 'full'",
+        ],
+        'pr-unit-contracts' => ["needs.route.outputs.route == 'bounded'"],
+        'pr-feature-mysql' => ["needs.route.outputs.route == 'bounded'"],
+        'feature-mysql' => [
+            "needs.route.outputs.route == 'complete'",
+            "needs.route.outputs.qualification == 'full'",
+        ],
+        'feature-postgresql' => [
+            "needs.route.outputs.route == 'complete'",
+            "needs.route.outputs.qualification == 'full'",
+        ],
+        'feature-mariadb' => [
+            "needs.route.outputs.route == 'complete'",
+            "needs.route.outputs.qualification == 'full'",
+        ],
+        'coverage' => [
+            "needs.route.outputs.route == 'complete'",
+            "needs.route.outputs.qualification == 'full'",
+        ],
     ];
 
-    foreach ($routes as $job => $condition) {
+    foreach ($routes as $job => $conditions) {
         $definition = workflow_job_definition($workflow, $job);
 
-        if (! str_contains($definition, 'needs: route') || ! str_contains($definition, $condition)) {
-            fail("Build workflow job [{$job}] is not wired to its required route [{$condition}].");
+        if (! str_contains($definition, 'needs: route')) {
+            fail("Build workflow job [{$job}] does not depend on route classification.");
+        }
+
+        foreach ($conditions as $condition) {
+            if (! str_contains($definition, $condition)) {
+                fail("Build workflow job [{$job}] is not wired to its required condition [{$condition}].");
+            }
         }
     }
 
@@ -139,13 +162,35 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         }
     }
 
+    foreach (['full', 'release-recovery'] as $qualification) {
+        if (! str_contains($build, "needs.route.outputs.qualification == '{$qualification}'")) {
+            fail("Final build gate does not validate qualification [{$qualification}].");
+        }
+    }
+
+    foreach (
+        [
+            'selected qualification reporting' => 'Report qualification class and elapsed time',
+            'target qualification baseline reporting' => 'baseline_elapsed_seconds',
+            'focused matrix exclusion' => 'Focused release and recovery qualification succeeded',
+        ] as $description => $needle
+    ) {
+        if (! str_contains($build, $needle)) {
+            fail("Final build gate is missing {$description} [{$needle}].");
+        }
+    }
+
     $route = workflow_job_definition($workflow, 'route');
 
     foreach (
         [
             'route self-tests' => 'resolve-build-route.php --self-test',
+            'target qualification self-tests' => 'classify-target-qualification.php --self-test',
+            'classification behavior and trust tests' => 'test-build-qualification.py',
             'exact feature inventory verification' => 'verify-feature-shards.php',
             'workflow YAML syntax validation' => "yq eval-all '.' .github/workflows/*.yml",
+            'release recovery contract tests' => 'test-component-release-recovery.py',
+            'public-boundary validation' => 'scripts/check-public-boundary.sh',
         ] as $description => $needle
     ) {
         if (! str_contains($route, $needle)) {

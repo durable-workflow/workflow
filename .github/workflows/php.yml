@@ -27,11 +27,22 @@ jobs:
     timeout-minutes: 2
     outputs:
       route: ${{ steps.route.outputs.route }}
+      qualification: ${{ steps.qualification.outputs.qualification }}
+      qualification_reason: ${{ steps.qualification.outputs.qualification_reason }}
+      changed_path_categories: ${{ steps.qualification.outputs.changed_path_categories }}
+      baseline_run_id: ${{ steps.qualification.outputs.baseline_run_id }}
+      baseline_elapsed_seconds: ${{ steps.qualification.outputs.baseline_elapsed_seconds }}
+      started_at: ${{ steps.clock.outputs.started_at }}
 
     steps:
+    - name: Record qualification start
+      id: clock
+      run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
-        fetch-depth: 1
+        fetch-depth: 0
+        persist-credentials: false
 
     - name: Resolve build route
       id: route
@@ -45,8 +56,30 @@ jobs:
         --alternate-ci-structural-admission="${ALTERNATE_CI_STRUCTURAL_ADMISSION:-}"
         >> "$GITHUB_OUTPUT"
 
+    - name: Classify target qualification
+      id: qualification
+      env:
+        BUILD_SERVER_URL: ${{ github.server_url }}
+        BUILD_EVENT_NAME: ${{ github.event_name }}
+        BUILD_REF: ${{ github.ref }}
+        BUILD_BEFORE_SHA: ${{ github.event.before }}
+        BUILD_HEAD_SHA: ${{ github.sha }}
+      run: >-
+        php scripts/ci/classify-target-qualification.php
+        --server-url="$BUILD_SERVER_URL"
+        --event-name="$BUILD_EVENT_NAME"
+        --ref="$BUILD_REF"
+        --before="$BUILD_BEFORE_SHA"
+        --head="$BUILD_HEAD_SHA"
+        >> "$GITHUB_OUTPUT"
+
     - name: Verify fail-safe build routes
       run: php scripts/ci/resolve-build-route.php --self-test
+
+    - name: Verify fail-safe target qualification
+      run: |
+        php scripts/ci/classify-target-qualification.php --self-test
+        python scripts/ci/test-build-qualification.py
 
     - name: Verify complete feature inventories
       run: php scripts/ci/verify-feature-shards.php
@@ -54,12 +87,70 @@ jobs:
     - name: Validate workflow YAML syntax
       run: yq eval-all '.' .github/workflows/*.yml >/dev/null
 
+    - name: Validate release and recovery script syntax
+      run: |
+        bash -n \
+          scripts/ci/check-docs-release-audit.sh \
+          scripts/ci/check-packagist-release.sh \
+          scripts/ci/check-platform-conformance-mirror.sh
+        php -l scripts/ci/classify-target-qualification.php
+        php -l scripts/ci/compare-platform-conformance-mirrors.php
+        python - <<'PY'
+        import ast
+        from pathlib import Path
+
+        for path in Path("scripts/ci").glob("*.py"):
+            ast.parse(path.read_text(), filename=str(path))
+        PY
+
     - name: Verify release recovery source contracts
       run: python scripts/ci/test-component-release-recovery.py
 
+    - name: Scan public boundary
+      shell: bash
+      env:
+        BUILD_EVENT_NAME: ${{ github.event_name }}
+        BUILD_BEFORE_SHA: ${{ github.event.before }}
+        BUILD_HEAD_SHA: ${{ github.sha }}
+        PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PULL_REQUEST_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: |
+        set -euo pipefail
+
+        baseline=""
+        if [ "$BUILD_EVENT_NAME" = "pull_request" ]; then
+          range="${PULL_REQUEST_BASE_SHA}..${PULL_REQUEST_HEAD_SHA}"
+          base_ref="origin/${PULL_REQUEST_BASE_REF}"
+          if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+            baseline="$base_ref"
+          else
+            baseline="$PULL_REQUEST_BASE_SHA"
+          fi
+        elif [[ "$BUILD_BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+          && [[ ! "$BUILD_BEFORE_SHA" =~ ^0+$ ]] \
+          && git cat-file -e "${BUILD_BEFORE_SHA}^{commit}"; then
+          range="${BUILD_BEFORE_SHA}..${BUILD_HEAD_SHA}"
+        elif git rev-parse --verify --quiet "${BUILD_HEAD_SHA}^" >/dev/null; then
+          range="${BUILD_HEAD_SHA}^..${BUILD_HEAD_SHA}"
+        else
+          range="$BUILD_HEAD_SHA"
+        fi
+
+        PUBLIC_BOUNDARY_GIT_RANGE="$range" \
+          PUBLIC_BOUNDARY_GIT_BASELINE="$baseline" \
+          scripts/check-public-boundary.sh
+
   quality:
     needs: route
-    if: ${{ needs.route.outputs.route == 'bounded' || needs.route.outputs.route == 'complete' }}
+    if: >-
+      ${{
+        needs.route.outputs.route == 'bounded'
+        || (
+          needs.route.outputs.route == 'complete'
+          && needs.route.outputs.qualification == 'full'
+        )
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -67,6 +158,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
@@ -98,6 +190,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -150,6 +243,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 20
+          persist-credentials: false
 
     - name: Resolve changed files
       env:
@@ -289,7 +383,11 @@ jobs:
 
   feature-mysql:
     needs: route
-    if: ${{ needs.route.outputs.route == 'complete' }}
+    if: >-
+      ${{
+        needs.route.outputs.route == 'complete'
+        && needs.route.outputs.qualification == 'full'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -319,6 +417,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -447,7 +546,11 @@ jobs:
 
   feature-postgresql:
     needs: route
-    if: ${{ needs.route.outputs.route == 'complete' }}
+    if: >-
+      ${{
+        needs.route.outputs.route == 'complete'
+        && needs.route.outputs.qualification == 'full'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -476,6 +579,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -605,7 +709,11 @@ jobs:
 
   feature-mariadb:
     needs: route
-    if: ${{ needs.route.outputs.route == 'complete' }}
+    if: >-
+      ${{
+        needs.route.outputs.route == 'complete'
+        && needs.route.outputs.qualification == 'full'
+      }}
     runs-on: ubuntu-latest
 
     services:
@@ -631,6 +739,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -699,7 +808,11 @@ jobs:
 
   coverage:
     needs: route
-    if: ${{ needs.route.outputs.route == 'complete' }}
+    if: >-
+      ${{
+        needs.route.outputs.route == 'complete'
+        && needs.route.outputs.qualification == 'full'
+      }}
     runs-on: ubuntu-latest
 
     services:
@@ -712,6 +825,7 @@ jobs:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -799,6 +913,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    outputs:
+      qualification: ${{ needs.route.outputs.qualification }}
+      elapsed_seconds: ${{ steps.report.outputs.elapsed_seconds }}
     needs:
     - route
     - quality
@@ -814,12 +931,17 @@ jobs:
     - name: Require a recognized build route
       env:
         BUILD_ROUTE: ${{ needs.route.outputs.route }}
+        QUALIFICATION_CLASS: ${{ needs.route.outputs.qualification }}
         ROUTE_JOB_RESULT: ${{ needs.route.result }}
       run: |
         test "$ROUTE_JOB_RESULT" = "success"
         case "$BUILD_ROUTE" in
           bounded|complete|structural|local-sentinel) ;;
           *) echo "Unrecognized or unavailable build route: $BUILD_ROUTE" >&2; exit 1 ;;
+        esac
+        case "$QUALIFICATION_CLASS" in
+          full|release-recovery) ;;
+          *) echo "Unrecognized or unavailable qualification class: $QUALIFICATION_CLASS" >&2; exit 1 ;;
         esac
 
     - name: Check bounded pull-request gate
@@ -835,7 +957,11 @@ jobs:
         echo "Bounded external pull-request validation succeeded."
 
     - name: Check complete public matrix
-      if: ${{ needs.route.outputs.route == 'complete' }}
+      if: >-
+        ${{
+          needs.route.outputs.route == 'complete'
+          && needs.route.outputs.qualification == 'full'
+        }}
       run: |
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "skipped"
@@ -845,6 +971,22 @@ jobs:
         test "${{ needs.feature-postgresql.result }}" = "success"
         test "${{ needs.coverage.result }}" = "success"
         echo "The complete public release matrix succeeded for this SHA."
+
+    - name: Check focused release and recovery qualification
+      if: >-
+        ${{
+          needs.route.outputs.route == 'complete'
+          && needs.route.outputs.qualification == 'release-recovery'
+        }}
+      run: |
+        test "${{ needs.quality.result }}" = "skipped"
+        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mariadb.result }}" = "skipped"
+        test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage.result }}" = "skipped"
+        echo "Focused release and recovery qualification succeeded without the runtime matrix."
 
     - name: Check structural candidate gate
       if: ${{ needs.route.outputs.route == 'structural' }}
@@ -869,3 +1011,47 @@ jobs:
         test "${{ needs.feature-postgresql.result }}" = "skipped"
         test "${{ needs.coverage.result }}" = "skipped"
         echo "Local landed-SHA sentinel succeeded."
+
+    - name: Report qualification class and elapsed time
+      id: report
+      if: ${{ always() && needs.route.result == 'success' }}
+      env:
+        QUALIFICATION_CLASS: ${{ needs.route.outputs.qualification }}
+        QUALIFICATION_REASON: ${{ needs.route.outputs.qualification_reason }}
+        CHANGED_PATH_CATEGORIES: ${{ needs.route.outputs.changed_path_categories }}
+        QUALIFICATION_STARTED_AT: ${{ needs.route.outputs.started_at }}
+        BASELINE_RUN_ID: ${{ needs.route.outputs.baseline_run_id }}
+        BASELINE_ELAPSED_SECONDS: ${{ needs.route.outputs.baseline_elapsed_seconds }}
+      run: |
+        case "$QUALIFICATION_CLASS" in
+          full|release-recovery) ;;
+          *) echo "Cannot report unknown qualification class: $QUALIFICATION_CLASS" >&2; exit 1 ;;
+        esac
+        [[ "$QUALIFICATION_STARTED_AT" =~ ^[0-9]+$ ]]
+        [[ "$BASELINE_RUN_ID" =~ ^[0-9]+$ ]]
+        [[ "$BASELINE_ELAPSED_SECONDS" =~ ^[0-9]+$ ]]
+
+        elapsed_seconds=$(( $(date +%s) - QUALIFICATION_STARTED_AT ))
+        saved_seconds=$(( BASELINE_ELAPSED_SECONDS - elapsed_seconds ))
+        echo "elapsed_seconds=$elapsed_seconds" >> "$GITHUB_OUTPUT"
+        printf \
+          'qualification_class=%s reason=%s categories=%s elapsed_seconds=%s baseline_run_id=%s baseline_elapsed_seconds=%s saved_seconds=%s\n' \
+          "$QUALIFICATION_CLASS" \
+          "$QUALIFICATION_REASON" \
+          "${CHANGED_PATH_CATEGORIES:-none}" \
+          "$elapsed_seconds" \
+          "$BASELINE_RUN_ID" \
+          "$BASELINE_ELAPSED_SECONDS" \
+          "$saved_seconds"
+
+        {
+          echo "### Target qualification"
+          echo
+          echo "| Measurement | Value |"
+          echo "| --- | ---: |"
+          echo "| Qualification class | \`$QUALIFICATION_CLASS\` |"
+          echo "| Changed-path categories | \`${CHANGED_PATH_CATEGORIES:-none}\` |"
+          echo "| Current elapsed time | ${elapsed_seconds}s |"
+          echo "| [Baseline run](https://github.com/durable-workflow/workflow/actions/runs/${BASELINE_RUN_ID}) | ${BASELINE_ELAPSED_SECONDS}s |"
+          echo "| Difference from baseline | ${saved_seconds}s |"
+        } >> "$GITHUB_STEP_SUMMARY"

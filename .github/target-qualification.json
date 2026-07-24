@@ -1,0 +1,32 @@
+{
+    "schema": "durable-workflow.target-qualification/v1",
+    "baseline": {
+        "run_id": 29998512292,
+        "elapsed_seconds": 308
+    },
+    "focused_class": "release-recovery",
+    "path_categories": {
+        "release-audit": [
+            ".github/workflows/release-docs-audit.yml",
+            "scripts/ci/check-docs-release-audit.sh",
+            "scripts/ci/check-packagist-release.sh",
+            "scripts/ci/check-platform-conformance-mirror.sh",
+            "scripts/ci/compare-platform-conformance-mirrors.php"
+        ],
+        "recovery-authority": [
+            "scripts/ci/component-release-recovery.py",
+            "scripts/ci/recovery_workflow_authority.py"
+        ],
+        "recovery-contract": [
+            "scripts/ci/cli-release-plan-recovery.fixture.yml",
+            "scripts/ci/cli_release_verifier_contract.py",
+            "scripts/ci/sdk-python-release-plan-recovery.fixture.yml",
+            "scripts/ci/sdk-rust-release-plan-recovery.fixture.yml",
+            "scripts/ci/server-release-plan-recovery.fixture.yml",
+            "scripts/ci/test-component-release-recovery.py"
+        ],
+        "recovery-workflow": [
+            ".github/workflows/release-plan-recovery.yml"
+        ]
+    }
+}
