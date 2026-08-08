@@ -12,28 +12,13 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
-      mysql:
-        image: mysql
-        env:
-          MYSQL_ROOT_PASSWORD: password
-        ports:
-        - 3306:3306
-
-      postgres:
-        image: postgres
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: testbench
-        ports:
-        - 5432:5432
-
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379/tcp
 
     steps:
     - uses: actions/checkout@v3
@@ -75,17 +60,134 @@ jobs:
     - name: Run static analysis via PHPStan
       run: vendor/bin/phpstan analyse src tests
 
-    - name: Resolve service endpoints
+    - name: Resolve unit Redis endpoint
+      env:
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+      run: |
+        if getent hosts redis >/dev/null 2>&1; then
+          redis_host="redis"
+          redis_port="6379"
+        elif [ -n "$REDIS_PUBLISHED_PORT" ]; then
+          redis_host="127.0.0.1"
+          redis_port="$REDIS_PUBLISHED_PORT"
+        else
+          echo "Unable to resolve the redis service endpoint" >&2
+          exit 1
+        fi
+
+        echo "REDIS_HOST=${redis_host}" >> "$GITHUB_ENV"
+        echo "REDIS_PORT=${redis_port}" >> "$GITHUB_ENV"
+
+    - name: Wait for unit Redis service
+      timeout-minutes: 2
+      run: |
+        probe_redis() {
+          timeout 3 php -r '
+            $socket = @fsockopen($argv[1], (int) $argv[2], $errorCode, $errorMessage, 1);
+            if ($socket === false) {
+                throw new RuntimeException("Redis connection failed ({$errorCode}): {$errorMessage}");
+            }
+            stream_set_timeout($socket, 1);
+            fwrite($socket, "*1\r\n\$4\r\nPING\r\n");
+            $response = fgets($socket);
+            fclose($socket);
+            if (trim((string) $response) !== "+PONG") {
+                throw new RuntimeException("Redis did not answer PING");
+            }
+          ' "$REDIS_HOST" "$REDIS_PORT"
+        }
+
+        for attempt in $(seq 1 20); do
+          if probe_redis 2>/dev/null; then
+            echo "Redis is ready at $REDIS_HOST:$REDIS_PORT"
+            exit 0
+          fi
+          echo "Waiting for Redis at $REDIS_HOST:$REDIS_PORT (attempt $attempt/20)"
+          sleep 2
+        done
+
+        echo "Redis was not ready at $REDIS_HOST:$REDIS_PORT after 20 attempts" >&2
+        probe_redis
+
+    - name: Prepare unit test database
+      run: touch testbench.sqlite
+
+    - name: Run unit test suite
+      if: github.event_name == 'pull_request'
+      timeout-minutes: 5
+      run: vendor/bin/phpunit --testdox --testsuite unit
+      env:
+        DB_CONNECTION: sqlite
+        DB_DATABASE: testbench.sqlite
+        QUEUE_CONNECTION: sync
+
+    - name: Code Coverage
+      if: github.event_name == 'push'
+      timeout-minutes: 5
+      run: |
+        vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
+      env:
+        DB_CONNECTION: sqlite
+        DB_DATABASE: testbench.sqlite
+        QUEUE_CONNECTION: sync
+        XDEBUG_MODE: coverage
+
+    - name: Upload coverage to Codecov
+      if: github.event_name == 'push'
+      uses: codecov/codecov-action@v5
+      with:
+        files: ./coverage.xml
+        fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+  feature-mysql:
+
+    name: Feature tests (MySQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        ports:
+        - 3306/tcp
+
+      redis:
+        image: redis
+        ports:
+        - 6379/tcp
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+          fetch-depth: 10
+
+    - name: Pin Composer to the 2.x line
+      run: composer self-update --2
+
+    - name: Cache Composer packages
+      uses: actions/cache@v3
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress --no-blocking
+
+    - name: Resolve MySQL and Redis endpoints
       env:
         MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
-        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
         REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
       run: |
         resolve_service() {
-          variable_prefix="$1"
-          service_host="$2"
-          container_port="$3"
-          published_port="$4"
+          service_host="$1"
+          container_port="$2"
+          published_port="$3"
+          variable_prefix="$4"
 
           if getent hosts "$service_host" >/dev/null 2>&1; then
             resolved_host="$service_host"
@@ -102,11 +204,62 @@ jobs:
           echo "${variable_prefix}_PORT=${resolved_port}" >> "$GITHUB_ENV"
         }
 
-        resolve_service MYSQL mysql 3306 "$MYSQL_PUBLISHED_PORT"
-        resolve_service POSTGRES postgres 5432 "$POSTGRES_PUBLISHED_PORT"
-        resolve_service REDIS redis 6379 "$REDIS_PUBLISHED_PORT"
+        resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" DB
+        resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
 
-    - name: Export test defaults
+    - name: Wait for MySQL and Redis
+      timeout-minutes: 2
+      run: |
+        probe_database() {
+          timeout 3 php -r '
+            $dsn = sprintf("%s:host=%s;port=%s", $argv[1], $argv[2], $argv[3]);
+            if ($argv[4] !== "") {
+                $dsn .= ";dbname={$argv[4]}";
+            }
+            $database = new PDO($dsn, $argv[5], $argv[6]);
+            $database->query("SELECT 1");
+          ' "$@"
+        }
+
+        probe_redis() {
+          timeout 3 php -r '
+            $socket = @fsockopen($argv[1], (int) $argv[2], $errorCode, $errorMessage, 1);
+            if ($socket === false) {
+                throw new RuntimeException("Redis connection failed ({$errorCode}): {$errorMessage}");
+            }
+            stream_set_timeout($socket, 1);
+            fwrite($socket, "*1\r\n\$4\r\nPING\r\n");
+            $response = fgets($socket);
+            fclose($socket);
+            if (trim((string) $response) !== "+PONG") {
+                throw new RuntimeException("Redis did not answer PING");
+            }
+          ' "$REDIS_HOST" "$REDIS_PORT"
+        }
+
+        wait_for() {
+          service="$1"
+          endpoint="$2"
+          shift 2
+
+          for attempt in $(seq 1 20); do
+            if "$@" 2>/dev/null; then
+              echo "$service is ready at $endpoint"
+              return 0
+            fi
+            echo "Waiting for $service at $endpoint (attempt $attempt/20)"
+            sleep 2
+          done
+
+          echo "$service was not ready at $endpoint after 20 attempts" >&2
+          "$@" || true
+          return 1
+        }
+
+        wait_for MySQL "$DB_HOST:$DB_PORT" probe_database mysql "$DB_HOST" "$DB_PORT" "" root password
+        wait_for Redis "$REDIS_HOST:$REDIS_PORT" probe_redis
+
+    - name: Export MySQL test defaults
       run: |
         echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=" >> "$GITHUB_ENV"
         echo "DB_DATABASE=testbench" >> "$GITHUB_ENV"
@@ -115,48 +268,181 @@ jobs:
         echo "QUEUE_FAILED_DRIVER=null" >> "$GITHUB_ENV"
         echo "REDIS_PASSWORD=" >> "$GITHUB_ENV"
 
-    - name: Create databases
-      run: |
-        touch testbench.sqlite
-        mysql -e 'CREATE DATABASE testbench' -h"$MYSQL_HOST" -uroot -ppassword -P "$MYSQL_PORT"
+    - name: Create MySQL database
+      run: mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
 
-    - name: Run test suite (MySQL)
-      run: |
-        DB_HOST="$MYSQL_HOST" DB_PORT="$MYSQL_PORT" \
-          REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" \
-          vendor/bin/phpunit --testdox --debug --testsuite feature
+    - name: Run full MySQL feature suite
+      if: github.event_name == 'push'
+      timeout-minutes: 12
+      run: vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: mysql
         QUEUE_CONNECTION: redis
 
-    - name: Run test suite (PostgreSQL)
+    - name: Run bounded MySQL review smoke
+      if: github.event_name == 'pull_request'
+      timeout-minutes: 3
+      run: vendor/bin/phpunit --testdox --debug tests/Feature/AsyncWorkflowTest.php
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+
+    - name: Upload MySQL laravel.log if tests fail
+      if: ${{ github.server_url == 'https://github.com' && failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: laravel-log-mysql
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
+  feature-postgresql:
+
+    name: Feature tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: testbench
+        ports:
+        - 5432/tcp
+
+      redis:
+        image: redis
+        ports:
+        - 6379/tcp
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+          fetch-depth: 10
+
+    - name: Pin Composer to the 2.x line
+      run: composer self-update --2
+
+    - name: Cache Composer packages
+      uses: actions/cache@v3
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress --no-blocking
+
+    - name: Resolve PostgreSQL and Redis endpoints
+      env:
+        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
       run: |
-        DB_HOST="$POSTGRES_HOST" DB_PORT="$POSTGRES_PORT" \
-          REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" \
-          vendor/bin/phpunit --testdox --debug --testsuite feature
+        resolve_service() {
+          service_host="$1"
+          container_port="$2"
+          published_port="$3"
+          variable_prefix="$4"
+
+          if getent hosts "$service_host" >/dev/null 2>&1; then
+            resolved_host="$service_host"
+            resolved_port="$container_port"
+          elif [ -n "$published_port" ]; then
+            resolved_host="127.0.0.1"
+            resolved_port="$published_port"
+          else
+            echo "Unable to resolve the $service_host service endpoint" >&2
+            return 1
+          fi
+
+          echo "${variable_prefix}_HOST=${resolved_host}" >> "$GITHUB_ENV"
+          echo "${variable_prefix}_PORT=${resolved_port}" >> "$GITHUB_ENV"
+        }
+
+        resolve_service postgres 5432 "$POSTGRES_PUBLISHED_PORT" DB
+        resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+
+    - name: Wait for PostgreSQL and Redis
+      timeout-minutes: 2
+      run: |
+        probe_database() {
+          timeout 3 php -r '
+            $dsn = sprintf("%s:host=%s;port=%s", $argv[1], $argv[2], $argv[3]);
+            if ($argv[4] !== "") {
+                $dsn .= ";dbname={$argv[4]}";
+            }
+            $database = new PDO($dsn, $argv[5], $argv[6]);
+            $database->query("SELECT 1");
+          ' "$@"
+        }
+
+        probe_redis() {
+          timeout 3 php -r '
+            $socket = @fsockopen($argv[1], (int) $argv[2], $errorCode, $errorMessage, 1);
+            if ($socket === false) {
+                throw new RuntimeException("Redis connection failed ({$errorCode}): {$errorMessage}");
+            }
+            stream_set_timeout($socket, 1);
+            fwrite($socket, "*1\r\n\$4\r\nPING\r\n");
+            $response = fgets($socket);
+            fclose($socket);
+            if (trim((string) $response) !== "+PONG") {
+                throw new RuntimeException("Redis did not answer PING");
+            }
+          ' "$REDIS_HOST" "$REDIS_PORT"
+        }
+
+        wait_for() {
+          service="$1"
+          endpoint="$2"
+          shift 2
+
+          for attempt in $(seq 1 20); do
+            if "$@" 2>/dev/null; then
+              echo "$service is ready at $endpoint"
+              return 0
+            fi
+            echo "Waiting for $service at $endpoint (attempt $attempt/20)"
+            sleep 2
+          done
+
+          echo "$service was not ready at $endpoint after 20 attempts" >&2
+          "$@" || true
+          return 1
+        }
+
+        wait_for PostgreSQL "$DB_HOST:$DB_PORT" probe_database pgsql "$DB_HOST" "$DB_PORT" testbench root password
+        wait_for Redis "$REDIS_HOST:$REDIS_PORT" probe_redis
+
+    - name: Export PostgreSQL test defaults
+      run: |
+        echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=" >> "$GITHUB_ENV"
+        echo "DB_DATABASE=testbench" >> "$GITHUB_ENV"
+        echo "DB_USERNAME=root" >> "$GITHUB_ENV"
+        echo "DB_PASSWORD=password" >> "$GITHUB_ENV"
+        echo "QUEUE_FAILED_DRIVER=null" >> "$GITHUB_ENV"
+        echo "REDIS_PASSWORD=" >> "$GITHUB_ENV"
+
+    - name: Run full PostgreSQL feature suite
+      if: github.event_name == 'push'
+      timeout-minutes: 12
+      run: vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: pgsql
         QUEUE_CONNECTION: redis
 
-    - name: Upload laravel.log if tests fail
-      if: failure()
+    - name: Run bounded PostgreSQL review smoke
+      if: github.event_name == 'pull_request'
+      timeout-minutes: 3
+      run: vendor/bin/phpunit --testdox --debug tests/Feature/AsyncWorkflowTest.php
+      env:
+        DB_CONNECTION: pgsql
+        QUEUE_CONNECTION: redis
+
+    - name: Upload PostgreSQL laravel.log if tests fail
+      if: ${{ github.server_url == 'https://github.com' && failure() }}
       uses: actions/upload-artifact@v4
       with:
-        name: laravel-log
+        name: laravel-log-postgresql
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
-
-    - name: Code Coverage
-      run: |
-        vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
-      env:
-        DB_CONNECTION: sqlite
-        DB_DATABASE: testbench.sqlite
-        QUEUE_CONNECTION: sync
-        XDEBUG_MODE: coverage
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
-        token: ${{ secrets.CODECOV_TOKEN }}
