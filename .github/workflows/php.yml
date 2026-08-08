@@ -5,6 +5,8 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+    paths-ignore:
+      - README.md
 
 jobs:
   build:
@@ -73,35 +75,67 @@ jobs:
     - name: Run static analysis via PHPStan
       run: vendor/bin/phpstan analyse src tests
 
-    - name: Export GitHub Actions test defaults
+    - name: Resolve service endpoints
+      env:
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
+        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+      run: |
+        resolve_service() {
+          variable_prefix="$1"
+          service_host="$2"
+          container_port="$3"
+          published_port="$4"
+
+          if getent hosts "$service_host" >/dev/null 2>&1; then
+            resolved_host="$service_host"
+            resolved_port="$container_port"
+          elif [ -n "$published_port" ]; then
+            resolved_host="127.0.0.1"
+            resolved_port="$published_port"
+          else
+            echo "Unable to resolve the $service_host service endpoint" >&2
+            return 1
+          fi
+
+          echo "${variable_prefix}_HOST=${resolved_host}" >> "$GITHUB_ENV"
+          echo "${variable_prefix}_PORT=${resolved_port}" >> "$GITHUB_ENV"
+        }
+
+        resolve_service MYSQL mysql 3306 "$MYSQL_PUBLISHED_PORT"
+        resolve_service POSTGRES postgres 5432 "$POSTGRES_PUBLISHED_PORT"
+        resolve_service REDIS redis 6379 "$REDIS_PUBLISHED_PORT"
+
+    - name: Export test defaults
       run: |
         echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=" >> "$GITHUB_ENV"
-        echo "DB_HOST=127.0.0.1" >> "$GITHUB_ENV"
         echo "DB_DATABASE=testbench" >> "$GITHUB_ENV"
         echo "DB_USERNAME=root" >> "$GITHUB_ENV"
         echo "DB_PASSWORD=password" >> "$GITHUB_ENV"
         echo "QUEUE_FAILED_DRIVER=null" >> "$GITHUB_ENV"
-        echo "REDIS_HOST=127.0.0.1" >> "$GITHUB_ENV"
         echo "REDIS_PASSWORD=" >> "$GITHUB_ENV"
-        echo "REDIS_PORT=${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
 
     - name: Create databases
       run: |
         touch testbench.sqlite
-        mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
+        mysql -e 'CREATE DATABASE testbench' -h"$MYSQL_HOST" -uroot -ppassword -P "$MYSQL_PORT"
 
     - name: Run test suite (MySQL)
-      run: vendor/bin/phpunit --testdox --debug --testsuite feature
+      run: |
+        DB_HOST="$MYSQL_HOST" DB_PORT="$MYSQL_PORT" \
+          REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" \
+          vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: mysql
-        DB_PORT: ${{ job.services.mysql.ports[3306] }}
         QUEUE_CONNECTION: redis
 
     - name: Run test suite (PostgreSQL)
-      run: vendor/bin/phpunit --testdox --debug --testsuite feature
+      run: |
+        DB_HOST="$POSTGRES_HOST" DB_PORT="$POSTGRES_PORT" \
+          REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" \
+          vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: pgsql
-        DB_PORT: ${{ job.services.postgres.ports[5432] }}
         QUEUE_CONNECTION: redis
 
     - name: Upload laravel.log if tests fail
