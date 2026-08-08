@@ -110,7 +110,14 @@ jobs:
         probe_redis
 
     - name: Prepare unit test database
-      run: touch testbench.sqlite
+      run: |
+        database_directory="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          database_directory="/dev/shm"
+        fi
+
+        database_path="$(mktemp "$database_directory"/workflow-testbench-XXXXXX.sqlite)"
+        echo "DB_DATABASE=$database_path" >> "$GITHUB_ENV"
 
     - name: Run unit test suite
       if: github.event_name == 'pull_request'
@@ -118,7 +125,6 @@ jobs:
       run: vendor/bin/phpunit --testdox --testsuite unit
       env:
         DB_CONNECTION: sqlite
-        DB_DATABASE: testbench.sqlite
         QUEUE_CONNECTION: sync
 
     - name: Code Coverage
@@ -128,9 +134,15 @@ jobs:
         vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
       env:
         DB_CONNECTION: sqlite
-        DB_DATABASE: testbench.sqlite
         QUEUE_CONNECTION: sync
         XDEBUG_MODE: coverage
+
+    - name: Remove unit test database
+      if: always()
+      run: |
+        if [ -n "${DB_DATABASE:-}" ]; then
+          rm -f -- "$DB_DATABASE"
+        fi
 
     - name: Upload coverage to Codecov
       if: github.event_name == 'push'
