@@ -9,6 +9,137 @@ on:
       - README.md
 
 jobs:
+  dependency-injection-compatibility:
+
+    name: Dependency injection (Laravel ${{ matrix.laravel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - laravel: 9
+          framework: ^9.0
+          php: '8.1'
+          testbench: ^7.0
+        - laravel: 10
+          framework: ^10.0
+          php: '8.1'
+          testbench: ^8.0
+        - laravel: 11
+          framework: ^11.0
+          php: '8.2'
+          testbench: ^9.0
+        - laravel: 12
+          framework: ^12.0
+          php: '8.2'
+          testbench: ^10.0
+        - laravel: 13
+          framework: ^13.0
+          php: '8.3'
+          testbench: ^11.0
+
+    services:
+      redis:
+        image: redis
+        ports:
+        - 6379/tcp
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      with:
+        php-version: ${{ matrix.php }}
+        tools: composer:v2
+        extensions: redis, pdo_sqlite
+        coverage: none
+
+    - name: Install test dependencies for Laravel ${{ matrix.laravel }}
+      run: |
+        composer require "laravel/framework:${{ matrix.framework }}" --no-update --no-interaction
+        composer require --dev "orchestra/testbench:${{ matrix.testbench }}" --no-update --no-interaction
+        composer update --prefer-dist --no-progress --no-interaction --with-all-dependencies --no-blocking
+
+    - name: Run resolver compatibility smoke
+      run: php tests/Compatibility/DependencyInjectionSmoke.php
+
+    - name: Prepare dependency injection feature smoke
+      env:
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+      run: |
+        if getent hosts redis >/dev/null 2>&1; then
+          redis_host="redis"
+          redis_port="6379"
+        elif [ -n "$REDIS_PUBLISHED_PORT" ]; then
+          redis_host="127.0.0.1"
+          redis_port="$REDIS_PUBLISHED_PORT"
+        else
+          echo "Unable to resolve the redis service endpoint" >&2
+          exit 1
+        fi
+
+        echo "Resolved dependency injection Redis endpoint to $redis_host:$redis_port"
+
+        database_directory="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          database_directory="/dev/shm"
+        fi
+
+        database_path="$(mktemp "$database_directory"/workflow-dependency-injection-XXXXXX.sqlite)"
+        echo "DB_DATABASE=$database_path" >> "$GITHUB_ENV"
+        echo "REDIS_HOST=$redis_host" >> "$GITHUB_ENV"
+        echo "REDIS_PORT=$redis_port" >> "$GITHUB_ENV"
+
+        probe_redis() {
+          timeout 3 php -r '
+            $socket = @fsockopen($argv[1], (int) $argv[2], $errorCode, $errorMessage, 1);
+            if ($socket === false) {
+                throw new RuntimeException("Redis connection failed ({$errorCode}): {$errorMessage}");
+            }
+            stream_set_timeout($socket, 1);
+            fwrite($socket, "*1\r\n\$4\r\nPING\r\n");
+            $response = fgets($socket);
+            fclose($socket);
+            if (trim((string) $response) !== "+PONG") {
+                throw new RuntimeException("Redis did not answer PING");
+            }
+          ' "$redis_host" "$redis_port"
+        }
+
+        for attempt in $(seq 1 20); do
+          if probe_redis 2>/dev/null; then
+            echo "Redis is ready at $redis_host:$redis_port"
+            exit 0
+          fi
+          echo "Waiting for Redis at $redis_host:$redis_port (attempt $attempt/20)"
+          sleep 2
+        done
+
+        echo "Redis was not ready at $redis_host:$redis_port after 20 attempts" >&2
+        probe_redis
+
+    - name: Run workflow and activity dependency injection smoke
+      timeout-minutes: 2
+      run: vendor/bin/phpunit --testdox --testsuite feature --filter '/::testDependencyInjection$/'
+      env:
+        APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
+        DB_CONNECTION: sqlite
+        QUEUE_CONNECTION: redis
+        QUEUE_FAILED_DRIVER: 'null'
+        CACHE_DRIVER: redis
+        CACHE_STORE: redis
+        REDIS_PASSWORD: ''
+
+    - name: Remove dependency injection database
+      if: always()
+      run: |
+        if [ -n "${DB_DATABASE:-}" ]; then
+          rm -f -- "$DB_DATABASE"
+        fi
+
   build:
 
     runs-on: ubuntu-latest

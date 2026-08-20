@@ -29,6 +29,21 @@ final class CiWorkflowPolicyTest extends TestCase
 
     public function testDatabaseJobsResolvePublishedOrServiceNetworkEndpoints(): void
     {
+        $dependencyInjection = self::job('dependency-injection-compatibility');
+
+        self::assertStringContainsString(
+            'REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}',
+            $dependencyInjection
+        );
+        self::assertStringContainsString('if getent hosts redis', $dependencyInjection);
+        self::assertStringContainsString('redis_host="redis"', $dependencyInjection);
+        self::assertStringContainsString('redis_port="6379"', $dependencyInjection);
+        self::assertStringContainsString('elif [ -n "$REDIS_PUBLISHED_PORT" ]', $dependencyInjection);
+        self::assertStringContainsString('redis_host="127.0.0.1"', $dependencyInjection);
+        self::assertStringContainsString('redis_port="$REDIS_PUBLISHED_PORT"', $dependencyInjection);
+        self::assertStringContainsString('probe_redis', $dependencyInjection);
+        self::assertStringContainsString('$redis_host:$redis_port after 20 attempts', $dependencyInjection);
+
         $build = self::job('build');
 
         self::assertStringContainsString('REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}', $build);

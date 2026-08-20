@@ -7,5 +7,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 use PHPUnit\Event\Facade;
 use Tests\TestSuiteSubscriber;
 
-$subscriber = new TestSuiteSubscriber();
-Facade::instance()->registerSubscribers($subscriber);
+if (class_exists(Facade::class)) {
+    $subscriber = new TestSuiteSubscriber();
+    Facade::instance()->registerSubscribers($subscriber);
+}

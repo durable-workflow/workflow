@@ -17,9 +17,9 @@ abstract class TestCase extends BaseTestCase
 
     public static function setUpBeforeClass(): void
     {
-        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+        if (self::currentSuite() === 'feature') {
             Dotenv::createImmutable(__DIR__, '.env.feature')->safeLoad();
-        } elseif (TestSuiteSubscriber::getCurrentSuite() === 'unit') {
+        } elseif (self::currentSuite() === 'unit') {
             Dotenv::createImmutable(__DIR__, '.env.unit')->safeLoad();
         }
 
@@ -51,9 +51,9 @@ abstract class TestCase extends BaseTestCase
 
     protected function setUp(): void
     {
-        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+        if (self::currentSuite() === 'feature') {
             Dotenv::createImmutable(__DIR__, '.env.feature')->safeLoad();
-        } elseif (TestSuiteSubscriber::getCurrentSuite() === 'unit') {
+        } elseif (self::currentSuite() === 'unit') {
             Dotenv::createImmutable(__DIR__, '.env.unit')->safeLoad();
         }
 
@@ -92,5 +92,14 @@ abstract class TestCase extends BaseTestCase
                 // Ignore if no redis
             }
         }
+    }
+
+    private static function currentSuite(): string
+    {
+        if (! interface_exists(\PHPUnit\Event\TestSuite\StartedSubscriber::class)) {
+            return '';
+        }
+
+        return TestSuiteSubscriber::getCurrentSuite();
     }
 }
