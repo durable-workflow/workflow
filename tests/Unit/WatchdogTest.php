@@ -6,9 +6,12 @@ namespace Tests\Unit;
 
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Queue\Job as JobContract;
+use Illuminate\Queue\Jobs\SyncJob;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Sleep;
 use RuntimeException;
 use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
@@ -31,6 +34,7 @@ final class WatchdogTest extends TestCase
 
     protected function tearDown(): void
     {
+        Sleep::fake(false);
         Cache::forget('workflow:watchdog');
         Cache::forget('workflow:watchdog:looping');
 
@@ -339,6 +343,28 @@ final class WatchdogTest extends TestCase
         Queue::assertPushed(Watchdog::class, 1);
     }
 
+    public function testExpiredLeaseAllowsAStalledChainToBeReplaced(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+
+        $this->createStalePendingWorkflow();
+
+        try {
+            Watchdog::wake('redis');
+
+            Carbon::setTestNow(now()->addSeconds(Watchdog::DEFAULT_TIMEOUT));
+            Watchdog::wake('redis');
+            Queue::assertPushed(Watchdog::class, 1);
+
+            Carbon::setTestNow(now()->addSeconds(61));
+            Watchdog::wake('redis');
+            Queue::assertPushed(Watchdog::class, 2);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testHandleTouchesWorkflowBeforeRedispatch(): void
     {
         Queue::fake();
@@ -507,19 +533,337 @@ final class WatchdogTest extends TestCase
         }
     }
 
-    public function testHandleReleasesCurrentJobWhenRunningOnQueue(): void
+    public function testHandleDispatchesFreshDelayedJobWhenRunningOnQueue(): void
     {
         Queue::fake();
 
         $timeout = Watchdog::DEFAULT_TIMEOUT;
         $job = $this->createMock(JobContract::class);
-        $job->expects($this->once())
-            ->method('release')
-            ->with($timeout);
+        $job->expects($this->never())
+            ->method('release');
 
-        $watchdog = new Watchdog();
+        $watchdog = (new Watchdog())
+            ->onConnection('redis')
+            ->onQueue('high');
         $watchdog->setJob($job);
         $watchdog->handle();
+
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $nextWatchdog) use ($watchdog, $timeout): bool {
+            return $nextWatchdog !== $watchdog
+                && $nextWatchdog->generation !== null
+                && $nextWatchdog->generation !== $watchdog->generation
+                && $nextWatchdog->connection === 'redis'
+                && $nextWatchdog->queue === 'high'
+                && $nextWatchdog->delay === $timeout;
+        });
+    }
+
+    public function testDuplicateCandidatesOnlyScheduleOneSuccessor(): void
+    {
+        Queue::fake();
+
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT + 60);
+
+        $first = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $first->setJob($this->createMock(JobContract::class));
+
+        $duplicate = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $duplicate->setJob($this->createMock(JobContract::class));
+
+        $first->handle();
+        $duplicate->handle();
+
+        Queue::assertPushed(Watchdog::class, 1);
+    }
+
+    public function testConcurrentCandidateCannotJoinTheContinuingChain(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        Sleep::fake(true, true);
+
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT + 60);
+
+        $duplicate = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $duplicate->setJob($this->createMock(JobContract::class));
+
+        $modelClass = new class() extends StoredWorkflow {
+            public static ?Watchdog $duplicate = null;
+
+            protected static function booted(): void
+            {
+                static::addGlobalScope('run-concurrent-watchdog', static function (): void {
+                    Carbon::setTestNow(now()->addSeconds(Watchdog::DEFAULT_TIMEOUT + 30));
+                    $duplicate = self::$duplicate;
+                    self::$duplicate = null;
+                    $duplicate?->handle();
+                });
+            }
+        };
+        $modelClassName = get_class($modelClass);
+        $modelClassName::$duplicate = $duplicate;
+        $originalModel = config('workflows.stored_workflow_model');
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            config([
+                'workflows.stored_workflow_model' => $modelClassName,
+            ]);
+            $watchdog->handle();
+        } finally {
+            config([
+                'workflows.stored_workflow_model' => $originalModel,
+            ]);
+            Carbon::setTestNow();
+        }
+
+        Queue::assertPushed(Watchdog::class, 1);
+    }
+
+    public function testCurrentGenerationWaitsForStaleContenderAndPreservesQueueAffinity(): void
+    {
+        Queue::fake();
+
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT + 60);
+
+        $heldLock = Cache::lock('workflow:watchdog:chain', Watchdog::DEFAULT_TIMEOUT + 60);
+        $this->assertTrue($heldLock->get());
+
+        Sleep::fake();
+        Sleep::whenFakingSleep(static function () use ($heldLock): void {
+            $heldLock->release();
+        });
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            $watchdog->handle();
+        } finally {
+            $heldLock->release();
+        }
+
+        Sleep::assertSleptTimes(1);
+        Queue::assertPushed(Watchdog::class, 1);
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $nextWatchdog): bool {
+            return $nextWatchdog->generation !== null
+                && $nextWatchdog->connection === 'redis'
+                && $nextWatchdog->queue === 'high'
+                && $nextWatchdog->delay === Watchdog::DEFAULT_TIMEOUT;
+        });
+    }
+
+    public function testExpiredLockHolderCannotReplaceANewerGenerationAfterSlowScan(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+
+        $generation = 'expired-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT + 60);
+
+        $modelClass = new class() extends StoredWorkflow {
+            protected static function booted(): void
+            {
+                static::addGlobalScope('replace-expired-watchdog-owner', static function (): void {
+                    Carbon::setTestNow(now()->addSeconds(Watchdog::DEFAULT_TIMEOUT + 61));
+
+                    Cache::lock('workflow:watchdog:chain', Watchdog::DEFAULT_TIMEOUT + 60)
+                        ->get(static function (): void {
+                            $replacement = (new Watchdog('replacement-generation'))
+                                ->onConnection('redis')
+                                ->onQueue('high');
+
+                            Cache::put(
+                                'workflow:watchdog',
+                                'replacement-generation',
+                                Watchdog::DEFAULT_TIMEOUT + 60
+                            );
+                            Cache::put('workflow:watchdog:looping', 'replacement-generation', 60);
+                            app(Dispatcher::class)->dispatch($replacement);
+                        });
+                });
+            }
+        };
+        $modelClassName = get_class($modelClass);
+        $originalModel = config('workflows.stored_workflow_model');
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis')
+            ->onQueue('high');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            config([
+                'workflows.stored_workflow_model' => $modelClassName,
+            ]);
+            $watchdog->handle();
+        } finally {
+            config([
+                'workflows.stored_workflow_model' => $originalModel,
+            ]);
+            Carbon::setTestNow();
+        }
+
+        Queue::assertPushed(Watchdog::class, 1);
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $queuedWatchdog): bool {
+            return $queuedWatchdog->generation === 'replacement-generation';
+        });
+        $this->assertSame('replacement-generation', Cache::get('workflow:watchdog'));
+    }
+
+    public function testLegacyCandidatesAndBooleanMarkerConvergeToOneSuccessor(): void
+    {
+        Queue::fake();
+        Cache::put('workflow:watchdog', true, Watchdog::DEFAULT_TIMEOUT);
+
+        $first = (new Watchdog())
+            ->onConnection('redis');
+        $first->setJob($this->createMock(JobContract::class));
+
+        $duplicate = (new Watchdog())
+            ->onConnection('redis');
+        $duplicate->setJob($this->createMock(JobContract::class));
+
+        $first->handle();
+        $duplicate->handle();
+
+        Queue::assertPushed(Watchdog::class, 1);
+    }
+
+    public function testRearmingFailureReleasesGenerationForRecovery(): void
+    {
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT);
+        Cache::put('workflow:watchdog:looping', $generation, 60);
+
+        $dispatcher = $this->createMock(Dispatcher::class);
+        $dispatcher->expects($this->once())
+            ->method('dispatch')
+            ->willThrowException(new RuntimeException('rearming failed'));
+        $this->app->instance(Dispatcher::class, $dispatcher);
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            $watchdog->handle();
+            $this->fail('Expected rearming failure to be rethrown.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('rearming failed', $exception->getMessage());
+        }
+
+        $this->assertFalse(Cache::has('workflow:watchdog'));
+        $this->assertFalse(Cache::has('workflow:watchdog:looping'));
+    }
+
+    public function testRearmingFailureWaitsForHeldChainLockBeforeReleasingOwnership(): void
+    {
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT);
+        Cache::put('workflow:watchdog:looping', $generation, 60);
+
+        $heldLock = null;
+        Sleep::fake();
+        Sleep::whenFakingSleep(static function () use (&$heldLock): void {
+            $heldLock?->release();
+        });
+
+        $dispatcher = $this->createMock(Dispatcher::class);
+        $dispatcher->expects($this->once())
+            ->method('dispatch')
+            ->willReturnCallback(static function () use (&$heldLock): void {
+                $heldLock = Cache::lock('workflow:watchdog:chain', Watchdog::DEFAULT_TIMEOUT + 60);
+
+                if (! $heldLock->get()) {
+                    throw new RuntimeException('Unable to hold the watchdog chain lock.');
+                }
+
+                throw new RuntimeException('rearming failed while chain lock is held');
+            });
+        $this->app->instance(Dispatcher::class, $dispatcher);
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            $watchdog->handle();
+            $this->fail('Expected rearming failure to be rethrown.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('rearming failed while chain lock is held', $exception->getMessage());
+        } finally {
+            $heldLock?->release();
+        }
+
+        Sleep::assertSleptTimes(1);
+
+        $this->assertFalse(Cache::has('workflow:watchdog'));
+        $this->assertFalse(Cache::has('workflow:watchdog:looping'));
+    }
+
+    public function testDispatchFailureDoesNotClearANewerOwner(): void
+    {
+        $generation = 'current-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT);
+
+        $dispatcher = $this->createMock(Dispatcher::class);
+        $dispatcher->expects($this->once())
+            ->method('dispatch')
+            ->willReturnCallback(static function (): void {
+                Cache::put('workflow:watchdog', 'replacement-generation', Watchdog::DEFAULT_TIMEOUT);
+                Cache::put('workflow:watchdog:looping', 'replacement-generation', 60);
+
+                throw new RuntimeException('late dispatch failure');
+            });
+        $this->app->instance(Dispatcher::class, $dispatcher);
+
+        $watchdog = (new Watchdog($generation))
+            ->onConnection('redis');
+        $watchdog->setJob($this->createMock(JobContract::class));
+
+        try {
+            $watchdog->handle();
+            $this->fail('Expected dispatch failure to be rethrown.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('late dispatch failure', $exception->getMessage());
+        }
+
+        $this->assertSame('replacement-generation', Cache::get('workflow:watchdog'));
+        $this->assertSame('replacement-generation', Cache::get('workflow:watchdog:looping'));
+    }
+
+    public function testSynchronousAndNoJobExecutionsAreOneShot(): void
+    {
+        Queue::fake();
+
+        $direct = new Watchdog();
+        $direct->handle();
+
+        $generation = 'sync-generation';
+        Cache::put('workflow:watchdog', $generation, Watchdog::DEFAULT_TIMEOUT);
+
+        $sync = (new Watchdog($generation))
+            ->onConnection('sync');
+        $sync->setJob(new SyncJob($this->app, '{}', 'sync', 'default'));
+        $sync->handle();
+
+        Queue::assertNotPushed(Watchdog::class);
     }
 
     private function createStalePendingWorkflow(array $attributes = []): StoredWorkflow
