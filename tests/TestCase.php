@@ -8,6 +8,7 @@ use Dotenv\Dotenv;
 use Illuminate\Support\Facades\Cache;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
+use Workflow\WorkflowStub;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -31,8 +32,17 @@ abstract class TestCase extends BaseTestCase
 
         self::flushRedis();
 
+        $workerEnvironment = self::currentSuite() === 'feature'
+            ? [
+                'WORKFLOW_WATCHDOG_ENABLED' => 'false',
+            ]
+            : null;
+
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-            self::$workers[$i] = new Process(['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work']);
+            self::$workers[$i] = new Process(
+                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
+                env: $workerEnvironment,
+            );
             self::$workers[$i]->disableOutput();
             self::$workers[$i]->start();
         }
@@ -77,6 +87,30 @@ abstract class TestCase extends BaseTestCase
     protected function getPackageProviders($app)
     {
         return [\Workflow\Providers\WorkflowServiceProvider::class];
+    }
+
+    protected function waitForWorkflow(WorkflowStub $workflow, float $timeoutSeconds = 30.0): void
+    {
+        $deadline = hrtime(true) + (int) ($timeoutSeconds * 1_000_000_000);
+
+        do {
+            if (! $workflow->running()) {
+                return;
+            }
+
+            usleep(50_000);
+        } while (hrtime(true) < $deadline);
+
+        $this->fail(sprintf(
+            'Timed out after %.1f seconds waiting for workflow %s; status=%s, logs=%d, exceptions=%d.',
+            $timeoutSeconds,
+            (string) $workflow->id(),
+            (string) $workflow->status(),
+            $workflow->logs()
+                ->count(),
+            $workflow->exceptions()
+                ->count(),
+        ));
     }
 
     private static function flushRedis(): void

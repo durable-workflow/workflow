@@ -22,7 +22,7 @@ final class StateMachineWorkflowTest extends TestCase
         sleep(3);
         $workflow->approve();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -43,7 +43,7 @@ final class StateMachineWorkflowTest extends TestCase
         sleep(3);
         $workflow->deny();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('denied', $workflow->output());
