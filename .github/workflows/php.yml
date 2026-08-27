@@ -156,12 +156,17 @@ jobs:
       with:
           fetch-depth: 10
 
-    - name: Pin Composer to the 2.x line
+    - name: Set up PHP and Composer
       # The install step below relies on `--no-blocking`. Pin Composer to the
       # latest 2.x release so that option is always present and keeps its current
       # semantics regardless of the runner's bundled Composer version (a behaviour
       # change would require a new Composer major, which this pin excludes).
-      run: composer self-update --2
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      with:
+        php-version: '8.3'
+        tools: composer:v2
+        extensions: redis, pdo_sqlite
+        coverage: xdebug
 
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
@@ -307,8 +312,13 @@ jobs:
       with:
           fetch-depth: 10
 
-    - name: Pin Composer to the 2.x line
-      run: composer self-update --2
+    - name: Set up PHP and Composer
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      with:
+        php-version: '8.3'
+        tools: composer:v2
+        extensions: redis, pdo_mysql
+        coverage: none
 
     - name: Cache Composer packages
       uses: actions/cache@v3
@@ -463,8 +473,13 @@ jobs:
       with:
           fetch-depth: 10
 
-    - name: Pin Composer to the 2.x line
-      run: composer self-update --2
+    - name: Set up PHP and Composer
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      with:
+        php-version: '8.3'
+        tools: composer:v2
+        extensions: redis, pdo_pgsql
+        coverage: none
 
     - name: Cache Composer packages
       uses: actions/cache@v3

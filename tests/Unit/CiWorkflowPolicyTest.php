@@ -156,6 +156,19 @@ final class CiWorkflowPolicyTest extends TestCase
         self::assertStringContainsString("if: github.event_name == 'push'", self::step('Code Coverage'));
     }
 
+    public function testComposerIsProvisionedWithoutMutatingTheSystemExecutable(): void
+    {
+        foreach (['build', 'feature-mysql', 'feature-postgresql'] as $jobName) {
+            $job = self::job($jobName);
+
+            self::assertStringContainsString('- name: Set up PHP and Composer', $job);
+            self::assertMatchesRegularExpression('/uses: shivammathur\/setup-php@[0-9a-f]{40} # v2/', $job);
+            self::assertStringContainsString('tools: composer:v2', $job);
+            self::assertStringNotContainsString('composer self-update', $job);
+            self::assertStringNotContainsString('sudo ', $job);
+        }
+    }
+
     private static function job(string $name): string
     {
         $matched = preg_match(
