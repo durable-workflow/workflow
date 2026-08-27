@@ -3,6 +3,7 @@ name: "Copilot Setup Steps"
 on:
   workflow_dispatch:
   push:
+    branches: [ master ]
     paths:
       - .github/workflows/copilot-setup-steps.yml
   pull_request:
@@ -24,7 +25,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: testbench
         ports:
-          - 3306:3306
+          - 3306/tcp
         options: >-
           --health-cmd="mysqladmin ping -ppassword"
           --health-interval=10s
@@ -38,7 +39,7 @@ jobs:
           POSTGRES_PASSWORD: password
           POSTGRES_DB: testbench
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd="pg_isready -U root -d testbench"
           --health-interval=10s
@@ -48,7 +49,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379:6379
+          - 6379/tcp
         options: >-
           --health-cmd="redis-cli ping"
           --health-interval=10s
@@ -62,7 +63,7 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.1"
+          php-version: "8.3"
           extensions: pdo_mysql, pdo_pgsql, pgsql, redis, xdebug
           tools: composer:v2
           coverage: xdebug
@@ -79,34 +80,113 @@ jobs:
             ${{ runner.os }}-copilot-php-
 
       - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --no-interaction
+        run: composer install --prefer-dist --no-progress --no-interaction --no-blocking
+
+      - name: Resolve Copilot service endpoints
+        env:
+          MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
+          POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
+          REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        run: |
+          resolve_service() {
+            service_host="$1"
+            container_port="$2"
+            published_port="$3"
+            variable_prefix="$4"
+
+            if getent hosts "$service_host" >/dev/null 2>&1; then
+              resolved_host="$service_host"
+              resolved_port="$container_port"
+            elif [ -n "$published_port" ]; then
+              resolved_host="127.0.0.1"
+              resolved_port="$published_port"
+            else
+              echo "Unable to resolve the $service_host service endpoint" >&2
+              return 1
+            fi
+
+            echo "${variable_prefix}_HOST=${resolved_host}" >> "$GITHUB_ENV"
+            echo "${variable_prefix}_PORT=${resolved_port}" >> "$GITHUB_ENV"
+          }
+
+          resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" MYSQL
+          resolve_service postgres 5432 "$POSTGRES_PUBLISHED_PORT" POSTGRES
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+
+      - name: Wait for Copilot services
+        timeout-minutes: 2
+        run: |
+          probe_database() {
+            timeout 3 php -r '
+              $dsn = sprintf("%s:host=%s;port=%s", $argv[1], $argv[2], $argv[3]);
+              if ($argv[4] !== "") {
+                  $dsn .= ";dbname={$argv[4]}";
+              }
+              $database = new PDO($dsn, $argv[5], $argv[6]);
+              $database->query("SELECT 1");
+            ' "$@"
+          }
+
+          probe_redis() {
+            timeout 3 php -r '
+              $socket = @fsockopen($argv[1], (int) $argv[2], $errorCode, $errorMessage, 1);
+              if ($socket === false) {
+                  throw new RuntimeException("Redis connection failed ({$errorCode}): {$errorMessage}");
+              }
+              stream_set_timeout($socket, 1);
+              fwrite($socket, "*1\r\n\$4\r\nPING\r\n");
+              $response = fgets($socket);
+              fclose($socket);
+              if (trim((string) $response) !== "+PONG") {
+                  throw new RuntimeException("Redis did not answer PING");
+              }
+            ' "$REDIS_HOST" "$REDIS_PORT"
+          }
+
+          wait_for() {
+            service="$1"
+            endpoint="$2"
+            shift 2
+
+            for attempt in $(seq 1 20); do
+              if "$@" 2>/dev/null; then
+                echo "$service is ready at $endpoint"
+                return 0
+              fi
+              echo "Waiting for $service at $endpoint (attempt $attempt/20)"
+              sleep 2
+            done
+
+            echo "$service was not ready at $endpoint after 20 attempts" >&2
+            "$@" || true
+            return 1
+          }
+
+          wait_for MySQL "$MYSQL_HOST:$MYSQL_PORT" probe_database mysql "$MYSQL_HOST" "$MYSQL_PORT" "" root password
+          wait_for PostgreSQL "$POSTGRES_HOST:$POSTGRES_PORT" probe_database pgsql "$POSTGRES_HOST" "$POSTGRES_PORT" testbench root password
+          wait_for Redis "$REDIS_HOST:$REDIS_PORT" probe_redis
 
       - name: Export GitHub Actions test defaults
         run: |
           echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=" >> "$GITHUB_ENV"
-          echo "DB_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "DB_DATABASE=testbench" >> "$GITHUB_ENV"
           echo "DB_USERNAME=root" >> "$GITHUB_ENV"
           echo "DB_PASSWORD=password" >> "$GITHUB_ENV"
-          echo "REDIS_HOST=127.0.0.1" >> "$GITHUB_ENV"
 
       - name: Smoke test feature suite (MySQL + Redis)
         env:
           APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
           DB_CONNECTION: mysql
           DB_DATABASE: testbench
-          DB_HOST: 127.0.0.1
-          DB_PORT: ${{ job.services.mysql.ports[3306] }}
           DB_USERNAME: root
           DB_PASSWORD: password
           QUEUE_CONNECTION: redis
           QUEUE_FAILED_DRIVER: "null"
-          REDIS_HOST: 127.0.0.1
           REDIS_PASSWORD:
-          REDIS_PORT: ${{ job.services.redis.ports[6379] }}
-          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
         run: |
-          php -r '$pdo = new PDO(sprintf("mysql:host=127.0.0.1;port=%s", getenv("MYSQL_PORT")), "root", "password"); $pdo->exec("CREATE DATABASE IF NOT EXISTS testbench");'
+          export DB_HOST="$MYSQL_HOST"
+          export DB_PORT="$MYSQL_PORT"
+          php -r '$pdo = new PDO(sprintf("mysql:host=%s;port=%s", getenv("DB_HOST"), getenv("DB_PORT")), "root", "password"); $pdo->exec("CREATE DATABASE IF NOT EXISTS testbench");'
           vendor/bin/phpunit --testdox --testsuite feature --filter AsyncWorkflowTest
 
       - name: Smoke test feature suite (PostgreSQL + Redis)
@@ -114,13 +194,12 @@ jobs:
           APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
           DB_CONNECTION: pgsql
           DB_DATABASE: testbench
-          DB_HOST: 127.0.0.1
-          DB_PORT: ${{ job.services.postgres.ports[5432] }}
           DB_USERNAME: root
           DB_PASSWORD: password
           QUEUE_CONNECTION: redis
           QUEUE_FAILED_DRIVER: "null"
-          REDIS_HOST: 127.0.0.1
           REDIS_PASSWORD:
-          REDIS_PORT: ${{ job.services.redis.ports[6379] }}
-        run: vendor/bin/phpunit --testdox --testsuite feature --filter AsyncWorkflowTest
+        run: |
+          export DB_HOST="$POSTGRES_HOST"
+          export DB_PORT="$POSTGRES_PORT"
+          vendor/bin/phpunit --testdox --testsuite feature --filter AsyncWorkflowTest

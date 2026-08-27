@@ -10,6 +10,110 @@ final class CiWorkflowPolicyTest extends TestCase
 {
     private const WORKFLOW_PATH = __DIR__ . '/../../.github/workflows/php.yml';
 
+    private const COPILOT_WORKFLOW_PATH = __DIR__ . '/../../.github/workflows/copilot-setup-steps.yml';
+
+    public function testCopilotSetupUsesTheSupportedBranchAndToolchainContract(): void
+    {
+        $workflow = self::copilotWorkflow();
+        $events = strstr($workflow, "\njobs:", true);
+
+        self::assertIsString($events);
+        self::assertMatchesRegularExpression(
+            '/^  workflow_dispatch:\R  push:\R    branches: \[ master \]\R    paths:\R' .
+            '      - \.github\/workflows\/copilot-setup-steps\.yml$/m',
+            $events
+        );
+        self::assertMatchesRegularExpression(
+            '/^  pull_request:\R    paths:\R      - \.github\/workflows\/copilot-setup-steps\.yml$/m',
+            $events
+        );
+
+        $job = self::job('copilot-setup-steps', $workflow);
+
+        self::assertStringContainsString('php-version: "8.3"', $job);
+        self::assertStringContainsString('tools: composer:v2', $job);
+        self::assertStringContainsString(
+            'composer install --prefer-dist --no-progress --no-interaction --no-blocking',
+            $job
+        );
+    }
+
+    public function testCopilotSetupUsesPortableServiceEndpointsWithBoundedReadiness(): void
+    {
+        $workflow = self::copilotWorkflow();
+        $job = self::job('copilot-setup-steps', $workflow);
+        $resolver = self::step('Resolve Copilot service endpoints', $workflow);
+
+        foreach ([
+            'mysql' => [3306, 'MYSQL'],
+            'postgres' => [5432, 'POSTGRES'],
+            'redis' => [6379, 'REDIS'],
+        ] as $service => [$port, $variablePrefix]) {
+            self::assertStringContainsString("- {$port}/tcp", $job);
+            self::assertStringContainsString(
+                "{$variablePrefix}_PUBLISHED_PORT: \${{ job.services.{$service}.ports[{$port}] }}",
+                $resolver
+            );
+            self::assertStringContainsString(
+                "resolve_service {$service} {$port} \"\${$variablePrefix}_PUBLISHED_PORT\" {$variablePrefix}",
+                $resolver
+            );
+        }
+
+        self::assertStringContainsString('if getent hosts "$service_host"', $resolver);
+        self::assertStringContainsString('resolved_host="$service_host"', $resolver);
+        self::assertStringContainsString('resolved_host="127.0.0.1"', $resolver);
+        self::assertStringContainsString(
+            'echo "${variable_prefix}_HOST=${resolved_host}" >> "$GITHUB_ENV"',
+            $resolver
+        );
+        self::assertStringContainsString(
+            'echo "${variable_prefix}_PORT=${resolved_port}" >> "$GITHUB_ENV"',
+            $resolver
+        );
+
+        $readiness = self::step('Wait for Copilot services', $workflow);
+
+        self::assertStringContainsString('timeout-minutes: 2', $readiness);
+        self::assertStringContainsString('for attempt in $(seq 1 20)', $readiness);
+        self::assertStringContainsString('timeout 3 php -r', $readiness);
+        self::assertStringContainsString('$database->query("SELECT 1")', $readiness);
+        self::assertStringContainsString('PING', $readiness);
+        self::assertStringContainsString(
+            'wait_for MySQL "$MYSQL_HOST:$MYSQL_PORT" probe_database mysql',
+            $readiness
+        );
+        self::assertStringContainsString(
+            'wait_for PostgreSQL "$POSTGRES_HOST:$POSTGRES_PORT" probe_database pgsql',
+            $readiness
+        );
+        self::assertStringContainsString('wait_for Redis "$REDIS_HOST:$REDIS_PORT" probe_redis', $readiness);
+
+        $readinessPosition = strpos($job, '- name: Wait for Copilot services');
+
+        self::assertIsInt($readinessPosition);
+        foreach ([
+            'Smoke test feature suite (MySQL + Redis)',
+            'Smoke test feature suite (PostgreSQL + Redis)',
+        ] as $smokeStep) {
+            $smokePosition = strpos($job, "- name: {$smokeStep}");
+
+            self::assertIsInt($smokePosition);
+            self::assertLessThan($smokePosition, $readinessPosition);
+        }
+
+        self::assertStringContainsString(
+            'export DB_HOST="$MYSQL_HOST"',
+            self::step('Smoke test feature suite (MySQL + Redis)', $workflow)
+        );
+        self::assertStringContainsString(
+            'export DB_HOST="$POSTGRES_HOST"',
+            self::step('Smoke test feature suite (PostgreSQL + Redis)', $workflow)
+        );
+        self::assertStringNotContainsString('DB_HOST: 127.0.0.1', $job);
+        self::assertStringNotContainsString('REDIS_HOST: 127.0.0.1', $job);
+    }
+
     public function testReadmeOnlyPullRequestsAreIgnoredWithoutWeakeningPushQualification(): void
     {
         $events = strstr(self::workflow(), "\njobs:", true);
@@ -169,11 +273,11 @@ final class CiWorkflowPolicyTest extends TestCase
         }
     }
 
-    private static function job(string $name): string
+    private static function job(string $name, ?string $workflow = null): string
     {
         $matched = preg_match(
             '/^  ' . preg_quote($name, '/') . ':\R(?<job>.*?)(?=^  [a-zA-Z0-9_-]+:|\z)/ms',
-            self::workflow(),
+            $workflow ?? self::workflow(),
             $matches
         );
 
@@ -182,11 +286,12 @@ final class CiWorkflowPolicyTest extends TestCase
         return $matches['job'];
     }
 
-    private static function step(string $name): string
+    private static function step(string $name, ?string $workflow = null): string
     {
         $matched = preg_match(
-            '/^    - name: ' . preg_quote($name, '/') . '\R(?<step>.*?)(?=^    - name:|\z)/ms',
-            self::workflow(),
+            '/^(?<indent> +)- name: ' . preg_quote($name, '/') .
+            '\R(?<step>.*?)(?=^(?P=indent)- name:|\z)/ms',
+            $workflow ?? self::workflow(),
             $matches
         );
 
@@ -198,6 +303,15 @@ final class CiWorkflowPolicyTest extends TestCase
     private static function workflow(): string
     {
         $workflow = file_get_contents(self::WORKFLOW_PATH);
+
+        self::assertIsString($workflow);
+
+        return $workflow;
+    }
+
+    private static function copilotWorkflow(): string
+    {
+        $workflow = file_get_contents(self::COPILOT_WORKFLOW_PATH);
 
         self::assertIsString($workflow);
 
