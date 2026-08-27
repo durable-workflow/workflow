@@ -24,9 +24,13 @@ final class WorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the cancellation signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -47,7 +51,7 @@ final class WorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -73,7 +77,7 @@ final class WorkflowTest extends TestCase
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -91,7 +95,7 @@ final class WorkflowTest extends TestCase
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -109,7 +113,7 @@ final class WorkflowTest extends TestCase
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -127,7 +131,7 @@ final class WorkflowTest extends TestCase
 
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());

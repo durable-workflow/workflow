@@ -20,7 +20,7 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start(shouldTimeout: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertLessThan(5, now()->diffInSeconds($now));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -35,7 +35,7 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start(shouldTimeout: true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
         $this->assertGreaterThanOrEqual(5, now()->diffInSeconds($now));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
@@ -48,7 +48,7 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow, timeoutSeconds: 10.0);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertFalse($workflow->output());

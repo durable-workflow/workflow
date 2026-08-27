@@ -28,7 +28,7 @@ final class ParentWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -45,7 +45,7 @@ final class ParentWorkflowTest extends TestCase
 
         $workflow->start(shouldThrow: true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNull($workflow->output());
@@ -69,7 +69,7 @@ final class ParentWorkflowTest extends TestCase
         $workflow->fresh()
             ->start(shouldThrow: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -86,7 +86,7 @@ final class ParentWorkflowTest extends TestCase
 
         $workflow->start(1);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -103,7 +103,7 @@ final class ParentWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());

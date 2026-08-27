@@ -16,7 +16,7 @@ final class RetriesWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
         $this->assertSame(4, $workflow->exceptions()->count());
     }

@@ -25,7 +25,7 @@ final class SignalReplayTest extends TestCase
         sleep(1);
         $workflow->approve(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -39,7 +39,7 @@ final class SignalReplayTest extends TestCase
         sleep(1);
         $workflow->approve(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -55,7 +55,7 @@ final class SignalReplayTest extends TestCase
         sleep(1);
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('both_approved', $workflow->output());
@@ -71,7 +71,7 @@ final class SignalReplayTest extends TestCase
         sleep(1);
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('completed', $workflow->output());
@@ -85,7 +85,7 @@ final class SignalReplayTest extends TestCase
         $workflow->approveFirst(true);
         $workflow->approveSecond(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('both_approved', $workflow->output());
@@ -99,7 +99,7 @@ final class SignalReplayTest extends TestCase
         sleep(3);
         $workflow->shouldRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertTrue($workflow->output());
@@ -119,7 +119,7 @@ final class SignalReplayTest extends TestCase
         sleep(1);
         $workflow->approveExecutive(true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('approved', $workflow->output());
@@ -144,7 +144,7 @@ final class SignalReplayTest extends TestCase
         $message = $workflow->receive();
         $this->assertSame('You said: User', $message);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('completed', $workflow->output());

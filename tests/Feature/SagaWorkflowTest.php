@@ -22,7 +22,7 @@ final class SagaWorkflowTest extends TestCase
 
         $workflow->start(shouldThrow: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('saga_workflow', $workflow->output());
@@ -39,7 +39,7 @@ final class SagaWorkflowTest extends TestCase
 
         $workflow->start(shouldThrow: true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNull($workflow->output());
@@ -56,7 +56,7 @@ final class SagaWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('compensated', $workflow->output());

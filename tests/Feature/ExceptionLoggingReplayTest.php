@@ -30,7 +30,7 @@ final class ExceptionLoggingReplayTest extends TestCase
         sleep(1);
         $workflow->requestRetry();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')
@@ -53,7 +53,7 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')
@@ -70,7 +70,7 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $classes = $workflow->logs()
             ->pluck('class')

@@ -44,6 +44,12 @@ final class WorkflowServiceProviderTest extends TestCase
         );
     }
 
+    public function testPackageConfigLoadsWithoutPublishedConfig(): void
+    {
+        $this->assertSame(StoredWorkflow::class, config('workflows.stored_workflow_model'));
+        $this->assertTrue(config('workflows.watchdog.enabled'));
+    }
+
     public function testConfigIsPublished(): void
     {
         Artisan::call('vendor:publish', [

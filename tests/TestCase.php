@@ -6,6 +6,7 @@ namespace Tests;
 
 use Dotenv\Dotenv;
 use Illuminate\Support\Facades\Cache;
+use InvalidArgumentException;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
 use Workflow\WorkflowStub;
@@ -89,22 +90,40 @@ abstract class TestCase extends BaseTestCase
         return [\Workflow\Providers\WorkflowServiceProvider::class];
     }
 
-    protected function waitForWorkflow(WorkflowStub $workflow, float $timeoutSeconds = 30.0): void
-    {
+    /**
+     * @param (callable(WorkflowStub): bool)|null $condition
+     */
+    protected function waitForWorkflow(
+        WorkflowStub $workflow,
+        ?callable $condition = null,
+        string $expectedState = 'a terminal state',
+        float $timeoutSeconds = 30.0,
+    ): void {
+        if ($timeoutSeconds <= 0) {
+            throw new InvalidArgumentException('Workflow polling timeout must be greater than zero.');
+        }
+
+        $condition ??= static fn (WorkflowStub $workflow): bool => ! $workflow->running();
         $deadline = hrtime(true) + (int) ($timeoutSeconds * 1_000_000_000);
 
         do {
-            if (! $workflow->running()) {
+            if ($condition($workflow)) {
                 return;
             }
 
-            usleep(50_000);
-        } while (hrtime(true) < $deadline);
+            $remainingNanoseconds = $deadline - hrtime(true);
+            if ($remainingNanoseconds <= 0) {
+                break;
+            }
+
+            usleep((int) min(50_000, max(1, (int) ceil($remainingNanoseconds / 1_000))));
+        } while (true);
 
         $this->fail(sprintf(
-            'Timed out after %.1f seconds waiting for workflow %s; status=%s, logs=%d, exceptions=%d.',
+            'Timed out after %.3f seconds waiting for workflow %s to reach %s; status=%s, logs=%d, exceptions=%d.',
             $timeoutSeconds,
             (string) $workflow->id(),
+            $expectedState,
             (string) $workflow->status(),
             $workflow->logs()
                 ->count(),
@@ -130,6 +149,14 @@ abstract class TestCase extends BaseTestCase
 
     private static function currentSuite(): string
     {
+        if (str_starts_with(static::class, __NAMESPACE__ . '\\Feature\\')) {
+            return 'feature';
+        }
+
+        if (str_starts_with(static::class, __NAMESPACE__ . '\\Unit\\')) {
+            return 'unit';
+        }
+
         if (! interface_exists(\PHPUnit\Event\TestSuite\StartedSubscriber::class)) {
             return '';
         }

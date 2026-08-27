@@ -19,7 +19,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowSignalingChildDirectly::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('direct_signaling_approved', $parentWorkflow->output());
@@ -30,7 +30,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowWithContextCheck::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('success', $parentWorkflow->output());
@@ -59,7 +59,7 @@ final class ChildWorkflowSignalingTest extends TestCase
         $parentWorkflow = WorkflowStub::make(TestParentWorkflowWithMultipleChildren::class);
         $parentWorkflow->start();
 
-        while ($parentWorkflow->running());
+        $this->waitForWorkflow($parentWorkflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $parentWorkflow->status());
         $this->assertSame('child1_first|child2_second|child3_third', $parentWorkflow->output());

@@ -19,7 +19,7 @@ final class AwaitWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());
@@ -35,7 +35,7 @@ final class AwaitWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());

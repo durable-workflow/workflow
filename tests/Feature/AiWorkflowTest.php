@@ -42,9 +42,7 @@ final class AiWorkflowTest extends TestCase
 
         $this->assertSame('Echo: World', $message);
 
-        while ($workflow->running()) {
-            sleep(1);
-        }
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('completed', $workflow->output());
