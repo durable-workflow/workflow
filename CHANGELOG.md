@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Workflow `2.0.0` promotes the fully qualified release-candidate runtime to
+  the stable 2.0 line without changing its durable execution behavior.
 - Workflow `2.0.0-rc.55` treats the official stable-v1 Y and Base64 serializer
   settings as nonblocking migration diagnostics while v1 runs drain, without
   changing the Avro-only codec used for all new v2 payloads.

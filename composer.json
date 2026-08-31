@@ -76,7 +76,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-rc.55",
+            "product-train": "2.0.0",
             "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
             "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
         },
