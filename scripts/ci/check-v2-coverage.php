@@ -114,8 +114,8 @@ function summarize_coverage(string $root, array $clovers, array $contract): arra
         fail('Coverage contract schema_version must be 1.');
     }
 
-    if ($branch !== 'v2' || $metric !== 'line' || $suffix !== '.php') {
-        fail('Coverage contract must measure v2 PHP line coverage.');
+    if ($branch !== 'main' || $metric !== 'line' || $suffix !== '.php') {
+        fail('Coverage contract must measure main-branch PHP line coverage.');
     }
 
     if (! is_array($excludedPaths) || $excludedPaths !== []) {
@@ -559,7 +559,7 @@ function self_test(string $root): void
 
     $contract = [
         'schema_version' => 1,
-        'branch' => 'v2',
+        'branch' => 'main',
         'measurement' => [
             'metric' => 'line',
             'test_suite' => 'unit',
