@@ -263,6 +263,11 @@ final class WorkflowQueryContractTest extends TestCase
                 'type' => 'int|mixed',
                 'required' => true,
             ],
+            [
+                'name' => 'non_string_type',
+                'type' => ['string'],
+                'required' => true,
+            ],
         ]);
 
         $result = WorkflowQueryContract::validatedArgumentsForRun($run, 'typed-query', [
@@ -272,10 +277,11 @@ final class WorkflowQueryContractTest extends TestCase
             'nullable_union' => null,
             'explicit_nullable' => null,
             'mixed_union' => [],
+            'non_string_type' => null,
         ]);
 
         $this->assertSame([], $result['validation_errors']);
-        $this->assertCount(6, $result['arguments']);
+        $this->assertCount(7, $result['arguments']);
     }
 
     public function testItUsesTheGenericArgumentNameForMalformedDurableParameters(): void
