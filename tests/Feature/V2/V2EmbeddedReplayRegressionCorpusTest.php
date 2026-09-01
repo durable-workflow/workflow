@@ -65,6 +65,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
 
             if (($fixture['id'] ?? null) === 'parallel-child-group-final-sibling-release') {
+                $this->assertLegacyParallelChildRawHistoryGap($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'parallel-child-group-durable-command-sequence') {
                 $this->assertStandaloneParallelChildBarrierFixture($fixture);
             }
 
@@ -164,6 +168,29 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    private function assertLegacyParallelChildRawHistoryGap(array $fixture): void
+    {
+        $scheduledEvents = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildWorkflowScheduled',
+        ));
+        $completionEvents = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildRunCompleted',
+        ));
+
+        $this->assertSame([2, 3], array_column($scheduledEvents, 'sequence'));
+        $this->assertSame([3, 4], array_column(array_column($scheduledEvents, 'payload'), 'sequence'));
+        $this->assertSame([3, 3], array_column(
+            array_column($scheduledEvents, 'payload'),
+            'parallel_group_base_sequence',
+        ));
+        $this->assertSame([4, 3], array_column(array_column($completionEvents, 'payload'), 'sequence'));
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
     private function assertStandaloneParallelChildBarrierFixture(array $fixture): void
     {
         $this->clearWorkflowState();
@@ -188,6 +215,23 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $claim = $bridge->claimStatus($parentTask->id, 'regression-corpus-parent-worker');
         $this->assertTrue($claim['claimed']);
 
+        $initialHistory = $bridge->historyPayload($parentTask->id);
+        $this->assertNotNull($initialHistory);
+
+        $authored = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $parentRun->workflow_instance_id,
+            $parentRun->id,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $initialHistory['history_events'],
+        )->step();
+        $this->assertFalse($authored->completed);
+        $this->assertSame(
+            ['start_child_workflow', 'start_child_workflow'],
+            array_column($authored->commands, 'type'),
+        );
+
         $scheduledEvents = array_values(array_filter(
             $fixture['history'],
             static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildWorkflowScheduled',
@@ -202,41 +246,32 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             'parallel_group_index',
             'parallel_group_path',
         ]);
-        $commands = array_map(
-            static function (array $event) use ($parallelKeys, $workflow): array {
-                $payload = $event['payload'];
-                $groupIndex = $payload['parallel_group_index'];
-
-                return [
-                    'type' => 'start_child_workflow',
-                    'workflow_type' => $payload['child_workflow_type'],
-                    'arguments' => Serializer::serializeWithCodec(
-                        $workflow['payload_codec'],
-                        [$workflow['arguments'][$groupIndex]],
-                    ),
-                    'payload_codec' => $workflow['payload_codec'],
-                    ...array_intersect_key($payload, $parallelKeys),
-                ];
-            },
-            $scheduledEvents,
+        $this->assertSame([1, 2], array_column(array_column($scheduledEvents, 'payload'), 'sequence'));
+        $this->assertEquals(
+            array_map(
+                static fn (array $event): array => array_intersect_key($event['payload'], $parallelKeys),
+                $scheduledEvents,
+            ),
+            array_map(
+                static fn (array $command): array => array_intersect_key($command, $parallelKeys),
+                $authored->commands,
+            ),
         );
 
-        $scheduled = $bridge->complete($parentTask->id, $commands);
-        if (! $scheduled['completed'] && $scheduled['reason'] === 'invalid_commands') {
-            foreach ([
-                1 => 'prepared',
-                2 => 'ready',
-            ] as $sequence => $result) {
-                WorkflowHistoryEvent::record($parentRun, HistoryEventType::SideEffectRecorded, [
-                    'sequence' => $sequence,
-                    'result' => Serializer::serializeWithCodec($workflow['payload_codec'], $result),
-                ], $parentTask);
-            }
-
-            $scheduled = $bridge->complete($parentTask->id, $commands);
-        }
+        $scheduled = $bridge->complete($parentTask->id, $authored->commands);
         $this->assertTrue($scheduled['completed'], json_encode($scheduled, JSON_THROW_ON_ERROR));
         $this->assertCount(2, $scheduled['created_task_ids']);
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::SideEffectRecorded->value)
+            ->count());
+        $this->assertSame([1, 2], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): mixed => $event->payload['sequence'] ?? null)
+            ->all());
 
         $childTasks = WorkflowLink::query()
             ->where('parent_workflow_run_id', $parentRun->id)
@@ -252,7 +287,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $fixture['history'],
             static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildRunCompleted',
         ));
-        $this->assertSame([4, 3], array_column(array_column($completionEvents, 'payload'), 'sequence'));
+        $this->assertSame([2, 1], array_column(array_column($completionEvents, 'payload'), 'sequence'));
 
         $openParentTaskCount = static fn (): int => WorkflowTask::query()
             ->where('workflow_run_id', $parentRun->id)
@@ -303,6 +338,43 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->where('workflow_run_id', $parentRun->id)
             ->where('event_type', HistoryEventType::ChildRunCompleted->value)
             ->count());
+
+        /** @var WorkflowTask $replacementTask */
+        $replacementTask = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $replacementClaim = $bridge->claimStatus($replacementTask->id, 'regression-corpus-replacement-worker');
+        $this->assertTrue($replacementClaim['claimed']);
+
+        $replacementHistory = $bridge->historyPayload($replacementTask->id);
+        $this->assertNotNull($replacementHistory);
+        $coldReplay = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $parentRun->workflow_instance_id,
+            $parentRun->id,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $replacementHistory['history_events'],
+        )->step();
+
+        $this->assertTrue($coldReplay->completed);
+        $this->assertSame(['complete_workflow'], array_column($coldReplay->commands, 'type'));
+        $this->assertSame([
+            [
+                'child' => 'first',
+            ],
+            [
+                'child' => 'second',
+            ],
+        ], $coldReplay->result['children'] ?? null);
+        $this->assertSame($stub->workflowId(), $coldReplay->result['workflow_id'] ?? null);
+        $this->assertSame($parentRun->id, $coldReplay->result['run_id'] ?? null);
+
+        $finished = $bridge->complete($replacementTask->id, $coldReplay->commands);
+        $this->assertTrue($finished['completed'], json_encode($finished, JSON_THROW_ON_ERROR));
+        $this->assertSame('completed', $finished['run_status']);
     }
 
     /**

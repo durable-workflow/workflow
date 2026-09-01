@@ -157,6 +157,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestConstructorInjectionActivity.php",
         "tests/Fixtures/V2/TestConstructorInjectionWorkflow.php",
         "tests/Fixtures/V2/TestPortableLocalActivityIdentityWorkflow.php",
+        "tests/Fixtures/V2/TestParallelChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestSequentialChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestServiceResponseReplayWorkflow.php",
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",

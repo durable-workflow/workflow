@@ -116,8 +116,12 @@ final class ReplayRegressionCorpusTest extends TestCase
 
         $this->assertStepMatches($fixture['expected'], $step, "{$fixture['id']} final outcome");
 
-        if (($fixture['id'] ?? null) === 'parallel-child-group-final-sibling-release') {
+        if (in_array($fixture['id'] ?? null, [
+            'parallel-child-group-final-sibling-release',
+            'parallel-child-group-durable-command-sequence',
+        ], true)) {
             $this->assertParallelChildReplayPrefix($fixture, $step);
+            $this->assertParallelChildSequenceEra($fixture);
         }
 
         if (($fixture['id'] ?? null) === 'durable-selection-recorded-winner') {
@@ -301,6 +305,47 @@ final class ReplayRegressionCorpusTest extends TestCase
         $this->assertCount(1, $completed->commands);
         $this->assertSame('complete_workflow', $completed->commands[0]['type']);
         $this->assertSame($fixture['expected']['result'], $completed->result);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertParallelChildSequenceEra(array $fixture): void
+    {
+        $scheduledEvents = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildWorkflowScheduled',
+        ));
+        $completionEvents = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => ($event['event_type'] ?? null) === 'ChildRunCompleted',
+        ));
+        $expected = match ($fixture['id']) {
+            'parallel-child-group-final-sibling-release' => [
+                'scheduled' => [3, 4],
+                'completed' => [4, 3],
+                'base' => 3,
+            ],
+            'parallel-child-group-durable-command-sequence' => [
+                'scheduled' => [1, 2],
+                'completed' => [2, 1],
+                'base' => 1,
+            ],
+        };
+
+        $this->assertSame([2, 3], array_column($scheduledEvents, 'sequence'));
+        $this->assertSame($expected['scheduled'], array_column(
+            array_column($scheduledEvents, 'payload'),
+            'sequence',
+        ));
+        $this->assertSame([$expected['base'], $expected['base']], array_column(
+            array_column($scheduledEvents, 'payload'),
+            'parallel_group_base_sequence',
+        ));
+        $this->assertSame($expected['completed'], array_column(
+            array_column($completionEvents, 'payload'),
+            'sequence',
+        ));
     }
 
     /**
