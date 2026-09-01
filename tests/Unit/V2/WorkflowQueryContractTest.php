@@ -230,6 +230,68 @@ final class WorkflowQueryContractTest extends TestCase
         ], $result['validation_errors']);
     }
 
+    public function testItSupportsDurableParametersWithoutCompleteTypeMetadata(): void
+    {
+        $run = $this->runWithQueryContract('partial-type-metadata', [
+            [
+                'name' => 'untyped',
+                'required' => true,
+            ],
+            [
+                'name' => 'empty_type',
+                'type' => '',
+                'required' => true,
+            ],
+            [
+                'name' => 'nullable_short',
+                'type' => '?string',
+                'required' => true,
+            ],
+            [
+                'name' => 'nullable_union',
+                'type' => 'string|null',
+                'required' => true,
+            ],
+            [
+                'name' => 'explicit_nullable',
+                'type' => 'string',
+                'required' => true,
+                'allows_null' => true,
+            ],
+            [
+                'name' => 'mixed_union',
+                'type' => 'int|mixed',
+                'required' => true,
+            ],
+        ]);
+
+        $result = WorkflowQueryContract::validatedArgumentsForRun($run, 'typed-query', [
+            'untyped' => new stdClass(),
+            'empty_type' => null,
+            'nullable_short' => null,
+            'nullable_union' => null,
+            'explicit_nullable' => null,
+            'mixed_union' => [],
+        ]);
+
+        $this->assertSame([], $result['validation_errors']);
+        $this->assertCount(6, $result['arguments']);
+    }
+
+    public function testItUsesTheGenericArgumentNameForMalformedDurableParameters(): void
+    {
+        $run = $this->runWithQueryContract('missing-parameter-name', [[
+            'type' => 'string',
+        ]]);
+
+        $result = WorkflowQueryContract::validatedArgumentsForRun($run, 'typed-query', [123]);
+
+        $this->assertSame([123], $result['arguments']);
+        $this->assertSame([
+            'argument' => ['The argument argument must be of type string.'],
+        ], $result['validation_errors']);
+    }
+
     public function testItUsesSafeFallbacksWhenNoDurableOrLoadableContractExists(): void
     {
         $run = $this->runWithQueryContract('fallback', []);
