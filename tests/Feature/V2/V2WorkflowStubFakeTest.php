@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use BadMethodCallException;
+use LogicException;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -94,6 +96,103 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->pluck('event_type')
             ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
             ->all());
+    }
+
+    public function testFakeContractIsInertUntilEnabledAndMockEnablesIt(): void
+    {
+        $this->assertFalse(WorkflowStub::faked());
+        $this->assertSame([], WorkflowStub::mocks());
+        $this->assertSame([
+            'mocked' => false,
+            'result' => null,
+            'throwable' => null,
+        ], WorkflowStub::mockedResult(TestGreetingActivity::class, null, ['Taylor']));
+
+        WorkflowStub::recordDispatched(TestGreetingActivity::class, ['Taylor']);
+        WorkflowStub::recordSignalSent('fake-inert', 'name-provided', ['Taylor']);
+        WorkflowStub::recordUpdateSent('fake-inert', 'approve', [true]);
+
+        $this->assertTrue(WorkflowStub::dispatched(TestGreetingActivity::class)->isEmpty());
+        $this->assertTrue(WorkflowStub::signalsSent('name-provided')->isEmpty());
+        $this->assertTrue(WorkflowStub::updatesSent('approve')->isEmpty());
+        WorkflowStub::assertNothingDispatched();
+
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $this->assertTrue(WorkflowStub::faked());
+        $this->assertTrue(WorkflowStub::hasMock(TestGreetingActivity::class));
+    }
+
+    public function testFakeRecordersInitializeMissingStoresAndSupportFilters(): void
+    {
+        app()->instance('workflow.v2.mocks', []);
+
+        $this->assertTrue(WorkflowStub::faked());
+        $this->assertTrue(WorkflowStub::dispatched(TestGreetingActivity::class)->isEmpty());
+        $this->assertTrue(WorkflowStub::signalsSent('name-provided')->isEmpty());
+        $this->assertTrue(WorkflowStub::updatesSent('approve')->isEmpty());
+
+        WorkflowStub::recordDispatched(TestGreetingActivity::class, ['Taylor']);
+        WorkflowStub::recordSignalSent('fake-recorders', 'name-provided', ['Taylor']);
+        WorkflowStub::recordUpdateSent('fake-recorders', 'approve', [true, 'webhook']);
+
+        $this->assertCount(1, WorkflowStub::dispatched(
+            TestGreetingActivity::class,
+            static fn (string $name): bool => $name === 'Taylor',
+        ));
+        $this->assertCount(0, WorkflowStub::dispatched(
+            TestGreetingActivity::class,
+            static fn (string $name): bool => $name === 'Jordan',
+        ));
+        $this->assertCount(1, WorkflowStub::signalsSent(
+            'name-provided',
+            static fn (string $instanceId, string $name): bool => $instanceId === 'fake-recorders'
+                && $name === 'Taylor',
+        ));
+        $this->assertCount(1, WorkflowStub::updatesSent(
+            'approve',
+            static fn (string $instanceId, bool $approved, string $source): bool => $instanceId === 'fake-recorders'
+                && $approved
+                && $source === 'webhook',
+        ));
+
+        WorkflowStub::assertDispatched(TestGreetingActivity::class, 1);
+        WorkflowStub::assertSignalSent('name-provided', 1);
+        WorkflowStub::assertUpdateSent('approve', 1);
+    }
+
+    public function testMockedResultCapturesCallableFailures(): void
+    {
+        WorkflowStub::mock(TestGreetingActivity::class, static function (): never {
+            throw new RuntimeException('fake callback failed');
+        });
+
+        $result = WorkflowStub::mockedResult(TestGreetingActivity::class, null, ['Taylor']);
+
+        $this->assertTrue($result['mocked']);
+        $this->assertNull($result['result']);
+        $this->assertInstanceOf(RuntimeException::class, $result['throwable']);
+        $this->assertSame('fake callback failed', $result['throwable']->getMessage());
+    }
+
+    public function testUndefinedWorkflowMethodReportsTheRequestedMethod(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'fake-undefined-method');
+
+        $this->expectException(BadMethodCallException::class);
+        $this->expectExceptionMessage('Call to undefined method [Workflow\\V2\\WorkflowStub::missingMethod].');
+
+        $workflow->missingMethod();
+    }
+
+    public function testRunReadyTasksRequiresAPositiveLimit(): void
+    {
+        WorkflowStub::fake();
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('WorkflowStub::runReadyTasks() requires a positive task limit.');
+
+        WorkflowStub::runReadyTasks(0);
     }
 
     public function testFakeActivityMockCallbackReceivesDurableContext(): void
