@@ -536,7 +536,11 @@ final class FailureFactory
         $properties = [];
         $reflection = new ReflectionClass($throwable);
 
-        while ($reflection->getName() !== Exception::class && $reflection->getName() !== Error::class) {
+        while (
+            $reflection !== false
+            && $reflection->getName() !== Exception::class
+            && $reflection->getName() !== Error::class
+        ) {
             if (! $reflection->isInternal()) {
                 foreach ($reflection->getProperties() as $property) {
                     if ($property->isStatic() || $property->getDeclaringClass()->getName() !== $reflection->getName()) {
@@ -564,10 +568,6 @@ final class FailureFactory
             }
 
             $reflection = $reflection->getParentClass();
-
-            if ($reflection === false) {
-                break;
-            }
         }
 
         return $properties;
@@ -682,7 +682,7 @@ final class FailureFactory
 
     /**
      * @return array{
-     *     class: class-string<Throwable>|string,
+     *     class: class-string<Throwable>|string|null,
      *     type: string|null,
      *     message: string,
      *     code: int,
@@ -712,7 +712,7 @@ final class FailureFactory
         $normalized = [
             'class' => is_string($payload['class'] ?? null)
                 ? $payload['class']
-                : ($fallbackClass ?? RestoredWorkflowException::class),
+                : $fallbackClass,
             'type' => is_string($payload['type'] ?? null)
                 ? $payload['type']
                 : $fallbackType,
