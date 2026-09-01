@@ -1,7 +1,7 @@
 {
   "schema": "durable-workflow.v2.sdk-neutrality.contract",
   "version": 4,
-  "authority_doc": "https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md",
+  "authority_doc": "https://github.com/durable-workflow/workflow/blob/main/docs/architecture/sdk-neutrality.md",
   "authority_url": "https://durable-workflow.github.io/sdk-neutrality-contract.json",
   "surface_stability_authority": "durable-workflow.v2.surface-stability.contract",
   "protocol_specs_authority": "durable-workflow.v2.platform-protocol-specs.catalog",
