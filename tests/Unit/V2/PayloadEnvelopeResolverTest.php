@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Validation\ValidationException;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 
-final class PayloadEnvelopeResolverTest extends TestCase
+final class PayloadEnvelopeResolverTest extends NonDatabaseTestCase
 {
     private ?string $storageRoot = null;
 
@@ -34,6 +34,19 @@ final class PayloadEnvelopeResolverTest extends TestCase
     public function testResolveToArrayReturnsPositionalArrayUnchanged(): void
     {
         $this->assertSame(['alpha', 'beta'], PayloadEnvelopeResolver::resolveToArray(['alpha', 'beta']));
+    }
+
+    public function testResolveToArrayRejectsScalarInputWithTheRequestedFieldName(): void
+    {
+        try {
+            PayloadEnvelopeResolver::resolveToArray('not-an-array', 'arguments');
+            $this->fail('Expected scalar input to be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(
+                ['The arguments field must be an array or an envelope object.'],
+                $exception->errors()['arguments'],
+            );
+        }
     }
 
     public function testResolveToArrayDecodesAvroEnvelope(): void
@@ -149,19 +162,153 @@ final class PayloadEnvelopeResolverTest extends TestCase
         ]);
     }
 
-    public function testResolveExternalPayloadRejectsCodecMismatch(): void
+    public function testResolveCommandPayloadPreservesRawValuesAndExtractsInlineEnvelope(): void
+    {
+        $blob = Serializer::serializeWithCodec('avro', ['completed']);
+
+        $this->assertNull(PayloadEnvelopeResolver::resolveCommandPayload(null));
+        $this->assertSame('raw-payload', PayloadEnvelopeResolver::resolveCommandPayload('raw-payload'));
+        $this->assertSame([], PayloadEnvelopeResolver::resolveCommandPayload([]));
+        $this->assertSame($blob, PayloadEnvelopeResolver::resolveCommandPayload([
+            'codec' => 'avro',
+            'blob' => $blob,
+        ]));
+    }
+
+    public function testResolveCommandPayloadWithCodecReportsOnlyEnvelopeCodec(): void
+    {
+        $blob = Serializer::serializeWithCodec('avro', ['completed']);
+
+        $this->assertSame(
+            [
+                'payload' => null,
+                'codec' => null,
+            ],
+            PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(null),
+        );
+        $this->assertSame(
+            [
+                'payload' => ['raw'],
+                'codec' => null,
+            ],
+            PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(['raw']),
+        );
+        $this->assertSame(
+            [
+                'payload' => $blob,
+                'codec' => 'avro',
+            ],
+            PayloadEnvelopeResolver::resolveCommandPayloadWithCodec([
+                'blob' => $blob,
+                'codec' => 'avro',
+            ]),
+        );
+    }
+
+    public function testResolveCommandPayloadMethodsFetchExternalEnvelope(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
         $reference = ExternalPayloadStorage::store($driver, 'encoded-payload', 'avro');
-        $payload = $reference->toArray();
-        $payload['codec'] = 'workflow-serializer-y';
+        $envelope = [
+            'codec' => 'avro',
+            'external_storage' => $reference->toArray(),
+        ];
 
+        $this->assertSame(
+            'encoded-payload',
+            PayloadEnvelopeResolver::resolveCommandPayload($envelope, externalStorage: $driver),
+        );
+        $this->assertSame(
+            [
+                'payload' => 'encoded-payload',
+                'codec' => 'avro',
+            ],
+            PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($envelope, externalStorage: $driver),
+        );
+    }
+
+    public function testResolveReturnsEmptyEnvelopeForMissingInput(): void
+    {
+        $expected = [
+            'codec' => null,
+            'blob' => null,
+        ];
+
+        $this->assertSame($expected, PayloadEnvelopeResolver::resolve(null));
+        $this->assertSame($expected, PayloadEnvelopeResolver::resolve([]));
+    }
+
+    public function testResolveEncodesPlainArgumentsAsAvro(): void
+    {
+        $resolved = PayloadEnvelopeResolver::resolve([
+            'first' => 'alpha',
+            'second' => 7,
+        ]);
+
+        $this->assertSame('avro', $resolved['codec']);
+        $this->assertIsString($resolved['blob']);
+        $this->assertSame(['alpha', 7], Serializer::unserializeWithCodec($resolved['codec'], $resolved['blob']));
+    }
+
+    public function testResolveRejectsScalarInput(): void
+    {
         $this->expectException(ValidationException::class);
-        $this->expectExceptionMessage('unsupported_payload_codec');
+        $this->expectExceptionMessage('must be an array or an envelope object');
+
+        PayloadEnvelopeResolver::resolve('not-an-array');
+    }
+
+    public function testResolveRejectsEmptyEnvelopeCodec(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('codec must be a non-empty string');
+
+        PayloadEnvelopeResolver::resolve([
+            'codec' => '',
+            'blob' => 'payload',
+        ]);
+    }
+
+    public function testResolveRejectsNonStringEnvelopeBlob(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('envelope blob must be a string');
 
         PayloadEnvelopeResolver::resolve([
             'codec' => 'avro',
-            'external_storage' => $payload,
+            'blob' => ['not', 'bytes'],
+        ]);
+    }
+
+    public function testResolveRejectsNonObjectExternalReference(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('external payload reference must be an object');
+
+        PayloadEnvelopeResolver::resolve([
+            'codec' => 'avro',
+            'external_storage' => 'file:///tmp/payload',
+        ], externalStorage: $driver);
+    }
+
+    public function testResolveReportsInvalidExternalReference(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Unsupported external payload reference schema');
+
+        PayloadEnvelopeResolver::resolve([
+            'codec' => 'avro',
+            'external_storage' => [
+                'schema' => 'unknown-schema',
+                'uri' => 'file:///tmp/payload',
+                'sha256' => str_repeat('a', 64),
+                'size_bytes' => 12,
+                'codec' => 'avro',
+            ],
         ], externalStorage: $driver);
     }
 
