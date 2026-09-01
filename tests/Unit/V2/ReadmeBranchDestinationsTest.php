@@ -15,7 +15,10 @@ final class ReadmeBranchDestinationsTest extends TestCase
 
     public function testActionsBadgeAndDestinationAreScopedToV2(): void
     {
-        [$destination, $image] = $this->badgeUrls('GitHub Workflow Status');
+        [$destination, $image] = $this->badgeUrls(
+            'github.com',
+            self::REPOSITORY_PATH . '/actions/workflows/php.yml/badge.svg',
+        );
 
         $this->assertUrl($destination, 'github.com', self::REPOSITORY_PATH . '/actions/workflows/php.yml');
         $this->assertSame([
@@ -30,7 +33,10 @@ final class ReadmeBranchDestinationsTest extends TestCase
 
     public function testCodecovBadgeAndDestinationAreScopedToV2(): void
     {
-        [$destination, $image] = $this->badgeUrls('Codecov');
+        [$destination, $image] = $this->badgeUrls(
+            'codecov.io',
+            '/gh' . self::REPOSITORY_PATH . '/branch/v2/graph/badge.svg',
+        );
 
         $this->assertUrl($destination, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/v2');
         $this->assertUrl($image, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/v2/graph/badge.svg');
@@ -65,7 +71,7 @@ final class ReadmeBranchDestinationsTest extends TestCase
     /**
      * @return array{string, string}
      */
-    private function badgeUrls(string $alt): array
+    private function badgeUrls(string $host, string $path): array
     {
         $document = new DOMDocument();
         $previous = libxml_use_internal_errors(true);
@@ -79,11 +85,25 @@ final class ReadmeBranchDestinationsTest extends TestCase
 
         $this->assertTrue($loaded);
 
-        $images = (new DOMXPath($document))->query(sprintf('//img[@alt="%s"]', $alt));
+        $images = (new DOMXPath($document))->query('//img[@src]');
         $this->assertNotFalse($images);
-        $this->assertCount(1, $images, sprintf('Expected exactly one %s badge.', $alt));
 
-        $image = $images->item(0);
+        $matches = [];
+
+        foreach ($images as $candidate) {
+            if (! $candidate instanceof DOMElement) {
+                continue;
+            }
+
+            $source = $candidate->getAttribute('src');
+            if (parse_url($source, PHP_URL_HOST) === $host && parse_url($source, PHP_URL_PATH) === $path) {
+                $matches[] = $candidate;
+            }
+        }
+
+        $this->assertCount(1, $matches, sprintf('Expected exactly one badge at https://%s%s.', $host, $path));
+
+        $image = $matches[0];
         $this->assertInstanceOf(DOMElement::class, $image);
         $link = $image->parentNode;
         $this->assertInstanceOf(DOMElement::class, $link);

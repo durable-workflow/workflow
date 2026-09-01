@@ -70,7 +70,6 @@ jobs:
     - name: Validate CI script syntax
       run: |
         bash -n \
-          scripts/ci/check-docs-release-audit.sh \
           scripts/ci/laravel-embedded-upgrade-smoke.sh \
           scripts/ci/check-packagist-release.sh \
           scripts/ci/check-platform-conformance-mirror.sh \

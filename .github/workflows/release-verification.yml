@@ -1,24 +1,22 @@
-name: Release Docs Audit
+name: Release Verification
 
 on:
   push:
     tags:
-      - '2.0.0-alpha.*'
-      - '2.0.0-beta.*'
-      - '2.0.0-rc.*'
-      - '2.0.0'
+      - '2.*'
+      - '!2.*-*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to audit, for example 2.0.0-alpha.201'
+        description: 'Stable 2.x release tag, for example 2.0.1'
         required: true
 
 permissions:
   contents: read
 
 jobs:
-  release-artifact:
-    name: Verify published Workflow artifact
+  published-package:
+    name: Verify published Workflow package
     runs-on: ubuntu-latest
     outputs:
       laravel_published_matrix: ${{ steps.laravel-matrix.outputs.matrix }}
@@ -33,11 +31,11 @@ jobs:
           php-version: '8.3'
           tools: composer
 
-      - name: Derive exhaustive Laravel release qualification
+      - name: Derive supported Laravel upgrade matrix
         id: laravel-matrix
         run: echo "matrix=$(php scripts/ci/laravel-embedded-upgrade-matrix.php --scope=published)" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve release tag
+      - name: Resolve stable release tag
         id: release
         shell: bash
         env:
@@ -50,8 +48,8 @@ jobs:
             tag="$GITHUB_REF_NAME"
           fi
           tag="${tag#v}"
-          if ! printf '%s\n' "$tag" | grep -Eq '^2\.0\.0((-(alpha|beta|rc)\.[0-9]+)?)$'; then
-            echo "::error::Invalid Workflow release tag for docs audit: $tag"
+          if ! printf '%s\n' "$tag" | grep -Eq '^2\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Expected a stable Workflow 2.x tag, got: $tag"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -62,47 +60,20 @@ jobs:
           PACKAGIST_PACKAGE_VERSION: ${{ steps.release.outputs.tag }}
         run: scripts/ci/check-packagist-release.sh
 
-      - name: Verify published platform conformance mirror
+      - name: Verify published platform contract
         env:
           WORKFLOW_PLATFORM_CONFORMANCE_VERSION: ${{ steps.release.outputs.tag }}
         run: scripts/ci/check-platform-conformance-mirror.sh
 
-  docs-release-audit:
-    name: Verify public docs release-audit tuple
-    needs: release-artifact
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          persist-credentials: false
-
-      - name: Require live docs release audit refresh
-        env:
-          DOCS_RELEASE_AUDIT_ARTIFACT: workflow
-          DOCS_RELEASE_AUDIT_VERSION: ${{ needs.release-artifact.outputs.release_tag }}
-          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
-          DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json
-        run: scripts/ci/check-docs-release-audit.sh
-
-      - name: Upload docs release audit evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          name: docs-release-audit-evidence
-          path: |
-            docs-release-audit-evidence.json
-            docs-release-audit-handoff.json
-          if-no-files-found: warn
-
-  laravel-embedded-upgrade-published:
-    name: Published Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} upgrade
-    needs: release-artifact
+  laravel-upgrade:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published upgrade
+    needs: published-package
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.release-artifact.outputs.laravel_published_matrix) }}
+      matrix: ${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -114,8 +85,9 @@ jobs:
           php-version: ${{ matrix.php }}
           tools: composer
 
-      - name: Run the clean published-artifact upgrade journey
+      - name: Run the published-package upgrade journey
         env:
           LARAVEL_VERSION: ${{ matrix.laravel }}
-          WORKFLOW_V2_VERSION: ${{ needs.release-artifact.outputs.release_tag }}
+          WORKFLOW_V2_VERSION: ${{ needs.published-package.outputs.release_tag }}
         run: scripts/ci/laravel-embedded-upgrade-smoke.sh
+

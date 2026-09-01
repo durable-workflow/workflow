@@ -62,7 +62,7 @@ final class LaravelEmbeddedUpgradeContractTest extends TestCase
         $sourceMatrix = $this->qualificationMatrix($root, 'source');
         $publishedMatrix = $this->qualificationMatrix($root, 'published');
         $sourceWorkflow = Yaml::parseFile($root . '/.github/workflows/php.yml');
-        $releaseWorkflow = Yaml::parseFile($root . '/.github/workflows/release-docs-audit.yml');
+        $releaseWorkflow = Yaml::parseFile($root . '/.github/workflows/release-verification.yml');
         $expectedSourceMatrix = [
             'include' => $this->deriveMinimumCells($intersection['authority']),
         ];
@@ -82,17 +82,13 @@ final class LaravelEmbeddedUpgradeContractTest extends TestCase
         );
         $this->assertSame(
             '${{ steps.laravel-matrix.outputs.matrix }}',
-            $releaseWorkflow['jobs']['release-artifact']['outputs']['laravel_published_matrix'],
+            $releaseWorkflow['jobs']['published-package']['outputs']['laravel_published_matrix'],
         );
         $this->assertSame(
-            '${{ fromJSON(needs.release-artifact.outputs.laravel_published_matrix) }}',
-            $releaseWorkflow['jobs']['laravel-embedded-upgrade-published']['strategy']['matrix'],
+            '${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}',
+            $releaseWorkflow['jobs']['laravel-upgrade']['strategy']['matrix'],
         );
-        $this->assertSame('release-artifact', $releaseWorkflow['jobs']['docs-release-audit']['needs']);
-        $this->assertSame(
-            'release-artifact',
-            $releaseWorkflow['jobs']['laravel-embedded-upgrade-published']['needs'],
-        );
+        $this->assertSame('published-package', $releaseWorkflow['jobs']['laravel-upgrade']['needs']);
     }
 
     /**

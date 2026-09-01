@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_WORKFLOW = ROOT / ".github/workflows/php.yml"
-RELEASE_AUDIT_WORKFLOW = ROOT / ".github/workflows/release-docs-audit.yml"
+RELEASE_VERIFICATION_WORKFLOW = ROOT / ".github/workflows/release-verification.yml"
 FEATURE_SHARD_VERIFIER = ROOT / "scripts/ci/verify-feature-shards.php"
 FEATURE_SHARD_SPLITTER = ROOT / "scripts/ci/split-feature-tests.php"
 PR_TEST_SELECTOR = ROOT / "scripts/ci/select-pr-tests.php"
@@ -327,7 +327,7 @@ class BuildWorkflowTrustTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.build = BUILD_WORKFLOW.read_text()
-        cls.release_audit = RELEASE_AUDIT_WORKFLOW.read_text()
+        cls.release_verification = RELEASE_VERIFICATION_WORKFLOW.read_text()
         cls.workflow_sources = [
             path.read_text() for path in (ROOT / ".github/workflows").glob("*.yml")
         ]
@@ -357,26 +357,17 @@ class BuildWorkflowTrustTest(unittest.TestCase):
             self.build.count("${{ github.event_name }}-${{ runner.os }}-php-") // 2,
         )
 
-    def test_release_audit_cannot_be_triggered_by_pull_requests(self) -> None:
-        trigger = self.release_audit.split("\npermissions:", 1)[0]
+    def test_release_verification_cannot_be_triggered_by_pull_requests(self) -> None:
+        trigger = self.release_verification.split("\npermissions:", 1)[0]
         self.assertNotIn("pull_request", trigger)
 
-    def test_published_laravel_and_docs_evidence_are_independent(
-        self,
-    ) -> None:
+    def test_published_laravel_upgrade_depends_on_package_verification(self) -> None:
         published_ancestors = workflow_job_ancestors(
-            self.release_audit,
-            "laravel-embedded-upgrade-published",
-        )
-        docs_ancestors = workflow_job_ancestors(
-            self.release_audit,
-            "docs-release-audit",
+            self.release_verification,
+            "laravel-upgrade",
         )
 
-        self.assertIn("release-artifact", published_ancestors)
-        self.assertNotIn("docs-release-audit", published_ancestors)
-        self.assertIn("release-artifact", docs_ancestors)
-        self.assertNotIn("laravel-embedded-upgrade-published", docs_ancestors)
+        self.assertEqual({"published-package"}, published_ancestors)
 
     def test_target_branch_jobs_skip_pull_requests(self) -> None:
         for job in (

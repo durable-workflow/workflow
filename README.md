@@ -1,156 +1,103 @@
-<p align="center"><a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Av2"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=v2" alt="GitHub Workflow Status"></a> <a href="https://codecov.io/gh/durable-workflow/workflow/branch/v2"><img alt="Codecov" src="https://codecov.io/gh/durable-workflow/workflow/branch/v2/graph/badge.svg"></a> <a href="https://packagist.org/packages/durable-workflow/workflow/stats"><img alt="Packagist Downloads (custom server)" src="https://img.shields.io/packagist/dt/durable-workflow/workflow"></a>
- <a href="https://durable-workflow.com/docs/installation"><img src="https://img.shields.io/badge/docs-read%20now-brightgreen" alt="Docs"></a> <a href="https://github.com/durable-workflow/workflow/blob/v2/LICENSE"><img alt="Packagist License" src="https://img.shields.io/packagist/l/durable-workflow/workflow?color=bright-green"></a></p>
+# Durable Workflow for Laravel
 
-Durable Workflow (formerly Laravel Workflow) is a package for the Laravel web framework that provides tools for defining and managing workflows and activities. A workflow is a series of interconnected activities that are executed in a specific order to achieve a desired result. Activities are individual tasks or pieces of logic that are executed as part of a workflow.
+<p align="center">
+  <a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Av2"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=v2" alt="Build status"></a>
+  <a href="https://codecov.io/gh/durable-workflow/workflow/branch/v2"><img src="https://codecov.io/gh/durable-workflow/workflow/branch/v2/graph/badge.svg" alt="Code coverage"></a>
+  <a href="https://packagist.org/packages/durable-workflow/workflow"><img src="https://img.shields.io/packagist/v/durable-workflow/workflow" alt="Latest Packagist version"></a>
+  <a href="https://packagist.org/packages/durable-workflow/workflow/stats"><img src="https://img.shields.io/packagist/dt/durable-workflow/workflow" alt="Packagist downloads"></a>
+  <a href="https://github.com/durable-workflow/workflow/blob/v2/LICENSE"><img src="https://img.shields.io/packagist/l/durable-workflow/workflow" alt="MIT license"></a>
+</p>
 
-Durable Workflow can be used to automate and manage complex processes, such as agentic workflows (AI-driven), financial transactions, data analysis, data pipelines, microservices, job tracking, user signup flows, sagas and other business processes. By using Durable Workflow, developers can break down large, complex processes into smaller, modular units that can be easily maintained and updated.
+Durable Workflow is the embedded Laravel runtime for durable execution. Write
+long-running workflows as ordinary PHP, keep completed work recorded through
+worker restarts and application deploys, and use Laravel's queues, cache, and
+database as the runtime.
 
-Some key features and benefits of Durable Workflow include:
+This package also provides the orchestration engine hosted by
+[Durable Workflow Server](https://github.com/durable-workflow/server). Use the
+[PHP SDK](https://github.com/durable-workflow/sdk-php) with Server or
+[Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
+to run outside the Laravel application or across PHP, Python, and Rust.
 
-- Support for defining workflows and activities using simple, declarative PHP classes.
-- Tools for starting, monitoring, and managing workflows, including support for queuing and parallel execution.
-- Built-in support for handling errors and retries, ensuring that workflows are executed reliably and consistently.
-- Integration with Laravel's queue and event systems, allowing workflows to be executed asynchronously on worker servers.
-- Extensive documentation and a growing community of developers who use and contribute to Durable Workflow.
-
-## Documentation
-
-Documentation for Durable Workflow can be found on the [website](https://durable-workflow.com/docs/installation).
-
-## Community
-
-You can find us in the [GitHub discussions](https://github.com/durable-workflow/workflow/discussions) and also on our [Discord channel](https://discord.gg/xu5aDDpqVy).
-
-## Sample App
-
-There's also a [sample application](https://github.com/durable-workflow/sample-app) that you can run directly from GitHub in your browser.
-
-## Usage
-
-Install the embedded Laravel runtime:
+## Install
 
 ```bash
-curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- workflow
+composer require durable-workflow/workflow:^2.0
+php artisan migrate
 ```
 
-This package owns Laravel service-provider integration, migrations, Eloquent
-models, queue jobs, replay persistence, and in-process workflow and activity
-authoring. It does not include a client or remote-worker runtime for the
-standalone server.
+Run a Laravel queue worker or Horizon to execute workflows and activities:
 
-**1. Create a workflow**
-```php
-use function Workflow\V2\activity;
-use Workflow\V2\Workflow;
-
-class MyWorkflow extends Workflow
-{
-    public function handle(string $name): string
-    {
-        $result = activity(MyActivity::class, $name);
-
-        return $result;
-    }
-}
+```bash
+php artisan queue:work
 ```
 
-**2. Create an activity**
+## Your First Workflow
+
 ```php
+<?php
+
 use Workflow\V2\Activity;
+use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
+use function Workflow\V2\activity;
 
-class MyActivity extends Activity
+final class GreetActivity extends Activity
 {
     public function handle(string $name): string
     {
         return "Hello, {$name}!";
     }
 }
-```
 
-**3. Run the workflow**
-```php
-use Workflow\V2\WorkflowStub;
+final class GreetWorkflow extends Workflow
+{
+    public function handle(string $name): string
+    {
+        return activity(GreetActivity::class, $name);
+    }
+}
 
-$workflow = WorkflowStub::make(MyWorkflow::class);
+$workflow = WorkflowStub::make(GreetWorkflow::class);
 $workflow->start('world');
+
+echo $workflow->output(); // Hello, world!
 ```
 
-```php
-$workflow->output();
-=> 'Hello, world!'
-```
+Workflow code can coordinate activities, timers, signals, queries, updates,
+child workflows, sagas, cancellation, retries, parallel work, side effects,
+continue-as-new, search attributes, memo, and message streams. The runtime
+persists execution history so replay can resume after process or host failure
+without repeating completed activities.
 
-## Using a dedicated storage connection
+## Choose a Deployment
 
-By default all workflow persistence (every Eloquent model and every migration shipped
-by this package) lives on your application's **default** database connection. To isolate
-workflow state on its own database — for separate backup/retention/scaling, a different
-driver, or tenant isolation — point the package at a dedicated connection:
-
-```php
-// config/workflows.php
-'storage' => [
-    // null => the application's default connection (the default, unchanged behavior).
-    'connection' => Env::dw('DW_STORAGE_CONNECTION', 'WORKFLOW_STORAGE_CONNECTION', null),
-],
-```
-
-```dotenv
-# .env — must match a key under config('database.connections')
-DW_STORAGE_CONNECTION=durable_workflow
-```
-
-When set, both the models and the migrations are routed to that connection, so
-`php artisan migrate` creates the workflow tables there and all reads/writes target it.
-Leaving it `null` preserves today's behavior exactly.
-
-The schema/database is governed by the connection's own configuration — use
-`search_path` for PostgreSQL or `database` for MySQL on that connection. There is no
-separate schema option.
-
-## Embedded and Polyglot Usage
-
-This package provides the application-embedded version of Durable Workflow for Laravel.
-
-Use it when your workflows and activities run within a Laravel application and you do not need workers written in other languages.
-
-For standalone or polyglot orchestration, run the [standalone Durable Workflow server](https://github.com/durable-workflow/server) and install the [PHP SDK](https://github.com/durable-workflow/sdk-php) in framework-neutral PHP applications and remote workers:
-
-```bash
-curl -fsSL https://durable-workflow.com/install-sdk.sh | sh -s -- php
-```
-
-The standalone server allows PHP, Python, Rust, and other supported SDKs to participate in the same workflow system.
-
-| Deployment mode | PHP package | Runtime owner |
+| Deployment | Use it when | Runtime owner |
 | --- | --- | --- |
-| Embedded Laravel | `durable-workflow/workflow` | The Laravel application owns durable state and queue execution. |
-| Standalone server host | `durable-workflow/workflow` inside `durable-workflow/server` | The server hosts Workflow's engine contracts and persistence. |
-| Standalone PHP client or remote worker | `durable-workflow/sdk` | The SDK owns authentication, transport, protocol types, client operations, and worker polling. |
+| Embedded Laravel | Workflows and activities live inside one Laravel application. | Your application owns persistence and queue execution. |
+| Self-hosted Server | Workers run independently or in multiple languages. | Your team operates Server, MySQL, Redis, and optional Waterline. |
+| Durable Workflow Cloud | You want a managed runtime for PHP, Python, and Rust workers. | Durable Workflow operates the runtime and persistence. |
+
+Embedded runs remain owned by the Laravel application. Moving new work to
+Server or Cloud does not reinterpret existing embedded history.
+
+## Learn More
+
+- [Embedded installation](https://durable-workflow.com/docs/2.0/installation/)
+- [Embedded feature guides](https://durable-workflow.com/docs/2.0/category/embedded/)
+- [Configuration reference](https://durable-workflow.com/docs/2.0/configuration/options/)
+- [Deployment modes](https://durable-workflow.com/docs/2.0/polyglot/deployment-modes/)
+- [Monitoring with Waterline](https://durable-workflow.com/docs/2.0/monitoring/)
+- [Runnable Sample App](https://github.com/durable-workflow/sample-app)
+
+Questions and design discussions are welcome in
+[GitHub Discussions](https://github.com/durable-workflow/workflow/discussions)
+and [Discord](https://discord.gg/xu5aDDpqVy).
 
 ## Sponsors
 
-The Durable Workflow package is sustained by the community via sponsors and volunteers.
+Durable Workflow is sustained by contributors and sponsors:
 
-- <a href="https://github.com/discovery-ukraine" target="_blank" rel="noopener sponsored">Andriy Karpishyn</a>
-- <a href="https://freispace.com" target="_blank" rel="noopener sponsored">Freispace Resource Scheduling</a>
-- <a href="https://translateabook.com" target="_blank" rel="noopener sponsored">Translate a Book</a>
-
-## Monitoring
-
-[Waterline](https://github.com/durable-workflow/waterline) is a separate UI that works nicely alongside Horizon. Think of Waterline as being to workflows what Horizon is to queues.
-Waterline is a technical runtime UI for operators: use it for fleet
-health, queues, waits, retries, failures, repair, and history
-diagnostics. Business dashboards should read app-owned milestone
-projections keyed by `workflow_id` and `run_id`, not Waterline data or
-workflow runtime tables.
-
-### Dashboard View
-
-![Waterline dashboard](https://raw.githubusercontent.com/durable-workflow/waterline/refs/heads/v2/docs/screenshots/dashboard.png)
-
-### Workflow View
-
-![Waterline workflow detail](https://raw.githubusercontent.com/durable-workflow/waterline/refs/heads/v2/docs/screenshots/workflow-detail.png)
-
-Refer to https://github.com/durable-workflow/waterline for installation and configuration instructions.
+- [Andriy Karpishyn](https://github.com/discovery-ukraine)
+- [Freispace Resource Scheduling](https://freispace.com)
+- [Translate a Book](https://translateabook.com)
