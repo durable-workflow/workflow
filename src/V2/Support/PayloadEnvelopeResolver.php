@@ -283,14 +283,6 @@ final class PayloadEnvelopeResolver
             ]);
         }
 
-        if ($reference->codec !== $canonicalCodec) {
-            throw ValidationException::withMessages([
-                $field . '.external_storage.codec' => [
-                    'The external payload reference codec must match the payload envelope codec.',
-                ],
-            ]);
-        }
-
         return [
             'codec' => $canonicalCodec,
             'blob' => ExternalPayloadStorage::fetch($externalStorage, $reference),
