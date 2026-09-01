@@ -1,6 +1,6 @@
 {
     "schema_version": 1,
-    "branch": "v2",
+    "branch": "main",
     "measurement": {
         "metric": "line",
         "test_suite": "unit",
@@ -16,6 +16,6 @@
     },
     "provenance": {
         "observed_at": "2026-09-01",
-        "evidence": "The local unit-only command retains the existing 60.00% floor for fast feedback. Public branch qualification uses the combined unit and MySQL feature contract in v2-coverage-contract.json."
+        "evidence": "The local unit-only command retains the existing 60.00% floor for fast feedback. Public main-branch qualification uses the combined unit and MySQL feature contract in v2-coverage-contract.json."
     }
 }
