@@ -99,6 +99,11 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
         'weight profile' => "--weight-profile={$profile}",
     ];
 
+    if ($profile === 'mysql') {
+        $requirements['PCOV coverage driver'] = 'coverage: pcov';
+        $requirements['per-shard Clover report'] = '--coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml"';
+    }
+
     foreach ($requirements as $description => $needle) {
         if (! str_contains($jobDefinition, $needle)) {
             fail("Build workflow job [{$job}] is missing {$description} [{$needle}].");
@@ -128,16 +133,16 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
             "needs.route.outputs.route == 'complete'",
             "needs.route.outputs.qualification == 'full'",
         ],
-        'coverage' => [
-            "needs.route.outputs.route == 'complete'",
-            "needs.route.outputs.qualification == 'full'",
-        ],
+        'coverage' => ["needs.route.outputs.route == 'complete'", "needs.route.outputs.qualification == 'full'"],
     ];
 
     foreach ($routes as $job => $conditions) {
         $definition = workflow_job_definition($workflow, $job);
 
-        if (! str_contains($definition, 'needs: route')) {
+        if (
+            ! str_contains($definition, 'needs: route')
+            && ! str_contains($definition, "needs:\n    - route\n")
+        ) {
             fail("Build workflow job [{$job}] does not depend on route classification.");
         }
 
@@ -153,6 +158,20 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
     foreach (array_keys($routes) as $job) {
         if (! str_contains($build, "    - {$job}\n")) {
             fail("Final build gate does not wait for [{$job}].");
+        }
+    }
+
+    $coverage = workflow_job_definition($workflow, 'coverage');
+    foreach (
+        [
+            'feature-shard dependency' => "    - feature-mysql\n",
+            'feature report download' => 'pattern: feature-timing-mysql-*',
+            'first feature report merge input' => '--clover=build/feature-coverage/mysql-shard-0-coverage.xml',
+            'last feature report merge input' => '--clover=build/feature-coverage/mysql-shard-3-coverage.xml',
+        ] as $description => $needle
+    ) {
+        if (! str_contains($coverage, $needle)) {
+            fail("Coverage job is missing {$description} [{$needle}].");
         }
     }
 

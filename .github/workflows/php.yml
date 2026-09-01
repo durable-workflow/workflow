@@ -588,7 +588,7 @@ jobs:
         && needs.route.outputs.qualification == 'full'
       }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
 
     strategy:
       fail-fast: false
@@ -617,6 +617,12 @@ jobs:
       with:
           fetch-depth: 10
           persist-credentials: false
+
+    - name: Set up PHP coverage driver
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.3'
+        coverage: pcov
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
@@ -696,8 +702,9 @@ jobs:
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
         started_at=$(date +%s)
         set +e
-        timeout --foreground 10m xargs -a /tmp/mysql-shard-files \
+        timeout --foreground 12m xargs -a /tmp/mysql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
+          --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
         elapsed=$(( $(date +%s) - started_at ))
@@ -1007,7 +1014,9 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   coverage:
-    needs: route
+    needs:
+    - route
+    - feature-mysql
     if: >-
       ${{
         needs.route.outputs.route == 'complete'
@@ -1032,6 +1041,12 @@ jobs:
           persist-credentials: false
           ref: ${{ env.COVERAGE_COMMIT }}
 
+    - name: Set up PHP coverage driver
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.3'
+        coverage: pcov
+
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
@@ -1042,6 +1057,13 @@ jobs:
 
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
+
+    - name: Download MySQL feature coverage
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+      with:
+        pattern: feature-timing-mysql-*
+        path: build/feature-coverage
+        merge-multiple: true
 
     - name: Create SQLite database on fast temporary storage
       run: |
@@ -1095,10 +1117,16 @@ jobs:
         DB_CONNECTION: sqlite
         DB_DATABASE: ${{ env.COVERAGE_DB_PATH }}
         QUEUE_CONNECTION: sync
-        XDEBUG_MODE: coverage
+        XDEBUG_MODE: off
 
     - name: Enforce the v2 coverage ratchet
-      run: php scripts/ci/check-v2-coverage.php
+      run: >-
+        php scripts/ci/check-v2-coverage.php
+        --clover=coverage.xml
+        --clover=build/feature-coverage/mysql-shard-0-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-1-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-2-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-3-coverage.xml
 
     - name: Upload coverage resource metrics
       if: ${{ always() && github.server_url == 'https://github.com' }}
@@ -1118,10 +1146,10 @@ jobs:
       if: ${{ github.server_url == 'https://github.com' }}
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
       with:
-        flags: v2-unit
-        files: ./coverage.xml
+        flags: v2
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml
         fail_ci_if_error: true
-        name: v2-unit
+        name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}
         override_commit: ${{ env.COVERAGE_COMMIT }}
 

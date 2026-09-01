@@ -13,11 +13,19 @@ if (isset($arguments['self-test'])) {
     exit(0);
 }
 
-$clover = resolve_path($root, $arguments['clover'] ?? 'coverage.xml');
-$contractPath = resolve_path($root, $arguments['contract'] ?? COVERAGE_CONTRACT);
-$output = resolve_path($root, $arguments['output'] ?? COVERAGE_OUTPUT);
+$cloverArguments = $arguments['clover'] ?? ['coverage.xml'];
+$contractArgument = $arguments['contract'] ?? COVERAGE_CONTRACT;
+$outputArgument = $arguments['output'] ?? COVERAGE_OUTPUT;
+
+if (! is_array($cloverArguments) || ! is_string($contractArgument) || ! is_string($outputArgument)) {
+    fail('Coverage arguments are invalid.');
+}
+
+$clovers = array_map(static fn (string $path): string => resolve_path($root, $path), $cloverArguments);
+$contractPath = resolve_path($root, $contractArgument);
+$output = resolve_path($root, $outputArgument);
 $contract = json_object($contractPath);
-$summary = summarize_coverage($root, $clover, $contract);
+$summary = summarize_coverage($root, $clovers, $contract);
 
 write_json($output, $summary);
 write_step_summary($summary);
@@ -43,7 +51,7 @@ if (! $ratchet['passes']) {
 
 /**
  * @param list<string> $arguments
- * @return array<string, string|true>
+ * @return array<string, string|true|list<string>>
  */
 function parse_arguments(array $arguments): array
 {
@@ -57,13 +65,27 @@ function parse_arguments(array $arguments): array
         }
 
         if (preg_match('/^--(clover|contract|output)=(.+)$/', $argument, $matches) === 1) {
-            $parsed[$matches[1]] = $matches[2];
+            if ($matches[1] === 'clover') {
+                $parsed['clover'] ??= [];
+
+                if (! is_array($parsed['clover'])) {
+                    fail('Coverage Clover arguments are invalid.');
+                }
+
+                $parsed['clover'][] = $matches[2];
+            } else {
+                if (isset($parsed[$matches[1]])) {
+                    fail("Coverage argument [--{$matches[1]}] may be provided only once.");
+                }
+
+                $parsed[$matches[1]] = $matches[2];
+            }
 
             continue;
         }
 
         fail(
-            'Usage: php scripts/ci/check-v2-coverage.php [--clover=path] [--contract=path] [--output=path] [--self-test]'
+            'Usage: php scripts/ci/check-v2-coverage.php [--clover=path ...] [--contract=path] [--output=path] [--self-test]'
         );
     }
 
@@ -74,7 +96,7 @@ function parse_arguments(array $arguments): array
  * @param array<string, mixed> $contract
  * @return array<string, mixed>
  */
-function summarize_coverage(string $root, string $clover, array $contract): array
+function summarize_coverage(string $root, array $clovers, array $contract): array
 {
     $measurement = require_object($contract, 'measurement');
     $source = require_object($measurement, 'source');
@@ -106,7 +128,7 @@ function summarize_coverage(string $root, string $clover, array $contract): arra
 
     $sourceDirectory = resolve_path($root, $sourceRoot);
     $inventory = source_inventory($sourceDirectory, $root, $suffix);
-    $coveredFiles = clover_files($clover, $root);
+    $coveredFiles = clover_files($clovers, $root);
     $missingFiles = array_values(array_diff($inventory, array_keys($coveredFiles)));
     $unexpectedFiles = array_values(array_diff(array_keys($coveredFiles), $inventory));
 
@@ -173,6 +195,7 @@ function summarize_coverage(string $root, string $clover, array $contract): arra
         'measurement' => [
             'metric' => $metric,
             'test_suite' => $testSuite,
+            'report_count' => count($clovers),
             'source' => [
                 'root' => $sourceRoot,
                 'suffix' => $suffix,
@@ -232,9 +255,58 @@ function source_inventory(string $directory, string $root, string $suffix): arra
 }
 
 /**
+ * @param list<string> $clovers
  * @return array<string, array{executable_lines: int, covered_lines: int, uncovered_line_numbers: list<int>}>
  */
-function clover_files(string $clover, string $root): array
+function clover_files(array $clovers, string $root): array
+{
+    if ($clovers === []) {
+        fail('At least one Clover report is required.');
+    }
+
+    $lineCounts = [];
+
+    foreach ($clovers as $clover) {
+        foreach (clover_line_counts($clover, $root) as $path => $lines) {
+            $lineCounts[$path] ??= [];
+
+            foreach ($lines as $number => $count) {
+                $lineCounts[$path][$number] = max($lineCounts[$path][$number] ?? 0, $count);
+            }
+        }
+    }
+
+    $files = [];
+
+    foreach ($lineCounts as $path => $lines) {
+        ksort($lines, SORT_NUMERIC);
+        $uncovered = [];
+        $covered = 0;
+
+        foreach ($lines as $number => $count) {
+            if ($count > 0) {
+                $covered++;
+            } else {
+                $uncovered[] = $number;
+            }
+        }
+
+        $files[$path] = [
+            'executable_lines' => count($lines),
+            'covered_lines' => $covered,
+            'uncovered_line_numbers' => $uncovered,
+        ];
+    }
+
+    ksort($files, SORT_STRING);
+
+    return $files;
+}
+
+/**
+ * @return array<string, array<int, int>>
+ */
+function clover_line_counts(string $clover, string $root): array
 {
     if (! is_file($clover)) {
         fail("Clover report [{$clover}] does not exist.");
@@ -261,9 +333,7 @@ function clover_files(string $clover, string $root): array
         }
 
         $path = normalize_clover_path($file->getAttribute('name'), $root);
-        $executable = 0;
-        $covered = 0;
-        $uncovered = [];
+        $lines = [];
 
         foreach ($file->getElementsByTagName('line') as $line) {
             if (! $line instanceof DOMElement || $line->getAttribute('type') !== 'stmt') {
@@ -277,23 +347,19 @@ function clover_files(string $clover, string $root): array
                 fail("Clover report has invalid line metrics for [{$path}].");
             }
 
-            $executable++;
-            if ($count > 0) {
-                $covered++;
-            } else {
-                $uncovered[] = $number;
+            if (isset($lines[$number])) {
+                fail("Clover report contains duplicate executable line [{$path}:{$number}].");
             }
+
+            $lines[$number] = $count;
         }
 
         if (isset($files[$path])) {
             fail("Clover report contains duplicate file [{$path}].");
         }
 
-        $files[$path] = [
-            'executable_lines' => $executable,
-            'covered_lines' => $covered,
-            'uncovered_line_numbers' => $uncovered,
-        ];
+        ksort($lines, SORT_NUMERIC);
+        $files[$path] = $lines;
     }
 
     ksort($files, SORT_STRING);
@@ -485,6 +551,11 @@ function self_test(string $root): void
         '<?xml version="1.0"?><coverage><project><file name="%s"><line num="2" type="stmt" count="1"/><line num="3" type="stmt" count="0"/></file></project></coverage>',
         htmlspecialchars($source . '/Example.php', ENT_XML1),
     ));
+    $featureClover = $fixture . '/feature-coverage.xml';
+    file_put_contents($featureClover, sprintf(
+        '<?xml version="1.0"?><coverage><project><file name="%s"><line num="2" type="stmt" count="0"/><line num="3" type="stmt" count="1"/></file></project></coverage>',
+        htmlspecialchars($source . '/Example.php', ENT_XML1),
+    ));
 
     $contract = [
         'schema_version' => 1,
@@ -505,7 +576,7 @@ function self_test(string $root): void
     ];
 
     try {
-        $summary = summarize_coverage($fixture, $clover, $contract);
+        $summary = summarize_coverage($fixture, [$clover], $contract);
         assert_self_test($summary['totals']['line_coverage_basis_points'] === 5000, 'calculates line coverage');
         assert_self_test($summary['ratchet']['passes'] === true, 'accepts coverage at the baseline');
         assert_self_test($summary['components'][0]['name'] === 'v2/support', 'groups uncovered paths by component');
@@ -513,14 +584,17 @@ function self_test(string $root): void
             $summary['uncovered_paths'][0]['uncovered_line_numbers'] === [3],
             'reports uncovered executable lines',
         );
+        $combined = summarize_coverage($fixture, [$clover, $featureClover], $contract);
+        assert_self_test($combined['totals']['line_coverage_basis_points'] === 10_000, 'unions line coverage reports');
+        assert_self_test($combined['measurement']['report_count'] === 2, 'reports merged coverage provenance');
 
         $contract['ratchet']['accepted_baseline_basis_points'] = 5001;
-        $summary = summarize_coverage($fixture, $clover, $contract);
+        $summary = summarize_coverage($fixture, [$clover], $contract);
         assert_self_test($summary['ratchet']['passes'] === false, 'rejects a coverage regression');
 
         file_put_contents($fixture . '/src/V2/Support/Missing.php', "<?php\nreturn false;\n");
         try {
-            summarize_coverage($fixture, $clover, $contract);
+            summarize_coverage($fixture, [$clover], $contract);
             fail('Coverage self-test did not reject an omitted production source file.');
         } catch (RuntimeException $exception) {
             assert_self_test(

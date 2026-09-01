@@ -3,8 +3,7 @@
     "branch": "v2",
     "measurement": {
         "metric": "line",
-        "test_suite": "unit+feature-mysql",
-        "coverage_driver": "pcov",
+        "test_suite": "unit",
         "source": {
             "root": "src",
             "suffix": ".php",
@@ -17,6 +16,6 @@
     },
     "provenance": {
         "observed_at": "2026-09-01",
-        "evidence": "The branch-bound coverage job unions one unit report with all four MySQL feature-shard reports against the complete production source inventory. The existing 60.00% floor remains in place until the first public combined run establishes the non-decreasing combined baseline."
+        "evidence": "The local unit-only command retains the existing 60.00% floor for fast feedback. Public branch qualification uses the combined unit and MySQL feature contract in v2-coverage-contract.json."
     }
 }

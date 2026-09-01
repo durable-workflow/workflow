@@ -34,7 +34,7 @@
         "test": "phpunit --testdox",
         "coverage": [
             "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",
-            "@php scripts/ci/check-v2-coverage.php"
+            "@php scripts/ci/check-v2-coverage.php --contract=resources/v2-unit-coverage-contract.json"
         ],
         "post-autoload-dump": [
             "@clear",
