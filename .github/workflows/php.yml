@@ -682,7 +682,7 @@ jobs:
     - name: Create MySQL database
       run: >-
         mysql
-        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; CREATE DATABASE testbench'
+        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; SET GLOBAL max_connections=500; CREATE DATABASE testbench'
         -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
