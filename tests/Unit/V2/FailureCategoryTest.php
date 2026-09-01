@@ -63,6 +63,17 @@ final class FailureCategoryTest extends NonDatabaseTestCase
         $this->assertSame(FailureCategory::Activity, $category);
     }
 
+    public function testActivityStructuralLimitKeepsStructuralLimitCategory(): void
+    {
+        $category = FailureFactory::classify(
+            'activity',
+            'activity_execution',
+            StructuralLimitExceededException::payloadSize(65, 64),
+        );
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
     public function testChildPropagationClassifiesAsChildWorkflow(): void
     {
         $category = FailureFactory::classify('child', 'child_workflow_run', new RuntimeException('child failed'));
@@ -316,6 +327,18 @@ final class FailureCategoryTest extends NonDatabaseTestCase
         $this->assertSame(FailureCategory::Internal, $category);
     }
 
+    public function testClassifyFromStringsRecognizesLoadedExceptionSubclass(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            FailureCategoryPdoException::class,
+            'database connection failed',
+        );
+
+        $this->assertSame(FailureCategory::Internal, $category);
+    }
+
     public function testClassifyFromStringsMaxAttemptsAsInternal(): void
     {
         $category = FailureFactory::classifyFromStrings(
@@ -550,4 +573,8 @@ final class FailureCategoryTest extends NonDatabaseTestCase
     {
         $this->assertFalse(FailureFactory::isNonRetryableFromStrings('App\\Exceptions\\DeletedExceptionClass'));
     }
+}
+
+final class FailureCategoryPdoException extends PDOException
+{
 }
