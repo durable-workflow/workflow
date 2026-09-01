@@ -74,10 +74,10 @@ final class LaravelEmbeddedUpgradeContractTest extends TestCase
         $this->assertSame($expectedPublishedMatrix, $publishedMatrix);
         $this->assertSame(
             '${{ steps.laravel-matrix.outputs.matrix }}',
-            $sourceWorkflow['jobs']['route']['outputs']['laravel_source_matrix'],
+            $sourceWorkflow['jobs']['preflight']['outputs']['laravel_source_matrix'],
         );
         $this->assertSame(
-            '${{ fromJSON(needs.route.outputs.laravel_source_matrix) }}',
+            '${{ fromJSON(needs.preflight.outputs.laravel_source_matrix) }}',
             $sourceWorkflow['jobs']['laravel-embedded-upgrade-source']['strategy']['matrix'],
         );
         $this->assertSame(
