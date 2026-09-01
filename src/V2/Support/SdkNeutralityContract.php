@@ -44,7 +44,7 @@ final class SdkNeutralityContract
 
     public const PACKAGE_CONTRACT_PATH = 'resources/sdk-neutrality-contract.json';
 
-    public const MIRROR_SHA256 = 'fdd34e4409549cf97325f650bf22f2d7f12a40246eb2949da1f547472ebc5a53';
+    public const MIRROR_SHA256 = 'a8397b32297b7817af267b4a24ede10d608fdaad22981e28b20120710f41bbaf';
 
     public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/main/docs/architecture/sdk-neutrality.md';
 
