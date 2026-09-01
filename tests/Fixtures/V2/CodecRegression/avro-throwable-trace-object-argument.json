@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "avro-throwable-trace-object-argument",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "frame_class",
+        "value": {
+          "type": "string",
+          "value": "Tests\\Unit\\Serializers\\AvroValueProtocolTest"
+        }
+      },
+      {
+        "key": "frame_function",
+        "value": {
+          "type": "string",
+          "value": "throwableWithObjectArgumentForCorpus"
+        }
+      },
+      {
+        "key": "object_argument_omitted",
+        "value": {
+          "type": "boolean",
+          "value": true
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNw4GFmZyYW1lX2NsYXNzClhUZXN0c1xVbml0XFNlcmlhbGl6ZXJzXEF2cm9WYWx1ZVByb3RvY29sVGVzdBxmcmFtZV9mdW5jdGlvbgpIdGhyb3dhYmxlV2l0aE9iamVjdEFyZ3VtZW50Rm9yQ29ycHVzLm9iamVjdF9hcmd1bWVudF9vbWl0dGVkAgEA"
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

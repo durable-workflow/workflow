@@ -270,11 +270,42 @@ final class Serializer
             'code' => $throwable->getCode(),
             'line' => $throwable->getLine(),
             'file' => $throwable->getFile(),
-            'trace' => collect($throwable->getTrace())
-                ->filter(static fn ($trace) => self::serializable($trace))
-                ->values()
-                ->toArray(),
+            'trace' => self::portableThrowableTrace($throwable),
         ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function portableThrowableTrace(Throwable $throwable): array
+    {
+        return collect($throwable->getTrace())
+            ->filter(static fn (mixed $frame): bool => is_array($frame))
+            ->map(static function (array $frame): array {
+                $portable = [];
+
+                foreach ($frame as $key => $value) {
+                    if (is_string($key) && self::isPortableAvroValue($value)) {
+                        $portable[$key] = $value;
+                    }
+                }
+
+                return $portable;
+            })
+            ->filter(static fn (array $frame): bool => $frame !== [])
+            ->values()
+            ->toArray();
+    }
+
+    private static function isPortableAvroValue(mixed $value): bool
+    {
+        try {
+            Avro::serialize($value);
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     private static function helper(): ModelIdentifierHelper

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Workflow `2.0.1` keeps PHP exception traces Avro-portable when argument
+  capture is enabled, preserving each frame's durable fields while omitting
+  object and resource values that cannot cross the public payload boundary.
 - Workflow `2.0.0` promotes the fully qualified release-candidate runtime to
   the stable 2.0 line without changing its durable execution behavior.
 - Workflow `2.0.0-rc.55` treats the official stable-v1 Y and Base64 serializer

@@ -138,6 +138,16 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
     OFFICIAL_BINDING_CONSUMERS[
         (
             "php",
+            "codec",
+            "tests/Fixtures/V2/CodecRegression/*.json",
+            "codec-regression-v1",
+        )
+    ]: (
+        "tests/Unit/Serializers/AvroValueProtocolTest.php",
+    ),
+    OFFICIAL_BINDING_CONSUMERS[
+        (
+            "php",
             "replay",
             "tests/Fixtures/V2/ReplayRegression/*.json",
             "replay-regression-v1",

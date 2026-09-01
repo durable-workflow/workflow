@@ -278,7 +278,8 @@ final class AvroValueProtocolTest extends TestCase
         self::assertSame('avro', $fixture['protocol']['codec'] ?? null);
         self::assertSame(Avro::valueSchemaFingerprint(), $fixture['protocol']['fingerprint'] ?? null);
 
-        $value = self::taggedValue($fixture['value']);
+        $expected = self::taggedValue($fixture['value']);
+        $value = self::observedCodecValue($fixture, $expected);
         $wire = $fixture['framing']['wire_base64'] ?? null;
         $operation = $fixture['failure_policy']['operation'] ?? null;
         $error = $fixture['failure_policy']['error'] ?? null;
@@ -327,5 +328,62 @@ final class AvroValueProtocolTest extends TestCase
             )),
             default => throw new InvalidArgumentException('Unsupported tagged corpus value.'),
         };
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private static function observedCodecValue(array $fixture, mixed $expected): mixed
+    {
+        if (($fixture['id'] ?? null) !== 'avro-throwable-trace-object-argument') {
+            return $expected;
+        }
+
+        $previous = ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+
+        try {
+            $argument = new \stdClass();
+            $throwable = self::throwableWithObjectArgumentForCorpus($argument);
+            self::assertSame($argument, $throwable->getTrace()[0]['args'][0]);
+
+            $decoded = Serializer::unserializeWithCodec(
+                'avro',
+                Serializer::serializeWithCodec('avro', $throwable),
+            );
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+
+        $frame = null;
+        foreach ($decoded['trace'] ?? [] as $candidate) {
+            if (($candidate['function'] ?? null) === 'throwableWithObjectArgumentForCorpus') {
+                $frame = $candidate;
+                break;
+            }
+        }
+
+        self::assertIsArray($frame);
+        self::assertInstanceOf(AvroMapValue::class, $expected);
+        $observed = [
+            'frame_class' => $frame['class'] ?? null,
+            'frame_function' => $frame['function'] ?? null,
+            'object_argument_omitted' => ! array_key_exists('args', $frame),
+        ];
+        self::assertSame(
+            $expected->pairs,
+            array_map(
+                static fn (string $key, mixed $value): array => [$key, $value],
+                array_keys($observed),
+                array_values($observed),
+            ),
+        );
+
+        return $observed;
+    }
+
+    private static function throwableWithObjectArgumentForCorpus(object $argument): \RuntimeException
+    {
+        return new \RuntimeException('codec regression corpus');
     }
 }

@@ -113,6 +113,34 @@ final class CodecIndependentHelpersTest extends TestCase
         $this->assertIsArray($decoded['trace']);
     }
 
+    public function testAvroThrowableTraceOmitsOnlyNonPortableFields(): void
+    {
+        $previous = ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+
+        try {
+            $argument = new \stdClass();
+            $throwable = $this->throwableWithObjectArgument($argument);
+            $trace = $throwable->getTrace();
+
+            $this->assertSame($argument, $trace[0]['args'][0]);
+
+            $decoded = Serializer::unserializeWithCodec(
+                'avro',
+                Serializer::serializeWithCodec('avro', $throwable),
+            );
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+
+        $frame = collect($decoded['trace'])
+            ->firstWhere('function', 'throwableWithObjectArgument');
+
+        $this->assertIsArray($frame);
+        $this->assertSame(self::class, $frame['class']);
+        $this->assertArrayNotHasKey('args', $frame);
+    }
+
     public static function languageNeutralCodecProvider(): array
     {
         $cases = [];
@@ -146,5 +174,10 @@ final class CodecIndependentHelpersTest extends TestCase
             'Y' => [Y::class],
             'Base64' => [Base64::class],
         ];
+    }
+
+    private function throwableWithObjectArgument(object $argument): Exception
+    {
+        return new Exception('trace boom');
     }
 }
