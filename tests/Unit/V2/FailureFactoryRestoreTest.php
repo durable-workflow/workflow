@@ -18,6 +18,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Support\FailureFactory;
 
 final class FailureFactoryRestoreTest extends NonDatabaseTestCase
@@ -169,6 +170,58 @@ final class FailureFactoryRestoreTest extends NonDatabaseTestCase
 
         $this->assertInstanceOf(RestoredWorkflowException::class, $missing);
         $this->assertSame('removed failure', $missing->getMessage());
+    }
+
+    public function testRestoreUsesAValidWrapperWhenFailureClassMetadataIsMissing(): void
+    {
+        $restored = FailureFactory::restore([
+            'message' => 'classless worker failure',
+            'code' => 31,
+        ]);
+
+        $this->assertInstanceOf(RestoredWorkflowException::class, $restored);
+        $this->assertSame('classless worker failure', $restored->getMessage());
+        $this->assertSame(31, $restored->getCode());
+        $this->assertNull($restored->failurePayload()['class']);
+        $this->assertSame(RestoredWorkflowException::class, $restored->originalExceptionClass());
+    }
+
+    public function testReplayResolutionReportsMissingFailureClassAsUnresolved(): void
+    {
+        $this->assertSame([
+            'class' => null,
+            'source' => 'unresolved',
+            'error' => null,
+        ], FailureFactory::replayResolution([
+            'message' => 'classless replay failure',
+        ]));
+    }
+
+    public function testReplayRejectsFailureWithoutClassMetadata(): void
+    {
+        $this->expectException(UnresolvedWorkflowFailureException::class);
+
+        FailureFactory::restoreForReplay([
+            'message' => 'classless replay failure',
+        ]);
+    }
+
+    public function testLiveRestoreFallsBackToRecordedClassWhenTypeMappingIsInvalid(): void
+    {
+        config()->set('workflows.v2.types.exceptions', [
+            'broken.failure' => \stdClass::class,
+        ]);
+
+        $restored = FailureFactory::restore([
+            'class' => RuntimeException::class,
+            'type' => 'broken.failure',
+            'message' => 'recover with recorded class',
+            'code' => 37,
+        ]);
+
+        $this->assertInstanceOf(RuntimeException::class, $restored);
+        $this->assertSame('recover with recorded class', $restored->getMessage());
+        $this->assertSame(37, $restored->getCode());
     }
 
     public function testExternalWorkerStringFailureUsesFallbackMetadata(): void
