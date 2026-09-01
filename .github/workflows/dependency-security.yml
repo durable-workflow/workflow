@@ -2,7 +2,7 @@ name: dependency-security
 
 on:
   push:
-    branches: [v2, main]
+    branches: [main]
     paths:
       - .github/dependabot.yml
       - .github/workflows/dependency-security.yml
@@ -11,7 +11,7 @@ on:
       - resources/laravel-embedded-upgrade-contract.json
       - scripts/ci/check-laravel-dependency-security.php
   pull_request:
-    branches: [v2, main]
+    branches: [main]
     paths:
       - .github/dependabot.yml
       - .github/workflows/dependency-security.yml
