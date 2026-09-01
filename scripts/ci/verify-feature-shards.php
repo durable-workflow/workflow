@@ -92,8 +92,8 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
     $jobDefinition = workflow_job_definition($workflow, $job);
     $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS - 1));
     $requirements = [
-        'complete-gate routing' => "needs.route.outputs.route == 'complete'",
-        'full qualification routing' => "needs.route.outputs.qualification == 'full'",
+        'repository preflight dependency' => "needs: preflight",
+        'target-branch routing' => "github.event_name != 'pull_request'",
         'complete shard matrix' => "shard: [{$expectedMatrix}]",
         'splitter shard count' => '--shards=' . FEATURE_SHARDS,
         'weight profile' => "--weight-profile={$profile}",
@@ -114,36 +114,24 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
 function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): void
 {
     $routes = [
-        'quality' => [
-            "needs.route.outputs.route == 'bounded'",
-            "needs.route.outputs.route == 'complete'",
-            "needs.route.outputs.qualification == 'full'",
-        ],
-        'pr-unit-contracts' => ["needs.route.outputs.route == 'bounded'"],
-        'pr-feature-mysql' => ["needs.route.outputs.route == 'bounded'"],
-        'feature-mysql' => [
-            "needs.route.outputs.route == 'complete'",
-            "needs.route.outputs.qualification == 'full'",
-        ],
-        'feature-postgresql' => [
-            "needs.route.outputs.route == 'complete'",
-            "needs.route.outputs.qualification == 'full'",
-        ],
-        'feature-mariadb' => [
-            "needs.route.outputs.route == 'complete'",
-            "needs.route.outputs.qualification == 'full'",
-        ],
-        'coverage' => ["needs.route.outputs.route == 'complete'", "needs.route.outputs.qualification == 'full'"],
+        'regression-corpus' => [],
+        'quality' => [],
+        'pr-unit-contracts' => ["github.event_name == 'pull_request'"],
+        'pr-feature-mysql' => ["github.event_name == 'pull_request'"],
+        'feature-mysql' => ["github.event_name != 'pull_request'"],
+        'feature-postgresql' => ["github.event_name != 'pull_request'"],
+        'feature-mariadb' => ["github.event_name != 'pull_request'"],
+        'coverage' => ["github.event_name != 'pull_request'"],
     ];
 
     foreach ($routes as $job => $conditions) {
         $definition = workflow_job_definition($workflow, $job);
 
         if (
-            ! str_contains($definition, 'needs: route')
-            && ! str_contains($definition, "needs:\n    - route\n")
+            ! str_contains($definition, 'needs: preflight')
+            && ! str_contains($definition, "needs:\n    - preflight\n")
         ) {
-            fail("Build workflow job [{$job}] does not depend on route classification.");
+            fail("Build workflow job [{$job}] does not depend on repository preflight.");
         }
 
         foreach ($conditions as $condition) {
@@ -175,23 +163,11 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         }
     }
 
-    foreach (['bounded', 'complete', 'structural', 'local-sentinel'] as $route) {
-        if (! str_contains($build, "needs.route.outputs.route == '{$route}'")) {
-            fail("Final build gate does not validate route [{$route}].");
-        }
-    }
-
-    foreach (['full', 'release-recovery'] as $qualification) {
-        if (! str_contains($build, "needs.route.outputs.qualification == '{$qualification}'")) {
-            fail("Final build gate does not validate qualification [{$qualification}].");
-        }
-    }
-
     foreach (
         [
-            'selected qualification reporting' => 'Report qualification class and elapsed time',
-            'target qualification baseline reporting' => 'baseline_elapsed_seconds',
-            'focused matrix exclusion' => 'Focused release and recovery qualification succeeded',
+            'pull-request gate' => 'Check pull-request gate',
+            'target-branch gate' => 'Check target-branch matrix',
+            'regression corpus result' => 'needs.regression-corpus.result',
         ] as $description => $needle
     ) {
         if (! str_contains($build, $needle)) {
@@ -199,21 +175,18 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         }
     }
 
-    $route = workflow_job_definition($workflow, 'route');
+    $preflight = workflow_job_definition($workflow, 'preflight');
 
     foreach (
         [
-            'route self-tests' => 'resolve-build-route.php --self-test',
-            'target qualification self-tests' => 'classify-target-qualification.php --self-test',
-            'classification behavior and trust tests' => 'test-build-qualification.py',
+            'build routing and trust tests' => 'test-build-routing.py',
             'feature execution inventory verification' => 'verify-feature-shards.php',
             'workflow YAML syntax validation' => "yq eval-all '.' .github/workflows/*.yml",
-            'release recovery conformance' => 'release_recovery_consumer_conformance.py',
             'public-boundary validation' => 'scripts/check-public-boundary.sh',
         ] as $description => $needle
     ) {
-        if (! str_contains($route, $needle)) {
-            fail("Structural candidate gate is missing {$description} [{$needle}].");
+        if (! str_contains($preflight, $needle)) {
+            fail("Repository preflight is missing {$description} [{$needle}].");
         }
     }
 

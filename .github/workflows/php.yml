@@ -14,12 +14,6 @@ concurrency:
   group: build-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Pull requests from alternate CI servers may use lightweight structural
-  # admission. Removing this setting (or setting it to false) fails safe to
-  # bounded contribution checks without weakening GitHub qualification.
-  ALTERNATE_CI_STRUCTURAL_ADMISSION: 'true'
-
 jobs:
   action-policy:
     name: Central action policy preflight
@@ -51,66 +45,21 @@ jobs:
         --target workflow
         --workflow-directory .github/workflows
 
-  route:
-    name: Resolve portable build route
+  preflight:
+    name: Validate repository contracts
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
-      route: ${{ steps.route.outputs.route }}
-      qualification: ${{ steps.qualification.outputs.qualification }}
-      qualification_reason: ${{ steps.qualification.outputs.qualification_reason }}
-      changed_path_categories: ${{ steps.qualification.outputs.changed_path_categories }}
-      baseline_run_id: ${{ steps.qualification.outputs.baseline_run_id }}
-      baseline_elapsed_seconds: ${{ steps.qualification.outputs.baseline_elapsed_seconds }}
       laravel_source_matrix: ${{ steps.laravel-matrix.outputs.matrix }}
-      started_at: ${{ steps.clock.outputs.started_at }}
 
     steps:
-    - name: Record qualification start
-      id: clock
-      run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
-
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
         fetch-depth: 0
         persist-credentials: false
 
-    - name: Resolve build route
-      id: route
-      env:
-        BUILD_SERVER_URL: ${{ github.server_url }}
-        BUILD_EVENT_NAME: ${{ github.event_name }}
-      run: >-
-        php scripts/ci/resolve-build-route.php
-        --server-url="$BUILD_SERVER_URL"
-        --event-name="$BUILD_EVENT_NAME"
-        --alternate-ci-structural-admission="${ALTERNATE_CI_STRUCTURAL_ADMISSION:-}"
-        >> "$GITHUB_OUTPUT"
-
-    - name: Classify target qualification
-      id: qualification
-      env:
-        BUILD_SERVER_URL: ${{ github.server_url }}
-        BUILD_EVENT_NAME: ${{ github.event_name }}
-        BUILD_REF: ${{ github.ref }}
-        BUILD_BEFORE_SHA: ${{ github.event.before }}
-        BUILD_HEAD_SHA: ${{ github.sha }}
-      run: >-
-        php scripts/ci/classify-target-qualification.php
-        --server-url="$BUILD_SERVER_URL"
-        --event-name="$BUILD_EVENT_NAME"
-        --ref="$BUILD_REF"
-        --before="$BUILD_BEFORE_SHA"
-        --head="$BUILD_HEAD_SHA"
-        >> "$GITHUB_OUTPUT"
-
-    - name: Verify fail-safe build routes
-      run: php scripts/ci/resolve-build-route.php --self-test
-
-    - name: Verify fail-safe target qualification
-      run: |
-        php scripts/ci/classify-target-qualification.php --self-test
-        python scripts/ci/test-build-qualification.py
+    - name: Verify build and feature selection contracts
+      run: python scripts/ci/test-build-routing.py
 
     - name: Verify complete feature inventories
       run: php scripts/ci/verify-feature-shards.php
@@ -118,7 +67,7 @@ jobs:
     - name: Validate workflow YAML syntax
       run: yq eval-all '.' .github/workflows/*.yml >/dev/null
 
-    - name: Validate release and recovery script syntax
+    - name: Validate CI script syntax
       run: |
         bash -n \
           scripts/ci/check-docs-release-audit.sh \
@@ -126,7 +75,6 @@ jobs:
           scripts/ci/check-packagist-release.sh \
           scripts/ci/check-platform-conformance-mirror.sh \
           scripts/ci/test-platform-conformance-resolver-audit.sh
-        php -l scripts/ci/classify-target-qualification.php
         php -l scripts/ci/compare-platform-conformance-mirrors.php
         php -l scripts/ci/check-v2-coverage.php
         php -l scripts/ci/list-worker-protocol-resolvers.php
@@ -147,20 +95,6 @@ jobs:
 
     - name: Validate Laravel dependency security policy
       run: php scripts/ci/check-laravel-dependency-security.php --policy-only
-
-    - name: Verify release recovery source contracts
-      env:
-        CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-      run: |
-        arguments=()
-        if [ -n "$CONFORMANCE_BASE_REF" ]; then
-          arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
-        fi
-        python scripts/ci/release_recovery_consumer_conformance.py \
-          --contract scripts/ci/release-recovery-consumer-contract.json \
-          --adapter scripts/ci/release-recovery-consumer-adapter.json \
-          "${arguments[@]}"
-        python scripts/ci/test-component-release-recovery.py ConsumerContractIdentityRegressionTest
 
     - name: Install payload consumer dependencies
       run: composer install --prefer-dist --no-progress --no-dev --no-scripts
@@ -218,15 +152,7 @@ jobs:
           scripts/check-public-boundary.sh
 
   regression-corpus:
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'bounded'
-        || (
-          needs.route.outputs.route == 'complete'
-          && needs.route.outputs.qualification == 'full'
-        )
-      }}
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 6
 
@@ -255,7 +181,7 @@ jobs:
 
     - name: Prepare official consumer runtime
       env:
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         if [ -d /dev/shm ] && [ -w /dev/shm ]; then
           temporary_root=/dev/shm
@@ -310,15 +236,7 @@ jobs:
         fi
 
   quality:
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'bounded'
-        || (
-          needs.route.outputs.route == 'complete'
-          && needs.route.outputs.qualification == 'full'
-        )
-      }}
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -350,18 +268,14 @@ jobs:
 
   laravel-embedded-upgrade-source:
     name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} embedded upgrade
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'complete'
-        && needs.route.outputs.qualification == 'full'
-      }}
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.route.outputs.laravel_source_matrix) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.laravel_source_matrix) }}
 
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -380,8 +294,8 @@ jobs:
       run: scripts/ci/laravel-embedded-upgrade-smoke.sh
 
   pr-unit-contracts:
-    needs: route
-    if: ${{ needs.route.outputs.route == 'bounded' }}
+    needs: preflight
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -418,8 +332,8 @@ jobs:
           --log-junit build/test-results/pr-unit-contracts.xml
 
   pr-feature-mysql:
-    needs: route
-    if: ${{ needs.route.outputs.route == 'bounded' }}
+    needs: preflight
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 13
 
@@ -482,8 +396,8 @@ jobs:
 
     - name: Resolve service endpoints and export test defaults
       env:
-        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         resolve_service() {
           service="$1"
@@ -528,6 +442,7 @@ jobs:
         mkdir -p build/test-results
         cat build/pr-selection/summary.txt
         set +e
+        # shellcheck disable=SC2016
         timeout --foreground 8m bash -euo pipefail -c '
           filter=$(cat build/pr-selection/mysql-fallback-filter.txt)
           xargs -a build/pr-selection/mysql-fallback-files.txt \
@@ -581,12 +496,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-mysql:
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'complete'
-        && needs.route.outputs.qualification == 'full'
-      }}
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 18
 
@@ -637,8 +548,8 @@ jobs:
 
     - name: Resolve service endpoints and export test defaults
       env:
-        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports[3306] }}
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         resolve_service() {
           service="$1"
@@ -751,12 +662,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-postgresql:
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'complete'
-        && needs.route.outputs.qualification == 'full'
-      }}
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -800,8 +707,8 @@ jobs:
 
     - name: Resolve service endpoints and export test defaults
       env:
-        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports[5432] }}
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports['5432'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         resolve_service() {
           service="$1"
@@ -914,12 +821,8 @@ jobs:
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-mariadb:
-    needs: route
-    if: >-
-      ${{
-        needs.route.outputs.route == 'complete'
-        && needs.route.outputs.qualification == 'full'
-      }}
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     services:
@@ -960,8 +863,8 @@ jobs:
 
     - name: Resolve service endpoints and export test defaults
       env:
-        MARIADB_PUBLISHED_PORT: ${{ job.services.mariadb.ports[3306] }}
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        MARIADB_PUBLISHED_PORT: ${{ job.services.mariadb.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         resolve_service() {
           service="$1"
@@ -1015,13 +918,9 @@ jobs:
 
   coverage:
     needs:
-    - route
+    - preflight
     - feature-mysql
-    if: >-
-      ${{
-        needs.route.outputs.route == 'complete'
-        && needs.route.outputs.qualification == 'full'
-      }}
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
 
     env:
@@ -1080,7 +979,7 @@ jobs:
 
     - name: Resolve service endpoint and export coverage test defaults
       env:
-        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports[6379] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
       run: |
         resolve_service() {
           service="$1"
@@ -1160,11 +1059,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    outputs:
-      qualification: ${{ needs.route.outputs.qualification }}
-      elapsed_seconds: ${{ steps.report.outputs.elapsed_seconds }}
     needs:
-    - route
+    - preflight
+    - regression-corpus
     - quality
     - pr-unit-contracts
     - pr-feature-mysql
@@ -1183,25 +1080,13 @@ jobs:
         ACTION_POLICY_RESULT: ${{ needs.action-policy.result }}
       run: test "$ACTION_POLICY_RESULT" = success
 
-    - name: Require a recognized build route
-      env:
-        BUILD_ROUTE: ${{ needs.route.outputs.route }}
-        QUALIFICATION_CLASS: ${{ needs.route.outputs.qualification }}
-        ROUTE_JOB_RESULT: ${{ needs.route.result }}
-      run: |
-        test "$ROUTE_JOB_RESULT" = "success"
-        case "$BUILD_ROUTE" in
-          bounded|complete|structural|local-sentinel) ;;
-          *) echo "Unrecognized or unavailable build route: $BUILD_ROUTE" >&2; exit 1 ;;
-        esac
-        case "$QUALIFICATION_CLASS" in
-          full|release-recovery) ;;
-          *) echo "Unrecognized or unavailable qualification class: $QUALIFICATION_CLASS" >&2; exit 1 ;;
-        esac
+    - name: Require repository preflight
+      run: test "${{ needs.preflight.result }}" = "success"
 
-    - name: Check bounded pull-request gate
-      if: ${{ needs.route.outputs.route == 'bounded' }}
+    - name: Check pull-request gate
+      if: ${{ github.event_name == 'pull_request' }}
       run: |
+        test "${{ needs.regression-corpus.result }}" = "success"
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "success"
         test "${{ needs.pr-feature-mysql.result }}" = "success"
@@ -1210,15 +1095,12 @@ jobs:
         test "${{ needs.feature-postgresql.result }}" = "skipped"
         test "${{ needs.coverage.result }}" = "skipped"
         test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
-        echo "Bounded external pull-request validation succeeded."
+        echo "Pull-request validation succeeded."
 
-    - name: Check complete public matrix
-      if: >-
-        ${{
-          needs.route.outputs.route == 'complete'
-          && needs.route.outputs.qualification == 'full'
-        }}
+    - name: Check target-branch matrix
+      if: ${{ github.event_name != 'pull_request' }}
       run: |
+        test "${{ needs.regression-corpus.result }}" = "success"
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "skipped"
         test "${{ needs.pr-feature-mysql.result }}" = "skipped"
@@ -1227,91 +1109,4 @@ jobs:
         test "${{ needs.feature-postgresql.result }}" = "success"
         test "${{ needs.coverage.result }}" = "success"
         test "${{ needs.laravel-embedded-upgrade-source.result }}" = "success"
-        echo "The complete public release matrix succeeded for this SHA."
-
-    - name: Check focused release and recovery qualification
-      if: >-
-        ${{
-          needs.route.outputs.route == 'complete'
-          && needs.route.outputs.qualification == 'release-recovery'
-        }}
-      run: |
-        test "${{ needs.quality.result }}" = "skipped"
-        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
-        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mariadb.result }}" = "skipped"
-        test "${{ needs.feature-postgresql.result }}" = "skipped"
-        test "${{ needs.coverage.result }}" = "skipped"
-        test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
-        echo "Focused release and recovery qualification succeeded without the runtime matrix."
-
-    - name: Check structural candidate gate
-      if: ${{ needs.route.outputs.route == 'structural' }}
-      run: |
-        test "${{ needs.quality.result }}" = "skipped"
-        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
-        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mariadb.result }}" = "skipped"
-        test "${{ needs.feature-postgresql.result }}" = "skipped"
-        test "${{ needs.coverage.result }}" = "skipped"
-        test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
-        echo "Structural candidate validation succeeded without starting broad deterministic tests."
-
-    - name: Check local landed-SHA sentinel
-      if: ${{ needs.route.outputs.route == 'local-sentinel' }}
-      run: |
-        test "${{ needs.quality.result }}" = "skipped"
-        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
-        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mysql.result }}" = "skipped"
-        test "${{ needs.feature-mariadb.result }}" = "skipped"
-        test "${{ needs.feature-postgresql.result }}" = "skipped"
-        test "${{ needs.coverage.result }}" = "skipped"
-        test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
-        echo "Local landed-SHA sentinel succeeded."
-
-    - name: Report qualification class and elapsed time
-      id: report
-      if: ${{ always() && needs.route.result == 'success' }}
-      env:
-        QUALIFICATION_CLASS: ${{ needs.route.outputs.qualification }}
-        QUALIFICATION_REASON: ${{ needs.route.outputs.qualification_reason }}
-        CHANGED_PATH_CATEGORIES: ${{ needs.route.outputs.changed_path_categories }}
-        QUALIFICATION_STARTED_AT: ${{ needs.route.outputs.started_at }}
-        BASELINE_RUN_ID: ${{ needs.route.outputs.baseline_run_id }}
-        BASELINE_ELAPSED_SECONDS: ${{ needs.route.outputs.baseline_elapsed_seconds }}
-      run: |
-        case "$QUALIFICATION_CLASS" in
-          full|release-recovery) ;;
-          *) echo "Cannot report unknown qualification class: $QUALIFICATION_CLASS" >&2; exit 1 ;;
-        esac
-        [[ "$QUALIFICATION_STARTED_AT" =~ ^[0-9]+$ ]]
-        [[ "$BASELINE_RUN_ID" =~ ^[0-9]+$ ]]
-        [[ "$BASELINE_ELAPSED_SECONDS" =~ ^[0-9]+$ ]]
-
-        elapsed_seconds=$(( $(date +%s) - QUALIFICATION_STARTED_AT ))
-        saved_seconds=$(( BASELINE_ELAPSED_SECONDS - elapsed_seconds ))
-        echo "elapsed_seconds=$elapsed_seconds" >> "$GITHUB_OUTPUT"
-        printf \
-          'qualification_class=%s reason=%s categories=%s elapsed_seconds=%s baseline_run_id=%s baseline_elapsed_seconds=%s saved_seconds=%s\n' \
-          "$QUALIFICATION_CLASS" \
-          "$QUALIFICATION_REASON" \
-          "${CHANGED_PATH_CATEGORIES:-none}" \
-          "$elapsed_seconds" \
-          "$BASELINE_RUN_ID" \
-          "$BASELINE_ELAPSED_SECONDS" \
-          "$saved_seconds"
-
-        {
-          echo "### Target qualification"
-          echo
-          echo "| Measurement | Value |"
-          echo "| --- | ---: |"
-          echo "| Qualification class | \`$QUALIFICATION_CLASS\` |"
-          echo "| Changed-path categories | \`${CHANGED_PATH_CATEGORIES:-none}\` |"
-          echo "| Current elapsed time | ${elapsed_seconds}s |"
-          echo "| [Baseline run](https://github.com/durable-workflow/workflow/actions/runs/${BASELINE_RUN_ID}) | ${BASELINE_ELAPSED_SECONDS}s |"
-          echo "| Difference from baseline | ${saved_seconds}s |"
-        } >> "$GITHUB_STEP_SUMMARY"
+        echo "The target-branch test matrix succeeded for this SHA."
