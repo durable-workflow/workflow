@@ -2,9 +2,9 @@ name: build
 
 on:
   push:
-    branches: [ master, '1.x' ]
+    branches: ['1.x']
   pull_request:
-    branches: [ master, '1.x' ]
+    branches: ['1.x']
     paths-ignore:
       - README.md
 
