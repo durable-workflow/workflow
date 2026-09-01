@@ -629,6 +629,330 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         $this->assertArrayNotHasKey('retry_extension', $normalized[0]['retry_policy']);
     }
 
+    public function testRecordLocalActivityRejectsContradictoryTerminalFields(): void
+    {
+        $valid = $this->validLocalActivityCommand();
+
+        $missingResult = $valid;
+        unset($missingResult['result']);
+
+        $failedWithoutMessage = $valid;
+        unset($failedWithoutMessage['result']);
+        $failedWithoutMessage['outcome'] = 'failed';
+        $failedWithoutMessage['attempts'] = [[
+            'attempt_id' => 'attempt-1',
+            'attempt_number' => 1,
+            'outcome' => 'failed',
+            'message' => 'attempt failed',
+            'heartbeats' => [],
+        ]];
+
+        $timedOutWithoutKind = $valid;
+        unset($timedOutWithoutKind['result']);
+        $timedOutWithoutKind['outcome'] = 'timed_out';
+        $timedOutWithoutKind['message'] = 'activity timed out';
+        $timedOutWithoutKind['attempts'] = [[
+            'attempt_id' => 'attempt-1',
+            'attempt_number' => 1,
+            'outcome' => 'timed_out',
+            'message' => 'activity timed out',
+            'heartbeats' => [],
+        ]];
+
+        $completedNonRetryable = $valid;
+        $completedNonRetryable['non_retryable'] = true;
+        $completedNonRetryable['attempts'][0]['non_retryable'] = true;
+
+        $cases = [
+            'missing activity type' => [
+                [
+                    ...$valid,
+                    'activity_type' => '',
+                ],
+                'commands.0.activity_type',
+            ],
+            'unknown terminal outcome' => [
+                [
+                    ...$valid,
+                    'outcome' => 'unknown',
+                ],
+                'commands.0.outcome',
+            ],
+            'completed marked non-retryable' => [$completedNonRetryable, 'commands.0.non_retryable'],
+            'invalid timeout kind' => [
+                [
+                    ...$valid,
+                    'timeout_kind' => 'socket',
+                ],
+                'commands.0.timeout_kind',
+            ],
+            'timed out without timeout kind' => [$timedOutWithoutKind, 'commands.0.timeout_kind'],
+            'completed without result' => [$missingResult, 'commands.0.result'],
+            'failed without command message' => [$failedWithoutMessage, 'commands.0.message'],
+        ];
+
+        foreach ($cases as $case => [$command, $expectedError]) {
+            $errors = $this->normalizeAndCaptureErrors([$command], '1.19');
+
+            $this->assertArrayHasKey($expectedError, $errors, $case);
+        }
+    }
+
+    public function testRecordLocalActivityRejectsMalformedOrUnboundedAttemptReports(): void
+    {
+        $valid = $this->validLocalActivityCommand();
+
+        $tooManyAttempts = $valid;
+        $tooManyAttempts['retry_policy'] = [
+            'max_attempts' => WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS + 1,
+            'backoff_seconds' => array_fill(0, WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS, 0),
+        ];
+        $tooManyAttempts['attempts'] = array_map(
+            static fn (int $index): array => [
+                'attempt_id' => 'attempt-' . ($index + 1),
+                'attempt_number' => $index + 1,
+                'outcome' => $index === WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS
+                    ? 'completed'
+                    : 'failed',
+                'message' => $index === WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS
+                    ? null
+                    : 'retry',
+                'retry_reason' => $index === WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS
+                    ? null
+                    : 'failure',
+                'backoff_seconds' => $index === WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS
+                    ? null
+                    : 0,
+                'heartbeats' => [],
+            ],
+            range(0, WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_ATTEMPTS),
+        );
+
+        $failedAttemptWithoutMessage = $valid;
+        unset($failedAttemptWithoutMessage['result']);
+        $failedAttemptWithoutMessage['outcome'] = 'failed';
+        $failedAttemptWithoutMessage['message'] = 'command failed';
+        $failedAttemptWithoutMessage['attempts'] = [[
+            'attempt_id' => 'attempt-1',
+            'attempt_number' => 1,
+            'outcome' => 'failed',
+            'heartbeats' => [],
+        ]];
+
+        $nonRetryableIntermediateAttempt = $valid;
+        $nonRetryableIntermediateAttempt['retry_policy'] = [
+            'max_attempts' => 2,
+            'backoff_seconds' => [0],
+        ];
+        $nonRetryableIntermediateAttempt['attempts'] = [
+            [
+                'attempt_id' => 'attempt-1',
+                'attempt_number' => 1,
+                'outcome' => 'failed',
+                'message' => 'retry',
+                'non_retryable' => true,
+                'retry_reason' => 'failure',
+                'backoff_seconds' => 0,
+                'heartbeats' => [],
+            ],
+            [
+                'attempt_id' => 'attempt-2',
+                'attempt_number' => 2,
+                'outcome' => 'completed',
+                'heartbeats' => [],
+            ],
+        ];
+
+        $terminalNonRetryableMismatch = $valid;
+        unset($terminalNonRetryableMismatch['result']);
+        $terminalNonRetryableMismatch['outcome'] = 'failed';
+        $terminalNonRetryableMismatch['message'] = 'command failed';
+        $terminalNonRetryableMismatch['non_retryable'] = true;
+        $terminalNonRetryableMismatch['attempts'] = [[
+            'attempt_id' => 'attempt-1',
+            'attempt_number' => 1,
+            'outcome' => 'failed',
+            'message' => 'attempt failed',
+            'non_retryable' => false,
+            'heartbeats' => [],
+        ]];
+
+        $timedOutWithInvalidKind = $valid;
+        unset($timedOutWithInvalidKind['result']);
+        $timedOutWithInvalidKind['outcome'] = 'timed_out';
+        $timedOutWithInvalidKind['message'] = 'command timed out';
+        $timedOutWithInvalidKind['timeout_kind'] = 'heartbeat';
+        $timedOutWithInvalidKind['attempts'] = [[
+            'attempt_id' => 'attempt-1',
+            'attempt_number' => 1,
+            'outcome' => 'timed_out',
+            'message' => 'attempt timed out',
+            'timeout_kind' => 'socket',
+            'heartbeats' => [],
+        ]];
+
+        $missingRetryMetadata = $valid;
+        $missingRetryMetadata['retry_policy'] = [
+            'max_attempts' => 2,
+            'backoff_seconds' => [1],
+        ];
+        $missingRetryMetadata['attempts'] = [
+            [
+                'attempt_id' => 'attempt-1',
+                'attempt_number' => 1,
+                'outcome' => 'failed',
+                'message' => 'retry',
+                'heartbeats' => [],
+            ],
+            [
+                'attempt_id' => 'attempt-2',
+                'attempt_number' => 2,
+                'outcome' => 'completed',
+                'heartbeats' => [],
+            ],
+        ];
+
+        $mismatchedBackoff = $missingRetryMetadata;
+        $mismatchedBackoff['attempts'][0]['retry_reason'] = 'failure';
+        $mismatchedBackoff['attempts'][0]['backoff_seconds'] = 2;
+
+        $tooManyHeartbeats = $valid;
+        $tooManyHeartbeats['attempts'][0]['heartbeats'] = array_fill(
+            0,
+            WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT + 1,
+            [
+                'elapsed_ms' => 0,
+            ],
+        );
+
+        $cases = [
+            'attempt and retry limits' => [
+                $tooManyAttempts,
+                ['commands.0.retry_policy.max_attempts', 'commands.0.attempts'],
+            ],
+            'attempt must be an object' => [
+                [
+                    ...$valid,
+                    'attempts' => [['list-entry']],
+                ],
+                ['commands.0.attempts.0'],
+            ],
+            'attempt outcome is constrained' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        'attempt_number' => 1,
+                        'outcome' => 'unknown',
+                        'heartbeats' => [],
+                    ]],
+                ],
+                ['commands.0.attempts.0.outcome'],
+            ],
+            'attempt id is bounded' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'attempt_id' => str_repeat('a', 256),
+                    ]],
+                ],
+                ['commands.0.attempts.0.attempt_id'],
+            ],
+            'attempt duration is non-negative' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'duration_ms' => -1,
+                    ]],
+                ],
+                ['commands.0.attempts.0.duration_ms'],
+            ],
+            'failed attempt requires message' => [$failedAttemptWithoutMessage, ['commands.0.attempts.0.message']],
+            'non-retryable attempt cannot retry' => [
+                $nonRetryableIntermediateAttempt,
+                ['commands.0.attempts.0.non_retryable'],
+            ],
+            'terminal non-retryable value matches command' => [
+                $terminalNonRetryableMismatch,
+                ['commands.0.attempts.0.non_retryable'],
+            ],
+            'timed out attempt constrains timeout kind' => [
+                $timedOutWithInvalidKind,
+                ['commands.0.attempts.0.timeout_kind'],
+            ],
+            'completed attempt rejects timeout kind' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'timeout_kind' => 'heartbeat',
+                    ]],
+                ],
+                ['commands.0.attempts.0.timeout_kind'],
+            ],
+            'retried attempt requires retry metadata' => [
+                $missingRetryMetadata,
+                ['commands.0.attempts.0.retry_reason', 'commands.0.attempts.0.backoff_seconds'],
+            ],
+            'retry backoff matches policy' => [$mismatchedBackoff, ['commands.0.attempts.0.backoff_seconds']],
+            'terminal attempt rejects retry metadata' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'retry_reason' => 'failure',
+                        'backoff_seconds' => 0,
+                    ]],
+                ],
+                ['commands.0.attempts.0'],
+            ],
+            'heartbeats are ordered lists' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'heartbeats' => [
+                            'elapsed_ms' => 0,
+                        ],
+                    ]],
+                ],
+                ['commands.0.attempts.0.heartbeats'],
+            ],
+            'heartbeat count is bounded' => [$tooManyHeartbeats, ['commands.0.attempts.0.heartbeats']],
+            'heartbeat must be an object' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'heartbeats' => [['list-entry']],
+                    ]],
+                ],
+                ['commands.0.attempts.0.heartbeats.0'],
+            ],
+            'heartbeat elapsed time is non-negative' => [
+                [
+                    ...$valid,
+                    'attempts' => [[
+                        ...$valid['attempts'][0],
+                        'heartbeats' => [[
+                            'elapsed_ms' => -1,
+                        ]],
+                    ]],
+                ],
+                ['commands.0.attempts.0.heartbeats.0.elapsed_ms'],
+            ],
+        ];
+
+        foreach ($cases as $case => [$command, $expectedErrors]) {
+            $errors = $this->normalizeAndCaptureErrors([$command], '1.19');
+
+            foreach ($expectedErrors as $expectedError) {
+                $this->assertArrayHasKey($expectedError, $errors, $case);
+            }
+        }
+    }
+
     public function testScheduleActivityRejectsInvalidRetryPolicy(): void
     {
         $this->expectException(ValidationException::class);
@@ -1890,5 +2214,29 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         }
 
         $this->fail('Expected ValidationException was not thrown.');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validLocalActivityCommand(): array
+    {
+        return [
+            'type' => 'record_local_activity',
+            'activity_type' => 'charge-card',
+            'result' => Serializer::serialize('charged'),
+            'outcome' => 'completed',
+            'attempts' => [[
+                'attempt_id' => 'attempt-1',
+                'attempt_number' => 1,
+                'outcome' => 'completed',
+                'duration_ms' => 1,
+                'heartbeats' => [],
+            ]],
+            'retry_policy' => [
+                'max_attempts' => 1,
+                'backoff_seconds' => [],
+            ],
+        ];
     }
 }
