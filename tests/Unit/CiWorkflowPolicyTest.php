@@ -19,7 +19,7 @@ final class CiWorkflowPolicyTest extends TestCase
 
         self::assertIsString($events);
         self::assertMatchesRegularExpression(
-            '/^  workflow_dispatch:\R  push:\R    branches: \[ master \]\R    paths:\R' .
+            "/^  workflow_dispatch:\\R  push:\\R    branches: \\[ master, '1\\.x' \\]\\R    paths:\\R" .
             '      - \.github\/workflows\/copilot-setup-steps\.yml$/m',
             $events
         );
@@ -119,14 +119,14 @@ final class CiWorkflowPolicyTest extends TestCase
         $events = strstr(self::workflow(), "\njobs:", true);
 
         self::assertIsString($events);
-        self::assertMatchesRegularExpression('/^  push:\R    branches: \[ master \]$/m', $events);
+        self::assertMatchesRegularExpression("/^  push:\\R    branches: \\[ master, '1\\.x' \\]$/m", $events);
 
         $push = strstr($events, '  pull_request:', true);
 
         self::assertIsString($push);
         self::assertStringNotContainsString('paths-ignore:', $push);
         self::assertMatchesRegularExpression(
-            '/^  pull_request:\R    branches: \[ master \]\R    paths-ignore:\R      - README\.md\R\z/m',
+            "/^  pull_request:\\R    branches: \\[ master, '1\\.x' \\]\\R    paths-ignore:\\R      - README\\.md\\R\\z/m",
             $events
         );
     }
