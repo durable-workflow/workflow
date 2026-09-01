@@ -1,11 +1,11 @@
 # Durable Workflow for Laravel
 
 <p align="center">
-  <a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Av2"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=v2" alt="Build status"></a>
-  <a href="https://codecov.io/gh/durable-workflow/workflow/branch/v2"><img src="https://codecov.io/gh/durable-workflow/workflow/branch/v2/graph/badge.svg" alt="Code coverage"></a>
+  <a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Amain"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=main" alt="Build status"></a>
+  <a href="https://codecov.io/gh/durable-workflow/workflow/branch/main"><img src="https://codecov.io/gh/durable-workflow/workflow/branch/main/graph/badge.svg" alt="Code coverage"></a>
   <a href="https://packagist.org/packages/durable-workflow/workflow"><img src="https://img.shields.io/packagist/v/durable-workflow/workflow" alt="Latest Packagist version"></a>
   <a href="https://packagist.org/packages/durable-workflow/workflow/stats"><img src="https://img.shields.io/packagist/dt/durable-workflow/workflow" alt="Packagist downloads"></a>
-  <a href="https://github.com/durable-workflow/workflow/blob/v2/LICENSE"><img src="https://img.shields.io/packagist/l/durable-workflow/workflow" alt="MIT license"></a>
+  <a href="https://github.com/durable-workflow/workflow/blob/main/LICENSE"><img src="https://img.shields.io/packagist/l/durable-workflow/workflow" alt="MIT license"></a>
 </p>
 
 Durable Workflow is the embedded Laravel runtime for durable execution. Write

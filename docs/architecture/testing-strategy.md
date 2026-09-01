@@ -341,7 +341,7 @@ following layers; the table is the inventory of where to look.
 | Workflow package fixtures and feature tests | `durable-workflow/workflow` `tests/` | Author-facing runtime, replay, codec, command, and projection behavior. |
 | Workflow package unit and contract suites | `durable-workflow/workflow` `tests/Unit/V2/` | Documentation pins, surface stability, and durable-row contracts. |
 | Server feature and unit suites | `durable-workflow/server` server tests | HTTP API, worker protocol, control-plane, and operator audit behavior over the wire. |
-| Waterline V2 dedicated suites | `durable-workflow/waterline` v2 tests | Projection-adapter correctness for run summaries, timelines, lineage, failures, commands, waits, timers, and metadata. |
+| Waterline V2 dedicated suites | `durable-workflow/waterline` main-branch tests | Projection-adapter correctness for run summaries, timelines, lineage, failures, commands, waits, timers, and metadata. |
 | Platform conformance fixtures | `docs/architecture/platform-conformance-suite.md` | Cross-repo proof that package, server, CLI, Waterline, SDKs, and managed cloud honor the same buckets. |
 | Replay-debug bundles | `WorkflowReplayer`, `BundleIntegrityVerifier`, replay-diff tooling | Frozen replay proofs that may be carried into other SDKs without rewriting suites. |
 

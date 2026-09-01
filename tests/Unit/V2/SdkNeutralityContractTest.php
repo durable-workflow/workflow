@@ -44,7 +44,7 @@ final class SdkNeutralityContractTest extends TestCase
         $this->assertSame('durable-workflow.v2.sdk-neutrality.contract', $manifest['schema']);
         $this->assertSame(4, $manifest['version']);
         $this->assertSame(
-            'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md',
+            'https://github.com/durable-workflow/workflow/blob/main/docs/architecture/sdk-neutrality.md',
             $manifest['authority_doc'],
         );
         $this->assertSame(

@@ -9,10 +9,10 @@ applicable.
 ## Local setup
 
 The package supports the PHP versions declared in `composer.json`. Clone the
-`v2` branch and install its development dependencies:
+`main` branch and install its development dependencies:
 
 ```bash
-git clone --branch v2 https://github.com/durable-workflow/workflow.git
+git clone --branch main https://github.com/durable-workflow/workflow.git
 cd workflow
 composer install
 composer build
@@ -65,12 +65,12 @@ and in every applicable official binding.
 
 Fixtures preserve protocol version, value and type, framing, and stable failure
 policy. Existing evidence is append-only. Validate new evidence against the
-pull request's target branch; `origin/v2` is the usual base for this repository,
+pull request's target branch; `origin/main` is the usual base for this repository,
 but set `base_ref` to another target when appropriate:
 
 ```bash
-git fetch origin v2
-base_ref=origin/v2
+git fetch origin main
+base_ref=origin/main
 python scripts/ci/validate-regression-corpus.py --base-ref "$base_ref"
 ```
 
