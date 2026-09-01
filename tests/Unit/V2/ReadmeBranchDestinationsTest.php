@@ -13,7 +13,7 @@ final class ReadmeBranchDestinationsTest extends TestCase
 {
     private const REPOSITORY_PATH = '/durable-workflow/workflow';
 
-    public function testActionsBadgeAndDestinationAreScopedToV2(): void
+    public function testActionsBadgeAndDestinationAreScopedToMain(): void
     {
         [$destination, $image] = $this->badgeUrls(
             'github.com',
@@ -22,24 +22,24 @@ final class ReadmeBranchDestinationsTest extends TestCase
 
         $this->assertUrl($destination, 'github.com', self::REPOSITORY_PATH . '/actions/workflows/php.yml');
         $this->assertSame([
-            'query' => 'branch:v2',
+            'query' => 'branch:main',
         ], $this->queryParameters($destination));
 
         $this->assertUrl($image, 'github.com', self::REPOSITORY_PATH . '/actions/workflows/php.yml/badge.svg');
         $this->assertSame([
-            'branch' => 'v2',
+            'branch' => 'main',
         ], $this->queryParameters($image));
     }
 
-    public function testCodecovBadgeAndDestinationAreScopedToV2(): void
+    public function testCodecovBadgeAndDestinationAreScopedToMain(): void
     {
         [$destination, $image] = $this->badgeUrls(
             'codecov.io',
-            '/gh' . self::REPOSITORY_PATH . '/branch/v2/graph/badge.svg',
+            '/gh' . self::REPOSITORY_PATH . '/branch/main/graph/badge.svg',
         );
 
-        $this->assertUrl($destination, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/v2');
-        $this->assertUrl($image, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/v2/graph/badge.svg');
+        $this->assertUrl($destination, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/main');
+        $this->assertUrl($image, 'codecov.io', '/gh' . self::REPOSITORY_PATH . '/branch/main/graph/badge.svg');
     }
 
     public function testRepositoryLinksDoNotTargetMaster(): void
