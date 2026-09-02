@@ -389,6 +389,39 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $triggered->payload['occurrence_time']);
     }
 
+    public function testTickSharesABoundedBatchAcrossNamespaces(): void
+    {
+        WorkflowStub::fake();
+
+        foreach ([10, 9, 8] as $index => $minutesAgo) {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'noisy-' . ($index + 1),
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                namespace: 'noisy',
+            );
+            $schedule->forceFill([
+                'next_fire_at' => now()
+                    ->subMinutes($minutesAgo),
+            ])->save();
+        }
+
+        $quiet = ScheduleManager::create(
+            scheduleId: 'quiet-1',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            namespace: 'quiet',
+        );
+        $quiet->forceFill([
+            'next_fire_at' => now()
+                ->subMinute(),
+        ])->save();
+
+        $results = ScheduleManager::tick(2);
+
+        $this->assertSame(['noisy-1', 'quiet-1'], array_column($results, 'schedule_id'));
+    }
+
     public function testTickSkipsFutureSchedules(): void
     {
         ScheduleManager::create(

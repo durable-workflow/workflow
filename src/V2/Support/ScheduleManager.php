@@ -6,6 +6,8 @@ namespace Workflow\V2\Support;
 
 use Cron\CronExpression;
 use DateTimeInterface;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use Workflow\V2\CommandContext;
@@ -433,11 +435,9 @@ final class ScheduleManager
         $results = [];
 
         // Phase 1: drain buffered actions for schedules whose last run finished.
-        $withBuffer = WorkflowSchedule::query()
+        $withBuffer = self::fairScheduleBatch(WorkflowSchedule::query()
             ->where('status', ScheduleStatus::Active->value)
-            ->whereNotNull('buffered_actions')
-            ->limit($limit)
-            ->get();
+            ->whereNotNull('buffered_actions'), $limit, 'updated_at');
 
         foreach ($withBuffer as $schedule) {
             if (! $schedule->hasBufferedActions() || self::runningRunExists($schedule)) {
@@ -502,13 +502,10 @@ final class ScheduleManager
         }
 
         // Phase 2: evaluate due schedules.
-        $due = WorkflowSchedule::query()
+        $due = self::fairScheduleBatch(WorkflowSchedule::query()
             ->where('status', ScheduleStatus::Active->value)
             ->whereNotNull('next_fire_at')
-            ->where('next_fire_at', '<=', now())
-            ->orderBy('next_fire_at')
-            ->limit($limit)
-            ->get();
+            ->where('next_fire_at', '<=', now()), $limit, 'next_fire_at');
 
         foreach ($due as $schedule) {
             $occurrenceTime = $schedule->next_fire_at;
@@ -630,6 +627,61 @@ final class ScheduleManager
         }
 
         return $results;
+    }
+
+    /**
+     * Select a bounded oldest-first batch without allowing one namespace to
+     * occupy every slot. Namespace order is based on each namespace's oldest
+     * eligible row, then rows are selected one per namespace per round.
+     *
+     * @param  Builder<WorkflowSchedule>  $eligible
+     * @return Collection<int, WorkflowSchedule>
+     */
+    private static function fairScheduleBatch(Builder $eligible, int $limit, string $orderColumn): Collection
+    {
+        $limit = max(0, $limit);
+
+        if ($limit === 0) {
+            return new Collection();
+        }
+
+        $model = $eligible->getModel();
+        $connection = $model->getConnection();
+        $grammar = $connection->getQueryGrammar();
+        $keyName = $model->getKeyName();
+        $key = $grammar->wrap($keyName);
+        $namespace = $grammar->wrap('namespace');
+        $order = $grammar->wrap($orderColumn);
+
+        $ranked = (clone $eligible)
+            ->select([$keyName, 'namespace'])
+            ->selectRaw(
+                "ROW_NUMBER() OVER (PARTITION BY {$namespace} ORDER BY {$order}, {$key}) AS namespace_position"
+            )
+            ->selectRaw("MIN({$order}) OVER (PARTITION BY {$namespace}) AS namespace_oldest");
+
+        $ids = $connection->query()
+            ->fromSub($ranked->toBase(), 'fair_schedule_candidates')
+            ->orderBy('namespace_position')
+            ->orderBy('namespace_oldest')
+            ->orderBy('namespace')
+            ->limit($limit)
+            ->pluck($keyName)
+            ->all();
+
+        if ($ids === []) {
+            return new Collection();
+        }
+
+        $byId = (clone $eligible)
+            ->whereIn($model->qualifyColumn($keyName), $ids)
+            ->get()
+            ->keyBy(static fn (WorkflowSchedule $schedule): string => (string) $schedule->getKey());
+
+        return new Collection(array_values(array_filter(array_map(
+            static fn (mixed $id): mixed => $byId->get((string) $id),
+            $ids,
+        ))));
     }
 
     /**
