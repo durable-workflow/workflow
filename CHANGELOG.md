@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2.0.3 - 2026-09-02
+
+- Schedule ticks share bounded due-work and buffered-drain batches across
+  namespaces while preserving oldest-first order within each namespace.
+
 ## 2.0.2 - 2026-09-01
 
 - Workflow `2.0.2` reports its stable package identity through the platform
