@@ -1,0 +1,431 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "skew_refusal_matrix_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for published-artifact version-skew refusal across CLI, Python SDK, PHP SDK worker, and Waterline surfaces.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.skew-refusal-matrix.result",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "requires_resolved_versions": true,
+    "requires_artifact_sources_for_each_required_artifact": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "release_tag_without_required_assets",
+      "rolling_server_image_tag"
+    ],
+    "required_artifacts": [
+      "server",
+      "cli",
+      "sdk-python",
+      "workflow",
+      "sdk-php",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow": [
+        "workflow-php",
+        "durable-workflow/workflow"
+      ],
+      "sdk-php": [
+        "durable-workflow/sdk"
+      ],
+      "sdk-python": [
+        "durable_workflow"
+      ],
+      "cli": [
+        "dw"
+      ]
+    },
+    "required_artifact_provenance": {
+      "sdk-php": {
+        "package": "durable-workflow/sdk",
+        "source": "packagist",
+        "role": "standalone_remote_php_worker",
+        "required_fields": [
+          "resolved_version",
+          "dist_type",
+          "dist_url",
+          "dist_reference"
+        ]
+      },
+      "workflow": {
+        "package": "durable-workflow/workflow",
+        "source": "packagist",
+        "role": "embedded_laravel_and_waterline_engine",
+        "required_fields": [
+          "resolved_version",
+          "dist_type",
+          "dist_url",
+          "dist_reference"
+        ]
+      }
+    },
+    "required_run_record_fields": [
+      "artifact_versions",
+      "published_artifact_versions",
+      "resolved_artifact_versions",
+      "artifact_sources",
+      "local_product_source_checkouts_used",
+      "started_at",
+      "finished_at",
+      "outcome",
+      "runner_blocked",
+      "surface_results",
+      "pairing_results",
+      "operation_evidence",
+      "findings",
+      "finding_links"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "artifact_versions",
+    "published_artifact_versions",
+    "resolved_artifact_versions",
+    "artifact_sources",
+    "local_product_source_checkouts_used",
+    "implementation_identity",
+    "surface_results",
+    "pairing_results",
+    "operation_evidence",
+    "compatibility_windows",
+    "request_response_captures",
+    "findings",
+    "finding_links"
+  ],
+  "required_matrix": {
+    "surfaces": [
+      "cli",
+      "sdk-python",
+      "sdk-php",
+      "waterline"
+    ],
+    "pairing_classes": [
+      "compatible",
+      "backward_skew",
+      "forward_skew",
+      "outside_window"
+    ],
+    "operation_groups": {
+      "cli": [
+        "cluster_info_probe",
+        "workflow_control_plane",
+        "schedule_control_plane"
+      ],
+      "sdk-python": [
+        "cluster_info_probe",
+        "workflow_control_plane",
+        "worker_lifecycle",
+        "schedule_control_plane"
+      ],
+      "sdk-php": [
+        "cluster_info_probe",
+        "worker_lifecycle"
+      ],
+      "waterline": [
+        "cluster_info_probe",
+        "waterline_render"
+      ]
+    },
+    "worker_skew_classifications": [
+      "register_refused",
+      "register_and_serve",
+      "register_and_drop"
+    ],
+    "waterline_skew_classifications": [
+      "banner",
+      "render_refused",
+      "stale_render"
+    ],
+    "blocking_classifications": [
+      "register_and_drop",
+      "stale_render"
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "resolved_artifact_versions",
+        "artifact_sources",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "cli_version_pair_matrix": {
+      "required_surface": "cli",
+      "required_pairing_classes": [
+        "compatible",
+        "backward_skew",
+        "forward_skew",
+        "outside_window"
+      ],
+      "required_operation_groups": [
+        "cluster_info_probe",
+        "workflow_control_plane",
+        "schedule_control_plane"
+      ],
+      "required_fields": [
+        "surface_results",
+        "pairing_results",
+        "operation_evidence",
+        "exit_code_policy",
+        "loud_refusal_audit"
+      ]
+    },
+    "sdk_python_version_pair_matrix": {
+      "required_surface": "sdk-python",
+      "required_pairing_classes": [
+        "compatible",
+        "backward_skew",
+        "forward_skew",
+        "outside_window"
+      ],
+      "required_operation_groups": [
+        "cluster_info_probe",
+        "workflow_control_plane",
+        "worker_lifecycle",
+        "schedule_control_plane"
+      ],
+      "required_fields": [
+        "surface_results",
+        "pairing_results",
+        "operation_evidence",
+        "exception_policy",
+        "loud_refusal_audit"
+      ]
+    },
+    "workflow_worker_version_pair_matrix": {
+      "required_surface": "sdk-php",
+      "required_pairing_classes": [
+        "compatible",
+        "backward_skew",
+        "forward_skew",
+        "outside_window"
+      ],
+      "required_operation_groups": [
+        "cluster_info_probe",
+        "worker_lifecycle"
+      ],
+      "required_fields": [
+        "surface_results",
+        "pairing_results",
+        "operation_evidence",
+        "worker_skew_classification",
+        "register_and_drop_probe"
+      ]
+    },
+    "waterline_version_pair_matrix": {
+      "required_surface": "waterline",
+      "required_pairing_classes": [
+        "compatible",
+        "backward_skew",
+        "forward_skew",
+        "outside_window"
+      ],
+      "required_operation_groups": [
+        "cluster_info_probe",
+        "waterline_render"
+      ],
+      "required_fields": [
+        "surface_results",
+        "pairing_results",
+        "operation_evidence",
+        "waterline_skew_classification",
+        "screenshot_or_dom_snapshot"
+      ]
+    },
+    "future_version_boundary_matrix": {
+      "required_fields": [
+        "future_server_boundary",
+        "future_client_boundary",
+        "compatibility_window",
+        "observed_refusals_or_interop"
+      ]
+    },
+    "request_response_capture_for_skewed_operations": {
+      "required_fields": [
+        "request_response_captures",
+        "request_headers",
+        "request_body",
+        "response_headers",
+        "response_body",
+        "compatibility_window"
+      ]
+    },
+    "focused_finding_routing": {
+      "required_fields": [
+        "finding_links",
+        "owning_surface",
+        "next_acceptance_criterion"
+      ]
+    }
+  },
+  "host_runner_contract": {
+    "status": "required_for_passing_skew_refusal_matrix_conformance",
+    "result_schema": "durable-workflow.v2.skew-refusal-matrix.result",
+    "must_execute_against_published_artifacts": true,
+    "must_emit_result_for_every_required_surface_pairing_operation_group": true,
+    "must_capture_request_response_for_every_skewed_operation": true,
+    "smoke_summary_only_outcome": "non_passing_smoke_only",
+    "unexecuted_required_cell_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness"
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifacts are pinned",
+      "summary": "Resolve and install the exact server, CLI, Python SDK, standalone PHP SDK, embedded Workflow engine, and Waterline artifacts under test from their public channels.",
+      "operations": [
+        "resolve_published_server_artifact",
+        "resolve_published_cli_artifact",
+        "resolve_published_sdk_python_artifact",
+        "resolve_published_sdk_php_artifact",
+        "resolve_published_workflow_artifact",
+        "resolve_published_waterline_artifact"
+      ],
+      "pass_criteria": [
+        "all required artifact versions are concrete",
+        "no artifact is installed from a local product source checkout",
+        "artifact_sources records the exact Packagist durable-workflow/sdk distribution used by the standalone PHP SDK worker separately from durable-workflow/workflow, which is recorded only as the embedded Laravel and Waterline engine",
+        "both PHP package records include resolved version, Packagist dist type, URL, and reference, and the run record carries the resolved artifact tuple"
+      ]
+    },
+    {
+      "id": "cli_version_pair_matrix",
+      "title": "CLI skew matrix",
+      "summary": "Exercise compatible, backward-skewed, forward-skewed, and outside-window CLI to server pairings across cluster info, workflow control-plane, and schedule operations.",
+      "operations": [
+        "GET /api/cluster/info through dw server:info",
+        "POST /api/workflows through dw workflow start",
+        "POST /api/schedules through dw schedule create",
+        "POST /api/schedules/{id}/trigger through dw schedule trigger"
+      ],
+      "pass_criteria": [
+        "compatible pairings pass",
+        "outside-window pairings refuse before mutation",
+        "loud refusals name CLI version, server version, protocol or manifest, compatibility window, and next step"
+      ]
+    },
+    {
+      "id": "sdk_python_version_pair_matrix",
+      "title": "Python SDK skew matrix",
+      "summary": "Exercise compatible, backward-skewed, forward-skewed, and outside-window Python SDK to server pairings across client and worker operations.",
+      "operations": [
+        "GET /api/cluster/info through the Python SDK",
+        "workflow start, signal, query, update, cancel, and terminate through the Python SDK",
+        "worker register, poll, complete, fail, and heartbeat through the Python SDK",
+        "schedule create, describe, and trigger through the Python SDK"
+      ],
+      "pass_criteria": [
+        "compatible pairings pass",
+        "outside-window pairings refuse before mutation or worker registration",
+        "loud refusals use a typed or documented exception with both versions, protocol context, compatibility window, and next step"
+      ]
+    },
+    {
+      "id": "workflow_worker_version_pair_matrix",
+      "title": "PHP SDK worker skew matrix",
+      "summary": "Exercise PHP SDK worker registration, heartbeat, polling, complete, and fail calls against compatible and skewed server versions.",
+      "operations": [
+        "GET /api/cluster/info during PHP SDK worker bootstrap",
+        "POST /api/worker/register",
+        "POST /api/worker/heartbeat",
+        "POST /api/worker/workflow-tasks/poll",
+        "POST /api/worker/workflow-tasks/{task}/complete",
+        "POST /api/worker/workflow-tasks/{task}/fail"
+      ],
+      "pass_criteria": [
+        "worker skew is classified as register_refused, register_and_serve, or register_and_drop",
+        "register_and_drop is recorded as a blocking product finding",
+        "loud refusals name worker version, server version, worker protocol version, compatibility window, and next step"
+      ]
+    },
+    {
+      "id": "waterline_version_pair_matrix",
+      "title": "Waterline skew matrix",
+      "summary": "Exercise Waterline health, list, and detail rendering against compatible and skewed runtime versions.",
+      "operations": [
+        "GET /api/cluster/info through the Waterline observer",
+        "GET /waterline/api/v2/health",
+        "GET /waterline/api/flows/running",
+        "GET /waterline/api/flows/{id}"
+      ],
+      "pass_criteria": [
+        "Waterline skew is classified as banner, render_refused, or stale_render",
+        "stale_render without a loud warning is recorded as a blocking product finding",
+        "evidence includes a screenshot or DOM snapshot for every render classification"
+      ]
+    },
+    {
+      "id": "future_version_boundary_matrix",
+      "title": "Future-version boundary",
+      "summary": "Probe one step past the current compatibility window for client, worker, observer, and server surfaces.",
+      "operations": [
+        "probe current compatibility window",
+        "probe future client boundary",
+        "probe future worker boundary",
+        "probe future observer boundary",
+        "probe future server boundary"
+      ],
+      "pass_criteria": [
+        "inside-window forward skew interoperates or refuses according to the advertised compatibility statement",
+        "outside-window forward skew refuses before mutation, registration, dropped work, or stale render",
+        "the error context explains the supported version range"
+      ]
+    },
+    {
+      "id": "request_response_capture_for_skewed_operations",
+      "title": "Skewed operation wire evidence",
+      "summary": "Capture request and response data for every skewed operation group in the matrix.",
+      "operations": [
+        "capture skewed CLI wire exchange",
+        "capture skewed Python SDK wire exchange",
+        "capture skewed PHP SDK worker wire exchange",
+        "capture skewed Waterline wire exchange"
+      ],
+      "pass_criteria": [
+        "every skewed operation records request headers, request body, response status, response headers, and response body",
+        "captured evidence includes the observed client or worker version, server version, and compatibility window",
+        "non-pass cells link the exact captured request and response to the owning finding"
+      ]
+    },
+    {
+      "id": "focused_finding_routing",
+      "title": "Focused finding routing",
+      "summary": "Route uncovered cells and product failures to focused findings with an owner and acceptance criterion.",
+      "operations": [
+        "route uncovered matrix cells",
+        "route loud refusal failures",
+        "route register_and_drop classifications",
+        "route stale_render classifications"
+      ],
+      "pass_criteria": [
+        "every uncovered surface, pairing class, or operation group has a focused linked finding",
+        "silent success or corrupt state routes to the accepting side",
+        "register_and_drop and stale_render route as blocking product findings"
+      ]
+    }
+  ]
+}

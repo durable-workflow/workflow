@@ -1,0 +1,133 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Tests\NonDatabaseTestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Support\CommandPayloadPreview;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+
+final class CommandPayloadPreviewTest extends NonDatabaseTestCase
+{
+    public function testAvailableRejectsNonStringOrEmptyBlobs(): void
+    {
+        $this->assertFalse(CommandPayloadPreview::available(null));
+        $this->assertFalse(CommandPayloadPreview::available(''));
+        $this->assertFalse(CommandPayloadPreview::available(['not', 'a', 'string']));
+        $this->assertTrue(CommandPayloadPreview::available('{}'));
+    }
+
+    public function testPreviewWithCodecDecodesAvroBlob(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        $blob = Serializer::serializeWithCodec('avro', [
+            'name' => 'Taylor',
+            'n' => 7,
+        ]);
+
+        $this->assertSame(
+            [
+                'name' => 'Taylor',
+                'n' => 7,
+            ],
+            CommandPayloadPreview::previewWithCodec($blob, 'avro'),
+        );
+    }
+
+    public function testPreviewWithCodecDecodesAvroWrappedBlob(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        $payload = [
+            'name' => 'Taylor',
+            'count' => 3,
+            'tags' => ['priority', 'vip'],
+        ];
+        $blob = Serializer::serializeWithCodec('avro', $payload);
+
+        $this->assertSame($payload, CommandPayloadPreview::previewWithCodec($blob, 'avro'));
+    }
+
+    public function testPreviewWithCodecFallsBackToRawBlobOnCodecMismatch(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        // Valid JSON bytes tagged as Avro — decode must fail safely and
+        // return the raw blob instead of throwing. Strict mixed-codec
+        // detection happens at ingress (PayloadEnvelopeResolver), not in
+        // this display helper.
+        $jsonBlob = '["hello"]';
+
+        $this->assertSame($jsonBlob, CommandPayloadPreview::previewWithCodec($jsonBlob, 'avro'));
+    }
+
+    public function testPreviewWithCodecDoesNotDecodeLegacyCodecAliases(): void
+    {
+        $blob = serialize(['a', 'b']);
+
+        $this->assertSame($blob, CommandPayloadPreview::previewWithCodec($blob, \Workflow\Serializers\Y::class));
+    }
+
+    public function testPreviewWithCodecDoesNotSniffUntaggedJsonWhenCodecIsNull(): void
+    {
+        $jsonBlob = '{"legacy":true}';
+
+        $this->assertSame($jsonBlob, CommandPayloadPreview::previewWithCodec($jsonBlob, null));
+    }
+
+    public function testPreviewWithCodecReturnsExternalPayloadEnvelopeForStoredReferences(): void
+    {
+        $envelope = [
+            'codec' => 'avro',
+            'external_storage' => [
+                'schema' => ExternalPayloadReference::SCHEMA,
+                'uri' => 'local://command-preview-test/payload',
+                'sha256' => hash('sha256', 'payload'),
+                'size_bytes' => 7,
+                'codec' => 'avro',
+            ],
+        ];
+        $stored = ExternalPayloads::encodeStoredEnvelope($envelope);
+
+        $this->assertSameJsonObject($envelope, CommandPayloadPreview::previewWithCodec($stored, 'avro'));
+        $this->assertSameJsonObject($envelope, CommandPayloadPreview::preview($stored));
+    }
+
+    public function testPreviewWithCodecReturnsNullForEmptyOrNonStringInput(): void
+    {
+        $this->assertNull(CommandPayloadPreview::previewWithCodec(null, 'avro'));
+        $this->assertNull(CommandPayloadPreview::previewWithCodec('', 'avro'));
+        $this->assertNull(CommandPayloadPreview::previewWithCodec(['x'], 'avro'));
+    }
+
+    public function testPreviewWithCodecRendersTypedAvroValueAndExplicitBytes(): void
+    {
+        $blob = Serializer::serializeWithCodec('avro', [
+            'order_id' => 'ord-42',
+            'amount' => 19.95,
+            'items_count' => 3,
+            'bytes' => \Workflow\Serializers\AvroBinaryValue::fromBytes("\x00\xFF"),
+        ]);
+
+        $decoded = CommandPayloadPreview::previewWithCodec($blob, 'avro');
+
+        $this->assertIsArray($decoded);
+        $this->assertSame('ord-42', $decoded['order_id']);
+        $this->assertSame(19.95, $decoded['amount']);
+        $this->assertSame(3, $decoded['items_count']);
+        $this->assertSame([
+            '$type' => 'bytes',
+            'base64' => 'AP8=',
+        ], $decoded['bytes']);
+    }
+}

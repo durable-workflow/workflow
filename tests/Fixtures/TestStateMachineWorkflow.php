@@ -6,7 +6,9 @@ namespace Tests\Fixtures;
 
 use function Workflow\await;
 use Workflow\Models\StoredWorkflow;
+use Workflow\QueryMethod;
 use Workflow\SignalMethod;
+use Workflow\States\StateMachine;
 use Workflow\Workflow;
 
 class TestStateMachineWorkflow extends Workflow
@@ -55,6 +57,7 @@ class TestStateMachineWorkflow extends Workflow
         $this->stateMachine->apply('deny');
     }
 
+    #[QueryMethod]
     public function isSubmitted()
     {
         return $this->stateMachine->getCurrentState() === 'submitted';

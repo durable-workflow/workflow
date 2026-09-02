@@ -1,0 +1,419 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2;
+
+use Carbon\CarbonInterval;
+use Laravel\SerializableClosure\SerializableClosure;
+use ReflectionFunction;
+use ReflectionMethod;
+use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
+use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\AllCall;
+use Workflow\V2\Support\AwaitCall;
+use Workflow\V2\Support\AwaitWithTimeoutCall;
+use Workflow\V2\Support\ChildWorkflowCall;
+use Workflow\V2\Support\ChildWorkflowOptions;
+use Workflow\V2\Support\ContinueAsNewCall;
+use Workflow\V2\Support\InternalAsyncClosurePayload;
+use Workflow\V2\Support\LocalActivityCall;
+use Workflow\V2\Support\LocalActivityOptions;
+use Workflow\V2\Support\SelectCall;
+use Workflow\V2\Support\SelectionResult;
+use Workflow\V2\Support\ServiceOperationCall;
+use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\SignalCall;
+use Workflow\V2\Support\TimerCall;
+use Workflow\V2\Support\UpsertMemoCall;
+use Workflow\V2\Support\UpsertSearchAttributesCall;
+use Workflow\V2\Support\VersionCall;
+use Workflow\V2\Support\WorkerSession;
+use Workflow\V2\Support\WorkerSessionOptions;
+use Workflow\V2\Support\WorkflowFiberContext;
+
+if (! function_exists(__NAMESPACE__ . '\\activity')) {
+    function activity(string $activity, mixed ...$arguments): mixed
+    {
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ActivityOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return WorkflowFiberContext::suspend(new ActivityCall($activity, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\localActivity')) {
+    function localActivity(string $activity, mixed ...$arguments): mixed
+    {
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof LocalActivityOptions) {
+            $options = array_shift($arguments);
+        } elseif (($arguments[0] ?? null) instanceof ActivityOptions) {
+            $options = LocalActivityOptions::fromActivityOptions(array_shift($arguments));
+        }
+
+        return WorkflowFiberContext::suspend(new LocalActivityCall($activity, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\serviceOperation')) {
+    /**
+     * Start a durable Nexus service operation from workflow code.
+     *
+     * The workflow fiber suspends on a deterministic command. The runtime
+     * records the durable service-call id and resumes with a
+     * {@see Support\ServiceOperationResult}, or throws a typed restored
+     * failure when the service call reaches a failed/cancelled terminal state.
+     *
+     * @api Stable v2 workflow authoring API.
+     */
+    function serviceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $requestPayload = null,
+        ?ServiceOperationOptions $options = null,
+    ): mixed {
+        return WorkflowFiberContext::suspend(new ServiceOperationCall(
+            $endpointName,
+            $serviceName,
+            $operationName,
+            $requestPayload,
+            $options,
+        ));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\workerSession')) {
+    function workerSession(string $sessionId, ?WorkerSessionOptions $options = null): WorkerSession
+    {
+        return new WorkerSession(($options ?? new WorkerSessionOptions())->withSessionId($sessionId));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\child')) {
+    function child(string $workflow, mixed ...$arguments): mixed
+    {
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ChildWorkflowOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return WorkflowFiberContext::suspend(new ChildWorkflowCall($workflow, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\async')) {
+    function async(callable $callback): mixed
+    {
+        $reflection = match (true) {
+            is_array($callback) => new ReflectionMethod($callback[0], $callback[1]),
+            is_string($callback) && str_contains($callback, '::') => new ReflectionMethod($callback),
+            is_object($callback) && ! $callback instanceof \Closure => new ReflectionMethod($callback, '__invoke'),
+            default => new ReflectionFunction($callback),
+        };
+
+        if ($reflection->isGenerator()) {
+            throw StraightLineWorkflowRequiredException::forAsyncCallback();
+        }
+
+        return child(
+            AsyncWorkflow::class,
+            InternalAsyncClosurePayload::encode(new SerializableClosure(\Closure::fromCallable($callback))),
+        );
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\all')) {
+    function all(iterable $calls): mixed
+    {
+        $resolved = [];
+
+        foreach ($calls as $call) {
+            if ($call instanceof \Closure) {
+                $resolved[] = WorkflowFiberContext::whileInactive($call);
+            } else {
+                $resolved[] = $call;
+            }
+        }
+
+        return WorkflowFiberContext::suspend(new AllCall($resolved));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\parallel')) {
+    function parallel(iterable $calls): mixed
+    {
+        return all($calls);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\select')) {
+    /**
+     * Start every durable operation and resume with the first committed
+     * eligible member. Non-winning operations remain active and addressable
+     * through the returned result's handles.
+     *
+     * @param iterable<int|string, mixed> $calls
+     */
+    function select(iterable $calls): SelectionResult|SelectCall
+    {
+        $resolved = (static function () use ($calls): \Generator {
+            foreach ($calls as $key => $call) {
+                yield $key => ($call instanceof \Closure
+                    ? WorkflowFiberContext::whileInactive($call)
+                    : $call);
+            }
+        })();
+
+        return WorkflowFiberContext::suspend(new SelectCall($resolved));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\await')) {
+    function await(
+        callable|string $condition,
+        int|string|CarbonInterval|null $timeout = null,
+        ?string $conditionKey = null
+    ): mixed {
+        if (
+            ! is_string($condition)
+            && is_string($timeout)
+            && $conditionKey === null
+            && preg_match(
+                '/(^P(T|\d)|\b\d+\s*(microseconds?|milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|months?|years?)\b)/i',
+                $timeout
+            ) !== 1
+        ) {
+            $conditionKey = $timeout;
+            $timeout = null;
+        }
+
+        $timeoutSeconds = null;
+        if ($timeout !== null) {
+            if ($timeout instanceof CarbonInterval) {
+                $timeoutSeconds = (int) ceil($timeout->totalSeconds);
+            } elseif (is_string($timeout)) {
+                $timeoutSeconds = (int) ceil(CarbonInterval::fromString($timeout)->totalSeconds);
+            } else {
+                $timeoutSeconds = $timeout;
+            }
+
+            $timeoutSeconds = max(0, $timeoutSeconds);
+        }
+
+        if (is_string($condition)) {
+            return WorkflowFiberContext::suspend(new SignalCall($condition, $timeoutSeconds));
+        }
+
+        $condition = \Closure::fromCallable($condition);
+
+        if ($timeoutSeconds !== null) {
+            return WorkflowFiberContext::suspend(new AwaitWithTimeoutCall(
+                $timeoutSeconds,
+                $condition,
+                Support\ConditionWaitKey::normalize($conditionKey),
+                Support\ConditionWaitDefinition::fingerprint($condition),
+            ));
+        }
+
+        return WorkflowFiberContext::suspend(new AwaitCall(
+            $condition,
+            Support\ConditionWaitKey::normalize($conditionKey),
+            Support\ConditionWaitDefinition::fingerprint($condition),
+        ));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\signal')) {
+    /**
+     * @deprecated Use await($name) for durable workflow-code signal waits.
+     */
+    function signal(string $name): mixed
+    {
+        return await($name);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\timer')) {
+    function timer(int|string|CarbonInterval $duration): mixed
+    {
+        if ($duration instanceof CarbonInterval) {
+            $duration = (int) ceil($duration->totalSeconds);
+        } elseif (is_string($duration)) {
+            $duration = (int) ceil(CarbonInterval::fromString($duration)->totalSeconds);
+        }
+
+        return WorkflowFiberContext::suspend(new TimerCall(max(0, $duration)));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\sideEffect')) {
+    function sideEffect(callable $callback): mixed
+    {
+        return WorkflowFiberContext::suspend(new SideEffectCall(\Closure::fromCallable($callback)));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\uuid4')) {
+    /**
+     * Generate a UUIDv4 and record it as durable history so replay returns
+     * the original value instead of reading randomness again.
+     */
+    function uuid4(): mixed
+    {
+        return sideEffect(static fn (): string => Support\DeterministicUuid::uuid4());
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\uuid7')) {
+    /**
+     * Generate a time-sortable UUIDv7 from deterministic workflow time and
+     * record it as durable history so replay returns the original value.
+     */
+    function uuid7(): mixed
+    {
+        $time = now();
+
+        return sideEffect(static fn (): string => Support\DeterministicUuid::uuid7($time));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
+    function continueAsNew(...$arguments): mixed
+    {
+        return WorkflowFiberContext::suspend(new ContinueAsNewCall($arguments));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\upsertMemo')) {
+    /**
+     * Upsert non-indexed memo metadata on the current workflow run.
+     *
+     * Memos are eventually consistent describe/list metadata, not replay
+     * authority and not a safe place for workflow-branching truth. They are
+     * excluded from filter and sort semantics by contract.
+     *
+     * Setting a key to null removes it from the active memo.
+     *
+     * @param array<string, mixed> $entries
+     */
+    function upsertMemo(array $entries): void
+    {
+        WorkflowFiberContext::suspend(new UpsertMemoCall($entries));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\upsertSearchAttributes')) {
+    /**
+     * Upsert indexed search attributes on the current workflow run.
+     *
+     * Search attributes are typed operator-visible metadata used for filtering,
+     * sorting, and saved views. They are plain-text values and must not contain
+     * secrets or PII.
+     *
+     * Setting a key to null removes it from the active search attributes.
+     *
+     * @param array<string, scalar|list<string>|null> $attributes
+     */
+    function upsertSearchAttributes(array $attributes): void
+    {
+        WorkflowFiberContext::suspend(new UpsertSearchAttributesCall($attributes));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\getVersion')) {
+    function getVersion(
+        string $changeId,
+        int $minSupported = WorkflowStub::DEFAULT_VERSION,
+        int $maxSupported = 1,
+    ): mixed {
+        return WorkflowFiberContext::suspend(new VersionCall($changeId, $minSupported, $maxSupported));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\patched')) {
+    function patched(string $changeId): mixed
+    {
+        return WorkflowFiberContext::suspend(VersionCall::patched($changeId));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\deprecatePatch')) {
+    function deprecatePatch(string $changeId): mixed
+    {
+        return WorkflowFiberContext::suspend(VersionCall::deprecatePatch($changeId));
+    }
+}
+
+// Timer sugar
+
+if (! function_exists(__NAMESPACE__ . '\\seconds')) {
+    function seconds(int $seconds): mixed
+    {
+        return timer($seconds);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\minutes')) {
+    function minutes(int $minutes): mixed
+    {
+        return timer($minutes * 60);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\hours')) {
+    function hours(int $hours): mixed
+    {
+        return timer($hours * 3600);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\days')) {
+    function days(int $days): mixed
+    {
+        return timer($days * 86400);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\weeks')) {
+    function weeks(int $weeks): mixed
+    {
+        return timer($weeks * 604800);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\months')) {
+    function months(int $months): mixed
+    {
+        return timer("{$months} months");
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\years')) {
+    function years(int $years): mixed
+    {
+        return timer("{$years} years");
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\now')) {
+    /**
+     * Read the deterministic workflow time.
+     *
+     * Inside a workflow fiber, returns the timestamp of the last history
+     * event the executor replayed before resuming.
+     * Outside a workflow fiber, falls back to wall-clock time.
+     */
+    function now(): \Carbon\CarbonInterface
+    {
+        return WorkflowFiberContext::getTime();
+    }
+}

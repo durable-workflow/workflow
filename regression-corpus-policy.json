@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/policy-schema.json",
+  "schema": "durable-workflow.regression-corpus-policy/v1",
+  "repository": "workflow",
+  "binding": "php",
+  "categories": {
+    "codec": {
+      "fixtures": [
+        {
+          "glob": "resources/protocol/avro-value-v1-golden.json",
+          "format": "avro-value-golden-v1"
+        },
+        {
+          "glob": "tests/Fixtures/V2/CodecRegression/*.json",
+          "format": "codec-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/Serializers/*.php"
+        },
+        {
+          "glob": "src/V2/Support/PayloadEnvelopeResolver.php"
+        },
+        {
+          "glob": "src/V2/Support/WorkflowPayloadDecoder.php"
+        }
+      ]
+    },
+    "replay": {
+      "fixtures": [
+        {
+          "glob": "tests/Fixtures/V2/GoldenHistory/*.json",
+          "format": "golden-history-v1"
+        },
+        {
+          "glob": "tests/Fixtures/V2/ReplayRegression/*.json",
+          "format": "replay-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/Commands/V2Replay*.php"
+        },
+        {
+          "glob": "src/V2/Support/*Replay*.php"
+        },
+        {
+          "glob": "src/V2/Support/WorkflowFiberRunner.php"
+        },
+        {
+          "glob": "src/V2/Support/WorkflowStepHistory.php"
+        },
+        {
+          "glob": "src/V2/Support/DefaultWorkflowTaskBridge.php"
+        },
+        {
+          "glob": "src/V2/Support/WorkflowExecutor.php"
+        },
+        {
+          "glob": "src/V2/Support/WorkflowExecution.php"
+        },
+        {
+          "glob": "src/V2/Support/*.php",
+          "content_patterns": [
+            "Replay",
+            "replay",
+            "History",
+            "history"
+          ]
+        }
+      ]
+    }
+  }
+}

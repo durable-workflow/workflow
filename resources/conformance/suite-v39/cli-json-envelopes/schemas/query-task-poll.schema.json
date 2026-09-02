@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/query-task-poll.schema.json",
+  "title": "dw query-task:poll --json",
+  "type": "object",
+  "required": ["task"],
+  "properties": {
+    "task": {
+      "type": ["object", "null"],
+      "properties": {
+        "query_task_id": { "type": ["string", "null"] },
+        "workflow_id": { "type": ["string", "null"] },
+        "run_id": { "type": ["string", "null"] },
+        "query_name": { "type": ["string", "null"] },
+        "query_task_attempt": { "type": ["integer", "null"] },
+        "lease_owner": { "type": ["string", "null"] },
+        "input": { "type": ["object", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "protocol_version": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

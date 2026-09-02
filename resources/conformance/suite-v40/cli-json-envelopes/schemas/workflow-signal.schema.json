@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-signal.schema.json",
+  "title": "dw workflow:signal --json",
+  "type": "object",
+  "required": ["namespace", "workflow_id", "signal_name", "outcome"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "workflow_id": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "signal_name": { "type": "string" },
+    "outcome": { "type": "string" },
+    "command_status": { "type": ["string", "null"] },
+    "command_id": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

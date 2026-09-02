@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/activity-task-result.schema.json",
+  "title": "dw activity complete/fail --json",
+  "type": "object",
+  "required": ["task_id", "activity_attempt_id"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "activity_attempt_id": { "type": "string" },
+    "outcome": {
+      "type": ["string", "null"],
+      "enum": ["completed", "failed", "ignored", null]
+    },
+    "recorded": { "type": ["boolean", "null"] },
+    "reason": {
+      "type": ["string", "null"],
+      "enum": [
+        "attempt_not_found",
+        "run_cancelled",
+        "run_terminated",
+        "stale_attempt",
+        null
+      ]
+    },
+    "next_task_id": { "type": ["string", "null"] },
+    "result": true,
+    "failure": {
+      "type": ["object", "null"],
+      "properties": {
+        "message": { "type": ["string", "null"] },
+        "type": { "type": ["string", "null"] },
+        "kind": {
+          "type": ["string", "null"],
+          "enum": [
+            "application",
+            "timeout",
+            "cancellation",
+            "malformed_output",
+            "handler_crash",
+            "decode_failure",
+            "unsupported_payload",
+            null
+          ]
+        },
+        "retryable": { "type": ["boolean", "null"] },
+        "non_retryable": { "type": ["boolean", "null"] },
+        "timeout_type": {
+          "type": ["string", "null"],
+          "enum": [
+            "schedule_to_start",
+            "start_to_close",
+            "schedule_to_close",
+            "heartbeat",
+            "deadline_exceeded",
+            null
+          ]
+        },
+        "cancelled": { "type": ["boolean", "null"] },
+        "malformed_output": { "type": ["boolean", "null"] },
+        "details": true
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

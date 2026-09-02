@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/env-list.schema.json",
+  "title": "dw env:list --json",
+  "type": "object",
+  "required": ["envs"],
+  "properties": {
+    "current_env": { "type": ["string", "null"] },
+    "config_path": { "type": "string" },
+    "envs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "server": { "type": ["string", "null"] },
+          "namespace": { "type": ["string", "null"] },
+          "tls_verify": { "type": "boolean" },
+          "output": { "type": ["string", "null"], "enum": ["table", "json", "jsonl", null] },
+          "current": { "type": "boolean" },
+          "token_source": {
+            "type": ["object", "null"],
+            "properties": {
+              "type": { "type": "string", "enum": ["literal", "env"] },
+              "env": { "type": "string" },
+              "value": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

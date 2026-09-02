@@ -1,0 +1,74 @@
+{
+  "schema": "durable-workflow.laravel-dependency-security-policy",
+  "version": 1,
+  "package": "laravel/framework",
+  "root_lockfile": "prohibited_for_library",
+  "dependabot": {
+    "dependency_alerts": "enabled",
+    "automated_security_fixes": "disabled",
+    "root_composer_updates": "prohibited",
+    "reason": "The host application owns the installed Laravel version and lockfile; GitHub dependency alerts remain visible while the per-major Composer audit owns resolution and accepted-risk tracking for this library constraint."
+  },
+  "supported_majors": {
+    "9": {
+      "minimum": "9.52.17",
+      "disposition": "accepted-risk"
+    },
+    "10": {
+      "minimum": "10.48.29",
+      "disposition": "accepted-risk"
+    },
+    "11": {
+      "minimum": "11.44.1",
+      "disposition": "accepted-risk"
+    },
+    "12": {
+      "minimum": "12.61.1",
+      "disposition": "secure"
+    },
+    "13": {
+      "minimum": "13.12.0",
+      "disposition": "secure"
+    }
+  },
+  "accepted_advisories": {
+    "PKSA-m5cs-t1y6-qpcs": {
+      "github_advisory": "GHSA-crmm-hgp2-wgrp",
+      "affected_supported_majors": [
+        "9",
+        "10",
+        "11"
+      ],
+      "review_by": "2026-11-24",
+      "reason": "Laravel has not published a patched release on these majors; compatibility is retained only for embedded upgrade and drain paths."
+    },
+    "PKSA-3r5d-mb8f-1qw9": {
+      "github_advisory": "GHSA-5vg9-5847-vvmq",
+      "affected_supported_majors": [
+        "9",
+        "10",
+        "11"
+      ],
+      "review_by": "2026-11-24",
+      "reason": "Laravel has not published a patched release on these majors; compatibility is retained only for embedded upgrade and drain paths."
+    },
+    "PKSA-mdq4-51ck-6kdq": {
+      "github_advisory": "GHSA-5vg9-5847-vvmq",
+      "affected_supported_majors": [
+        "9",
+        "10",
+        "11"
+      ],
+      "review_by": "2026-11-24",
+      "reason": "The FriendsOfPHP record describes the same GitHub advisory, and Laravel has not published a patched release on these majors."
+    },
+    "PKSA-8qx3-n5y5-vvnd": {
+      "github_advisory": "GHSA-78fx-h6xr-vch4",
+      "affected_supported_majors": [
+        "9"
+      ],
+      "review_by": "2026-11-24",
+      "reason": "Laravel 9 has no patched release; compatibility is retained only for embedded upgrade and drain paths."
+    }
+  }
+}

@@ -1,0 +1,207 @@
+asyncapi: 2.6.0
+id: durable-workflow.v2.worker-protocol-stream
+info:
+  title: Durable Workflow worker-protocol long-poll stream semantics
+  version: "6"
+  description: >
+    Normative AsyncAPI description of the public worker-protocol stream
+    semantics. Durable uses HTTP long-poll request/response rather than a
+    broker topic, but the externally observable contract is event-stream
+    shaped: workers subscribe by polling, the server leases at most one
+    task per successful poll, workers renew the lease with heartbeat
+    events, and terminal completion/failure events close the lease.
+x-durable-workflow-worker-protocol-negotiation:
+  advertised_version_path: worker_protocol.version
+  default_advertised_version: "1.13"
+  request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13"]
+  response_version: advertised_version
+  fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
+x-durable-workflow-catalog-entry: worker_protocol_stream
+x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
+x-durable-workflow-catalog-version: 16
+x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-object-families:
+  - name: worker_poll_stream
+    owner_repo: durable-workflow/server
+  - name: worker_task_lease
+    owner_repo: durable-workflow/server
+  - name: worker_task_heartbeat
+    owner_repo: durable-workflow/server
+defaultContentType: application/json
+channels:
+  worker.workflow_tasks:
+    description: Workflow task long-poll and lease lifecycle.
+    subscribe:
+      operationId: subscribeWorkflowTaskPoll
+      summary: Worker polls until a workflow task is leased, the poll times out, or the worker is draining.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/WorkflowTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+          - $ref: "#/components/messages/WorkerDraining"
+    publish:
+      operationId: publishWorkflowTaskLeaseEvent
+      summary: Worker renews or closes a workflow-task lease.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/TaskHeartbeat"
+          - $ref: "#/components/messages/WorkflowTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+  worker.activity_tasks:
+    description: Activity task long-poll and lease lifecycle.
+    subscribe:
+      operationId: subscribeActivityTaskPoll
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ActivityTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+          - $ref: "#/components/messages/WorkerDraining"
+    publish:
+      operationId: publishActivityTaskLeaseEvent
+      message:
+        oneOf:
+          - $ref: "#/components/messages/TaskHeartbeat"
+          - $ref: "#/components/messages/ActivityTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+  worker.query_tasks:
+    description: Ephemeral worker-routed query task lifecycle.
+    subscribe:
+      operationId: subscribeQueryTaskPoll
+      message:
+        oneOf:
+          - $ref: "#/components/messages/QueryTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+    publish:
+      operationId: publishQueryTaskTerminalEvent
+      message:
+        oneOf:
+          - $ref: "#/components/messages/QueryTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+components:
+  messages:
+    WorkflowTaskLeased:
+      name: WorkflowTaskLeased
+      title: Workflow task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    ActivityTaskLeased:
+      name: ActivityTaskLeased
+      title: Activity task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    QueryTaskLeased:
+      name: QueryTaskLeased
+      title: Query task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    PollTimedOut:
+      name: PollTimedOut
+      title: Poll timed out without a task
+      payload:
+        $ref: "#/components/schemas/PollTerminal"
+    WorkerDraining:
+      name: WorkerDraining
+      title: Worker is draining and must stop accepting new work
+      payload:
+        $ref: "#/components/schemas/PollTerminal"
+    TaskHeartbeat:
+      name: TaskHeartbeat
+      title: Worker renewed a task lease
+      payload:
+        $ref: "#/components/schemas/LeaseEvent"
+    WorkflowTaskCompleted:
+      name: WorkflowTaskCompleted
+      title: Worker completed a workflow task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+    ActivityTaskCompleted:
+      name: ActivityTaskCompleted
+      title: Worker completed an activity task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+    QueryTaskCompleted:
+      name: QueryTaskCompleted
+      title: Worker completed a query task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+    TaskFailed:
+      name: TaskFailed
+      title: Worker failed a leased task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+  schemas:
+    ProtocolEnvelope:
+      type: object
+      required: [protocol_version, server_capabilities]
+      additionalProperties: true
+      properties:
+        protocol_version:
+          type: string
+          const: "1.13"
+        server_capabilities:
+          type: object
+          additionalProperties: true
+    TaskLeased:
+      allOf:
+        - $ref: "#/components/schemas/ProtocolEnvelope"
+        - type: object
+          required: [task, lease]
+          properties:
+            task:
+              type: object
+              additionalProperties: true
+              required: [task_id]
+              properties:
+                task_id: { type: string }
+                task_type: { type: string, enum: [workflow, activity, query] }
+            lease:
+              type: object
+              additionalProperties: true
+              required: [leased_at, lease_expires_at]
+              properties:
+                leased_at: { type: string, format: date-time }
+                lease_expires_at: { type: string, format: date-time }
+    PollTerminal:
+      allOf:
+        - $ref: "#/components/schemas/ProtocolEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            task: { type: "null" }
+            poll_status:
+              type: string
+              enum: [timeout, empty, draining]
+            retry_after_seconds:
+              type: [integer, "null"]
+              minimum: 0
+    LeaseEvent:
+      type: object
+      required: [worker_id, task_id, event]
+      additionalProperties: true
+      properties:
+        worker_id: { type: string }
+        task_id: { type: string }
+        event:
+          type: string
+          enum: [heartbeat]
+        progress: true
+    LeaseTerminalEvent:
+      type: object
+      required: [worker_id, task_id, event]
+      additionalProperties: true
+      properties:
+        worker_id: { type: string }
+        task_id: { type: string }
+        event:
+          type: string
+          enum: [complete, fail]
+        result: true
+        failure:
+          type: [object, "null"]
+          additionalProperties: true
+x-durable-workflow-semantics:
+  long_poll_timeout: The server may hold a poll request until a task is available or the advertised timeout elapses.
+  lease_ownership: Only the worker that owns the active lease may heartbeat, complete, or fail the task.
+  task_ordering: Queue routing, build-id rollout, and compatibility filters are evaluated before a task is leased.
+  terminal_events: Complete and fail are terminal for a lease. Retrying after a terminal event must be idempotent and return the current terminal outcome.

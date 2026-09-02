@@ -1,0 +1,230 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Workflow\Traits\ResolvesStorageConnection;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\RepairBlockedReason;
+use Workflow\V2\Support\SearchAttributeValueFilter;
+use Workflow\V2\Support\WorkflowTaskProblem;
+
+class WorkflowRunSummary extends Model
+{
+    use ResolvesStorageConnection;
+
+    public $incrementing = false;
+
+    protected $table = 'workflow_run_summaries';
+
+    protected $guarded = [];
+
+    protected $keyType = 'string';
+
+    protected $dateFormat = 'Y-m-d H:i:s.u';
+
+    protected $appends = [
+        'instance_id',
+        'selected_run_id',
+        'run_id',
+        'exceptions_count',
+        'is_terminal',
+        'repair_blocked',
+        'task_problem_badge',
+    ];
+
+    protected $casts = [
+        'is_current_run' => 'bool',
+        'repair_attention' => 'bool',
+        'task_problem' => 'bool',
+        'visibility_labels' => 'array',
+        'projection_schema_version' => 'integer',
+        'history_event_count' => 'integer',
+        'history_size_bytes' => 'integer',
+        'history_fan_out' => 'integer',
+        'continue_as_new_recommended' => 'bool',
+        'started_at' => 'datetime',
+        'sort_timestamp' => 'datetime',
+        'closed_at' => 'datetime',
+        'archived_at' => 'datetime',
+        'wait_started_at' => 'datetime',
+        'wait_deadline_at' => 'datetime',
+        'next_task_at' => 'datetime',
+        'next_task_lease_expires_at' => 'datetime',
+    ];
+
+    public function run(): BelongsTo
+    {
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'id', 'id');
+    }
+
+    /**
+     * Typed search attributes relationship.
+     *
+     * Enables efficient Waterline visibility filtering via JOIN:
+     * WorkflowRunSummary::whereHas('searchAttributes', fn($q) =>
+     *     $q->where('key', 'customer_id')->where('value_keyword', 'cust_123')
+     * )->get();
+     */
+    public function searchAttributes(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('search_attribute_model', WorkflowSearchAttribute::class),
+            'workflow_run_id',
+            'id',
+        );
+    }
+
+    /**
+     * Workflow memos relationship.
+     *
+     * Memos are non-indexed returned-only metadata for describe/detail views.
+     * Unlike search attributes, memos are NOT filterable by contract.
+     */
+    public function memos(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('memo_model', WorkflowMemo::class),
+            'workflow_run_id',
+            'id',
+        );
+    }
+
+    public function getInstanceIdAttribute(): string
+    {
+        return $this->workflow_instance_id;
+    }
+
+    public function getSelectedRunIdAttribute(): string
+    {
+        return $this->id;
+    }
+
+    public function getRunIdAttribute(): string
+    {
+        return $this->id;
+    }
+
+    public function getExceptionsCountAttribute(): int
+    {
+        return (int) $this->exception_count;
+    }
+
+    public function getIsTerminalAttribute(): bool
+    {
+        return RunStatus::from($this->status)->isTerminal();
+    }
+
+    /**
+     * @return array{
+     *     code: string,
+     *     label: string,
+     *     description: string,
+     *     tone: string,
+     *     badge_visible: bool
+     * }|null
+     */
+    public function getRepairBlockedAttribute(): ?array
+    {
+        return RepairBlockedReason::metadata(
+            is_string($this->repair_blocked_reason) ? $this->repair_blocked_reason : null,
+        );
+    }
+
+    /**
+     * @return array{
+     *     code: string,
+     *     label: string,
+     *     description: string,
+     *     tone: string,
+     *     badge_visible: bool
+     * }|null
+     */
+    public function getTaskProblemBadgeAttribute(): ?array
+    {
+        return WorkflowTaskProblem::metadata(
+            (bool) $this->task_problem,
+            is_string($this->liveness_state) ? $this->liveness_state : null,
+            is_string($this->wait_kind) ? $this->wait_kind : null,
+        );
+    }
+
+    /**
+     * Get search attributes from the authoritative typed table.
+     *
+     * @return array<string, mixed> Key-value pairs
+     */
+    public function getTypedSearchAttributes(): array
+    {
+        if (! $this->exists) {
+            return [];
+        }
+
+        $this->loadMissing('searchAttributes');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowSearchAttribute> $searchAttributes */
+        $searchAttributes = $this->getRelation('searchAttributes');
+
+        return $searchAttributes
+            ->mapWithKeys(static function (WorkflowSearchAttribute $attr): array {
+                return [
+                    $attr->key => $attr->getValue(),
+                ];
+            })
+            ->sortKeys()
+            ->toArray();
+    }
+
+    /**
+     * Get memos from the authoritative typed table.
+     *
+     * @return array<string, mixed> Key-value pairs
+     */
+    public function getMemos(): array
+    {
+        if (! $this->exists) {
+            return [];
+        }
+
+        $this->loadMissing('memos');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowMemo> $memos */
+        $memos = $this->getRelation('memos');
+
+        return $memos
+            ->mapWithKeys(static function (WorkflowMemo $memo): array {
+                return [
+                    $memo->key => $memo->getValue(),
+                ];
+            })
+            ->sortKeys()
+            ->toArray();
+    }
+
+    /**
+     * Scope query to runs with specific search attribute value.
+     *
+     * Efficient filtering using typed table indexes.
+     *
+     * Example:
+     * WorkflowRunSummary::withSearchAttribute('customer_id', 'cust_123')->get();
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param string $key Attribute key
+     * @param mixed $value Attribute value
+     *
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeWithSearchAttribute($query, string $key, mixed $value)
+    {
+        return $query->whereHas('searchAttributes', static function ($q) use ($key, $value) {
+            $q->where('key', $key);
+            SearchAttributeValueFilter::apply($q, $value);
+        });
+    }
+}

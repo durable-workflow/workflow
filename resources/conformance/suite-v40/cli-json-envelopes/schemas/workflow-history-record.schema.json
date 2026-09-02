@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-record.schema.json",
+  "title": "dw workflow:history --output=jsonl record",
+  "type": "object",
+  "$ref": "workflow-history.schema.json#/properties/events/items"
+}

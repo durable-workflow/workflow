@@ -1,0 +1,350 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use LogicException;
+use ReflectionClass;
+use Throwable;
+use Workflow\V2\Activity;
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Workflow;
+
+final class TypeRegistry
+{
+    /**
+     * @var array<class-string, string>
+     */
+    private static array $cache = [];
+
+    /**
+     * @param class-string $class
+     */
+    public static function for(string $class): string
+    {
+        $configuredType = self::configuredTypeForClass($class);
+
+        if ($configuredType !== null) {
+            if (is_subclass_of($class, Workflow::class)) {
+                WorkflowDefinition::assertWorkflowTypeRegistration($configuredType, $class);
+            }
+
+            return $configuredType;
+        }
+
+        if (! isset(self::$cache[$class])) {
+            $reflection = new ReflectionClass($class);
+            $attributes = $reflection->getAttributes(Type::class);
+
+            self::$cache[$class] = $attributes === []
+                ? $class
+                : $attributes[0]->newInstance()->key;
+        }
+
+        if (is_subclass_of($class, Workflow::class)) {
+            WorkflowDefinition::assertWorkflowTypeRegistration(self::$cache[$class], $class);
+        }
+
+        return self::$cache[$class];
+    }
+
+    public static function resolveWorkflowClass(string $storedClass, ?string $workflowType): string
+    {
+        return self::resolveClass($storedClass, $workflowType, Workflow::class, 'workflows', 'workflow');
+    }
+
+    public static function resolveActivityClass(string $storedClass, ?string $activityType): string
+    {
+        return self::resolveClass($storedClass, $activityType, Activity::class, 'activities', 'activity');
+    }
+
+    /**
+     * @param class-string<Throwable> $class
+     */
+    public static function typeForThrowable(string $class): ?string
+    {
+        $configuredType = self::configuredTypeForClass($class);
+
+        if ($configuredType !== null) {
+            return $configuredType;
+        }
+
+        $reflection = new ReflectionClass($class);
+        $attributes = $reflection->getAttributes(Type::class);
+
+        return $attributes === []
+            ? null
+            : $attributes[0]->newInstance()->key;
+    }
+
+    /**
+     * @return class-string<Throwable>|null
+     */
+    public static function resolveThrowableClass(string $storedClass, ?string $exceptionType): ?string
+    {
+        $resolution = self::resolveThrowableClassWithSource($storedClass, $exceptionType);
+
+        return $resolution['class'] ?? null;
+    }
+
+    /**
+     * @return array{class: class-string<Throwable>, source: 'exception_type'|'class_alias'|'recorded_class'}|null
+     */
+    public static function resolveThrowableClassWithSource(string $storedClass, ?string $exceptionType): ?array
+    {
+        if (is_string($exceptionType) && $exceptionType !== '') {
+            $configuredClass = self::configuredClassForType($exceptionType, 'exceptions', Throwable::class);
+
+            if ($configuredClass !== null) {
+                return [
+                    'class' => $configuredClass,
+                    'source' => 'exception_type',
+                ];
+            }
+        }
+
+        $aliasedClass = self::configuredThrowableClassAlias($storedClass);
+
+        if ($aliasedClass !== null) {
+            return [
+                'class' => $aliasedClass,
+                'source' => 'class_alias',
+            ];
+        }
+
+        if (self::isValidClass($storedClass, Throwable::class)) {
+            return [
+                'class' => $storedClass,
+                'source' => 'recorded_class',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Validate configured type maps for ambiguous or conflicting registrations.
+     *
+     * Checks that no class appears as the target of multiple different type keys
+     * and that configured type keys do not conflict with #[Type] attributes on
+     * the mapped class.
+     */
+    public static function validateTypeMap(): void
+    {
+        foreach ([
+            'workflows' => Workflow::class,
+            'activities' => Activity::class,
+        ] as $configKey => $baseClass) {
+            /** @var array<string, class-string>|null $types */
+            $types = self::configuredTypeMap($configKey);
+
+            if (! is_array($types) || $types === []) {
+                continue;
+            }
+
+            // Detect the same class registered under multiple type keys.
+            $classCounts = array_count_values(array_filter($types, 'is_string'));
+
+            foreach ($classCounts as $class => $count) {
+                if ($count > 1) {
+                    $keys = array_keys(array_filter($types, static fn ($v) => $v === $class));
+
+                    throw new LogicException(sprintf(
+                        'Durable %s class [%s] is registered under multiple type keys [%s]. Each class must map to exactly one canonical type key.',
+                        rtrim($configKey, 's'),
+                        $class,
+                        implode(', ', $keys),
+                    ));
+                }
+            }
+
+            // Detect config key that disagrees with the class's #[Type] attribute.
+            foreach ($types as $configuredKey => $class) {
+                if (! is_string($class) || ! self::isValidClass($class, $baseClass)) {
+                    continue;
+                }
+
+                if ($baseClass === Workflow::class) {
+                    WorkflowDefinition::assertWorkflowTypeRegistration((string) $configuredKey, $class);
+                }
+
+                $reflection = new ReflectionClass($class);
+                $attributes = $reflection->getAttributes(Type::class);
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                $attributeKey = $attributes[0]->newInstance()->key;
+
+                if ($attributeKey !== $configuredKey) {
+                    throw new LogicException(sprintf(
+                        'Durable %s type key conflict: class [%s] has #[Type(\'%s\')] but is configured under key [%s]. The attribute and config key must agree.',
+                        rtrim($configKey, 's'),
+                        $class,
+                        $attributeKey,
+                        $configuredKey,
+                    ));
+                }
+            }
+        }
+    }
+
+    private static function isRegisteredTypeKey(string $key): bool
+    {
+        foreach (['workflows', 'activities'] as $section) {
+            $types = self::configuredTypeMap($section);
+            if (is_array($types) && array_key_exists($key, $types)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static function configuredTypeForClass(string $class): ?string
+    {
+        $configKey = match (true) {
+            is_subclass_of($class, Workflow::class) => 'workflows',
+            is_subclass_of($class, Activity::class) => 'activities',
+            is_subclass_of($class, Throwable::class) => 'exceptions',
+            default => null,
+        };
+
+        if ($configKey === null) {
+            return null;
+        }
+
+        /** @var array<string, class-string>|null $types */
+        $types = self::configuredTypeMap($configKey);
+
+        if (! is_array($types)) {
+            return null;
+        }
+
+        foreach ($types as $type => $mappedClass) {
+            if ($mappedClass === $class) {
+                return $type;
+            }
+        }
+
+        return null;
+    }
+
+    private static function configuredClassForType(string $type, string $configKey, string $expectedBaseClass): ?string
+    {
+        // Fetch the entire type map as an array and look up the key directly
+        // so that dotted durable type keys like "tests.external-greeting-workflow"
+        // are matched as flat array keys instead of being interpreted as nested
+        // config paths by Laravel's dot-notation config helper.
+        $types = self::configuredTypeMap($configKey);
+
+        if (! is_array($types)) {
+            return null;
+        }
+
+        $mappedClass = $types[$type] ?? null;
+
+        if (! is_string($mappedClass)) {
+            return null;
+        }
+
+        if (! self::isValidClass($mappedClass, $expectedBaseClass)) {
+            throw new LogicException(sprintf(
+                'Configured durable type [%s] points to [%s], which is not a loadable %s.',
+                $type,
+                $mappedClass,
+                $expectedBaseClass,
+            ));
+        }
+
+        return $mappedClass;
+    }
+
+    /**
+     * @return class-string<Throwable>|null
+     */
+    private static function configuredThrowableClassAlias(string $storedClass): ?string
+    {
+        /** @var array<string, class-string>|null $aliases */
+        $aliases = self::configuredTypeMap('exception_class_aliases');
+
+        if (! is_array($aliases)) {
+            return null;
+        }
+
+        $mappedClass = $aliases[$storedClass] ?? null;
+
+        if (! is_string($mappedClass) || $mappedClass === '') {
+            return null;
+        }
+
+        if (! self::isValidClass($mappedClass, Throwable::class)) {
+            throw new LogicException(sprintf(
+                'Configured exception class alias [%s] points to [%s], which is not a loadable %s.',
+                $storedClass,
+                $mappedClass,
+                Throwable::class,
+            ));
+        }
+
+        return $mappedClass;
+    }
+
+    private static function resolveClass(
+        string $storedClass,
+        ?string $type,
+        string $expectedBaseClass,
+        string $configKey,
+        string $label,
+    ): string {
+        if (self::isValidClass($storedClass, $expectedBaseClass)) {
+            return $storedClass;
+        }
+
+        if (is_string($type) && $type !== '') {
+            $configuredClass = self::configuredClassForType($type, $configKey, $expectedBaseClass);
+
+            if ($configuredClass !== null) {
+                return $configuredClass;
+            }
+        }
+
+        throw new LogicException(sprintf(
+            'Unable to resolve %s class [%s] for durable type [%s]. Register it under [workflows.v2.types.%s.%s] or restore the original class.',
+            $label,
+            $storedClass,
+            $type ?? 'unknown',
+            $configKey,
+            $type ?? '{type}',
+        ));
+    }
+
+    private static function isValidClass(string $class, string $expectedBaseClass): bool
+    {
+        return class_exists($class) && is_subclass_of($class, $expectedBaseClass);
+    }
+
+    /**
+     * Standalone workers can use the type registry outside a booted Laravel
+     * app, so missing config bindings must degrade to an empty type map rather
+     * than crashing replay-time exception restoration.
+     *
+     * @return array<string, class-string>|null
+     */
+    private static function configuredTypeMap(string $configKey): ?array
+    {
+        $types = self::configValue("workflows.v2.types.{$configKey}");
+
+        return is_array($types) ? $types : null;
+    }
+
+    private static function configValue(string $key): mixed
+    {
+        try {
+            return config($key);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+}

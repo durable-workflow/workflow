@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Support\ConfiguredV2Models;
+
+class WorkflowTask extends Model
+{
+    use ResolvesStorageConnection;
+
+    use HasUlids;
+
+    public $incrementing = false;
+
+    protected $table = 'workflow_tasks';
+
+    protected $guarded = [];
+
+    protected $keyType = 'string';
+
+    protected $dateFormat = 'Y-m-d H:i:s.u';
+
+    protected $casts = [
+        'task_type' => TaskType::class,
+        'status' => TaskStatus::class,
+        'payload' => 'array',
+        'repair_count' => 'integer',
+        'priority' => 'integer',
+        'fairness_weight' => 'integer',
+        'sticky_until' => 'datetime',
+        'sticky_claimed_at' => 'datetime',
+        'available_at' => 'datetime',
+        'leased_at' => 'datetime',
+        'lease_expires_at' => 'datetime',
+        'last_dispatch_attempt_at' => 'datetime',
+        'last_dispatched_at' => 'datetime',
+        'last_claim_failed_at' => 'datetime',
+        'repair_available_at' => 'datetime',
+    ];
+
+    public function run(): BelongsTo
+    {
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
+    }
+}

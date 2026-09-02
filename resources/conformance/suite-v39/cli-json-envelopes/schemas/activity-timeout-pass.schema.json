@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/activity-timeout-pass.schema.json",
+  "title": "dw system:activity-timeout-pass --json",
+  "type": "object",
+  "required": ["processed", "enforced", "skipped", "failed", "results"],
+  "properties": {
+    "processed": { "type": "integer" },
+    "enforced": { "type": "integer" },
+    "skipped": { "type": "integer" },
+    "failed": { "type": "integer" },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["outcome"],
+        "properties": {
+          "execution_id": { "type": ["string", "null"] },
+          "outcome": { "type": "string" },
+          "reason": { "type": ["string", "null"] },
+          "has_retry": { "type": ["boolean", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

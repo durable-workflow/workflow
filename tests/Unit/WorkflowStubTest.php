@@ -8,8 +8,11 @@ use Exception;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use ReflectionProperty;
+use stdClass;
 use Tests\Fixtures\TestAwaitWorkflow;
 use Tests\Fixtures\TestBadConnectionWorkflow;
+use Tests\Fixtures\TestChatBotWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
@@ -17,7 +20,10 @@ use Workflow\Serializers\Serializer;
 use Workflow\Signal;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowCreatedStatus;
+use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\States\WorkflowWaitingStatus;
+use Workflow\Timer;
 use Workflow\WorkflowStub;
 
 final class WorkflowStubTest extends TestCase
@@ -52,7 +58,10 @@ final class WorkflowStubTest extends TestCase
             ]);
         $workflow->fail(new Exception('test'));
         $this->assertTrue($workflow->failed());
-        $this->assertTrue($parentWorkflow->failed());
+
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->status = WorkflowCreatedStatus::class;
+        $storedWorkflow->save();
 
         $workflow->cancel();
         while (! $workflow->isCanceled());
@@ -75,7 +84,20 @@ final class WorkflowStubTest extends TestCase
         $workflow->cancel();
         $workflow->fail(new Exception('resume'));
 
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->status = WorkflowCreatedStatus::class;
+        $storedWorkflow->save();
+
+        // The nested dispatch during cancel() signal processing is released by
+        // WithoutOverlappingMiddleware (the activity semaphore is held by the
+        // Signal), and a released job does not release its ShouldBeUnique lock
+        // (CallQueuedHandler only releases when the job completes or fails).
+        // The cache repo's default driver stores locks on a separate
+        // connection than flush() clears, so Cache::flush() alone is not
+        // sufficient — release the unique lock explicitly.
         Cache::flush();
+        (new \Illuminate\Bus\UniqueLock(app(\Illuminate\Contracts\Cache\Repository::class)))
+            ->release(new TestAwaitWorkflow($storedWorkflow));
 
         $workflow->resume();
         $this->assertSame('2022-01-01 00:00:00', WorkflowStub::now()->toDateTimeString());
@@ -202,7 +224,7 @@ final class WorkflowStubTest extends TestCase
         $this->assertDatabaseHas('workflow_logs', [
             'stored_workflow_id' => $workflow->id(),
             'index' => 1,
-            'class' => Signal::class,
+            'class' => Timer::class,
         ]);
         $this->assertTrue(Serializer::unserialize($workflow->logs()->firstWhere('index', 1)->result));
     }
@@ -218,6 +240,48 @@ final class WorkflowStubTest extends TestCase
 
         $this->assertSame('redis', WorkflowStub::connection());
         $this->assertSame('default', WorkflowStub::queue());
+    }
+
+    public function testProbeHelpers(): void
+    {
+        $contextProperty = new ReflectionProperty(WorkflowStub::class, 'context');
+        $contextProperty->setAccessible(true);
+        $previousContext = $contextProperty->getValue();
+        $contextProperty->setValue(null);
+
+        try {
+            $this->assertInstanceOf(stdClass::class, WorkflowStub::getContext());
+            $this->assertFalse(WorkflowStub::isProbing());
+            $this->assertNull(WorkflowStub::probeIndex());
+            $this->assertNull(WorkflowStub::probeClass());
+            $this->assertFalse(WorkflowStub::probeMatched());
+            $this->assertFalse(WorkflowStub::probePendingBeforeMatch());
+
+            WorkflowStub::markProbeMatched();
+            WorkflowStub::markProbePendingBeforeMatch();
+
+            $this->assertFalse(WorkflowStub::probeMatched());
+            $this->assertFalse(WorkflowStub::probePendingBeforeMatch());
+
+            WorkflowStub::setContext([
+                'probing' => true,
+                'probeIndex' => 7,
+                'probeClass' => TestWorkflow::class,
+                'probeMatched' => false,
+                'probePendingBeforeMatch' => false,
+            ]);
+
+            WorkflowStub::markProbePendingBeforeMatch();
+            WorkflowStub::markProbeMatched();
+
+            $this->assertTrue(WorkflowStub::isProbing());
+            $this->assertSame(7, WorkflowStub::probeIndex());
+            $this->assertSame(TestWorkflow::class, WorkflowStub::probeClass());
+            $this->assertTrue(WorkflowStub::probeMatched());
+            $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+        } finally {
+            $contextProperty->setValue($previousContext);
+        }
     }
 
     public function testHandlesDuplicateLogInsertionProperly(): void
@@ -254,5 +318,291 @@ final class WorkflowStubTest extends TestCase
         $this->assertSame(1, $workflow->logs()->count());
 
         Queue::assertPushed(TestWorkflow::class, 1);
+    }
+
+    public function testResumeWhilePendingDoesNotThrowAndStillDispatches(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $workflow->resume();
+
+        $this->assertSame(WorkflowPendingStatus::class, $workflow->status());
+        Queue::assertPushed(TestWorkflow::class, 1);
+    }
+
+    public function testIsUpdateMethodReturnsTrueForUpdateMethods(): void
+    {
+        $this->assertTrue(WorkflowStub::isUpdateMethod(TestChatBotWorkflow::class, 'receive'));
+    }
+
+    public function testIsUpdateMethodReturnsFalseForNonUpdateMethods(): void
+    {
+        $this->assertFalse(WorkflowStub::isUpdateMethod(TestChatBotWorkflow::class, 'send'));
+        $this->assertFalse(WorkflowStub::isUpdateMethod(TestChatBotWorkflow::class, 'execute'));
+        $this->assertFalse(WorkflowStub::isUpdateMethod(TestChatBotWorkflow::class, 'nonexistent'));
+    }
+
+    public function testIsUpdateMethodReturnsFalseForClassWithoutUpdateMethods(): void
+    {
+        $this->assertFalse(WorkflowStub::isUpdateMethod(TestWorkflow::class, 'execute'));
+        $this->assertFalse(WorkflowStub::isUpdateMethod(TestWorkflow::class, 'nonexistent'));
+    }
+
+    public function testUpdateMethodCreatesSignalAndReturnsQueryResult(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestChatBotWorkflow::class);
+        $workflow->start();
+
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowWaitingStatus::$name,
+        ]);
+
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'send',
+                'arguments' => Serializer::serialize(['test']),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(null),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(true),
+            ]);
+
+        $result = $workflow->receive();
+
+        $this->assertSame('You said: test', $result);
+        $this->assertSame(2, $storedWorkflow->signals()->count());
+        $this->assertSame(1, $storedWorkflow->signals()->where('method', 'receive')->count());
+    }
+
+    public function testUpdateMethodDispatchesWhenNotFaked(): void
+    {
+        Queue::fake();
+
+        app()
+            ->offsetUnset('workflow.mocks');
+
+        $workflow = WorkflowStub::make(TestChatBotWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'send',
+                'arguments' => Serializer::serialize(['test']),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(null),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(true),
+            ]);
+
+        $result = $workflow->receive();
+
+        $this->assertSame('You said: test', $result);
+        $this->assertSame(2, $storedWorkflow->signals()->count());
+        $this->assertSame(1, $storedWorkflow->signals()->where('method', 'receive')->count());
+
+        Queue::assertPushed(Signal::class);
+    }
+
+    public function testUpdateMethodReplaysStoredSignals(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestChatBotWorkflow::class);
+        $workflow->start();
+
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowWaitingStatus::$name,
+        ]);
+
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'send',
+                'arguments' => Serializer::serialize(['first']),
+            ]);
+
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'send',
+                'arguments' => Serializer::serialize(['second']),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(null),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(true),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 2,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(false),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 3,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(null),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 4,
+                'now' => now(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(true),
+            ]);
+
+        $result1 = $workflow->receive();
+        $this->assertSame('You said: first', $result1);
+
+        $result2 = $workflow->receive();
+        $this->assertSame('You said: second', $result2);
+    }
+
+    public function testFailPropagatesFailToContinueParent(): void
+    {
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => StoredWorkflow::CONTINUE_PARENT_INDEX,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('continue parent fail'));
+
+        $this->assertTrue($workflow->failed());
+        $this->assertTrue($parentWorkflow->fresh()->failed());
+    }
+
+    public function testFailContinueParentHandlesTransitionNotFound(): void
+    {
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowFailedStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => StoredWorkflow::CONTINUE_PARENT_INDEX,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('continue parent already failed'));
+
+        $this->assertTrue($workflow->failed());
+        $this->assertTrue($parentWorkflow->fresh()->failed());
+    }
+
+    public function testFailDispatchesExceptionJobForNormalChildParent(): void
+    {
+        Queue::fake();
+
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => 0,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('child workflow failed'));
+
+        $this->assertTrue($workflow->failed());
+
+        Queue::assertPushed(\Workflow\Exception::class, static function ($job) use ($storedParentWorkflow) {
+            return $job->index === 0
+                && $job->storedWorkflow->id === $storedParentWorkflow->id
+                && $job->exception['class'] === Exception::class
+                && $job->exception['message'] === 'child workflow failed';
+        });
     }
 }

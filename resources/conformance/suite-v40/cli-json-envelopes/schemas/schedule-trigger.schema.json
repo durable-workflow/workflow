@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-trigger.schema.json",
+  "title": "dw schedule:trigger --json",
+  "type": "object",
+  "required": ["namespace", "outcome"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "schedule_id": { "type": ["string", "null"] },
+    "outcome": { "type": "string" },
+    "workflow_id": { "type": ["string", "null"] },
+    "run_id": { "type": ["string", "null"] },
+    "buffer_depth": { "type": ["integer", "null"] },
+    "reason": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

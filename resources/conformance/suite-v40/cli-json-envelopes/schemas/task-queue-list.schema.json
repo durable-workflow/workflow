@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list.schema.json",
+  "title": "dw task-queue:list --json",
+  "type": "object",
+  "required": ["namespace", "task_queues"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "task_queues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["namespace", "name"],
+        "properties": {
+          "namespace": { "type": "string" },
+          "name": { "type": "string" },
+          "admission": { "type": ["object", "null"], "additionalProperties": true }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

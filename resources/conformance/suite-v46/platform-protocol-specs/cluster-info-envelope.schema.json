@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.cluster-info-envelope",
+  "title": "Durable Workflow cluster-info envelope",
+  "description": "Normative JSON Schema for the response body of GET /api/cluster/info on the standalone Durable Workflow server. The envelope advertises server identity, capability flags, structural and request limits, topology, coordination-health, the worker fleet, task-repair diagnostics, and the nested platform protocol manifests (client_compatibility, surface_stability_contract, platform_protocol_specs, platform_conformance_suite, sdk_neutrality_contract, auth_composition_contract, control_plane, worker_protocol, bridge_adapter_outcome_contract, replay_verification_contract). Each nested manifest carries its own schema id and version field; this envelope only pins the keys, top-level types, and required fields. Per-manifest field shapes are normative under the manifest's own spec_id and are NOT redefined here. The envelope is the discovery surface other catalog entries reference.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "cluster_info_envelope",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "cluster_info_envelope",
+      "owner_repo": "durable-workflow/server"
+    },
+    {
+      "name": "client_compatibility_manifest",
+      "owner_repo": "durable-workflow/server"
+    },
+    {
+      "name": "surface_stability_contract",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "platform_protocol_specs_catalog",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "platform_conformance_suite_manifest",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "sdk_neutrality_contract",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "required": [
+    "server_id",
+    "version",
+    "default_namespace",
+    "supported_sdk_versions",
+    "capabilities",
+    "worker_fleet",
+    "task_repair",
+    "limits",
+    "structural_limits",
+    "topology",
+    "coordination_health",
+    "client_compatibility",
+    "surface_stability_contract",
+    "platform_protocol_specs",
+    "platform_conformance_suite",
+    "sdk_neutrality_contract",
+    "auth_composition_contract",
+    "control_plane",
+    "worker_protocol",
+    "bridge_adapter_outcome_contract",
+    "replay_verification_contract"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "server_id": {
+      "type": "string",
+      "description": "Stable identifier for this server process. Diagnostic; not required to be globally unique."
+    },
+    "version": {
+      "type": "string",
+      "description": "Server build version. This is build identity, not the client compatibility authority. SDKs negotiate compatibility through `client_compatibility` and `control_plane.request_contract`, not through this string."
+    },
+    "default_namespace": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Namespace the server falls back to when the request omits an explicit namespace."
+    },
+    "supported_sdk_versions": {
+      "type": "object",
+      "description": "Per-SDK supported version range advertised to clients. Diagnostic; the normative compatibility surface is `client_compatibility`.",
+      "additionalProperties": {
+        "type": ["string", "object", "null"]
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Map of capability flag to value. Booleans signal feature availability; arrays enumerate supported codecs and compression algorithms. Adding a new capability is a minor change; removing one is a major change.",
+      "required": [
+        "workflow_tasks",
+        "activity_tasks",
+        "signals",
+        "queries",
+        "updates",
+        "schedules",
+        "history_export",
+        "payload_codec_envelope",
+        "payload_codec_envelope_responses",
+        "bridge_adapter_outcome_contract",
+        "replay_verification_contract",
+        "external_executor_config_contract",
+        "invocable_carrier_contract",
+        "payload_codecs",
+        "response_compression"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "workflow_tasks": {"type": "boolean"},
+        "activity_tasks": {"type": "boolean"},
+        "signals": {"type": "boolean"},
+        "queries": {"type": "boolean"},
+        "updates": {"type": "boolean"},
+        "schedules": {"type": "boolean"},
+        "history_export": {"type": "boolean"},
+        "continue_as_new": {"type": "boolean"},
+        "child_workflows": {"type": "boolean"},
+        "payload_codec_envelope": {"type": "boolean"},
+        "payload_codec_envelope_responses": {"type": "boolean"},
+        "bridge_adapter_outcome_contract": {"type": "boolean"},
+        "replay_verification_contract": {"type": "boolean"},
+        "external_executor_config_contract": {"type": "boolean"},
+        "invocable_carrier_contract": {"type": "boolean"},
+        "payload_codecs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Codec ids accepted on every namespace. Engine-specific codecs are advertised separately under `payload_codecs_engine_specific`."
+        },
+        "payload_codecs_engine_specific": {
+          "type": "object",
+          "description": "Map of engine id to the additional codec ids that engine accepts beyond the universal set."
+        },
+        "response_compression": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["gzip", "deflate"]},
+          "description": "Response-body compression algorithms the server applies when the client advertises Accept-Encoding."
+        }
+      }
+    },
+    "worker_fleet": {
+      "type": "object",
+      "description": "Snapshot of the standalone worker fleet for the request namespace.",
+      "required": [
+        "namespace",
+        "active_workers",
+        "queues",
+        "build_ids",
+        "workers"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "namespace": {"type": "string"},
+        "active_workers": {"type": "integer", "minimum": 0},
+        "active_worker_scopes": {"type": "array"},
+        "queues": {"type": "array"},
+        "build_ids": {"type": "array"},
+        "workers": {"type": "array"}
+      }
+    },
+    "task_repair": {
+      "type": "object",
+      "description": "Diagnostic snapshot of the repair surface. Normative shape is owned by the `repair_actionability_objects` catalog entry; this envelope only requires the policy and candidates keys.",
+      "required": ["policy", "candidates"],
+      "additionalProperties": true,
+      "properties": {
+        "policy": {"type": "object"},
+        "candidates": {"type": ["array", "object"]}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "description": "Hard request-size and per-execution limits the server enforces. Tightening any of these limits is a breaking change.",
+      "required": [
+        "max_payload_bytes",
+        "max_memo_bytes",
+        "max_search_attributes",
+        "max_pending_activities",
+        "max_pending_children"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "max_payload_bytes": {"type": "integer", "minimum": 1},
+        "max_memo_bytes": {"type": "integer", "minimum": 1},
+        "max_search_attributes": {"type": "integer", "minimum": 0},
+        "max_search_attribute_key_length": {"type": "integer", "minimum": 1},
+        "max_search_attribute_value_bytes": {"type": "integer", "minimum": 1},
+        "max_operation_name_length": {"type": "integer", "minimum": 1},
+        "max_pending_activities": {"type": "integer", "minimum": 0},
+        "max_pending_children": {"type": "integer", "minimum": 0}
+      }
+    },
+    "structural_limits": {
+      "type": "object",
+      "description": "Snapshot of structural shape limits such as history budgets and queue-depth ceilings."
+    },
+    "topology": {
+      "type": "object",
+      "description": "Server topology manifest. Carries its own `schema` and `version` fields; full shape is normative under the topology manifest's own contract.",
+      "required": ["schema", "version", "supported_shapes", "current_shape"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "supported_shapes": {"type": "array"},
+        "current_shape": {"type": "string"}
+      }
+    },
+    "coordination_health": {
+      "type": "object",
+      "description": "Coordination-health manifest. Carries its own schema and version; that stable schema identity is normative for the full shape.",
+      "required": ["schema", "version", "status", "checks"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "status": {"type": "string"},
+        "checks": {"type": ["array", "object"]}
+      }
+    },
+    "client_compatibility": {
+      "type": "object",
+      "description": "Client compatibility authority published by the server.",
+      "required": ["authority"],
+      "additionalProperties": true,
+      "properties": {
+        "authority": {"type": "string", "const": "protocol_manifests"}
+      }
+    },
+    "surface_stability_contract": {
+      "type": "object",
+      "description": "Platform-wide surface-stability authority. Carries its own schema id `durable-workflow.v2.surface-stability.contract`. Full shape is normative under that schema id, not here.",
+      "required": [
+        "schema",
+        "version",
+        "authority_url",
+        "stability_levels",
+        "release_rules",
+        "field_visibility_rule",
+        "surface_families",
+        "release_check"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string", "const": "durable-workflow.v2.surface-stability.contract"},
+        "version": {"type": "integer", "minimum": 1},
+        "authority_url": {"type": "string", "format": "uri"},
+        "surface_families": {"type": "object"}
+      }
+    },
+    "platform_protocol_specs": {
+      "type": "object",
+      "description": "Platform protocol-spec catalog (this catalog). Carries its own schema id `durable-workflow.v2.platform-protocol-specs.catalog`. Full shape is normative under that schema id; this envelope only pins the top-level keys.",
+      "required": [
+        "schema",
+        "version",
+        "catalog_url",
+        "authority_url",
+        "formats",
+        "owner_repos",
+        "status_levels",
+        "evolution_rules",
+        "specs",
+        "release_check"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string", "const": "durable-workflow.v2.platform-protocol-specs.catalog"},
+        "version": {"type": "integer", "minimum": 1},
+        "catalog_url": {"type": "string", "format": "uri"},
+        "authority_url": {"type": "string", "format": "uri"},
+        "specs": {"type": "object"}
+      }
+    },
+    "platform_conformance_suite": {
+      "type": "object",
+      "description": "Platform conformance-suite manifest. Carries its own schema id `durable-workflow.v2.platform-conformance.suite`. Full shape is normative under that schema id.",
+      "required": [
+        "schema",
+        "version",
+        "authority_doc",
+        "surface_stability_authority",
+        "result_schema",
+        "result_version",
+        "conformance_levels",
+        "targets",
+        "fixture_catalog",
+        "pass_fail_rules",
+        "harness_contract",
+        "release_gates"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "sdk_neutrality_contract": {
+      "type": "object",
+      "description": "SDK-neutrality contract. Carries its own schema id `durable-workflow.v2.sdk-neutrality.contract`; that catalog defines the full normative shape.",
+      "required": ["schema", "version", "authority_url"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {"type": "string", "const": "durable-workflow.v2.sdk-neutrality.contract"},
+        "version": {"type": "integer", "minimum": 1},
+        "authority_url": {"type": "string", "format": "uri"}
+      }
+    },
+    "auth_composition_contract": {
+      "type": "object",
+      "description": "Auth composition manifest published by the server.",
+      "additionalProperties": true
+    },
+    "control_plane": {
+      "type": "object",
+      "description": "Control-plane protocol manifest. Its `version` field is the per-route compatibility authority; the cluster-info `version` is build identity only.",
+      "required": ["version"],
+      "additionalProperties": true,
+      "properties": {
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "worker_protocol": {
+      "type": "object",
+      "description": "Worker-plane protocol manifest published by the server.",
+      "required": ["version"],
+      "additionalProperties": true,
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "server_capabilities": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "worker_session_verbs": {
+              "type": "array",
+              "items": {"type": "string", "enum": ["create", "heartbeat", "close"]},
+              "minItems": 3,
+              "uniqueItems": true
+            },
+            "worker_sessions": {
+              "$ref": "./worker-sessions-runtime.schema.json#/$defs/workerSessionRuntimeContract"
+            },
+            "local_activities": {
+              "$ref": "./local-activity-runtime.schema.json#/$defs/localActivityRuntimeContract"
+            }
+          }
+        }
+      }
+    },
+    "bridge_adapter_outcome_contract": {
+      "type": "object",
+      "description": "Bridge adapter outcome contract published by the server.",
+      "additionalProperties": true
+    },
+    "replay_verification_contract": {
+      "type": "object",
+      "description": "Replay verification contract published by the server.",
+      "additionalProperties": true
+    },
+    "package_provenance": {
+      "type": "object",
+      "description": "Optional. Build-time package provenance (source, ref, commit). Only emitted when the operator has enabled provenance disclosure and the caller is admin or unauthenticated.",
+      "required": ["source", "ref", "commit"],
+      "additionalProperties": true,
+      "properties": {
+        "source": {"type": "string"},
+        "ref": {"type": "string"},
+        "commit": {"type": "string"}
+      }
+    }
+  }
+}

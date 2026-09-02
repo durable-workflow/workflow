@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/schedule.schema.json",
+  "title": "dw schedule create/describe/update --json",
+  "type": "object",
+  "required": ["namespace", "schedule_id"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "schedule_id": { "type": "string" },
+    "workflow_type": { "type": ["string", "null"] },
+    "spec": { "type": ["object", "null"], "additionalProperties": true },
+    "action": { "type": ["object", "null"], "additionalProperties": true },
+    "state": { "type": ["object", "null"], "additionalProperties": true },
+    "overlap_policy": { "type": ["string", "null"] },
+    "paused": { "type": ["boolean", "null"] },
+    "next_fire": { "type": ["string", "null"] },
+    "next_fire_at": { "type": ["string", "null"] },
+    "last_fire": { "type": ["string", "null"] },
+    "last_fire_at": { "type": ["string", "null"] },
+    "fires_count": { "type": ["integer", "null"] },
+    "outcome": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

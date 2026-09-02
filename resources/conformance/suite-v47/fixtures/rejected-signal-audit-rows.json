@@ -1,0 +1,65 @@
+{
+    "fixture_schema": "durable-workflow.rejected-signal-audit-rows/v1",
+    "workflow_instance_id": "detail-rejected-signal-audit",
+    "declared_signal": {
+        "name": "name-provided",
+        "arguments": {
+            "name": "string"
+        }
+    },
+    "requests": [
+        {
+            "signal_name": "name-provided",
+            "arguments": {
+                "nickname": "Taylor"
+            },
+            "expected": {
+                "type": "signal",
+                "target_scope": "instance",
+                "target_name": "name-provided",
+                "status": "rejected",
+                "outcome": "rejected_invalid_arguments",
+                "reason": "invalid_signal_arguments",
+                "rejection_reason": "invalid_signal_arguments",
+                "validation_errors": {
+                    "name": [
+                        "The name argument is required."
+                    ],
+                    "nickname": [
+                        "Unknown argument [nickname]."
+                    ]
+                },
+                "accepted_at": null,
+                "applied_at": null,
+                "rejected_at": "non_null",
+                "signal_status": "rejected"
+            }
+        },
+        {
+            "signal_name": "not-declared",
+            "arguments": {
+                "name": "Taylor"
+            },
+            "expected": {
+                "type": "signal",
+                "target_scope": "instance",
+                "target_name": "not-declared",
+                "status": "rejected",
+                "outcome": "rejected_unknown_signal",
+                "reason": "unknown_signal",
+                "rejection_reason": "unknown_signal",
+                "validation_errors": [],
+                "accepted_at": null,
+                "applied_at": null,
+                "rejected_at": "non_null",
+                "signal_status": "rejected"
+            }
+        }
+    ],
+    "invariants": {
+        "handler_invocations": 0,
+        "history_events_appended": 0,
+        "executable_or_ready_commands": 0,
+        "workflow_state_mutated": false
+    }
+}

@@ -4,6 +4,22 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Exception as BaseException;
+use Illuminate\Contracts\Queue\Job as JobContract;
+use Illuminate\Support\Facades\Cache;
+use InvalidArgumentException;
+use Mockery;
+use ReflectionMethod;
+use RuntimeException;
+use stdClass;
+use Tests\Fixtures\TestActivity;
+use Tests\Fixtures\TestProbeBackToBackWorkflow;
+use Tests\Fixtures\TestProbeChildFailureWorkflow;
+use Tests\Fixtures\TestProbeNowSignalWorkflow;
+use Tests\Fixtures\TestProbeParallelChildWorkflow;
+use Tests\Fixtures\TestProbeRetryActivity;
+use Tests\Fixtures\TestSagaActivity;
+use Tests\Fixtures\TestSagaParallelActivityWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Exception;
@@ -11,22 +27,25 @@ use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowRunningStatus;
+use Workflow\Workflow;
 use Workflow\WorkflowStub;
 
 final class ExceptionTest extends TestCase
 {
     public function testMiddleware(): void
     {
-        $exception = new Exception(0, now()->toDateTimeString(), new StoredWorkflow(), new \Exception(
+        $exception = new Exception(0, now()->toDateTimeString(), new StoredWorkflow(), new BaseException(
             'Test exception'
         ));
 
         $middleware = collect($exception->middleware())
-            ->map(static fn ($middleware) => is_object($middleware) ? get_class($middleware) : $middleware)
             ->values();
 
         $this->assertCount(1, $middleware);
-        $this->assertSame([WithoutOverlappingMiddleware::class], $middleware->all());
+        $this->assertSame(WithoutOverlappingMiddleware::class, $middleware[0]::class);
+        $this->assertSame(WithoutOverlappingMiddleware::WORKFLOW, $middleware[0]->type);
+        $this->assertSame(1, $middleware[0]->releaseAfter);
+        $this->assertSame(15, $middleware[0]->expiresAfter);
     }
 
     public function testExceptionWorkflowRunning(): void
@@ -38,9 +57,376 @@ final class ExceptionTest extends TestCase
             'status' => WorkflowRunningStatus::$name,
         ]);
 
-        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new \Exception('Test exception'));
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new BaseException('Test exception'));
         $exception->handle();
 
         $this->assertSame(WorkflowRunningStatus::class, $workflow->status());
     }
+
+    public function testHandleResumesWorkflowWhenLogAlreadyExists(): void
+    {
+        $lock = Mockery::mock();
+        $lock->shouldReceive('get')
+            ->once()
+            ->andReturn(true);
+        $lock->shouldReceive('release')
+            ->once();
+
+        Cache::shouldReceive('lock')
+            ->once()
+            ->with('laravel-workflow-exception:123', 15)
+            ->andReturn($lock);
+
+        $workflow = Mockery::mock();
+        $workflow->shouldReceive('resume')
+            ->once();
+
+        $storedWorkflow = Mockery::mock(StoredWorkflow::class)
+            ->makePartial();
+        $storedWorkflow->id = 123;
+        $storedWorkflow->shouldReceive('effectiveConnection')
+            ->andReturn(null);
+        $storedWorkflow->shouldReceive('effectiveQueue')
+            ->andReturn(null);
+        $storedWorkflow->shouldReceive('toWorkflow')
+            ->once()
+            ->andReturn($workflow);
+        $storedWorkflow->shouldReceive('hasLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(true);
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new BaseException('existing log'));
+        $exception->handle();
+
+        $this->assertSame(123, $storedWorkflow->id);
+
+        Mockery::close();
+    }
+
+    public function testHandleReleasesWhenExceptionLockUnavailable(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+
+        $lock = Mockery::mock();
+        $lock->shouldReceive('get')
+            ->once()
+            ->andReturn(false);
+
+        Cache::shouldReceive('lock')
+            ->once()
+            ->with('laravel-workflow-exception:' . $storedWorkflow->id, 15)
+            ->andReturn($lock);
+
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('release')
+            ->once()
+            ->with(1);
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'locked',
+            'code' => 0,
+        ]);
+        $exception->setJob($job);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->hasLogByIndex(0));
+
+        Mockery::close();
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassIsInvalid(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = '';
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'invalid workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassDoesNotExist(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = 'Tests\\Fixtures\\MissingWorkflowClass';
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'missing workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotAWorkflow(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = stdClass::class;
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'non workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotInstantiable(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = ExceptionTestAbstractWorkflow::class;
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'abstract workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassAutoloadThrows(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = 'Tests\\Fixtures\\ThrowingAutoloadWorkflow';
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'autoload failure',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $autoload = static function (string $class): void {
+            if ($class === 'Tests\\Fixtures\\ThrowingAutoloadWorkflow') {
+                throw new RuntimeException('autoload exploded');
+            }
+        };
+
+        spl_autoload_register($autoload);
+
+        try {
+            $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+            $method->setAccessible(true);
+
+            $this->assertSame('persist', $method->invoke($exception));
+        } finally {
+            spl_autoload_unregister($autoload);
+        }
+    }
+
+    public function testProbeReplayUsesCarbonNowBeforeWorkflowHandleResetsContext(): void
+    {
+        TestProbeNowSignalWorkflow::$signalSawCarbonNow = false;
+
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeNowSignalWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'recordNowType',
+                'arguments' => Serializer::serialize([]),
+            ]);
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'probe now type',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+        $method->invoke($exception);
+
+        $this->assertTrue(TestProbeNowSignalWorkflow::$signalSawCarbonNow);
+    }
+
+    public function testProbeReplayPersistsWhenNowCannotBeParsed(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $exception = new Exception(0, 'not-a-timestamp', $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'bad now',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
+    }
+
+    public function testSkipsWriteWhenProbeDoesNotReachCandidateException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeParallelChildWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => BaseException::class,
+                    'message' => 'child failed: child-1',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'child failed: child-2',
+            'code' => 0,
+        ], sourceClass: TestProbeChildFailureWorkflow::class);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->hasLogByIndex(1));
+        $this->assertSame(1, $storedWorkflow->logs()->count());
+    }
+
+    public function testRetriesWriteWhenProbeMatchesAfterEarlierPendingWork(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeParallelChildWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('release')
+            ->once()
+            ->with(1);
+
+        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'child failed: child-2',
+            'code' => 0,
+        ], sourceClass: TestProbeChildFailureWorkflow::class);
+        $exception->setJob($job);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(1));
+    }
+
+    public function testPersistsWriteWhenProbeReachesCandidateException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeBackToBackWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => RuntimeException::class,
+                    'message' => 'first failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => InvalidArgumentException::class,
+            'message' => 'second failure',
+            'code' => 0,
+        ], sourceClass: TestProbeRetryActivity::class);
+        $exception->handle();
+
+        $log = $storedWorkflow->fresh()
+            ->logs()
+            ->firstWhere('index', 1);
+
+        $this->assertNotNull($log);
+        $this->assertTrue($storedWorkflow->fresh()->hasLogByIndex(1));
+        $this->assertSame(TestProbeRetryActivity::class, Serializer::unserialize($log->result)['sourceClass']);
+    }
+
+    public function testSkipsWriteWhenProbeReachesDifferentActivityClassAtSameIndex(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestSagaParallelActivityWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => TestActivity::class,
+                'result' => Serializer::serialize('step complete'),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => RuntimeException::class,
+                    'message' => 'parallel failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $exception = new Exception(2, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => RuntimeException::class,
+            'message' => 'another parallel failure',
+            'code' => 0,
+        ], sourceClass: TestSagaActivity::class);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(2));
+    }
+}
+
+abstract class ExceptionTestAbstractWorkflow extends Workflow
+{
 }

@@ -11,6 +11,7 @@ use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\Signal;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\Timer;
 use Workflow\WorkflowStub;
 
 final class AwaitWithTimeoutsTest extends TestCase
@@ -87,6 +88,27 @@ final class AwaitWithTimeoutsTest extends TestCase
         $this->assertTrue(Serializer::unserialize($workflow->logs()->firstWhere('index', 0)->result));
     }
 
+    public function testLoadsStoredTimerResultAsTimedOut(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => Timer::class,
+                'result' => Serializer::serialize(true),
+            ]);
+
+        WorkflowStub::awaitWithTimeout('1 minute', static fn () => true)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertSame(false, $result);
+        $this->assertSame(1, $workflow->logs()->count());
+    }
+
     public function testResolvesConflictingResult(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
@@ -121,23 +143,18 @@ final class AwaitWithTimeoutsTest extends TestCase
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
 
-        $mockLogs = Mockery::mock(\Illuminate\Database\Eloquent\Relations\HasMany::class)
-            ->shouldReceive('whereIndex')
-            ->twice()
-            ->andReturnSelf()
-            ->shouldReceive('first')
-            ->twice()
-            ->andReturn(null)
-            ->shouldReceive('create')
-            ->andThrow(new \Illuminate\Database\QueryException('', '', [], new \Exception('Some other error')))
-            ->getMock();
-
         $mockStoredWorkflow = Mockery::spy($storedWorkflow);
-
-        $mockStoredWorkflow->shouldReceive('logs')
-            ->andReturnUsing(static function () use ($mockLogs) {
-                return $mockLogs;
-            });
+        $mockStoredWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(null);
+        $mockStoredWorkflow->shouldReceive('createLog')
+            ->once()
+            ->andThrow(new \Illuminate\Database\QueryException('', '', [], new \Exception('Some other error')));
+        $mockStoredWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0, true)
+            ->andReturn(null);
 
         WorkflowStub::setContext([
             'storedWorkflow' => $mockStoredWorkflow,

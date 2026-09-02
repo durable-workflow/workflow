@@ -1,0 +1,134 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "parallel-timer-group-reverse-completion",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMultipleTimerWorkflow",
+    "arguments": [
+      5,
+      1
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-21T10:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "timer-slow",
+        "sequence": 1,
+        "delay_seconds": 5,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-08-21T10:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "timer-fast",
+        "sequence": 2,
+        "delay_seconds": 1,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-08-21T10:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerFired",
+      "payload": {
+        "timer_id": "timer-fast",
+        "sequence": 2,
+        "delay_seconds": 1,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-08-21T10:00:03+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "payload": {
+        "timer_id": "timer-slow",
+        "sequence": 1,
+        "delay_seconds": 5,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-08-21T10:00:05+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "timers_completed": true,
+      "workflow_id": "regression-corpus-parallel-timer-group-reverse-completion",
+      "run_id": "regression-corpus-run-parallel-timer-group-reverse-completion"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-fiber-activity-history-sequence",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "single-activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-07-29T12:00:00+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 7,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-07-29T12:00:01+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "stage": "completed",
+      "name": null,
+      "greeting": "Hello, Ada!",
+      "approved": false,
+      "version": -1,
+      "version_result": null,
+      "reservation_id": null,
+      "events": [
+        "activity:Hello, Ada!"
+      ]
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

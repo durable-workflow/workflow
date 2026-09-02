@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\Models;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Tests\Fixtures\TestContinueAsNewWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
@@ -248,5 +249,267 @@ final class StoredWorkflowTest extends TestCase
 
         $this->assertNotNull($active);
         $this->assertSame($workflow->id, $active->id);
+    }
+
+    public function testEffectiveConnectionUsesWorkflowOptionConnection(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => TestWorkflow::class,
+            'status' => 'running',
+            'arguments' => Serializer::serialize([
+                'arguments' => [],
+                'options' => [
+                    'connection' => 'sync',
+                    'queue' => null,
+                ],
+            ]),
+        ]);
+
+        $this->assertSame('sync', $workflow->effectiveConnection());
+    }
+
+    public function testFindLogByIndexFreshSyncsLoadedLogsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $existingLog = $workflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => 'test',
+            ]);
+
+        $freshLog = $workflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now(),
+                'class' => 'test',
+            ]);
+
+        $workflow->setRelation('logs', $workflow->logs()->whereKey($existingLog->id)->get());
+
+        $log = $workflow->findLogByIndex(1, true);
+
+        $this->assertNotNull($log);
+        $this->assertSame($freshLog->id, $log->id);
+        $this->assertSame([$existingLog->id, $freshLog->id], $workflow->getRelation('logs')->pluck('id')->toArray());
+    }
+
+    public function testFindLogByIndexUsesLoadedLogsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => 'test',
+            ]);
+
+        $workflow->load('logs');
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $log = $workflow->findLogByIndex(0);
+
+        $this->assertNotNull($log);
+        $this->assertCount(0, DB::getQueryLog());
+    }
+
+    public function testFindLogByIndexDoesNotUseFirstWhereForLoadedLogsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $log = $workflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => 'test',
+            ]);
+
+        $workflow->setRelation('logs', new class([$log]) extends \Illuminate\Database\Eloquent\Collection {
+            public function firstWhere($key, $operator = null, $value = null)
+            {
+                throw new \BadMethodCallException('Loaded log lookup should not rely on firstWhere.');
+            }
+        });
+
+        $foundLog = $workflow->findLogByIndex(0);
+
+        $this->assertNotNull($foundLog);
+        $this->assertSame($log->id, $foundLog->id);
+    }
+
+    public function testCreateLogSyncsLoadedLogsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->load('logs');
+
+        $workflow->createLog([
+            'index' => 2,
+            'now' => now(),
+            'class' => 'test',
+        ]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $log = $workflow->findLogByIndex(2);
+
+        $this->assertNotNull($log);
+        $this->assertCount(0, DB::getQueryLog());
+    }
+
+    public function testFindTimerByIndexUsesLoadedTimersRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->timers()
+            ->create([
+                'index' => 3,
+                'stop_at' => now()
+                    ->addSecond(),
+            ]);
+
+        $workflow->load('timers');
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $timer = $workflow->findTimerByIndex(3);
+
+        $this->assertNotNull($timer);
+        $this->assertCount(0, DB::getQueryLog());
+    }
+
+    public function testFindTimerByIndexDoesNotUseFirstWhereForLoadedTimersRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $timer = $workflow->timers()
+            ->create([
+                'index' => 3,
+                'stop_at' => now()
+                    ->addSecond(),
+            ]);
+
+        $workflow->setRelation('timers', new class([$timer]) extends \Illuminate\Database\Eloquent\Collection {
+            public function firstWhere($key, $operator = null, $value = null)
+            {
+                throw new \BadMethodCallException('Loaded timer lookup should not rely on firstWhere.');
+            }
+        });
+
+        $foundTimer = $workflow->findTimerByIndex(3);
+
+        $this->assertNotNull($foundTimer);
+        $this->assertSame($timer->id, $foundTimer->id);
+    }
+
+    public function testFindTimerByIndexQueriesWhenTimersRelationIsNotLoaded(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->timers()
+            ->create([
+                'index' => 3,
+                'stop_at' => now()
+                    ->addSecond(),
+            ]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $timer = $workflow->findTimerByIndex(3);
+
+        $this->assertNotNull($timer);
+        $this->assertGreaterThan(0, count(DB::getQueryLog()));
+    }
+
+    public function testOrderedSignalsUsesLoadedSignalsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->signals()
+            ->create([
+                'method' => 'first',
+                'arguments' => serialize([]),
+                'created_at' => now()
+                    ->subSecond(),
+            ]);
+
+        $workflow->signals()
+            ->create([
+                'method' => 'second',
+                'arguments' => serialize([]),
+                'created_at' => now(),
+            ]);
+
+        $workflow->load('signals');
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $signals = $workflow->orderedSignals();
+
+        $this->assertSame(['first', 'second'], $signals->pluck('method')->toArray());
+        $this->assertCount(0, DB::getQueryLog());
+    }
+
+    public function testOrderedSignalsQueriesWhenSignalsRelationIsNotLoaded(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $workflow->signals()
+            ->create([
+                'method' => 'first',
+                'arguments' => serialize([]),
+                'created_at' => now()
+                    ->subSecond(),
+            ]);
+
+        $workflow->signals()
+            ->create([
+                'method' => 'second',
+                'arguments' => serialize([]),
+                'created_at' => now(),
+            ]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $signals = $workflow->orderedSignals();
+
+        $this->assertSame(['first', 'second'], $signals->pluck('method')->toArray());
+        $this->assertGreaterThan(0, count(DB::getQueryLog()));
     }
 }

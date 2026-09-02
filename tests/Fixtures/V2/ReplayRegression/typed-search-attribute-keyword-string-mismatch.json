@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "typed-search-attribute-keyword-string-mismatch",
+  "protocol_version": "1.16",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "workflow-executor",
+    "query-state-replayer"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSearchAttributeWorkflow",
+    "arguments": [
+      "Ada Lovelace"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-25T04:15:32+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "SearchAttributesUpserted",
+      "payload": {
+        "sequence": 1,
+        "attributes": {
+          "status": "processing",
+          "customer": "Ada Lovelace"
+        },
+        "attribute_types": {
+          "status": "keyword",
+          "customer": "keyword"
+        },
+        "merged": {
+          "status": "processing",
+          "customer": "Ada Lovelace"
+        }
+      },
+      "recorded_at": "2026-08-25T04:15:33+00:00"
+    }
+  ],
+  "expected_failure": {
+    "type": "search_attribute_type_identity_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException"
+  }
+}

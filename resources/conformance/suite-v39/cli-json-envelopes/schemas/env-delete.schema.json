@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/env-delete.schema.json",
+  "title": "dw env:delete --json",
+  "type": "object",
+  "required": ["name", "deleted"],
+  "properties": {
+    "name": { "type": "string" },
+    "deleted": { "type": "boolean" },
+    "cleared_current_env": { "type": "boolean" },
+    "config_path": { "type": "string" }
+  },
+  "additionalProperties": true
+}

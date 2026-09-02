@@ -1,0 +1,515 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "saga_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for saga and compensation conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "requires_resolved_versions": true,
+    "requires_downloadable_release_assets": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "requires_artifact_sources_for_each_required_artifact": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "release_tag_without_required_assets",
+      "rolling_server_image_tag"
+    ],
+    "required_artifacts": [
+      "server",
+      "cli",
+      "workflow-php",
+      "sdk-python",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow-php": [
+        "workflow"
+      ]
+    }
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "topology",
+    "book_trip_inputs",
+    "side_store_deltas",
+    "forward_step_events",
+    "compensation_events",
+    "history_dumps",
+    "worker_restart_observations",
+    "operator_visibility_snapshots",
+    "cross_language_matrix",
+    "typed_error_shapes",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "required_matrix": {
+    "workflow_runtimes": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "activity_runtimes": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "client_paths": [
+      "cli",
+      "sdk-python",
+      "sdk-php"
+    ],
+    "operator_visibility_paths": [
+      "dw workflow:describe <workflow-id>",
+      "dw workflow:show-run <workflow-id> <run-id>",
+      "dw workflow:history <workflow-id> <run-id>",
+      "dw workflow:history-export <workflow-id> <run-id>",
+      "GET /api/workflows/{workflowId}",
+      "GET /api/workflows/{workflowId}/runs/{runId}",
+      "GET /api/workflows/{workflowId}/runs/{runId}/history",
+      "GET /api/workflows/{workflowId}/runs/{runId}/history/export",
+      "GET /waterline/api/instances/{instanceId}",
+      "GET /waterline/api/instances/{instanceId}/runs/{runId}"
+    ],
+    "cross_language_cells": [
+      {
+        "workflow_runtime": "workflow-php",
+        "compensation_runtime": "sdk-python",
+        "scenario": "php_workflow_python_compensation"
+      },
+      {
+        "workflow_runtime": "sdk-python",
+        "compensation_runtime": "workflow-php",
+        "scenario": "python_workflow_php_compensation"
+      }
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "resolved_artifact_versions",
+        "artifact_sources",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "forward_success_path": {
+      "required_fields": [
+        "forward_rows",
+        "compensation_rows",
+        "workflow_status",
+        "history_dumps"
+      ]
+    },
+    "failure_at_d_reverse_compensation": {
+      "required_fields": [
+        "forward_rows",
+        "compensation_rows",
+        "compensation_order",
+        "workflow_status",
+        "history_dumps"
+      ]
+    },
+    "failure_at_c_reverse_compensation": {
+      "required_fields": [
+        "forward_rows",
+        "compensation_rows",
+        "compensation_order",
+        "send_confirmation_invocations",
+        "workflow_status"
+      ]
+    },
+    "failure_at_a_no_compensation": {
+      "required_fields": [
+        "forward_rows",
+        "compensation_rows",
+        "workflow_status"
+      ]
+    },
+    "compensation_retry_idempotence": {
+      "required_fields": [
+        "retry_attempts",
+        "business_effect_count",
+        "workflow_status"
+      ]
+    },
+    "compensation_failure_visibility": {
+      "required_fields": [
+        "failed_compensation_step",
+        "terminal_failure_shape",
+        "operator_visible_reason",
+        "workflow_status"
+      ]
+    },
+    "mid_compensation_worker_restart": {
+      "required_fields": [
+        "restart_timing",
+        "resumed_compensation_step",
+        "duplicate_compensation_counts",
+        "history_dumps"
+      ]
+    },
+    "php_workflow_python_compensation": {
+      "required_fields": [
+        "workflow_runtime",
+        "compensation_runtime",
+        "compensation_order",
+        "typed_result_shapes"
+      ]
+    },
+    "python_workflow_php_compensation": {
+      "required_fields": [
+        "workflow_runtime",
+        "compensation_runtime",
+        "compensation_order",
+        "typed_result_shapes"
+      ]
+    },
+    "typed_compensation_error_round_trip": {
+      "required_fields": [
+        "raised_error_type",
+        "observed_error_type",
+        "observed_error_message",
+        "terminal_failure_shape"
+      ]
+    },
+    "operator_visible_mid_compensation_status": {
+      "required_fields": [
+        "completed_forward_steps",
+        "running_compensation_step",
+        "completed_compensations",
+        "pending_compensations",
+        "failed_compensations",
+        "operator_visibility_snapshots"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "workflow_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP workflow runtime, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ]
+    },
+    {
+      "id": "forward_success_path",
+      "title": "Forward path completes without compensation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start BookTrip with reserve_flight, reserve_hotel, charge_card, and send_confirmation configured to succeed",
+        "record every forward activity completion into the side store",
+        "dump workflow status and history after completion"
+      ],
+      "pass_criteria": [
+        "the side store records exactly four forward completions in A, B, C, D order",
+        "the side store records zero compensation rows",
+        "the workflow reaches the documented completed status"
+      ]
+    },
+    {
+      "id": "failure_at_d_reverse_compensation",
+      "title": "Failure at D compensates C then B then A",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start BookTrip with send_confirmation configured to fail definitively after retries are exhausted",
+        "record forward completions and compensation handler effects into the side store",
+        "dump workflow terminal status and history"
+      ],
+      "pass_criteria": [
+        "the side store records completed forward steps A, B, and C only",
+        "compensation rows are recorded exactly once each in C, B, A order",
+        "the workflow reaches a documented failed-after-compensation terminal state rather than silently completing"
+      ]
+    },
+    {
+      "id": "failure_at_c_reverse_compensation",
+      "title": "Failure at C compensates B then A",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start BookTrip with charge_card configured to fail before send_confirmation is invoked",
+        "record forward completions and compensation handler effects into the side store",
+        "dump workflow terminal status and history"
+      ],
+      "pass_criteria": [
+        "the side store records completed forward steps A and B only",
+        "compensation rows are recorded exactly once each in B, A order",
+        "send_confirmation is never invoked"
+      ]
+    },
+    {
+      "id": "failure_at_a_no_compensation",
+      "title": "Failure at A runs no compensation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start BookTrip with reserve_flight configured to fail before any forward step completes",
+        "record side-store forward and compensation effects",
+        "dump workflow terminal status and history"
+      ],
+      "pass_criteria": [
+        "the side store records zero completed forward steps",
+        "the side store records zero compensation rows",
+        "the workflow reaches the documented failure status"
+      ]
+    },
+    {
+      "id": "compensation_retry_idempotence",
+      "title": "Compensation retry does not double-undo business state",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "configure cancel_hotel to fail once after recording its retry attempt and then succeed",
+        "trigger a BookTrip run that compensates the hotel step",
+        "compare retry attempts with the side-store business effect count"
+      ],
+      "pass_criteria": [
+        "cancel_hotel is retried after the injected failure",
+        "the underlying hotel cancellation effect is recorded exactly once",
+        "the workflow terminal state and history make the retry observable"
+      ]
+    },
+    {
+      "id": "compensation_failure_visibility",
+      "title": "Definitive compensation failure is visible",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "configure cancel_flight to fail definitively after retries are exhausted",
+        "trigger a BookTrip run that must compensate the flight step",
+        "capture CLI, control-plane, history, and Waterline views of the terminal run"
+      ],
+      "pass_criteria": [
+        "the workflow does not report success after compensation failure",
+        "the terminal failure shape names the failed compensation step",
+        "operator surfaces expose the compensation failure reason without requiring raw storage access"
+      ]
+    },
+    {
+      "id": "mid_compensation_worker_restart",
+      "title": "Worker restart resumes mid-compensation without duplicates",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "configure compensation handlers to run long enough to observe in-progress state",
+        "kill the active worker while compensation is in progress and restart it",
+        "compare side-store effects and history before and after restart"
+      ],
+      "pass_criteria": [
+        "compensation resumes from the same durable compensation step after worker restart",
+        "no compensation effect is skipped",
+        "no compensation effect is recorded more than once"
+      ]
+    },
+    {
+      "id": "php_workflow_python_compensation",
+      "title": "PHP workflow invokes Python compensation handlers",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "run BookTrip as a PHP workflow with Python compensation activity handlers",
+        "trigger a failure after charge_card completes",
+        "capture PHP workflow observations of Python compensation results"
+      ],
+      "pass_criteria": [
+        "Python compensation handlers run in reverse order for completed PHP workflow steps",
+        "the PHP workflow observes typed compensation results without language-specific drift",
+        "history links each cross-language compensation call to the failed saga run"
+      ]
+    },
+    {
+      "id": "python_workflow_php_compensation",
+      "title": "Python workflow invokes PHP compensation handlers",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "run BookTrip as a Python workflow with PHP compensation activity handlers",
+        "trigger a failure after charge_card completes",
+        "capture Python workflow observations of PHP compensation results"
+      ],
+      "pass_criteria": [
+        "PHP compensation handlers run in reverse order for completed Python workflow steps",
+        "the Python workflow observes typed compensation results without language-specific drift",
+        "history links each cross-language compensation call to the failed saga run"
+      ]
+    },
+    {
+      "id": "typed_compensation_error_round_trip",
+      "title": "Typed compensation error survives language and terminal boundaries",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "raise a recognizable typed exception from a compensation handler",
+        "observe the workflow failure shape from the originating workflow runtime, cross-language runtime, CLI, and history export",
+        "compare error type, message, compensation step, and retry metadata"
+      ],
+      "pass_criteria": [
+        "the original compensation error type or stable error code survives every claimed boundary",
+        "the failure shape identifies the compensation step that raised",
+        "the terminal state is not reduced to a generic compensation failed string"
+      ]
+    },
+    {
+      "id": "operator_visible_mid_compensation_status",
+      "title": "Operators can inspect in-progress compensation status",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "query the run while compensation is actively executing",
+        "capture CLI, control-plane, history, and Waterline detail snapshots",
+        "compare snapshots against the side-store state at the same observation point"
+      ],
+      "pass_criteria": [
+        "operator-visible state names completed forward steps",
+        "operator-visible state distinguishes completed, running, pending, and failed compensation steps",
+        "missing in-progress compensation status is recorded as a focused visibility finding against the owning surface"
+      ]
+    }
+  ]
+}

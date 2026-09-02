@@ -17,7 +17,7 @@ final class ContinueAsNewWorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertEquals(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertEquals('workflow_3', $workflow->output());

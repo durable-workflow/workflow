@@ -1,0 +1,661 @@
+{
+  "schema": "durable-workflow.cli.output-schema-manifest",
+  "version": 3,
+  "artifact_id": "durable-workflow.cli.output-schema-manifest@3",
+  "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/manifest.json",
+  "json_schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "stability": "patch-stable-additive",
+  "commands": {
+    "debug": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-debug.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-debug.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-debug.schema.json",
+      "sha256": "sha256:657915b4c64e25b6cb4cd4a4dd412d5ae8490b37c89a43a8636b600345a535e8"
+    },
+    "activity:complete": {
+      "output": "--json",
+      "schema": "schemas/output/activity-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-task-result.schema.json",
+      "sha256": "sha256:99abbd0b7f9d289bfd7f21b7b863a2aca1237333b7c4d920f414fcbca60daf22"
+    },
+    "activity:describe": {
+      "output": "--json",
+      "schema": "schemas/output/activity.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity.schema.json",
+      "sha256": "sha256:0ab45653bab605df47fe886b84c47ebb176ab1909c162b5063bf6d88a5f5b272"
+    },
+    "activity:fail": {
+      "output": "--json",
+      "schema": "schemas/output/activity-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-task-result.schema.json",
+      "sha256": "sha256:99abbd0b7f9d289bfd7f21b7b863a2aca1237333b7c4d920f414fcbca60daf22"
+    },
+    "activity:list": {
+      "output": "--json",
+      "schema": "schemas/output/activity-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list.schema.json",
+      "sha256": "sha256:ea24026a3bd9d2e8d2a98a1cdb00d3a55de25a5c5a42169bbd9eb9f4ebd8fecb"
+    },
+    "activities:describe": {
+      "output": "--json",
+      "schema": "schemas/output/activity.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity.schema.json",
+      "sha256": "sha256:0ab45653bab605df47fe886b84c47ebb176ab1909c162b5063bf6d88a5f5b272"
+    },
+    "activities:list": {
+      "output": "--json",
+      "schema": "schemas/output/activity-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list.schema.json",
+      "sha256": "sha256:ea24026a3bd9d2e8d2a98a1cdb00d3a55de25a5c5a42169bbd9eb9f4ebd8fecb"
+    },
+    "bridge:webhook": {
+      "output": "--json",
+      "schema": "schemas/output/bridge-adapter-outcome.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/bridge-adapter-outcome.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/bridge-adapter-outcome.schema.json",
+      "sha256": "sha256:4ba411a892b2b821f9fa0d6e9217a9112abfac67f9a324ac26130b35c99b4153"
+    },
+    "env:delete": {
+      "output": "--json",
+      "schema": "schemas/output/env-delete.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-delete.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-delete.schema.json",
+      "sha256": "sha256:eda1cf9ecef684e0e17a0b02c64c593cccc461ebc9365a068ea0d52cd3a2bae6"
+    },
+    "env:list": {
+      "output": "--json",
+      "schema": "schemas/output/env-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list.schema.json",
+      "sha256": "sha256:72ffff2a4d2bf803ba52585a477dc4cee859133a3a18f8bcb7bcf671d02d458e"
+    },
+    "env:set": {
+      "output": "--json",
+      "schema": "schemas/output/env-profile.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "sha256": "sha256:b46563c7018320b0009ab578b0e37c4a0d285e1cb6450c7a5075bbeca3a28751"
+    },
+    "env:show": {
+      "output": "--json",
+      "schema": "schemas/output/env-profile.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "sha256": "sha256:b46563c7018320b0009ab578b0e37c4a0d285e1cb6450c7a5075bbeca3a28751"
+    },
+    "env:use": {
+      "output": "--json",
+      "schema": "schemas/output/env-profile.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+      "sha256": "sha256:b46563c7018320b0009ab578b0e37c4a0d285e1cb6450c7a5075bbeca3a28751"
+    },
+    "namespace:create": {
+      "output": "--json",
+      "schema": "schemas/output/namespace.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "sha256": "sha256:3eaf767a7579af98beb5d42fe88f303261e0ce0c63560a99f9da59e3c460de01"
+    },
+    "namespace:delete": {
+      "output": "--json",
+      "schema": "schemas/output/namespace.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "sha256": "sha256:3eaf767a7579af98beb5d42fe88f303261e0ce0c63560a99f9da59e3c460de01"
+    },
+    "namespace:describe": {
+      "output": "--json",
+      "schema": "schemas/output/namespace.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "sha256": "sha256:3eaf767a7579af98beb5d42fe88f303261e0ce0c63560a99f9da59e3c460de01"
+    },
+    "namespace:list": {
+      "output": "--json",
+      "schema": "schemas/output/namespace-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list.schema.json",
+      "sha256": "sha256:63e086ce8341f1c14f2ef4d2a9a6746d1ba3473acefc6ca7b4b888393d8f4229"
+    },
+    "namespace:update": {
+      "output": "--json",
+      "schema": "schemas/output/namespace.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+      "sha256": "sha256:3eaf767a7579af98beb5d42fe88f303261e0ce0c63560a99f9da59e3c460de01"
+    },
+    "query-task:complete": {
+      "output": "--json",
+      "schema": "schemas/output/query-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+      "sha256": "sha256:24e9deb177b638fa217d6499684f18ad7adb12d86a6fa42ff3b3e2e22e00e992"
+    },
+    "query-task:fail": {
+      "output": "--json",
+      "schema": "schemas/output/query-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+      "sha256": "sha256:24e9deb177b638fa217d6499684f18ad7adb12d86a6fa42ff3b3e2e22e00e992"
+    },
+    "query-task:poll": {
+      "output": "--json",
+      "schema": "schemas/output/query-task-poll.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-poll.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-poll.schema.json",
+      "sha256": "sha256:962910e2c1ecf080faf19d93d3f382685bb7d979af2ee576a7560729409cf321"
+    },
+    "namespace:set-storage-driver": {
+      "output": "--json",
+      "schema": "schemas/output/external-storage-policy.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/external-storage-policy.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/external-storage-policy.schema.json",
+      "sha256": "sha256:8f05171742fe8ddf7ad2f22b478f412c12168806b9e0677700d6f597e6ddeb0f"
+    },
+    "schedule:backfill": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "sha256": "sha256:e28bc71d0fd5a9f73dfe102fe718808dc3588c9809256d0f802c450a0a547439"
+    },
+    "schedule:create": {
+      "output": "--json",
+      "schema": "schemas/output/schedule.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "sha256": "sha256:664860e5a42d683f6f877115d9f20fb55b7bee568a696698b843e64e2c8fa5a3"
+    },
+    "schedule:delete": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "sha256": "sha256:e28bc71d0fd5a9f73dfe102fe718808dc3588c9809256d0f802c450a0a547439"
+    },
+    "schedule:describe": {
+      "output": "--json",
+      "schema": "schemas/output/schedule.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "sha256": "sha256:664860e5a42d683f6f877115d9f20fb55b7bee568a696698b843e64e2c8fa5a3"
+    },
+    "schedule:history": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-history.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history.schema.json",
+      "sha256": "sha256:d65548fe16d63eb2b2c7c557af7476dc7576462908eab58df278c91cc3a7393b"
+    },
+    "schedule:list": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list.schema.json",
+      "sha256": "sha256:1e1f72aad6c76a871fed101e2ec7022d7366809b0f8ae8164e627822add47927"
+    },
+    "schedule:pause": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "sha256": "sha256:e28bc71d0fd5a9f73dfe102fe718808dc3588c9809256d0f802c450a0a547439"
+    },
+    "schedule:resume": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+      "sha256": "sha256:e28bc71d0fd5a9f73dfe102fe718808dc3588c9809256d0f802c450a0a547439"
+    },
+    "schedule:trigger": {
+      "output": "--json",
+      "schema": "schemas/output/schedule-trigger.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-trigger.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-trigger.schema.json",
+      "sha256": "sha256:12df246768782bfff0358770e115a13ce15af1f95813a8b186484026b8e7e2aa"
+    },
+    "schedule:update": {
+      "output": "--json",
+      "schema": "schemas/output/schedule.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+      "sha256": "sha256:664860e5a42d683f6f877115d9f20fb55b7bee568a696698b843e64e2c8fa5a3"
+    },
+    "search-attribute:create": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "sha256": "sha256:28bc6ff05ce5409a2024d7695f3c366339562a81a0a8ee6747e1603ff2dcda09"
+    },
+    "search-attributes:create": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "sha256": "sha256:28bc6ff05ce5409a2024d7695f3c366339562a81a0a8ee6747e1603ff2dcda09"
+    },
+    "search-attribute:delete": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "sha256": "sha256:28bc6ff05ce5409a2024d7695f3c366339562a81a0a8ee6747e1603ff2dcda09"
+    },
+    "search-attributes:delete": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+      "sha256": "sha256:28bc6ff05ce5409a2024d7695f3c366339562a81a0a8ee6747e1603ff2dcda09"
+    },
+    "search-attribute:list": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+      "sha256": "sha256:8eeb0d2e918fbed6d0bfb8d7fdc92cf7d0374d7e68fdceec072e03f8fa00dcc3"
+    },
+    "search-attributes:list": {
+      "output": "--json",
+      "schema": "schemas/output/search-attribute-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+      "sha256": "sha256:8eeb0d2e918fbed6d0bfb8d7fdc92cf7d0374d7e68fdceec072e03f8fa00dcc3"
+    },
+    "cluster:info": {
+      "output": "--output=json",
+      "schema": "schemas/output/server-info.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-info.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-info.schema.json",
+      "sha256": "sha256:606ce77e624db9fcce1541a51c75774f02414752c7bcc2f108ededde91dbd3c9"
+    },
+    "server:health": {
+      "output": "--output=json",
+      "schema": "schemas/output/server-health.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-health.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-health.schema.json",
+      "sha256": "sha256:a9138e09aad62f86038a26062570d93685af6e272075582f560498dd00803f49"
+    },
+    "server:info": {
+      "output": "--output=json",
+      "schema": "schemas/output/server-info.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-info.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-info.schema.json",
+      "sha256": "sha256:606ce77e624db9fcce1541a51c75774f02414752c7bcc2f108ededde91dbd3c9"
+    },
+    "storage:test": {
+      "output": "--json",
+      "schema": "schemas/output/storage-test.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/storage-test.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/storage-test.schema.json",
+      "sha256": "sha256:b2afc959aea73f43f012a7374d250e3feca9afa2ad5ad8ae852b6cbfa45a1659"
+    },
+    "system:activity-timeout-pass": {
+      "output": "--json",
+      "schema": "schemas/output/activity-timeout-pass.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-pass.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-pass.schema.json",
+      "sha256": "sha256:114338000e51fc8b8dee74c44428cd4d0c1f4fd50527b83cf12861784e4ac0ec"
+    },
+    "system:activity-timeout-status": {
+      "output": "--json",
+      "schema": "schemas/output/activity-timeout-status.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-status.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-status.schema.json",
+      "sha256": "sha256:50a25b8e4dccb568d7817daaf7ee836ce49c13e7811c709726ded53a07aa3b39"
+    },
+    "system:operator-metrics": {
+      "output": "--json",
+      "schema": "schemas/output/operator-metrics.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/operator-metrics.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/operator-metrics.schema.json",
+      "sha256": "sha256:737e9bf90abb66dd6e96f491ab4087a51f3090a9308b5251e521c31180ace5ad"
+    },
+    "system:repair-pass": {
+      "output": "--json",
+      "schema": "schemas/output/repair-pass.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-pass.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-pass.schema.json",
+      "sha256": "sha256:b9468ddcbbfd1c27dc95063f3e7257404ab31bbe08e6c2273ac6b716055f297f"
+    },
+    "system:repair-status": {
+      "output": "--json",
+      "schema": "schemas/output/repair-status.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-status.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-status.schema.json",
+      "sha256": "sha256:bde9c6ae2d7089c4782b7af38ae1d98d697c4e95d3847a3d0e5ef97199e1062f"
+    },
+    "system:retention-pass": {
+      "output": "--json",
+      "schema": "schemas/output/retention-pass.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-pass.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-pass.schema.json",
+      "sha256": "sha256:d162b0942edb53e7a5d219a9a1489375520a98e45bb2ad7f432c6a5a07a50b0f"
+    },
+    "system:retention-status": {
+      "output": "--json",
+      "schema": "schemas/output/retention-status.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-status.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-status.schema.json",
+      "sha256": "sha256:56071fca5c3aff96b9296fc8428d649ad416192abb54f2fec35bd160c33a7565"
+    },
+    "task-queue:build-ids": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue-build-ids.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-ids.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-ids.schema.json",
+      "sha256": "sha256:4bfc1f0c25e6d530ef4db4101615c9185e85b6bc20b30e51e61bab72e0406c69"
+    },
+    "task-queue:drain": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue-build-id-rollout.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "sha256": "sha256:d3de30a8dcaef80d73b3a5e45926b8d42d5e15e2e695cc4b6d96e37feadc469a"
+    },
+    "task-queue:promote": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue-build-id-rollout.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "sha256": "sha256:d3de30a8dcaef80d73b3a5e45926b8d42d5e15e2e695cc4b6d96e37feadc469a"
+    },
+    "task-queue:resume": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue-build-id-rollout.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+      "sha256": "sha256:d3de30a8dcaef80d73b3a5e45926b8d42d5e15e2e695cc4b6d96e37feadc469a"
+    },
+    "task-queue:describe": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue.schema.json",
+      "sha256": "sha256:443a8b912ef953af8548fba1b5be78ce7308bdcefe7b2a585dd1f0d7c81dc7bc"
+    },
+    "task-queue:list": {
+      "output": "--json",
+      "schema": "schemas/output/task-queue-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list.schema.json",
+      "sha256": "sha256:4bf7b484f3a729841cb5651236c127bf55a9db43acc870f3786d984aeaca8561"
+    },
+    "worker:register": {
+      "output": "--json",
+      "schema": "schemas/output/worker-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-operation.schema.json",
+      "sha256": "sha256:151c7d04f1abc1c6a9c609d35bedd511de6455b340aaa6bda7500a158e9045d8"
+    },
+    "worker:deregister": {
+      "output": "--json",
+      "schema": "schemas/output/worker-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-operation.schema.json",
+      "sha256": "sha256:151c7d04f1abc1c6a9c609d35bedd511de6455b340aaa6bda7500a158e9045d8"
+    },
+    "worker:describe": {
+      "output": "--json",
+      "schema": "schemas/output/worker.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker.schema.json",
+      "sha256": "sha256:1c9726330a32612aca6b02398ce38b582700486f69b3026a10a9264fd54ffce5"
+    },
+    "worker:list": {
+      "output": "--json",
+      "schema": "schemas/output/worker-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list.schema.json",
+      "sha256": "sha256:d8968c668321cf4f57db8f74f22cca5f6dd846afd39e85edba8b6bcf2e2ac9c0"
+    },
+    "workflow:archive": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "sha256": "sha256:93efb18f800af21ee4c6acf4d26aa17b84528645f7c7e45e4784d91cdeebf2eb"
+    },
+    "workflow-task:complete": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+      "sha256": "sha256:d1e887263a1fbdfa65df2ae3e10f4771a5b5a87bfd43ee4ea9ce150a73938eb6"
+    },
+    "workflow-task:fail": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-task-result.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+      "sha256": "sha256:d1e887263a1fbdfa65df2ae3e10f4771a5b5a87bfd43ee4ea9ce150a73938eb6"
+    },
+    "workflow-task:history": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-task-history.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-history.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-history.schema.json",
+      "sha256": "sha256:45d6ba4115ef0b48e5133233a93a14ce64c08868cd540109f6ae51887c06b26c"
+    },
+    "workflow-task:poll": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-task-poll.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-poll.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-poll.schema.json",
+      "sha256": "sha256:858c079a97708e43068bf4729c060eaf88c6315eb4f695862367cf07007f5491"
+    },
+    "workflow:cancel": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "sha256": "sha256:93efb18f800af21ee4c6acf4d26aa17b84528645f7c7e45e4784d91cdeebf2eb"
+    },
+    "workflow:describe": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-run.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run.schema.json",
+      "sha256": "sha256:0103ea68b95dcba592c02c84499e48bf683b0dcbd8def7342a3a5ee1ef0af391"
+    },
+    "workflow:history": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-history.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history.schema.json",
+      "sha256": "sha256:0ccd82170e9cc2789ab48b8d23562b99d5288b64d3d698581f3d9d3390ccebf0"
+    },
+    "workflow:history-export": {
+      "output": "stdout-json",
+      "schema": "schemas/output/workflow-history-export.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-export.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-export.schema.json",
+      "sha256": "sha256:a78809b013435b70661ff72aa59a521a7d4ba38f1b9b079346f99de146bc9138"
+    },
+    "workflow:migrate-v1": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-v1-projection.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-v1-projection.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-v1-projection.schema.json",
+      "sha256": "sha256:b3ee74f7baaea45833fdd0fd1e6e9ec0276991277e24c92bc9bdbf6189b59919"
+    },
+    "workflow:list": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list.schema.json",
+      "sha256": "sha256:71f1a1e3d0c7b0d6f954593b0cf14dcae31e23806deb50890ee6b3ad08078b05"
+    },
+    "workflows:list": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-list.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list.schema.json",
+      "sha256": "sha256:71f1a1e3d0c7b0d6f954593b0cf14dcae31e23806deb50890ee6b3ad08078b05"
+    },
+    "workflow:list-runs": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-runs.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-runs.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-runs.schema.json",
+      "sha256": "sha256:c312a892e7c5651e31b5610c03f9ea1deee26191e663c618bade2bf0d282d8a9"
+    },
+    "workflow:query": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-query.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-query.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-query.schema.json",
+      "sha256": "sha256:6eb0f804ea03956fa688b74a956db83924c3bcdf4312fe0a3cc788a449690757"
+    },
+    "workflow:repair": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "sha256": "sha256:93efb18f800af21ee4c6acf4d26aa17b84528645f7c7e45e4784d91cdeebf2eb"
+    },
+    "workflow:show-run": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-run.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run.schema.json",
+      "sha256": "sha256:0103ea68b95dcba592c02c84499e48bf683b0dcbd8def7342a3a5ee1ef0af391"
+    },
+    "workflow:signal": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-signal.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-signal.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-signal.schema.json",
+      "sha256": "sha256:c42c02f7a54faa082982028482bc231ca29c495a2a00fabce5b0ae580a2505bf"
+    },
+    "workflow:start": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-start.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-start.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-start.schema.json",
+      "sha256": "sha256:a5cf0a2b4b10b0c6a513a44dd2239d7682021f78347a58d090ddc3064bc11b91"
+    },
+    "workflow:terminate": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-operation.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+      "sha256": "sha256:93efb18f800af21ee4c6acf4d26aa17b84528645f7c7e45e4784d91cdeebf2eb"
+    },
+    "workflow:update": {
+      "output": "--json",
+      "schema": "schemas/output/workflow-update.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-update.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-update.schema.json",
+      "sha256": "sha256:854055865e25589407d5d2068904fd840f522250a9b13b7182b592be138720b1"
+    }
+  },
+  "jsonl_commands": {
+    "activity:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "activities",
+      "schema": "schemas/output/activity-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list-record.schema.json",
+      "sha256": "sha256:3968a44439c6f924dc1daba53067f35049d32ecbe25cc7aa0181a16492764ceb"
+    },
+    "activities:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "activities",
+      "schema": "schemas/output/activity-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list-record.schema.json",
+      "sha256": "sha256:3968a44439c6f924dc1daba53067f35049d32ecbe25cc7aa0181a16492764ceb"
+    },
+    "env:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "envs",
+      "schema": "schemas/output/env-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list-record.schema.json",
+      "sha256": "sha256:2b94cbf78c0f06fc8f474519ccfdd870242d6a667b3e9277a9a160dbe531d8a8"
+    },
+    "namespace:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "namespaces",
+      "schema": "schemas/output/namespace-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list-record.schema.json",
+      "sha256": "sha256:ebf0b4e31b18f974e8bf2217e5a7eeb46905539c68f124f0178b33ae49987005"
+    },
+    "schedule:history": {
+      "output": "--output=jsonl",
+      "stream_items_from": "events",
+      "schema": "schemas/output/schedule-history-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history-record.schema.json",
+      "sha256": "sha256:fe3e6c69f796fee5b770c1f9f166b8996022453f57d07f68c0095b1d27319ff6"
+    },
+    "schedule:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "schedules",
+      "schema": "schemas/output/schedule-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list-record.schema.json",
+      "sha256": "sha256:dedfc5af0e02e7be4e43be66a4f2386b98eb7d89d27736886ce8823243b8c460"
+    },
+    "task-queue:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "task_queues",
+      "schema": "schemas/output/task-queue-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list-record.schema.json",
+      "sha256": "sha256:a33c2fe1ef389ab21e9cc29161052485af3af17be70cc02108ed3d89b5110ddf"
+    },
+    "worker:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "workers",
+      "schema": "schemas/output/worker-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list-record.schema.json",
+      "sha256": "sha256:d058a85ce651416e722cb78f76db2d2e1aaaa50de22d2b3f644178b132507cea"
+    },
+    "workflow:history": {
+      "output": "--output=jsonl",
+      "stream_items_from": "events",
+      "schema": "schemas/output/workflow-history-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-record.schema.json",
+      "sha256": "sha256:b0a497aef73bef39a65e2d7145d16a2abc5666d0b50ea309880f1e7ec9bdf889"
+    },
+    "workflow:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "workflows",
+      "schema": "schemas/output/workflow-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list-record.schema.json",
+      "sha256": "sha256:59487cb7285f061acbf5e8a441b54304ae3e57995189ee139db8da67a8632583"
+    },
+    "workflows:list": {
+      "output": "--output=jsonl",
+      "stream_items_from": "workflows",
+      "schema": "schemas/output/workflow-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list-record.schema.json",
+      "sha256": "sha256:59487cb7285f061acbf5e8a441b54304ae3e57995189ee139db8da67a8632583"
+    },
+    "workflow:list-runs": {
+      "output": "--output=jsonl",
+      "stream_items_from": "runs",
+      "schema": "schemas/output/workflow-run-list-record.schema.json",
+      "schema_id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run-list-record.schema.json",
+      "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run-list-record.schema.json",
+      "sha256": "sha256:1afa00ac0818ae2d3c9a004f8936e969bb6f1f12d343e475babb55f27f2740e0"
+    }
+  }
+}

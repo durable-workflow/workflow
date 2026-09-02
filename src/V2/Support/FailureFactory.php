@@ -1,0 +1,920 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use BackedEnum;
+use Error;
+use Exception;
+use Illuminate\Database\QueryException;
+use Illuminate\Queue\MaxAttemptsExceededException;
+use PDOException;
+use ReflectionClass;
+use ReflectionException;
+use ReflectionNamedType;
+use ReflectionProperty;
+use RuntimeException;
+use Throwable;
+use UnitEnum;
+use Workflow\Exceptions\NonRetryableExceptionContract;
+use Workflow\Serializers\AvroBinaryValue;
+use Workflow\Serializers\AvroMapValue;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
+use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
+use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+
+final class FailureFactory
+{
+    private const MAX_TRACE_FRAMES = 20;
+
+    /**
+     * @return array{
+     *     exception_class: class-string<Throwable>,
+     *     message: string,
+     *     file: string,
+     *     line: int,
+     *     trace_preview: string
+     * }
+     */
+    public static function make(Throwable $throwable): array
+    {
+        $payload = self::payload($throwable);
+        $restored = $throwable instanceof RestoredWorkflowException;
+
+        return [
+            'exception_class' => is_string($payload['class'] ?? null)
+                ? $payload['class']
+                : $throwable::class,
+            'message' => is_string($payload['message'] ?? null)
+                ? $payload['message']
+                : $throwable->getMessage(),
+            'file' => is_string($payload['file'] ?? null)
+                ? $payload['file']
+                : ($restored ? 'external-worker' : $throwable->getFile()),
+            'line' => is_int($payload['line'] ?? null)
+                ? $payload['line']
+                : ($restored ? 0 : $throwable->getLine()),
+            'trace_preview' => self::previewFromPayload($payload),
+        ];
+    }
+
+    /**
+     * Classify a failure into the canonical taxonomy based on its propagation
+     * kind, source kind, and the throwable itself.
+     */
+    public static function classify(
+        string $propagationKind,
+        string $sourceKind,
+        ?Throwable $throwable = null
+    ): FailureCategory {
+        return match ($propagationKind) {
+            'activity' => $throwable instanceof StructuralLimitExceededException
+                ? FailureCategory::StructuralLimit
+                : FailureCategory::Activity,
+            'child' => FailureCategory::ChildWorkflow,
+            'cancelled' => FailureCategory::Cancelled,
+            'terminated' => FailureCategory::Terminated,
+            'terminal', 'update' => self::classifyFromThrowable($throwable),
+            default => FailureCategory::Application,
+        };
+    }
+
+    /**
+     * Classify a failure from string metadata (class name and message) without
+     * requiring a live Throwable instance. Used by the external worker bridge
+     * where the original throwable is not available.
+     */
+    public static function classifyFromStrings(
+        string $propagationKind,
+        string $sourceKind,
+        ?string $exceptionClass,
+        ?string $message
+    ): FailureCategory {
+        return match ($propagationKind) {
+            'activity' => FailureCategory::Activity,
+            'child' => FailureCategory::ChildWorkflow,
+            'cancelled' => FailureCategory::Cancelled,
+            'terminated' => FailureCategory::Terminated,
+            'terminal', 'update' => self::classifyFromExceptionStrings($exceptionClass, $message),
+            default => FailureCategory::Application,
+        };
+    }
+
+    /**
+     * Determine whether a failure should be marked as non-retryable. A
+     * non-retryable failure will never be automatically retried by the engine,
+     * regardless of the retry policy.
+     */
+    public static function isNonRetryable(?Throwable $throwable): bool
+    {
+        if ($throwable instanceof RestoredWorkflowException) {
+            return (bool) ($throwable->failurePayload()['non_retryable'] ?? false);
+        }
+
+        if ($throwable instanceof StructuralLimitExceededException) {
+            return true;
+        }
+
+        return $throwable instanceof NonRetryableExceptionContract;
+    }
+
+    /**
+     * Determine non-retryable status from a recorded exception class string.
+     * Used by external worker and imported-history paths where the original
+     * throwable is not available.
+     */
+    public static function isNonRetryableFromStrings(?string $exceptionClass): bool
+    {
+        if ($exceptionClass === null || $exceptionClass === '') {
+            return false;
+        }
+
+        if (! class_exists($exceptionClass)) {
+            return false;
+        }
+
+        return is_a($exceptionClass, NonRetryableExceptionContract::class, true);
+    }
+
+    /**
+     * @return array{
+     *     class: class-string<Throwable>|string,
+     *     type?: string,
+     *     message: string,
+     *     code: int,
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
+     * }
+     */
+    public static function payload(Throwable $throwable): array
+    {
+        if ($throwable instanceof RestoredWorkflowException) {
+            /** @var array{
+             *     class: class-string<Throwable>|string,
+             *     type?: string,
+             *     message: string,
+             *     code: int,
+             *     file?: string,
+             *     line?: int,
+             *     trace?: list<array<string, mixed>>,
+             *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+             *     diagnostics?: array<string, mixed>,
+             *     runtime_diagnostics?: array<string, mixed>
+             * } $payload
+             */
+            $payload = $throwable->failurePayload();
+
+            return $payload;
+        }
+
+        $payload = [
+            'class' => $throwable::class,
+            'message' => $throwable->getMessage(),
+            'code' => $throwable->getCode(),
+            'file' => $throwable->getFile(),
+            'line' => $throwable->getLine(),
+            'trace' => self::normalizeTrace($throwable),
+            'properties' => self::normalizeProperties($throwable),
+        ];
+
+        $type = TypeRegistry::typeForThrowable($throwable::class);
+
+        if (is_string($type) && $type !== '') {
+            $payload['type'] = $type;
+        }
+
+        return $payload;
+    }
+
+    public static function restore(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+    ): Throwable {
+        $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+        $class = $normalized['class'];
+
+        if (
+            array_key_exists('details', $normalized)
+            || is_string($normalized['details_payload_codec'] ?? null)
+            || array_key_exists('non_retryable', $normalized)
+        ) {
+            return new RestoredWorkflowException($normalized);
+        }
+
+        try {
+            $resolvedClass = is_string($class)
+                ? TypeRegistry::resolveThrowableClass($class, $normalized['type'])
+                : null;
+        } catch (Throwable) {
+            $resolvedClass = is_string($class) && class_exists($class) && is_subclass_of($class, Throwable::class)
+                ? $class
+                : null;
+        }
+
+        if (is_string($resolvedClass)) {
+            try {
+                return self::restoreThrowable($resolvedClass, $normalized);
+            } catch (Throwable) {
+                // Fall back to a typed wrapper when the original class cannot be rehydrated safely.
+            }
+        }
+
+        return new RestoredWorkflowException($normalized);
+    }
+
+    public static function restoreExternalWorkerFailure(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+    ): RestoredWorkflowException {
+        if (is_string($payload)) {
+            $payload = [
+                'message' => $payload,
+            ];
+        }
+
+        return new RestoredWorkflowException(
+            self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode),
+        );
+    }
+
+    public static function restoreForReplay(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+    ): Throwable {
+        $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+
+        if (
+            array_key_exists('details', $normalized)
+            || is_string($normalized['details_payload_codec'] ?? null)
+            || array_key_exists('non_retryable', $normalized)
+        ) {
+            return new RestoredWorkflowException($normalized);
+        }
+
+        $class = $normalized['class'];
+
+        try {
+            $resolution = is_string($class)
+                ? TypeRegistry::resolveThrowableClassWithSource($class, $normalized['type'])
+                : null;
+        } catch (Throwable $throwable) {
+            throw UnresolvedWorkflowFailureException::misconfigured($normalized, $throwable);
+        }
+
+        if ($resolution === null) {
+            throw UnresolvedWorkflowFailureException::unresolved($normalized);
+        }
+
+        if (
+            $resolution['source'] === 'recorded_class'
+            && $resolution['class'] === RuntimeException::class
+            && is_string($normalized['type'] ?? null)
+            && $normalized['type'] !== ''
+        ) {
+            return new RestoredWorkflowException($normalized);
+        }
+
+        try {
+            return self::restoreThrowable($resolution['class'], $normalized);
+        } catch (Throwable $throwable) {
+            throw UnresolvedWorkflowFailureException::unrestorable($normalized, $throwable);
+        }
+    }
+
+    /**
+     * @return array{class: ?class-string<Throwable>, source: 'exception_type'|'class_alias'|'recorded_class'|'unresolved'|'misconfigured'|'unrestorable', error: ?string}
+     */
+    public static function replayResolution(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+        ?string $fallbackType = null,
+    ): array {
+        $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode, $fallbackType);
+        $class = $normalized['class'];
+
+        try {
+            $resolution = is_string($class)
+                ? TypeRegistry::resolveThrowableClassWithSource($class, $normalized['type'])
+                : null;
+        } catch (Throwable $throwable) {
+            return [
+                'class' => null,
+                'source' => 'misconfigured',
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        if ($resolution === null) {
+            return [
+                'class' => null,
+                'source' => 'unresolved',
+                'error' => null,
+            ];
+        }
+
+        try {
+            self::restoreThrowable($resolution['class'], $normalized);
+        } catch (Throwable $throwable) {
+            return [
+                'class' => $resolution['class'],
+                'source' => 'unrestorable',
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        return [
+            'class' => $resolution['class'],
+            'source' => $resolution['source'],
+            'error' => null,
+        ];
+    }
+
+    /**
+     * Refine the failure category for terminal/update propagation by inspecting
+     * the throwable type. Falls back to Application for user-space exceptions.
+     */
+    private static function classifyFromThrowable(?Throwable $throwable): FailureCategory
+    {
+        if ($throwable === null) {
+            return FailureCategory::Application;
+        }
+
+        // Structural-limit failures: pending fan-out, payload size, metadata size.
+        if ($throwable instanceof StructuralLimitExceededException) {
+            return FailureCategory::StructuralLimit;
+        }
+
+        // Task-level failures: determinism violations, unsupported yields, replay shape errors.
+        if (
+            $throwable instanceof UnsupportedWorkflowYieldException
+            || $throwable instanceof StraightLineWorkflowRequiredException
+        ) {
+            return FailureCategory::TaskFailure;
+        }
+
+        // Infrastructure failures: database, PDO, queue exhaustion.
+        if (
+            $throwable instanceof QueryException
+            || $throwable instanceof PDOException
+            || $throwable instanceof MaxAttemptsExceededException
+        ) {
+            return FailureCategory::Internal;
+        }
+
+        // Timeout failures: check message convention for timeout-induced failures.
+        if (self::isTimeoutThrowable($throwable)) {
+            return FailureCategory::Timeout;
+        }
+
+        // Structural-limit failures: check message convention as fallback.
+        if (self::isStructuralLimitMessage($throwable->getMessage())) {
+            return FailureCategory::StructuralLimit;
+        }
+
+        return FailureCategory::Application;
+    }
+
+    /**
+     * Refine the failure category using exception class name and message strings.
+     * Mirrors classifyFromThrowable logic using string matching instead of instanceof.
+     */
+    private static function classifyFromExceptionStrings(?string $exceptionClass, ?string $message): FailureCategory
+    {
+        if ($exceptionClass !== null) {
+            // Structural-limit failures.
+            if (self::classNameMatches($exceptionClass, StructuralLimitExceededException::class)) {
+                return FailureCategory::StructuralLimit;
+            }
+
+            // Task-level failures: determinism violations, unsupported yields.
+            if (
+                self::classNameMatches($exceptionClass, UnsupportedWorkflowYieldException::class)
+                || self::classNameMatches($exceptionClass, StraightLineWorkflowRequiredException::class)
+            ) {
+                return FailureCategory::TaskFailure;
+            }
+
+            // Infrastructure failures: database, PDO, queue exhaustion.
+            if (
+                self::classNameMatches($exceptionClass, QueryException::class)
+                || self::classNameMatches($exceptionClass, PDOException::class)
+                || self::classNameMatches($exceptionClass, MaxAttemptsExceededException::class)
+            ) {
+                return FailureCategory::Internal;
+            }
+        }
+
+        // Timeout failures: check message convention.
+        if ($message !== null && self::isTimeoutMessage($message)) {
+            return FailureCategory::Timeout;
+        }
+
+        // Structural-limit failures: check message convention.
+        if ($message !== null && self::isStructuralLimitMessage($message)) {
+            return FailureCategory::StructuralLimit;
+        }
+
+        return FailureCategory::Application;
+    }
+
+    /**
+     * Check if an exception class name matches a known class, accounting for
+     * the class itself or any subclass whose fully qualified name ends with
+     * the same short class name.
+     */
+    private static function classNameMatches(string $exceptionClass, string $knownClass): bool
+    {
+        if ($exceptionClass === $knownClass) {
+            return true;
+        }
+
+        // Also match when the recorded class is a subclass of the known class
+        // and is resolvable in the current runtime.
+        if (class_exists($exceptionClass) && is_a($exceptionClass, $knownClass, true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Detect throwables that represent timeout conditions. This checks for a
+     * conventional marker interface or a message pattern indicating a timeout.
+     */
+    private static function isTimeoutThrowable(Throwable $throwable): bool
+    {
+        return self::isTimeoutMessage($throwable->getMessage());
+    }
+
+    /**
+     * Check a message string for timeout-indicating patterns.
+     */
+    private static function isTimeoutMessage(string $message): bool
+    {
+        $message = strtolower($message);
+
+        return str_contains($message, 'timed out')
+            || str_contains($message, 'timeout exceeded')
+            || str_contains($message, 'execution deadline')
+            || str_contains($message, 'run deadline');
+    }
+
+    /**
+     * Check a message string for structural-limit-indicating patterns.
+     */
+    private static function isStructuralLimitMessage(string $message): bool
+    {
+        return str_starts_with($message, 'Structural limit exceeded:');
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function previewFromPayload(array $payload): string
+    {
+        $lines = [];
+
+        foreach (array_slice(self::traceFrames($payload), 0, 5) as $frame) {
+            $class = isset($frame['class']) && is_string($frame['class']) ? $frame['class'] : '';
+            $type = isset($frame['type']) && is_string($frame['type']) ? $frame['type'] : '';
+            $function = isset($frame['function']) && is_string($frame['function']) ? $frame['function'] : 'unknown';
+            $file = isset($frame['file']) && is_string($frame['file']) ? $frame['file'] : 'unknown';
+            $line = isset($frame['line']) ? (string) $frame['line'] : '0';
+
+            $lines[] = sprintf('%s%s%s @ %s:%s', $class, $type, $function, $file, $line);
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function normalizeTrace(Throwable $throwable): array
+    {
+        $frames = [];
+
+        foreach (array_slice($throwable->getTrace(), 0, self::MAX_TRACE_FRAMES) as $frame) {
+            $normalized = array_filter([
+                'class' => is_string($frame['class'] ?? null) ? $frame['class'] : null,
+                'type' => is_string($frame['type'] ?? null) ? $frame['type'] : null,
+                'function' => is_string($frame['function'] ?? null) ? $frame['function'] : null,
+                'file' => is_string($frame['file'] ?? null) ? $frame['file'] : null,
+                'line' => is_int($frame['line'] ?? null) ? $frame['line'] : null,
+            ], static fn (mixed $value): bool => $value !== null);
+
+            if ($normalized !== []) {
+                $frames[] = $normalized;
+            }
+        }
+
+        return $frames;
+    }
+
+    /**
+     * @return list<array{declaring_class: string, name: string, value: mixed}>
+     */
+    private static function normalizeProperties(Throwable $throwable): array
+    {
+        $properties = [];
+        $reflection = new ReflectionClass($throwable);
+
+        while (
+            $reflection !== false
+            && $reflection->getName() !== Exception::class
+            && $reflection->getName() !== Error::class
+        ) {
+            if (! $reflection->isInternal()) {
+                foreach ($reflection->getProperties() as $property) {
+                    if ($property->isStatic() || $property->getDeclaringClass()->getName() !== $reflection->getName()) {
+                        continue;
+                    }
+
+                    if (! $property->isInitialized($throwable)) {
+                        continue;
+                    }
+
+                    $normalized = self::normalizePropertyValue(
+                        Serializer::serializeModels($property->getValue($throwable)),
+                    );
+
+                    if (! $normalized['supported']) {
+                        continue;
+                    }
+
+                    $properties[] = [
+                        'declaring_class' => $reflection->getName(),
+                        'name' => $property->getName(),
+                        'value' => $normalized['value'],
+                    ];
+                }
+            }
+
+            $reflection = $reflection->getParentClass();
+        }
+
+        return $properties;
+    }
+
+    /**
+     * Normalize reflected exception state into the fixed Avro Value domain.
+     * Backed enums use their scalar value; unit enums use their case name.
+     * Unsupported objects and malformed map/string values omit only that
+     * diagnostic property instead of making the durable failure unencodable.
+     *
+     * @return array{supported: bool, value: mixed}
+     */
+    private static function normalizePropertyValue(mixed $value): array
+    {
+        if ($value instanceof BackedEnum) {
+            return [
+                'supported' => true,
+                'value' => $value->value,
+            ];
+        }
+
+        if ($value instanceof UnitEnum) {
+            return [
+                'supported' => true,
+                'value' => $value->name,
+            ];
+        }
+
+        if ($value instanceof AvroBinaryValue) {
+            return [
+                'supported' => true,
+                'value' => $value,
+            ];
+        }
+
+        if ($value instanceof AvroMapValue) {
+            $pairs = [];
+
+            foreach ($value->pairs as [$key, $item]) {
+                $normalized = self::normalizePropertyValue($item);
+                if (! $normalized['supported']) {
+                    return [
+                        'supported' => false,
+                        'value' => null,
+                    ];
+                }
+
+                $pairs[] = [$key, $normalized['value']];
+            }
+
+            return [
+                'supported' => true,
+                'value' => AvroMapValue::fromPairs($pairs),
+            ];
+        }
+
+        if ($value === null || is_bool($value) || is_int($value)) {
+            return [
+                'supported' => true,
+                'value' => $value,
+            ];
+        }
+
+        if (is_float($value)) {
+            return [
+                'supported' => is_finite($value),
+                'value' => $value,
+            ];
+        }
+
+        if (is_string($value)) {
+            return [
+                'supported' => preg_match('//u', $value) === 1,
+                'value' => $value,
+            ];
+        }
+
+        if (is_array($value)) {
+            $items = [];
+
+            foreach ($value as $key => $item) {
+                if (! array_is_list($value) && ! is_string($key)) {
+                    return [
+                        'supported' => false,
+                        'value' => null,
+                    ];
+                }
+
+                $normalized = self::normalizePropertyValue($item);
+                if (! $normalized['supported']) {
+                    return [
+                        'supported' => false,
+                        'value' => null,
+                    ];
+                }
+
+                $items[$key] = $normalized['value'];
+            }
+
+            return [
+                'supported' => true,
+                'value' => $items,
+            ];
+        }
+
+        return [
+            'supported' => false,
+            'value' => null,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     class: class-string<Throwable>|string|null,
+     *     type: string|null,
+     *     message: string,
+     *     code: int,
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
+     * }
+     */
+    private static function normalizePayload(
+        mixed $payload,
+        ?string $fallbackClass,
+        ?string $fallbackMessage,
+        ?int $fallbackCode,
+        ?string $fallbackType = null,
+    ): array {
+        if (is_string($payload)) {
+            $payload = Serializer::unserializeWithCodec('avro', $payload);
+        }
+
+        if (! is_array($payload)) {
+            $payload = [];
+        }
+
+        $normalized = [
+            'class' => is_string($payload['class'] ?? null)
+                ? $payload['class']
+                : $fallbackClass,
+            'type' => is_string($payload['type'] ?? null)
+                ? $payload['type']
+                : $fallbackType,
+            'message' => is_string($payload['message'] ?? null)
+                ? $payload['message']
+                : ($fallbackMessage ?? 'Workflow failure'),
+            'code' => is_int($payload['code'] ?? null)
+                ? $payload['code']
+                : ($fallbackCode ?? 0),
+        ];
+
+        if (is_string($payload['file'] ?? null) && $payload['file'] !== '') {
+            $normalized['file'] = $payload['file'];
+        }
+
+        if (is_int($payload['line'] ?? null)) {
+            $normalized['line'] = $payload['line'];
+        }
+
+        if (array_key_exists('trace', $payload)) {
+            $normalized['trace'] = self::traceFrames($payload);
+        }
+
+        if (array_key_exists('properties', $payload)) {
+            $normalized['properties'] = self::propertyFrames($payload);
+        }
+
+        if (array_key_exists('details', $payload)) {
+            $normalized['details'] = $payload['details'];
+        }
+
+        if (is_bool($payload['non_retryable'] ?? null)) {
+            $normalized['non_retryable'] = $payload['non_retryable'];
+        }
+
+        if (is_string($payload['details_payload_codec'] ?? null) && $payload['details_payload_codec'] !== '') {
+            $normalized['details_payload_codec'] = $payload['details_payload_codec'];
+        }
+
+        if (is_array($payload['diagnostics'] ?? null)) {
+            $normalized['diagnostics'] = $payload['diagnostics'];
+        }
+
+        if (is_array($payload['runtime_diagnostics'] ?? null)) {
+            $normalized['runtime_diagnostics'] = $payload['runtime_diagnostics'];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array{
+     *     class: class-string<Throwable>|string,
+     *     type?: string|null,
+     *     message: string,
+     *     code: int,
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
+     * } $payload
+     */
+    private static function restoreThrowable(string $class, array $payload): Throwable
+    {
+        $reflection = new ReflectionClass($class);
+
+        if ($reflection->isAbstract()) {
+            throw new ReflectionException(sprintf('Cannot restore abstract throwable [%s].', $class));
+        }
+
+        /** @var Throwable $throwable */
+        $throwable = $reflection->newInstanceWithoutConstructor();
+        // Throwable's protected message/code/file/line/trace properties are declared
+        // independently on Error and Exception (siblings, not parent/child). Use is_a
+        // with the allow_string flag so Error itself — not just its subclasses — picks
+        // the Error::class reflection target. Falling back to Exception here would
+        // raise "Cannot access protected property Error::$message" (#436).
+        $baseClass = is_a($class, Error::class, true) ? Error::class : Exception::class;
+        $file = is_string($payload['file'] ?? null) ? $payload['file'] : __FILE__;
+        $line = is_int($payload['line'] ?? null) ? $payload['line'] : __LINE__;
+        $trace = is_array($payload['trace'] ?? null) ? $payload['trace'] : [];
+        $properties = is_array($payload['properties'] ?? null) ? $payload['properties'] : [];
+
+        self::setThrowableProperty($throwable, $baseClass, 'message', $payload['message']);
+        self::setThrowableProperty($throwable, $baseClass, 'code', $payload['code']);
+        self::setThrowableProperty($throwable, $baseClass, 'file', $file);
+        self::setThrowableProperty($throwable, $baseClass, 'line', $line);
+        self::setThrowableProperty($throwable, $baseClass, 'trace', $trace);
+
+        foreach ($properties as $property) {
+            if (! is_string($property['declaring_class'] ?? null) || ! is_string($property['name'] ?? null)) {
+                continue;
+            }
+
+            $value = array_key_exists('value', $property)
+                ? Serializer::unserializeModels($property['value'])
+                : null;
+
+            self::setPayloadProperty($throwable, $class, $property['declaring_class'], $property['name'], $value);
+        }
+
+        return $throwable;
+    }
+
+    private static function setThrowableProperty(
+        Throwable $throwable,
+        string $class,
+        string $property,
+        mixed $value,
+    ): void {
+        $reflectionProperty = new ReflectionProperty($class, $property);
+        $reflectionProperty->setAccessible(true);
+        $reflectionProperty->setValue($throwable, $value);
+    }
+
+    private static function setPayloadProperty(
+        Throwable $throwable,
+        string $restoredClass,
+        string $declaringClass,
+        string $property,
+        mixed $value,
+    ): void {
+        $candidates = array_values(array_unique([$declaringClass, $restoredClass]));
+
+        foreach ($candidates as $candidate) {
+            if (! class_exists($candidate)) {
+                continue;
+            }
+
+            if ($candidate !== $restoredClass && ! is_a($restoredClass, $candidate, true)) {
+                continue;
+            }
+
+            try {
+                self::setThrowableProperty(
+                    $throwable,
+                    $candidate,
+                    $property,
+                    self::restoreEnumPropertyValue($candidate, $property, $value),
+                );
+
+                return;
+            } catch (Throwable) {
+                // A renamed exception should still be catchable even if one custom field no longer exists.
+            }
+        }
+    }
+
+    private static function restoreEnumPropertyValue(string $class, string $property, mixed $value): mixed
+    {
+        $type = (new ReflectionProperty($class, $property))->getType();
+        if (! $type instanceof ReflectionNamedType || $value === null) {
+            return $value;
+        }
+
+        $enumClass = $type->getName();
+        if (! enum_exists($enumClass)) {
+            return $value;
+        }
+
+        foreach ($enumClass::cases() as $case) {
+            if ($case instanceof BackedEnum && $case->value === $value) {
+                return $case;
+            }
+
+            if (! $case instanceof BackedEnum && is_string($value) && $case->name === $value) {
+                return $case;
+            }
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array<string, mixed>>
+     */
+    private static function traceFrames(array $payload): array
+    {
+        $trace = $payload['trace'] ?? null;
+
+        if (! is_array($trace)) {
+            return [];
+        }
+
+        return array_values(array_filter($trace, static fn (mixed $frame): bool => is_array($frame)));
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array{declaring_class: string, name: string, value: mixed}>
+     */
+    private static function propertyFrames(array $payload): array
+    {
+        $properties = $payload['properties'] ?? null;
+
+        if (! is_array($properties)) {
+            return [];
+        }
+
+        return array_values(array_filter($properties, static fn (mixed $property): bool => is_array($property)));
+    }
+}

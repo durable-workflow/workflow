@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-fiber-malformed-service-response",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "single-activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-07-30T09:00:00+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ServiceCallCompleted",
+      "payload": {
+        "sequence": 7,
+        "response_payload": {
+          "codec": "avro",
+          "blob": "{\"truncated\":"
+        }
+      },
+      "recorded_at": "2026-07-30T09:00:01+00:00"
+    }
+  ],
+  "expected_failure": {
+    "type": "malformed_service_response_envelope",
+    "exception": "Workflow\\Serializers\\CodecDecodeException"
+  }
+}

@@ -1,0 +1,1255 @@
+openapi: 3.1.0
+info:
+  title: durable-workflow.v2.worker-protocol-api
+  version: "14"
+  summary: Durable Workflow worker-plane HTTP+JSON API
+  description: >
+    Normative OpenAPI specification for the worker-plane HTTP+JSON API:
+    worker registration, graceful worker deregistration, worker heartbeat,
+    worker-session lifecycle,
+    long-poll task acquisition, task history paging, task heartbeat,
+    task completion, and task failure. Long-poll timing, cancellation,
+    and lease semantics are specified by durable-workflow.v2.worker-protocol-stream.
+    The server advertises its current 1.N version and accepts request headers
+    from the same major whose minor is less than or equal to N.
+x-durable-workflow-worker-protocol-negotiation:
+  advertised_version_path: worker_protocol.version
+  default_advertised_version: "1.18"
+  request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
+  response_version: advertised_version
+  fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
+x-durable-workflow-catalog-entry: worker_protocol_api
+x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
+x-durable-workflow-catalog-version: 16
+x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-message-streams-contract:
+  discovery_path: /cluster/info#/message_streams_contract
+  minimum_protocol_version: "1.15"
+  worker_capability: message_streams
+  completion_fields: [message_stream_cursors, message_stream_waits]
+  cursor_advancement: highest_contiguous_consumed_position
+  replay_identity: [stream_name, message_id, position]
+  payload_envelope:
+    field: payload_envelope
+    worker_delivery: inline_avro_blob
+    persistence: exact_inline_bytes_or_external_storage_reference
+  version_gate:
+    workers_below_minimum:
+      advertise_capability: forbidden
+      submit_completion_fields: forbidden
+    workers_at_or_above_minimum:
+      advertise_capability: allowed
+      submit_completion_fields: allowed
+    rejection_status: 409
+    rejection_reason: message_streams_unavailable
+x-durable-workflow-typed-search-attributes-contract:
+  minimum_protocol_version: "1.16"
+  worker_capability: typed_search_attributes
+  canonical_type_names: [string, keyword, keyword_list, int, float, bool, datetime]
+  completion_field: commands[].attribute_types
+  declaration_identity: [key, canonical_type, json_value]
+  server_boundary:
+    validate: [declared_key, declared_type, declared_value, namespace_registered_type]
+    malformed_or_conflicting_declaration_status: 422
+    malformed_or_conflicting_declaration_reason: validation_failed
+    inference_after_invalid_declaration: forbidden
+  history:
+    event_type: SearchAttributesUpserted
+    payload_field: attribute_types
+    new_event_rule: canonical_effective_type_required_for_every_non_deleted_attribute
+    full_and_paginated_history: identical
+    replay_identity: [sequence, attributes, attribute_types]
+    legacy_missing_metadata: unknown_type_identity_compare_value_only
+  version_gate:
+    workers_below_minimum:
+      submit_attribute_types: forbidden
+    workers_at_or_above_minimum:
+      submit_attribute_types: allowed
+    rejection_status: 409
+    rejection_reason: typed_search_attributes_unavailable
+x-durable-workflow-condition-wait-occurrence-identity-contract:
+  minimum_protocol_version: "1.17"
+  worker_capability: condition_wait_occurrence_identity
+  command_type: open_condition_wait
+  command_field: condition_wait_occurrence_id
+  authored_identity: explicit_deterministic_authored_ordinal
+  history:
+    lifecycle_event_types: [ConditionWaitOpened, ConditionWaitSatisfied, ConditionWaitTimedOut]
+    timeout_event_types: [TimerScheduled, TimerCancelled, TimerFired]
+    timeout_event_selector: { timer_kind: condition_timeout }
+    payload_field: condition_wait_occurrence_id
+    propagation: exact_value_on_every_event_for_one_wait_lifecycle
+    replay_identity: [sequence, condition_wait_occurrence_id, condition_key, condition_definition_fingerprint, timeout_seconds]
+    physical_reevaluations: reuse_open_occurrence_identity
+    adjacent_authored_waits: distinct_occurrence_identity
+    legacy_missing_occurrence_id: legacy_condition_wait_without_occurrence_identity
+  version_gate:
+    workers_below_minimum:
+      advertise_capability: forbidden
+      submit_occurrence_id: forbidden
+    capable_workers:
+      submit_occurrence_id: required
+    servers_below_minimum:
+      reject_before_execution: required
+    rejection_status: 400
+    rejection_reason: unsupported_protocol_version
+x-durable-workflow-portable-worker-affinity-contract:
+  minimum_protocol_version: "1.18"
+  worker_capabilities: [local_activities, worker_sessions, sticky_execution]
+  local_activities:
+    command_type: record_local_activity
+    runtime_schema:
+      $ref: ./local-activity-runtime.schema.json#/$defs/localActivityRuntimeContract
+    execution_mode: local
+    recorded_terminal_side_effect_on_cold_replay: reuse_without_execution
+  worker_sessions:
+    runtime_schema:
+      $ref: ./worker-sessions-runtime.schema.json#/$defs/workerSessionRuntimeContract
+    lifecycle_verbs: [create, heartbeat, close]
+    holder_loss: replacement_worker_reacquires_and_rebuilds_process_local_state
+  sticky_execution:
+    cache_owner: worker_process
+    cache_key_fields: [workflow_id, run_id, build_id]
+    correctness_fallback: cold_replay
+  version_gate:
+    workers_below_minimum:
+      advertise_capabilities: forbidden
+      submit_local_activity_command: forbidden
+    workers_at_or_above_minimum:
+      advertise_only_implemented_capabilities: required
+    servers_below_minimum:
+      reject_before_execution: required
+    rejection_status: 400
+    rejection_reason: unsupported_protocol_version
+x-durable-workflow-object-families:
+  - name: worker_registration_request
+    owner_repo: durable-workflow/server
+  - name: worker_deregistration_result
+    owner_repo: durable-workflow/server
+  - name: worker_task_poll_request
+    owner_repo: durable-workflow/server
+  - name: worker_task_result
+    owner_repo: durable-workflow/server
+  - name: worker_query_task_poll_request
+    owner_repo: durable-workflow/server
+  - name: worker_query_task_result
+    owner_repo: durable-workflow/server
+  - name: external_task_input_contract
+    owner_repo: durable-workflow/server
+  - name: external_task_result_contract
+    owner_repo: durable-workflow/server
+servers:
+  - url: /api
+security:
+  - durableWorkerAuth: []
+paths:
+  /worker/register:
+    post:
+      operationId: registerWorker
+      tags: [worker-lifecycle]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkerRegistrationRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/registrations/{workerId}:
+    delete:
+      operationId: deregisterWorker
+      summary: Gracefully deregister a worker
+      description: >
+        Removes the named worker registration in the resolved namespace and
+        recovers its outstanding workflow-task leases for replacement workers.
+        This worker-plane lifecycle operation requires the worker role; it is
+        distinct from the administrator-only worker-management endpoint.
+      tags: [worker-lifecycle]
+      x-durable-workflow-required-role: worker
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/WorkerIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/WorkerDeregistrationEnvelope" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "401": { $ref: "#/components/responses/WorkerError" }
+        "403": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/heartbeat:
+    post:
+      operationId: heartbeatWorker
+      tags: [worker-lifecycle]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkerHeartbeatRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+  /worker/sessions:
+    post:
+      operationId: createWorkerSession
+      tags: [worker-sessions]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionCreateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerSessionOperation" }
+        "201": { $ref: "#/components/responses/WorkerSessionOperation" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "412": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/sessions/{sessionId}/heartbeat:
+    post:
+      operationId: heartbeatWorkerSession
+      tags: [worker-sessions]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/SessionIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionHeartbeatRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerSessionOperation" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/sessions/{sessionId}:
+    delete:
+      operationId: closeWorkerSession
+      tags: [worker-sessions]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/SessionIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionCloseRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerSessionOperation" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/poll:
+    post:
+      operationId: pollWorkflowTask
+      tags: [workflow-tasks]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowTaskPollRequest" }
+      responses:
+        "200":
+          description: A claimed workflow task, an empty long-poll result, or a draining-worker response.
+          headers: { X-Durable-Workflow-Protocol-Version: { schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" } } }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowTaskPollResponse"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkflowTaskPollConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/history:
+    post:
+      operationId: getWorkflowTaskHistoryPage
+      tags: [workflow-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HistoryPageRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/heartbeat:
+    post:
+      operationId: heartbeatWorkflowTask
+      tags: [workflow-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskHeartbeatRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/complete:
+    post:
+      operationId: completeWorkflowTask
+      tags: [workflow-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowTaskCompleteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/fail:
+    post:
+      operationId: failWorkflowTask
+      tags: [workflow-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskFailureRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/poll:
+    post:
+      operationId: pollUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskPollRequest" }
+      responses:
+        "200":
+          description: A claimed update-validation task or an empty long-poll result.
+          headers: { X-Durable-Workflow-Protocol-Version: { schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" } } }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/UpdateValidationTaskClaim"
+                  - $ref: "#/components/schemas/EmptyPoll"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/{taskId}/approve:
+    post:
+      operationId: approveUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpdateValidationTaskCompletion" }
+        "404": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "409": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/{taskId}/reject:
+    post:
+      operationId: rejectUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskRejectionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpdateValidationTaskCompletion" }
+        "404": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "409": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/query-tasks/poll:
+    post:
+      operationId: pollQueryTask
+      tags: [query-tasks]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PollRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+  /worker/query-tasks/{queryTaskId}/complete:
+    post:
+      operationId: completeQueryTask
+      tags: [query-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - name: queryTaskId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QueryTaskCompleteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/query-tasks/{queryTaskId}/fail:
+    post:
+      operationId: failQueryTask
+      tags: [query-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - name: queryTaskId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskFailureRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/activity-tasks/poll:
+    post:
+      operationId: pollActivityTask
+      tags: [activity-tasks]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PollRequest" }
+      responses:
+        "200":
+          description: A claimed activity task, an empty long-poll result, or a draining-worker response.
+          headers: { X-Durable-Workflow-Protocol-Version: { schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" } } }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ActivityTaskClaim"
+                  - $ref: "#/components/schemas/EmptyPoll"
+                  - $ref: "#/components/schemas/DrainingPoll"
+  /worker/activity-tasks/{taskId}/heartbeat:
+    post:
+      operationId: heartbeatActivityTask
+      tags: [activity-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskHeartbeatRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/activity-tasks/{taskId}/complete:
+    post:
+      operationId: completeActivityTask
+      tags: [activity-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityTaskCompleteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/activity-tasks/{taskId}/fail:
+    post:
+      operationId: failActivityTask
+      tags: [activity-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskFailureRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+components:
+  securitySchemes:
+    durableWorkerAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+  parameters:
+    WorkerProtocolVersionHeader:
+      name: X-Durable-Workflow-Protocol-Version
+      in: header
+      required: true
+      description: >
+        Worker-selected protocol version. The default server advertises 1.15
+        and accepts same-major versions whose minor is no newer than 15.
+        Missing, malformed, different-major, and ahead-of-server values fail closed.
+      schema: { $ref: "#/components/schemas/AcceptedWorkerProtocolRequestVersion" }
+    TaskIdPath:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    SessionIdPath:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    WorkerIdPath:
+      name: workerId
+      in: path
+      required: true
+      description: Worker registration identity in the resolved namespace.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+  responses:
+    WorkerEnvelope:
+      description: Worker-protocol response envelope.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/WorkerEnvelope" }
+    WorkerError:
+      description: Machine-readable worker-protocol error envelope.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/WorkerError" }
+    WorkflowTaskPollConflict:
+      description: The poll request is unsupported, its idempotency identity conflicts with a previously bound task-kind set, or a cached task cannot be replayed within the requested task-kind set.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/PollRequestTaskKindsConflict"
+              - $ref: "#/components/schemas/CachedPollTaskKindConflict"
+              - $ref: "#/components/schemas/UpdateValidationCapabilityConflict"
+    UpdateValidationTaskCompletion:
+      description: A fenced update-validation task approval or rejection result.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionResult" }
+    UpdateValidationTaskCompletionFailure:
+      description: A typed update-validation completion fence rejection.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionFailure" }
+    WorkerSessionOperation:
+      description: Worker-session lifecycle admission or renewal result.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/WorkerEnvelope"
+              - $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionOperationResult"
+    WorkerDeregistrationEnvelope:
+      description: Graceful worker-deregistration result in the WorkerProtocol success envelope.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/WorkerEnvelope"
+              - $ref: "#/components/schemas/WorkerDeregistrationResult"
+  schemas:
+    AcceptedWorkerProtocolRequestVersion:
+      type: string
+      enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
+      description: >
+        Request versions accepted by a server using the default advertised
+        version 1.18. If deployment configuration changes the advertised
+        version to 1.N, the accepted set is 1.0 through 1.N.
+    AdvertisedWorkerProtocolVersion:
+      type: string
+      const: "1.18"
+      description: Default worker protocol version advertised by responses implementing the Durable Workflow 2.0 protocol contract.
+    WorkerEnvelope:
+      type: object
+      additionalProperties: true
+      required: [protocol_version, server_capabilities]
+      properties:
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        server_capabilities: { $ref: "#/components/schemas/WorkerServerCapabilities" }
+    WorkerError:
+      type: object
+      additionalProperties: true
+      required: [protocol_version, server_capabilities]
+      properties:
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        error: { type: string }
+        reason: { type: [string, "null"] }
+        remediation: { type: [string, "null"] }
+        server_capabilities: { $ref: "#/components/schemas/WorkerServerCapabilities" }
+    WorkerServerCapabilities:
+      type: object
+      additionalProperties: true
+      required: [workflow_task_poll_request_idempotency, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation]
+      properties:
+        workflow_task_poll_request_idempotency: { type: boolean, const: true }
+        message_streams:
+          $ref: "#/components/schemas/MessageStreamsCapability"
+        typed_search_attributes:
+          $ref: "#/components/schemas/TypedSearchAttributesCapability"
+        condition_wait_occurrence_identity:
+          $ref: "#/components/schemas/ConditionWaitOccurrenceIdentityCapability"
+        update_validation_tasks: { type: boolean, const: true }
+        synchronous_update_validation:
+          $ref: "#/components/schemas/SynchronousUpdateValidationCapability"
+        worker_session_verbs:
+          type: array
+          items: { type: string, enum: [create, heartbeat, close] }
+          minItems: 3
+        worker_sessions:
+          $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionRuntimeContract"
+    MessageStreamsCapability:
+      type: object
+      additionalProperties: true
+      required: [schema, version, capability_flag, minimum_worker_protocol_version, supported]
+      properties:
+        schema: { type: string, const: durable-workflow.v2.message-streams.contract }
+        version: { type: integer, const: 1 }
+        capability_flag: { type: string, const: message_streams }
+        minimum_worker_protocol_version: { type: string, const: "1.15" }
+        supported: { type: boolean }
+    TypedSearchAttributesCapability:
+      type: object
+      additionalProperties: true
+      required: [supported, minimum_worker_protocol_version, canonical_types, command_field, history_field, legacy_history_rule]
+      properties:
+        supported: { type: boolean }
+        minimum_worker_protocol_version: { type: string, const: "1.16" }
+        canonical_types:
+          type: array
+          uniqueItems: true
+          minItems: 7
+          maxItems: 7
+          items: { $ref: "#/components/schemas/SearchAttributeType" }
+        command_field: { type: string, const: attribute_types }
+        history_field: { type: string, const: attribute_types }
+        legacy_history_rule: { type: string, const: absent_metadata_is_unknown_type_identity }
+    ConditionWaitOccurrenceIdentityCapability:
+      type: object
+      additionalProperties: true
+      required: [supported, minimum_worker_protocol_version, capability_flag, command_field, history_field]
+      properties:
+        supported: { type: boolean }
+        minimum_worker_protocol_version: { type: string, const: "1.17" }
+        capability_flag: { type: string, const: condition_wait_occurrence_identity }
+        command_field: { type: string, const: condition_wait_occurrence_id }
+        history_field: { type: string, const: condition_wait_occurrence_id }
+    WorkerRegistrationRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queues]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        task_queues: { type: array, items: { type: string, minLength: 1 } }
+        workflow_types: { type: array, items: { type: string } }
+        activity_types: { type: array, items: { type: string } }
+        workflow_definition_fingerprints: { type: object, additionalProperties: { type: string } }
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+          x-durable-workflow-version-gated-values:
+            message_streams: "1.15"
+            typed_search_attributes: "1.16"
+            condition_wait_occurrence_identity: "1.17"
+            local_activities: "1.18"
+            worker_sessions: "1.18"
+            sticky_execution: "1.18"
+    WorkerHeartbeatRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queues: { type: array, items: { type: string } }
+        active_slots: { type: integer, minimum: 0 }
+    WorkerDeregistrationResult:
+      type: object
+      additionalProperties: true
+      required: [worker_id, outcome, recovered_workflow_task_count]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        outcome: { type: string, const: deregistered }
+        recovered_workflow_task_count: { type: integer, minimum: 0 }
+    PollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queues]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queues: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        build_id: { type: [string, "null"] }
+        poll_timeout_seconds: { type: integer, minimum: 0 }
+    WorkflowTaskPollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queue]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        poll_request_id:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 255
+          description: Idempotency identity bound to the normalized task_kinds set for the binding TTL.
+        timeout_seconds: { type: integer, minimum: 0, maximum: 60 }
+        history_page_size: { type: integer, minimum: 1, maximum: 1000 }
+        accept_history_encoding: { type: [string, "null"], maxLength: 64 }
+        task_kinds:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          default: [workflow]
+          items: { type: string, enum: [workflow, update_validation] }
+          description: Reordering does not change the normalized request shape; changing the effective set for a bound poll_request_id returns poll_request_task_kinds_conflict.
+    UpdateValidationTaskPollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queue]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        timeout_seconds: { type: integer, minimum: 0, maximum: 60 }
+    WorkflowTaskPollResponse:
+      oneOf:
+        - $ref: "#/components/schemas/MultiplexedWorkflowTaskClaim"
+        - $ref: "#/components/schemas/EmptyPoll"
+        - $ref: "#/components/schemas/DrainingPoll"
+      x-durable-workflow-discriminator: task.task_kind
+    EmptyPoll:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, enum: [timeout, empty] }
+    DrainingPoll:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: draining }
+            drain_reason: { type: [string, "null"] }
+    WorkflowTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            poll_status: { type: string, const: leased }
+            task:
+              $ref: "#/components/schemas/WorkflowTask"
+    MultiplexedWorkflowTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            poll_status: { type: string, const: leased }
+            task:
+              $ref: "#/components/schemas/MultiplexedWorkflowTask"
+    UpdateValidationTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            poll_status: { type: string, const: leased }
+            task:
+              $ref: "#/components/schemas/UpdateValidationTask"
+    MultiplexedWorkflowTask:
+      oneOf:
+        - $ref: "#/components/schemas/WorkflowTask"
+        - $ref: "#/components/schemas/UpdateValidationTask"
+      discriminator:
+        propertyName: task_kind
+        mapping:
+          workflow: "#/components/schemas/WorkflowTask"
+          update_validation: "#/components/schemas/UpdateValidationTask"
+    WorkflowTask:
+      type: object
+      additionalProperties: true
+      required: [task_kind, task_id, workflow_id, run_id, history]
+      properties:
+        task_kind: { type: string, const: workflow }
+        task_id: { type: string, minLength: 1 }
+        workflow_id: { type: string, minLength: 1 }
+        run_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        lease_expires_at: { type: string, format: date-time }
+        history: { type: array, items: { $ref: "#/components/schemas/WorkerHistoryEvent" } }
+    WorkerHistoryEvent:
+      type: object
+      additionalProperties: true
+      properties:
+        event_type: { type: string }
+        payload: { type: object, additionalProperties: true }
+      allOf:
+        - if:
+            required: [event_type]
+            properties:
+              event_type: { const: SearchAttributesUpserted }
+          then:
+            required: [payload]
+            properties:
+              payload: { $ref: "#/components/schemas/SearchAttributesUpsertedHistoryPayload" }
+        - if:
+            required: [event_type]
+            properties:
+              event_type:
+                enum: [ConditionWaitOpened, ConditionWaitSatisfied, ConditionWaitTimedOut]
+          then:
+            required: [payload]
+            properties:
+              payload: { $ref: "#/components/schemas/ConditionWaitHistoryPayload" }
+    SearchAttributesUpsertedHistoryPayload:
+      type: object
+      additionalProperties: true
+      required: [sequence, attributes, merged]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        attributes: { type: object, additionalProperties: true }
+        merged: { type: object, additionalProperties: true }
+        attribute_types:
+          $ref: "#/components/schemas/SearchAttributeTypeMap"
+          description: >
+            Required on newly recorded events. Absence identifies legacy history
+            whose type identity is unknown; it does not prove a typed match.
+    ConditionWaitHistoryPayload:
+      type: object
+      additionalProperties: true
+      required: [sequence, condition_wait_id]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        condition_wait_id: { type: string, minLength: 1 }
+        condition_wait_occurrence_id:
+          type: string
+          minLength: 1
+          x-durable-workflow-minimum-protocol-version: "1.17"
+          description: >
+            Present for wait lifecycles authored by a worker advertising
+            condition_wait_occurrence_identity and copied unchanged to every
+            lifecycle and condition-timeout event for that wait.
+        condition_key: { type: [string, "null"] }
+        condition_definition_fingerprint: { type: [string, "null"] }
+        timeout_seconds: { type: [integer, "null"], minimum: 0 }
+    UpdateValidationTask:
+      type: object
+      additionalProperties: true
+      required:
+        - task_kind
+        - update_validation_task_id
+        - update_id
+        - update_validation_attempt
+        - workflow_id
+        - run_id
+        - workflow_type
+        - update_name
+        - update_arguments
+        - payload_codec
+        - task_queue
+        - lease_owner
+        - lease_expires_at
+      properties:
+        task_kind: { type: string, const: update_validation }
+        update_validation_task_id: { type: string, minLength: 1 }
+        update_id: { type: string, minLength: 1 }
+        update_validation_attempt: { type: integer, minimum: 1 }
+        workflow_id: { type: string, minLength: 1 }
+        run_id: { type: string, minLength: 1 }
+        workflow_type: { type: string, minLength: 1 }
+        compatibility: { type: [string, "null"] }
+        update_name: { type: string, minLength: 1 }
+        update_arguments: { type: object, additionalProperties: true }
+        payload_codec: { type: string, enum: [avro] }
+        task_queue: { type: string, minLength: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        lease_expires_at: { type: string, format: date-time }
+    PollRequestTaskKindsConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error, poll_request_id, requested_task_kinds, bound_task_kinds]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: conflict }
+            reason: { type: string, const: poll_request_task_kinds_conflict }
+            error: { type: string, minLength: 1 }
+            poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+            requested_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+            bound_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+    CachedPollTaskKindConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error, poll_request_id, requested_task_kinds, cached_task_kind, cached_task_kind_state]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: conflict }
+            reason: { type: string, const: poll_cached_task_kind_conflict }
+            error: { type: string, minLength: 1 }
+            poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+            requested_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+            cached_task_kind: { type: [string, "null"], minLength: 1 }
+            cached_task_kind_state:
+              type: string
+              enum: [legacy_missing_discriminator, unrequested_discriminator]
+          oneOf:
+            - properties:
+                cached_task_kind: { type: "null" }
+                cached_task_kind_state: { const: legacy_missing_discriminator }
+            - properties:
+                cached_task_kind: { type: string, minLength: 1 }
+                cached_task_kind_state: { const: unrequested_discriminator }
+    UpdateValidationCapabilityConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: unsupported }
+            reason: { type: string, const: update_validation_capability_not_advertised }
+            error: { type: string, minLength: 1 }
+    SynchronousUpdateValidationCapability:
+      type: object
+      additionalProperties: true
+      required: [supported, acceptance_boundary, worker_capability, workflow_contract_field, task_poll, completion]
+      properties:
+        supported: { type: boolean, const: true }
+        minimum_protocol_version: { type: string, const: "1.13" }
+        acceptance_boundary: { type: string, const: validator_approved }
+        worker_capability: { type: string, const: update_validation_tasks }
+        workflow_contract_field: { type: string, const: update_validators }
+        task_poll:
+          type: object
+          additionalProperties: true
+          required: [strategy, endpoint, request_field, task_kinds, default_task_kinds, response_discriminator, poll_request_id_binding, poll_request_id_conflict_reason]
+          properties:
+            strategy: { type: string, const: multiplexed }
+            endpoint: { type: string, const: /worker/workflow-tasks/poll }
+            request_field: { type: string, const: task_kinds }
+            task_kinds:
+              type: array
+              const: [workflow, update_validation]
+            default_task_kinds:
+              type: array
+              const: [workflow]
+            response_discriminator: { type: string, const: task.task_kind }
+            poll_request_id_binding: { type: string, const: normalized_task_kind_set }
+            poll_request_id_conflict_reason: { type: string, const: poll_request_task_kinds_conflict }
+        completion:
+          type: object
+          additionalProperties: true
+          required: [approve_endpoint, reject_endpoint, fence_fields, typed_failure_reasons]
+          properties:
+            approve_endpoint: { type: string, const: "/worker/update-validation-tasks/{taskId}/approve" }
+            reject_endpoint: { type: string, const: "/worker/update-validation-tasks/{taskId}/reject" }
+            fence_fields:
+              type: array
+              const: [lease_owner, update_validation_attempt]
+            typed_failure_reasons:
+              type: array
+              minItems: 7
+              uniqueItems: true
+              items:
+                type: string
+                enum:
+                  - update_validation_task_not_found
+                  - duplicate_update_validation_completion
+                  - update_validation_task_not_leased
+                  - update_validation_lease_owner_mismatch
+                  - stale_update_validation_completion
+                  - update_validation_lease_expired
+                  - update_validator_worker_lost
+    UpdateValidationTaskCompletionRequest:
+      type: object
+      additionalProperties: true
+      required: [lease_owner, update_validation_attempt]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        update_validation_attempt: { type: integer, minimum: 1 }
+    UpdateValidationTaskRejectionRequest:
+      allOf:
+        - $ref: "#/components/schemas/UpdateValidationTaskCompletionRequest"
+        - type: object
+          required: [failure]
+          properties:
+            failure:
+              $ref: "#/components/schemas/UpdateValidationFailure"
+    UpdateValidationFailure:
+      type: object
+      additionalProperties: true
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+        reason: { type: [string, "null"] }
+        type: { type: [string, "null"] }
+        stack_trace: { type: [string, "null"] }
+        validation_errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+    UpdateValidationTaskCompletionResult:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [update_validation_task_id, update_id, update_validation_attempt, outcome, status]
+          properties:
+            update_validation_task_id: { type: string, minLength: 1 }
+            update_id: { type: string, minLength: 1 }
+            update_validation_attempt: { type: integer, minimum: 1 }
+            outcome: { type: string, enum: [approved, rejected, failed] }
+            reason: { type: [string, "null"] }
+            status: { type: integer, const: 200 }
+    UpdateValidationTaskCompletionFailure:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [update_validation_task_id, update_id, outcome, reason, error, status]
+          properties:
+            update_validation_task_id: { type: string, minLength: 1 }
+            update_id: { type: string, minLength: 1 }
+            update_validation_attempt: { type: integer, minimum: 1 }
+            outcome: { type: string, const: rejected }
+            reason:
+              type: string
+              enum:
+                - update_validation_task_not_found
+                - duplicate_update_validation_completion
+                - update_validation_task_not_leased
+                - update_validation_lease_owner_mismatch
+                - stale_update_validation_completion
+                - update_validation_lease_expired
+                - update_validator_worker_lost
+            error: { type: string, minLength: 1 }
+            status: { type: integer, enum: [404, 409] }
+    ActivityTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task]
+          properties:
+            task:
+              type: object
+              additionalProperties: true
+              required: [task_id, activity_type, attempt]
+              properties:
+                task_id: { type: string }
+                activity_type: { type: string }
+                attempt: { type: integer, minimum: 1 }
+                worker_session:
+                  $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionTaskAffinity"
+    HistoryPageRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        page_token: { type: [string, "null"] }
+        page_size: { type: integer, minimum: 1 }
+    TaskHeartbeatRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        worker_id: { type: string }
+        progress: true
+    WorkflowTaskCompleteRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, commands]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        commands:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowCommand"
+        message_stream_cursors:
+          type: array
+          maxItems: 100
+          x-durable-workflow-minimum-protocol-version: "1.15"
+          items: { $ref: "#/components/schemas/MessageStreamCursorAdvance" }
+        message_stream_waits:
+          type: array
+          maxItems: 100
+          x-durable-workflow-minimum-protocol-version: "1.15"
+          items: { $ref: "#/components/schemas/MessageStreamWait" }
+    MessageStreamCursorAdvance:
+      type: object
+      additionalProperties: false
+      required: [stream_name, through_position]
+      properties:
+        stream_name: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        through_position: { type: integer, minimum: 0 }
+    MessageStreamWait:
+      type: object
+      additionalProperties: false
+      required: [stream_name, after_position]
+      properties:
+        stream_name: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        after_position: { type: integer, minimum: 0 }
+    WorkflowCommand:
+      type: object
+      additionalProperties: true
+      required: [type]
+      properties:
+        type: { type: string }
+      allOf:
+        - if:
+            properties:
+              type: { const: upsert_search_attributes }
+            required: [type]
+          then:
+            required: [attributes]
+            properties:
+              attributes: { type: object, additionalProperties: true, minProperties: 1 }
+              attribute_types:
+                $ref: "#/components/schemas/SearchAttributeTypeMap"
+                x-durable-workflow-minimum-protocol-version: "1.16"
+                description: >
+                  Optional for value-inferred commands. When present, every key
+                  must name an attribute in this command and every declaration
+                  is validated without inference fallback.
+        - if:
+            properties:
+              type: { const: open_condition_wait }
+            required: [type]
+          then:
+            properties:
+              condition_key: { type: string, minLength: 1 }
+              condition_definition_fingerprint: { type: string, minLength: 1 }
+              condition_wait_occurrence_id:
+                type: string
+                minLength: 1
+                x-durable-workflow-minimum-protocol-version: "1.17"
+                x-durable-workflow-worker-capability: condition_wait_occurrence_identity
+                description: >
+                  Explicit deterministic identity for one authored wait. A
+                  capable worker must use a new value for every authored wait
+                  and reuse it only for physical re-evaluations of that wait.
+              timeout_seconds: { type: integer, minimum: 0 }
+        - if:
+            properties:
+              type: { const: record_local_activity }
+            required: [type]
+          then:
+            required: [activity_type, outcome]
+            x-durable-workflow-minimum-protocol-version: "1.18"
+            x-durable-workflow-worker-capability: local_activities
+            properties:
+              activity_type: { type: string, minLength: 1 }
+              arguments: true
+              result: true
+              payload_codec: { type: string, minLength: 1 }
+              outcome: { type: string, enum: [completed, failed, timed_out, cancelled] }
+              message: { type: [string, "null"] }
+              exception_type: { type: [string, "null"] }
+              non_retryable: { type: boolean }
+              attempts:
+                type: array
+                minItems: 1
+                items: { type: object, additionalProperties: true }
+              retry_policy: { type: object, additionalProperties: true }
+              start_to_close_timeout: { type: integer, minimum: 1 }
+              schedule_to_close_timeout: { type: integer, minimum: 1 }
+              heartbeat_timeout: { type: integer, minimum: 1 }
+              execution_mode: { type: string, const: local }
+    SearchAttributeTypeMap:
+      type: object
+      additionalProperties: { $ref: "#/components/schemas/SearchAttributeType" }
+      propertyNames: { pattern: "^[A-Za-z][A-Za-z0-9_]{0,127}$" }
+    SearchAttributeType:
+      type: string
+      enum: [string, keyword, keyword_list, int, float, bool, datetime]
+    QueryTaskCompleteRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        result: true
+    ActivityTaskCompleteRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        result: true
+    TaskFailureRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        error: { type: [string, "null"] }
+        exception_type: { type: [string, "null"] }
+        message: { type: [string, "null"] }
+        non_retryable: { type: [boolean, "null"] }

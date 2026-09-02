@@ -1,0 +1,1570 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.suite",
+  "version": 47,
+  "authority_doc": "docs/platform-conformance.md",
+  "authority_url": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+  "surface_stability_authority": "durable-workflow.v2.surface-stability.contract",
+  "result_schema": "durable-workflow.v2.platform-conformance.result",
+  "result_version": 1,
+  "source_dependencies": {
+    "cluster-info-envelope.schema.json": {
+      "artifact_id": "durable-workflow.v2.cluster-info-envelope@catalog-16",
+      "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/cluster-info-envelope.schema.json",
+      "source_path": "resources/conformance/suite-v47/platform-protocol-specs/cluster-info-envelope.schema.json",
+      "sha256": "sha256:7f761da2eda221a6240d1250b6dd774a36c2077642405f0f036e8124121ea4bc"
+    },
+    "history-export-bundle.schema.json": {
+      "artifact_id": "durable-workflow.v2.history-export-bundle@workflow-2.0.0-rc.42-schema-2",
+      "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/2.0.0-rc.42/resources/conformance/suite-v43/platform-protocol-specs/history-export-bundle.schema.json",
+      "source_release": "2.0.0-rc.42",
+      "source_path": "resources/conformance/suite-v47/platform-protocol-specs/history-export-bundle.schema.json",
+      "sha256": "sha256:29f9842ca426f231e79a454e95e23520e5b51b5d8f8453fb0c27f278d68bb21b"
+    },
+    "local-activity-runtime.schema.json": {
+      "artifact_id": "durable-workflow.v2.local-activity-runtime@catalog-16",
+      "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/local-activity-runtime.schema.json",
+      "source_path": "resources/conformance/suite-v47/platform-protocol-specs/local-activity-runtime.schema.json",
+      "sha256": "sha256:de74d7175cda4f761a57263aae2b32046e617783acf0677d4c5aa6c5358619ef"
+    },
+    "worker-sessions-runtime.schema.json": {
+      "artifact_id": "durable-workflow.v2.worker-sessions-runtime@catalog-16",
+      "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/worker-sessions-runtime.schema.json",
+      "source_path": "resources/conformance/suite-v47/platform-protocol-specs/worker-sessions-runtime.schema.json",
+      "sha256": "sha256:36b16340fe9524653baef7de0a32b2f744562bfc57e91853579a2c94dd512581"
+    }
+  },
+  "artifact_version_history": {
+    "rust_signal_query": {
+      "history_mode": "observed_bindings_with_provenance",
+      "strict_suite_versioning_from": 37,
+      "rule": "Evidence produced before suite version 37 must be interpreted using the exact artifact tuple and authority source revision recorded for that run. Starting with suite version 37, every exact artifact change must advance the suite version and append a binding without modifying prior bindings.",
+      "bindings": [
+        {
+          "suite_version": 29,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "0.1.2",
+            "source": "crates.io",
+            "cargo_requirement": "=0.1.2"
+          },
+          "source_revision": "009c0257964f33705941466d09777172068b3a26",
+          "authority_sha256": "793c8e6f63310c51aa97380466a58bd68b4c90dc2277351a3bf7ba60be794cba"
+        },
+        {
+          "suite_version": 30,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "0.1.2",
+            "source": "crates.io",
+            "cargo_requirement": "=0.1.2"
+          },
+          "source_revision": "3fa9bff54c8ccef5537a885b167e470a629661b9",
+          "authority_sha256": "1807509b4a56463c37998e91e433ff7cf79c49c9eb9722d6f36fefb38ac615a0"
+        },
+        {
+          "suite_version": 31,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.3",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.3"
+          },
+          "source_revision": "4275fd11d80e88d4414383e4338144c228eb5a78",
+          "authority_sha256": "eb79b471e654b14a517a077d526b085c56ac55b17405233df2ffbdf11e32e64b"
+        },
+        {
+          "suite_version": 32,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.4",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.4"
+          },
+          "source_revision": "187746bb19615a8cbb25dfbe1e4e27dbbd933472",
+          "authority_sha256": "4acdcb70da1cebb77a44edb7cce68ef1d0315159d289c94af2f57f526c3cbbea"
+        },
+        {
+          "suite_version": 33,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.5"
+          },
+          "source_revision": "08fab5ff5c51fd31ce8306b39edb10996d5a8531",
+          "authority_sha256": "d809264b6394935c0c4b3c30e6ba50252fba0c6743a81a2c747c39a28830277d"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.6",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.6"
+          },
+          "source_revision": "5191a97d90e3e476c4e6a51e90faa559868e4c70",
+          "authority_sha256": "d067aa5e750a804d67fb501704a46394488309e33f6df461ba000b41530a87a0"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.10",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.10"
+          },
+          "source_revision": "0fddbec98b94a5b542480d746759a2c695bba2be",
+          "authority_sha256": "6a90b3ba55b43feb332fb895a23045fdaf85b23357c1bbeff2e79321cd4afca8"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.13",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.13"
+          },
+          "source_revision": "0561e96950c68beabb3535a2f65f7403209885a5",
+          "authority_sha256": "c2e567ba37e68354256e680a53b0890ede7e8f3b69d2ed9aede33ad8aa0af8a4"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.14",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.14"
+          },
+          "source_revision": "ef844b34dfec8cfe54d4bc699fc21d80574ce028",
+          "authority_sha256": "ecc7c1b8427dd89fc370f7aafdd1a5d6089c8c60559f61af112d8d92e516dece"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.16",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.16"
+          },
+          "source_revision": "68262eb8589e8e1142c2e158f50815950a347ef8",
+          "authority_sha256": "4f304b9d2dae9b3f71b800b49d22b7ae4c60fd69e37bece224ccca5818911222"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.17",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.17"
+          },
+          "source_revision": "f1ef7d4edd8b1cea28192bfe360d3a233721c0ca",
+          "authority_sha256": "86cff1043fb2c97490b08a9fee0e6ca993eb2c3f4f03b863c61e4ffd5188cbaf"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.18",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.18"
+          },
+          "source_revision": "8853baf7d42e2bbdf08ed101dc0ba4e7bb0f4a31",
+          "authority_sha256": "8285966e7ed1eb20942ea24bc008725e80e737a895ae43a0c69fdd13728531d5"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-beta.21",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-beta.21"
+          },
+          "source_revision": "636ff3fc90c1a01c8ee74becaa148c9e193969ea",
+          "authority_sha256": "a60b114a3ad2285c4a9796d72de29919d3ba84e713f20fb0f6fa705aa957e525"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.1",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.1"
+          },
+          "source_revision": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+          "authority_sha256": "dba857beb24d0cd75adb7146d6e17b7728fb432e7d7e004a3a2553f630eb94cc"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.2",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.2"
+          },
+          "source_revision": "961bc3675b2c1c35577b66bccc77b2e4f4485369",
+          "authority_sha256": "087764682d0f80e6f8f329baa0cab6adec1cfe3733083383dd1d2159cc607457"
+        },
+        {
+          "suite_version": 34,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.1",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.1"
+          },
+          "source_revision": "6c137c89f5b0efdfc5f5720ef81005dd67751aad",
+          "authority_sha256": "dba857beb24d0cd75adb7146d6e17b7728fb432e7d7e004a3a2553f630eb94cc"
+        },
+        {
+          "suite_version": 35,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.3",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.3"
+          },
+          "source_revision": "2810085732928e0bae9a7ae16cc55149ad721635",
+          "authority_sha256": "fa4664b9cc826c3573e131a7b88d62b1dbee761d2b1d0e93d3aacb6a5e64cb11"
+        },
+        {
+          "suite_version": 36,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.4",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.4"
+          },
+          "source_revision": "dd07456686d367c215e2637f586436b9710d7b35",
+          "authority_sha256": "d256640d23b07c3d1a88e40854056074d8abd154360190712f67507c027ca8fc"
+        },
+        {
+          "suite_version": 36,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "source_revision": "257a758c4b20094246ec676f0340bb392cf867c6",
+          "authority_sha256": "4679879192043c5aa725d8e9770719c41a2b991e5dfc565ca3e5c33670ffd0b9"
+        },
+        {
+          "suite_version": 37,
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "source_revision": "e779bf19aeb78bdaeb020b23ac80b576ec125af8",
+          "authority_sha256": "3469169d0df27e80386ceca489826200620d6dfc87f42e4deae0949da377652c"
+        }
+      ]
+    },
+    "history_export_bundle": {
+      "history_mode": "immutable_prerelease_schema_bindings",
+      "bindings": [
+        {
+          "suite_version": 42,
+          "status": "historical",
+          "lifecycle": "prerelease",
+          "schema_version": 1,
+          "artifact_id": "durable-workflow.v2.history-export-bundle@catalog-16",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/history-export-bundle.schema.json",
+          "sha256": "sha256:e8d6ef0af49a2570007062215d1332c96910743c1449cd8ca2c702bfac6c181c"
+        },
+        {
+          "suite_version": 43,
+          "status": "current",
+          "lifecycle": "prerelease",
+          "schema_version": 2,
+          "artifact_id": "durable-workflow.v2.history-export-bundle@workflow-2.0.0-rc.42-schema-2",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/2.0.0-rc.42/resources/conformance/suite-v43/platform-protocol-specs/history-export-bundle.schema.json",
+          "source_release": "2.0.0-rc.42",
+          "sha256": "sha256:29f9842ca426f231e79a454e95e23520e5b51b5d8f8453fb0c27f278d68bb21b"
+        }
+      ]
+    },
+    "worker_protocol_api": {
+      "history_mode": "immutable_lifecycle_bindings",
+      "bindings": [
+        {
+          "suite_version": 40,
+          "status": "historical",
+          "lifecycle": "beta",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-beta-history",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/e990bc36731463cc5b2cb2a9175dbccfdea61704/static/platform-protocol-specs/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:3166ce8ecb4c15005f1d98b1669f1ffaf3aeff7e19d0f006454525b2b19e4035"
+        },
+        {
+          "suite_version": 41,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-protocol-1.13-history",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:55dfede6a9742f955911786eeb588ceecaa4266cebad57b92684c2a1bacefe7b"
+        },
+        {
+          "suite_version": 43,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-protocol-1.15-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.15/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:d21a59e98ef46419b0792e716bd359c424a5759140474b838b1398083a291df6"
+        },
+        {
+          "suite_version": 44,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-protocol-1.16-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.16/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:2dd330d52b8a36d1de0f364fc5f81311e2146f11ba1f77237e9c948e988c6817"
+        },
+        {
+          "suite_version": 45,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-protocol-1.17-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.17/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:ebf84ff9443860085e503dfabbe0ccf7f313bed95b2261bef1e56abfbaab188e"
+        },
+        {
+          "suite_version": 46,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16-protocol-1.18-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.18/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:d704de374bf097bae08421ff293638af6e036f97184ac8f5b732f31dabf6c920"
+        },
+        {
+          "suite_version": 47,
+          "status": "current",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.19/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:2b25103fb2260ee8c97e8cb62ff18dfcb8c8091a79f4cc70bb5e4878375a079c"
+        }
+      ]
+    },
+    "worker_protocol_stream": {
+      "history_mode": "immutable_lifecycle_bindings",
+      "bindings": [
+        {
+          "suite_version": 41,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16-protocol-1.13-history",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:15bddb75d0e7183a520e861f87d5315b65e42acdc57a8137f947e00cacbac251"
+        },
+        {
+          "suite_version": 43,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16-protocol-1.15-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.15/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:388fd30483c0bb52c6b39cee219be3c9fc933ff815ccf4a06f9063c85902b458"
+        },
+        {
+          "suite_version": 44,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16-protocol-1.16-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.16/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:05c966ba9e328a8d73e769f1303bd1d456be363e6dbb22cfa592c5177c47b5d0"
+        },
+        {
+          "suite_version": 45,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16-protocol-1.17-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.17/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:2111f2dbd158468e186bc5acca9ab3467910ff64fd44494cc60dda30d020f6df"
+        },
+        {
+          "suite_version": 46,
+          "status": "historical",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16-protocol-1.18-history",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.18/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:4842cf99b4e7a036cdc0d96600a6b34ed79a626e6ac422ed9d26afe5ad10b02a"
+        },
+        {
+          "suite_version": 47,
+          "status": "current",
+          "lifecycle": "lifecycle_neutral",
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.19/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:9b85abd60e1a9c5d41a134691f474e4665726f18f4b51d0851affbb0519582b1"
+        }
+      ]
+    }
+  },
+  "conformance_levels": [
+    "full",
+    "partial",
+    "provisional",
+    "nonconforming"
+  ],
+  "conformance_authorities": {
+    "php_sdk": {
+      "status": "stable",
+      "schema": "durable-workflow.v2.php-sdk-conformance-contract",
+      "version": 1,
+      "url": "https://durable-workflow.github.io/platform-conformance/php-sdk-conformance.json",
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance"
+    }
+  },
+  "targets": {
+    "standalone_server": {
+      "description": "Implementations of the standalone Durable Workflow server: the HTTP control plane plus the worker plane plus the cluster_info manifests.",
+      "required_surface_families": [
+        "server_api",
+        "worker_protocol",
+        "cluster_info_manifests"
+      ],
+      "required_fixture_categories": [
+        "control_plane_request_response",
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "schedules_runtime_contract",
+        "namespace_runtime_contract",
+        "child_workflow_runtime_contract",
+        "saga_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "principal_attribution_contract",
+        "worker_task_lifecycle",
+        "failure_repair_actionability"
+      ]
+    },
+    "embedded_engine": {
+      "description": "Application-embedded Workflow engine: Laravel integration, durable state, queue execution, replay persistence, and frozen history semantics.",
+      "required_surface_families": [
+        "history_event_wire_formats"
+      ],
+      "required_fixture_categories": [
+        "history_replay_bundles"
+      ]
+    },
+    "official_sdk": {
+      "description": "First-party framework-neutral SDK distributed by the project (PHP SDK, Python SDK, and Rust SDK). Must drive the worker plane, replay frozen history, and round-trip the control plane.",
+      "required_surface_families": [
+        "official_sdks",
+        "worker_protocol",
+        "history_event_wire_formats"
+      ],
+      "required_fixture_categories": [
+        "control_plane_request_response",
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "schedules_runtime_contract",
+        "namespace_runtime_contract",
+        "child_workflow_runtime_contract",
+        "saga_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "principal_attribution_contract",
+        "worker_task_lifecycle",
+        "history_replay_bundles"
+      ]
+    },
+    "worker_protocol_implementation": {
+      "description": "Third-party or alternate-language implementation of the worker plane and replay surface only. Does not have to host the server or implement the CLI JSON envelopes.",
+      "required_surface_families": [
+        "worker_protocol",
+        "history_event_wire_formats"
+      ],
+      "required_fixture_categories": [
+        "worker_task_lifecycle",
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "schedules_runtime_contract",
+        "namespace_runtime_contract",
+        "child_workflow_runtime_contract",
+        "saga_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "history_replay_bundles"
+      ]
+    },
+    "cli_json_client": {
+      "description": "Implementation that emits the `--output=json` and `--output=jsonl` envelopes that automation, agents, and operator scripts depend on. Includes the official `dw` CLI and any alternate operator shell that claims drop-in JSON parity.",
+      "required_surface_families": [
+        "cli_json"
+      ],
+      "required_fixture_categories": [
+        "control_plane_request_response",
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "schedules_runtime_contract",
+        "namespace_runtime_contract",
+        "child_workflow_runtime_contract",
+        "saga_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "principal_attribution_contract",
+        "cli_json_envelopes"
+      ]
+    },
+    "waterline_contract_surface": {
+      "description": "Implementation of the Waterline observability HTTP API and operator dashboard JSON shapes. Includes the first-party Waterline UI and any alternate observer that claims compatibility.",
+      "required_surface_families": [
+        "waterline_api"
+      ],
+      "required_fixture_categories": [
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "namespace_runtime_contract",
+        "saga_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "principal_attribution_contract",
+        "waterline_observer_envelopes"
+      ]
+    },
+    "repair_actionability_surface": {
+      "description": "Implementation that emits or consumes the failure / repair / actionability objects on stuck tasks, deterministic failure, and replay-mismatch surfaces.",
+      "required_surface_families": [
+        "worker_protocol",
+        "server_api"
+      ],
+      "required_fixture_categories": [
+        "failure_repair_actionability"
+      ]
+    },
+    "mcp_discovery_surface": {
+      "description": "Implementation of the Model Context Protocol surfaces (`/mcp/*`) and the `llms.txt` / `llms-2.0.txt` discovery files used by AI clients.",
+      "required_surface_families": [
+        "mcp_discovery_results"
+      ],
+      "required_fixture_categories": [
+        "mcp_discovery_envelopes"
+      ]
+    },
+    "prerelease_release_candidate": {
+      "description": "Coordinated Durable Workflow 2.0 prerelease artifact tuples spanning server, CLI, SDKs, Workflow, Waterline, sample app, and public docs.",
+      "required_surface_families": [
+        "server_api",
+        "official_sdks",
+        "cli_json",
+        "waterline_api",
+        "cluster_info_manifests"
+      ],
+      "required_fixture_categories": [
+        "skew_refusal_matrix_contract",
+        "workflow_update_runtime_contract",
+        "principal_attribution_contract",
+        "prerelease_readiness_contract"
+      ]
+    }
+  },
+  "fixture_catalog": {
+    "control_plane_request_response": {
+      "status": "stable",
+      "description": "Frozen request bodies and response shapes for control-plane operations: workflow.start, signal, query, update, cancel, task-history page, namespace storage driver, storage round-trip diagnostic.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.control-plane-api@catalog-16",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/control-plane-api.openapi.yaml",
+          "sha256": "sha256:b5c720b7553de2598f236d41e488860e2d41e86327d7cd96a47453059278392f"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/polyglot/cli-python-parity"
+    },
+    "worker_task_lifecycle": {
+      "status": "stable",
+      "description": "Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.worker-protocol-api@catalog-16",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.19/worker-protocol-api.openapi.yaml",
+          "sha256": "sha256:2b25103fb2260ee8c97e8cb62ff18dfcb8c8091a79f4cc70bb5e4878375a079c"
+        },
+        {
+          "artifact_id": "durable-workflow.v2.worker-protocol-stream@catalog-16",
+          "resolver_url": "https://durable-workflow.github.io/platform-protocol-specs/v1.19/worker-protocol-stream.asyncapi.yaml",
+          "sha256": "sha256:9b85abd60e1a9c5d41a134691f474e4665726f18f4b51d0851affbb0519582b1"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/polyglot/worker-protocol"
+    },
+    "signal_query_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for signal delivery and query consistency across PHP, Python, and Rust workers and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/signal_query_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/signal-query-runtime-scenarios.json",
+          "sha256": "sha256:f4104a67fdc307e5470c8272aa76971ae152fc22b526505cf149457c04a4c42d"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "python_worker_cli_and_sdk_baseline",
+        "php_worker_cli_and_sdk_baseline",
+        "python_worker_php_facing_and_cli_clients",
+        "php_worker_python_and_cli_clients",
+        "rust_worker_rust_php_python_clients",
+        "python_worker_rust_client",
+        "php_worker_rust_client",
+        "rust_query_error_and_immutability",
+        "ordered_signal_delivery",
+        "dedup_contract_observation",
+        "signal_during_replay",
+        "query_during_replay",
+        "rust_replayed_instance_state_query_after_cold_restart",
+        "completed_run_signal_and_query",
+        "unknown_signal_and_query_errors",
+        "malformed_signal_and_query_payloads",
+        "waterline_operator_visibility"
+      ],
+      "required_scenario_contracts": {
+        "rust_worker_rust_php_python_clients": {
+          "worker_runtime": "sdk-rust",
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "query_state_model": "snapshot_derived_transport_state",
+          "caller_paths": [
+            "sdk-rust",
+            "sdk-php",
+            "sdk-python"
+          ]
+        },
+        "python_worker_rust_client": {
+          "worker_runtime": "sdk-python",
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "rust_role": "client",
+          "caller_paths": [
+            "sdk-rust"
+          ]
+        },
+        "php_worker_rust_client": {
+          "worker_runtime": "sdk-php",
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "rust_role": "client",
+          "caller_paths": [
+            "sdk-rust"
+          ]
+        },
+        "rust_query_error_and_immutability": {
+          "worker_runtime": "sdk-rust",
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "query_state_model": "snapshot_derived_transport_state",
+          "required_assertions": [
+            "unknown_query_has_stable_outcome",
+            "malformed_query_payload_has_stable_outcome",
+            "unavailable_query_worker_has_stable_outcome",
+            "protocol_query_failure_has_stable_outcome",
+            "missing_workflow_query_has_stable_outcome",
+            "terminal_signal_has_stable_outcome",
+            "successful_query_emits_no_workflow_commands",
+            "failed_query_emits_no_workflow_commands",
+            "successful_query_appends_no_history",
+            "failed_query_appends_no_history",
+            "failed_query_does_not_change_later_answer"
+          ]
+        },
+        "rust_replayed_instance_state_query_after_cold_restart": {
+          "worker_runtime": "sdk-rust",
+          "artifact": {
+            "package": "durable-workflow",
+            "version": "2.0.0-rc.5",
+            "source": "crates.io",
+            "cargo_requirement": "=2.0.0-rc.5"
+          },
+          "query_state_model": "replayed_workflow_instance_state",
+          "lifecycle": [
+            "start_running_workflow",
+            "query_running_state",
+            "cold_stop_rust_worker",
+            "start_fresh_rust_worker_process",
+            "restore_state_from_durable_history",
+            "complete_restored_workflow",
+            "query_completed_state"
+          ],
+          "caller_paths": [
+            "sdk-rust",
+            "sdk-php",
+            "sdk-python"
+          ],
+          "required_assertions": [
+            "callers_observe_equivalent_state_at_each_checkpoint",
+            "restored_state_matches_committed_pre_restart_state",
+            "completed_state_matches_terminal_workflow_state",
+            "successful_replayed_query_emits_no_workflow_commands",
+            "failed_replayed_query_emits_no_workflow_commands",
+            "successful_replayed_query_appends_no_history",
+            "failed_replayed_query_appends_no_history",
+            "failed_replayed_query_does_not_change_state_returned_by_later_query"
+          ]
+        }
+      }
+    },
+    "workflow_update_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for workflow updates across declared update visibility, accepted/running/completed/failed outcomes, idempotency, refusal paths, payload envelopes, principal attribution, PHP/Python parity, and operator visibility.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/workflow_update_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/workflow-update-runtime-scenarios.json",
+          "sha256": "sha256:24c0bdb1cca0ea6f7cc68daf1a62e1ca41a20bfbf0d0419aa80a3bfd5b4bb385"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "declared_update_contract_visibility",
+        "accepted_update_control_plane_and_history",
+        "running_or_waiting_update_operator_visibility",
+        "completed_update_result_round_trip",
+        "failed_update_outcome",
+        "duplicate_request_idempotency",
+        "unknown_update_refusal",
+        "invalid_input_refusal",
+        "payload_envelope_round_trip",
+        "terminal_workflow_update_behavior",
+        "principal_attribution_with_auth",
+        "php_client_worker_update_surface",
+        "python_client_worker_update_surface",
+        "operator_diagnostics_surfaces"
+      ]
+    },
+    "search_attribute_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for Temporal-parity search attributes across PHP and Python workers, CLI query surfaces, Waterline operator visibility, cross-language codecs, load latency, boolean grammar, and adversarial query handling.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/search_attribute_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/search-attribute-runtime-scenarios.json",
+          "sha256": "sha256:41db9910236025878bdb2aa000d295ea58b4a53369c065a07eba037f7b256e5e"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "schema_definition_and_reserved_name_refusal",
+        "python_worker_start_and_upsert_visibility",
+        "php_worker_start_and_upsert_visibility",
+        "cli_query_and_error_surface",
+        "waterline_operator_visibility",
+        "python_to_php_codec_round_trip",
+        "php_to_python_codec_round_trip",
+        "equality_range_bool_query_behavior",
+        "or_not_query_grammar",
+        "keyword_list_membership",
+        "type_safety_wrong_literal",
+        "undefined_key_rejection",
+        "indexing_latency_distribution",
+        "load_and_bounded_latency",
+        "namespace_isolation",
+        "query_injection_hardening"
+      ]
+    },
+    "schedules_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for Temporal-parity schedules across cron and fixed-rate cadence, public list and describe surfaces, pause/resume/delete controls, missed-fire policy, restart survival, CLI/Python/PHP client paths, cross-language scheduled workflow dispatch, and adversarial schedule inputs.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/schedules_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/schedules-runtime-scenarios.json",
+          "sha256": "sha256:9f4850ffb627f0f5afb3a12de41f60d7a35761b73c42868529b81d3a44e74513"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "cron_cadence",
+        "fixed_rate_cadence",
+        "list_describe_visibility",
+        "pause_resume_no_fire_window",
+        "delete_stops_future_fires",
+        "missed_fire_policy",
+        "restart_survival",
+        "cli_schedule_surface",
+        "python_sdk_schedule_surface",
+        "php_schedule_surface",
+        "python_created_php_workflow",
+        "php_created_python_workflow",
+        "invalid_cron_refusal",
+        "nonexistent_workflow_type_outcome"
+      ]
+    },
+    "history_replay_bundles": {
+      "status": "stable",
+      "description": "Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/history_replay_bundles@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/replay-runtime-scenarios.json",
+          "sha256": "sha256:ce540ae887e0ef4ac2065a108c60e885458563e55a2fedf7291cea8835468945"
+        },
+        {
+          "artifact_id": "durable-workflow.v2.history-event-payloads@catalog-16",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/history-event-payloads.schema.json",
+          "sha256": "sha256:e81d1f9176f47a987facd05128a5e14276253b9b62998d58247ada3b5deeeb0f"
+        },
+        {
+          "artifact_id": "durable-workflow.v2.replay-bundle@catalog-16",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/replay-bundle.schema.json",
+          "sha256": "sha256:17409f333f8a05fe41a3ca60b2f6a1b7d9a008b07aae6194b7d5f17e3c6387f2"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "python_completed_history_activity_replay",
+        "python_completed_history_signal_update_replay",
+        "python_completed_history_wait_condition_replay",
+        "python_completed_history_version_marker_replay",
+        "python_completed_history_saga_compensation_replay",
+        "php_completed_history_activity_replay",
+        "php_completed_history_signal_update_replay",
+        "php_completed_history_wait_condition_replay",
+        "php_completed_history_version_marker_replay",
+        "php_completed_history_saga_compensation_replay",
+        "python_worker_restart_completed_query",
+        "python_worker_restart_activity_state",
+        "python_worker_restart_signal_update_state",
+        "python_worker_restart_wait_condition_state",
+        "python_worker_restart_version_marker_state",
+        "python_worker_restart_saga_compensation_state",
+        "php_worker_restart_completed_query",
+        "php_worker_restart_activity_state",
+        "php_worker_restart_signal_update_state",
+        "php_worker_restart_wait_condition_state",
+        "php_worker_restart_version_marker_state",
+        "php_worker_restart_saga_compensation_state",
+        "python_code_divergence_refusal",
+        "php_code_divergence_refusal",
+        "server_history_mutation_refusal",
+        "malformed_history_refusal",
+        "python_in_flight_signal_restart_timing",
+        "php_in_flight_signal_restart_timing"
+      ]
+    },
+    "namespace_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/namespace_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/namespace-runtime-scenarios.json",
+          "sha256": "sha256:78458d791b2ad1cb457c85c6e1395553ea5752ed252d8516d5b71bd0701f853d"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "namespace_create_update_describe_and_list",
+        "workflow_cross_namespace_visibility_isolation",
+        "workflow_cross_namespace_mutation_isolation",
+        "php_worker_task_queue_namespace_isolation",
+        "cli_namespace_context_and_default_scope",
+        "sdk_namespace_selection_parity",
+        "search_attribute_schema_and_value_query_isolation",
+        "schedule_namespace_isolation",
+        "namespace_lifecycle_cleanup_and_recreate",
+        "waterline_operator_namespace_visibility",
+        "nexus_explicit_cross_namespace_invocation",
+        "reserved_namespace_name_refusal",
+        "result_record_and_product_finding_routing"
+      ],
+      "host_runner_contract": {
+        "status": "required_for_passing_namespace_conformance",
+        "result_schema": "durable-workflow.v2.namespace-runtime.result",
+        "must_execute_against_published_artifacts": true,
+        "must_emit_result_for_every_required_scenario": true,
+        "smoke_summary_only_outcome": "non_passing_smoke_only",
+        "unexecuted_required_scenario_status": "not_covered",
+        "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+        "coverage_gap_owner": "conformance_harness"
+      }
+    },
+    "child_workflow_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for child workflow orchestration across PHP and Python workers, cross-language parent/child execution, failure and cancellation propagation, replay after worker restart, concurrent fan-out, and namespace behavior.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/child_workflow_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/child-workflow-runtime-scenarios.json",
+          "sha256": "sha256:8519047688cebc87594ab1dd185f55437f20bd9d9ec362856cb62edfe74fe9b0"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "python_parent_python_child_baseline",
+        "php_parent_php_child_baseline",
+        "php_parent_python_child_cross_language",
+        "python_parent_php_child_cross_language",
+        "child_failure_round_trip_matrix",
+        "parent_cancellation_propagates_to_child",
+        "direct_child_cancellation_observed_by_parent",
+        "worker_restart_replay_preserves_child_outcome",
+        "concurrent_child_fan_out",
+        "child_workflow_namespace_contract"
+      ]
+    },
+    "worker_versioning_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for safe-deploy worker versioning across build-ID registration, rollout visibility, drain/resume controls, per-run pins, compatible replay routing, no-compatible-worker diagnostics, cross-language PHP/Python pinning, adversarial no-bump behavior, and history API version pins.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/worker_versioning_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/worker-versioning-runtime-scenarios.json",
+          "sha256": "sha256:a5546f1c610bf7c34e793ff35fb28d1033a8ab37244eeba0e8aa02354cbba9a5"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "worker_registration_build_ids",
+        "operator_rollout_visibility",
+        "drain_resume_operator_controls",
+        "pin_on_start",
+        "replay_only_by_compatible_workers",
+        "new_starts_to_promoted_version",
+        "replay_across_cache_eviction",
+        "no_compatible_worker_behavior",
+        "operator_visibility_surfaces",
+        "cross_language_php_python_pinning",
+        "adversarial_no_version_bump",
+        "history_api_version_pin"
+      ]
+    },
+    "saga_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for Temporal-parity saga compensation across forward success, reverse-order compensation after later-step failure, early failure, retry idempotence, compensation failure visibility, worker restart replay, PHP/Python cross-language compensation, typed compensation errors, and operator-visible in-progress compensation state.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/saga_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/saga-runtime-scenarios.json",
+          "sha256": "sha256:d11d7966813eed10c7869196db72e56ab994cf86ee4bb0f33c8d68a9013959af"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "forward_success_path",
+        "failure_at_d_reverse_compensation",
+        "failure_at_c_reverse_compensation",
+        "failure_at_a_no_compensation",
+        "compensation_retry_idempotence",
+        "compensation_failure_visibility",
+        "mid_compensation_worker_restart",
+        "php_workflow_python_compensation",
+        "python_workflow_php_compensation",
+        "typed_compensation_error_round_trip",
+        "operator_visible_mid_compensation_status"
+      ]
+    },
+    "migration_runtime_contract": {
+      "status": "stable",
+      "description": "Live published-artifact scenarios for v1 to v2 migration across preserved histories, in-flight progress, activities, signal-or-timer waits, schedules, worker registrations, CLI access, Waterline operator visibility, new v2 starts, queue-aware rollback semantics, and version-skew refusal.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/migration_runtime_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/migration-runtime-scenarios.json",
+          "sha256": "sha256:79a0ecac7afec6efdfd089326b63f20d689797cc181a7a6d441d29699f7055f7"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "latest_supported_v1_state_setup",
+        "documented_migration_steps_execute",
+        "completed_history_preservation_and_replay",
+        "in_flight_workflow_progress_preserved",
+        "mid_activity_retry_preserved",
+        "schedule_cross_upgrade_cadence_preserved",
+        "worker_registration_projection_preserved",
+        "waterline_operator_visibility_preserved",
+        "cli_access_to_preupgrade_state",
+        "new_v2_workflow_start_after_upgrade",
+        "rollback_contract_verified",
+        "version_skew_refusal"
+      ]
+    },
+    "skew_refusal_matrix_contract": {
+      "status": "stable",
+      "description": "Published-artifact version-skew refusal scenarios across CLI, Python SDK, PHP workflow worker, Waterline, future-version boundaries, worker registration classifications, Waterline render classifications, and per-operation request/response evidence.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/skew_refusal_matrix_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/skew-refusal-matrix-scenarios.json",
+          "sha256": "sha256:578a327454b83a891e73d9966546b362c7a5bf94f4a29dc35eae2b110271ea93"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "cli_version_pair_matrix",
+        "sdk_python_version_pair_matrix",
+        "workflow_worker_version_pair_matrix",
+        "waterline_version_pair_matrix",
+        "future_version_boundary_matrix",
+        "request_response_capture_for_skewed_operations",
+        "focused_finding_routing"
+      ]
+    },
+    "prerelease_readiness_contract": {
+      "status": "stable",
+      "description": "Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, public docs, and the quickstart local-server hosting and Laravel paths.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/prerelease_readiness_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/prerelease-readiness-scenarios.json",
+          "sha256": "sha256:f2ee2bded2f34ceedb00b55177bfbfc03074fc86555d0b90493f75046d6a93f7"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_release_set",
+        "workflow_feature_completeness_verdict",
+        "workflow_migration_readiness_verdict",
+        "workflow_public_api_stability_verdict",
+        "workflow_documentation_and_config_verdict",
+        "quickstart_local_server_hosted_completion",
+        "quickstart_laravel_branch_completion",
+        "waterline_feature_completeness_verdict",
+        "waterline_migration_and_config_verdict",
+        "waterline_public_api_and_docs_verdict",
+        "ecosystem_compatibility_verdict",
+        "focused_finding_routing"
+      ]
+    },
+    "failure_repair_actionability": {
+      "status": "stable",
+      "description": "Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.repair-actionability-objects@catalog-16",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/durable-workflow.github.io/f781ced1ae33c8697835bd527a125bdf3eaf4321/static/platform-protocol-specs/repair-actionability-objects.schema.json",
+          "sha256": "sha256:ca4faf4cd1485c877038c794ff7fc2f92804c6e0be4072bec4f4b7f59da9eb17"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-protocol-specs"
+    },
+    "cli_json_envelopes": {
+      "status": "stable",
+      "description": "The revision-bound CLI output-schema manifest and its complete `--output=json` / `--output=jsonl` envelope and record schema closure for automation.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.cli.output-schema-manifest@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/manifest.json",
+          "sha256": "sha256:1b76016fe34266f1366cd09f66ba8a868f7c1faf014802237158f2b8a16a0e38"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list-record.schema.json",
+          "sha256": "sha256:3968a44439c6f924dc1daba53067f35049d32ecbe25cc7aa0181a16492764ceb"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-list.schema.json",
+          "sha256": "sha256:ea24026a3bd9d2e8d2a98a1cdb00d3a55de25a5c5a42169bbd9eb9f4ebd8fecb"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity-task-result.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-task-result.schema.json",
+          "sha256": "sha256:99abbd0b7f9d289bfd7f21b7b863a2aca1237333b7c4d920f414fcbca60daf22"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity-timeout-pass.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-pass.schema.json",
+          "sha256": "sha256:114338000e51fc8b8dee74c44428cd4d0c1f4fd50527b83cf12861784e4ac0ec"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity-timeout-status.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity-timeout-status.schema.json",
+          "sha256": "sha256:50a25b8e4dccb568d7817daaf7ee836ce49c13e7811c709726ded53a07aa3b39"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/activity.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/activity.schema.json",
+          "sha256": "sha256:0ab45653bab605df47fe886b84c47ebb176ab1909c162b5063bf6d88a5f5b272"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/bridge-adapter-outcome.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/bridge-adapter-outcome.schema.json",
+          "sha256": "sha256:4ba411a892b2b821f9fa0d6e9217a9112abfac67f9a324ac26130b35c99b4153"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/env-delete.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-delete.schema.json",
+          "sha256": "sha256:eda1cf9ecef684e0e17a0b02c64c593cccc461ebc9365a068ea0d52cd3a2bae6"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/env-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list-record.schema.json",
+          "sha256": "sha256:2b94cbf78c0f06fc8f474519ccfdd870242d6a667b3e9277a9a160dbe531d8a8"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/env-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-list.schema.json",
+          "sha256": "sha256:72ffff2a4d2bf803ba52585a477dc4cee859133a3a18f8bcb7bcf671d02d458e"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/env-profile.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/env-profile.schema.json",
+          "sha256": "sha256:b46563c7018320b0009ab578b0e37c4a0d285e1cb6450c7a5075bbeca3a28751"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/external-storage-policy.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/external-storage-policy.schema.json",
+          "sha256": "sha256:8f05171742fe8ddf7ad2f22b478f412c12168806b9e0677700d6f597e6ddeb0f"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/namespace-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list-record.schema.json",
+          "sha256": "sha256:ebf0b4e31b18f974e8bf2217e5a7eeb46905539c68f124f0178b33ae49987005"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/namespace-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace-list.schema.json",
+          "sha256": "sha256:63e086ce8341f1c14f2ef4d2a9a6746d1ba3473acefc6ca7b4b888393d8f4229"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/namespace.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/namespace.schema.json",
+          "sha256": "sha256:3eaf767a7579af98beb5d42fe88f303261e0ce0c63560a99f9da59e3c460de01"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/operator-metrics.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/operator-metrics.schema.json",
+          "sha256": "sha256:737e9bf90abb66dd6e96f491ab4087a51f3090a9308b5251e521c31180ace5ad"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/query-task-poll.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-poll.schema.json",
+          "sha256": "sha256:962910e2c1ecf080faf19d93d3f382685bb7d979af2ee576a7560729409cf321"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/query-task-result.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+          "sha256": "sha256:24e9deb177b638fa217d6499684f18ad7adb12d86a6fa42ff3b3e2e22e00e992"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/repair-pass.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-pass.schema.json",
+          "sha256": "sha256:b9468ddcbbfd1c27dc95063f3e7257404ab31bbe08e6c2273ac6b716055f297f"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/repair-status.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-status.schema.json",
+          "sha256": "sha256:bde9c6ae2d7089c4782b7af38ae1d98d697c4e95d3847a3d0e5ef97199e1062f"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/retention-pass.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-pass.schema.json",
+          "sha256": "sha256:d162b0942edb53e7a5d219a9a1489375520a98e45bb2ad7f432c6a5a07a50b0f"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/retention-status.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-status.schema.json",
+          "sha256": "sha256:56071fca5c3aff96b9296fc8428d649ad416192abb54f2fec35bd160c33a7565"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-history-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history-record.schema.json",
+          "sha256": "sha256:fe3e6c69f796fee5b770c1f9f166b8996022453f57d07f68c0095b1d27319ff6"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-history.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history.schema.json",
+          "sha256": "sha256:d65548fe16d63eb2b2c7c557af7476dc7576462908eab58df278c91cc3a7393b"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list-record.schema.json",
+          "sha256": "sha256:dedfc5af0e02e7be4e43be66a4f2386b98eb7d89d27736886ce8823243b8c460"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-list.schema.json",
+          "sha256": "sha256:1e1f72aad6c76a871fed101e2ec7022d7366809b0f8ae8164e627822add47927"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-operation.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-operation.schema.json",
+          "sha256": "sha256:e28bc71d0fd5a9f73dfe102fe718808dc3588c9809256d0f802c450a0a547439"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule-trigger.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-trigger.schema.json",
+          "sha256": "sha256:12df246768782bfff0358770e115a13ce15af1f95813a8b186484026b8e7e2aa"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/schedule.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule.schema.json",
+          "sha256": "sha256:664860e5a42d683f6f877115d9f20fb55b7bee568a696698b843e64e2c8fa5a3"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/search-attribute-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+          "sha256": "sha256:8eeb0d2e918fbed6d0bfb8d7fdc92cf7d0374d7e68fdceec072e03f8fa00dcc3"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/search-attribute.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute.schema.json",
+          "sha256": "sha256:28bc6ff05ce5409a2024d7695f3c366339562a81a0a8ee6747e1603ff2dcda09"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/server-health.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-health.schema.json",
+          "sha256": "sha256:a9138e09aad62f86038a26062570d93685af6e272075582f560498dd00803f49"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/server-info.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/server-info.schema.json",
+          "sha256": "sha256:606ce77e624db9fcce1541a51c75774f02414752c7bcc2f108ededde91dbd3c9"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/storage-test.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/storage-test.schema.json",
+          "sha256": "sha256:b2afc959aea73f43f012a7374d250e3feca9afa2ad5ad8ae852b6cbfa45a1659"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/task-queue-build-id-rollout.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-id-rollout.schema.json",
+          "sha256": "sha256:d3de30a8dcaef80d73b3a5e45926b8d42d5e15e2e695cc4b6d96e37feadc469a"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/task-queue-build-ids.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-build-ids.schema.json",
+          "sha256": "sha256:4bfc1f0c25e6d530ef4db4101615c9185e85b6bc20b30e51e61bab72e0406c69"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/task-queue-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list-record.schema.json",
+          "sha256": "sha256:a33c2fe1ef389ab21e9cc29161052485af3af17be70cc02108ed3d89b5110ddf"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/task-queue-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue-list.schema.json",
+          "sha256": "sha256:4bf7b484f3a729841cb5651236c127bf55a9db43acc870f3786d984aeaca8561"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/task-queue.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/task-queue.schema.json",
+          "sha256": "sha256:443a8b912ef953af8548fba1b5be78ce7308bdcefe7b2a585dd1f0d7c81dc7bc"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/worker-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list-record.schema.json",
+          "sha256": "sha256:d058a85ce651416e722cb78f76db2d2e1aaaa50de22d2b3f644178b132507cea"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/worker-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-list.schema.json",
+          "sha256": "sha256:d8968c668321cf4f57db8f74f22cca5f6dd846afd39e85edba8b6bcf2e2ac9c0"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/worker-operation.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker-operation.schema.json",
+          "sha256": "sha256:151c7d04f1abc1c6a9c609d35bedd511de6455b340aaa6bda7500a158e9045d8"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/worker.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/worker.schema.json",
+          "sha256": "sha256:1c9726330a32612aca6b02398ce38b582700486f69b3026a10a9264fd54ffce5"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-debug.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-debug.schema.json",
+          "sha256": "sha256:657915b4c64e25b6cb4cd4a4dd412d5ae8490b37c89a43a8636b600345a535e8"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-history-export.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-export.schema.json",
+          "sha256": "sha256:a78809b013435b70661ff72aa59a521a7d4ba38f1b9b079346f99de146bc9138"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-history-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-record.schema.json",
+          "sha256": "sha256:b0a497aef73bef39a65e2d7145d16a2abc5666d0b50ea309880f1e7ec9bdf889"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-history.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history.schema.json",
+          "sha256": "sha256:0ccd82170e9cc2789ab48b8d23562b99d5288b64d3d698581f3d9d3390ccebf0"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list-record.schema.json",
+          "sha256": "sha256:59487cb7285f061acbf5e8a441b54304ae3e57995189ee139db8da67a8632583"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-list.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-list.schema.json",
+          "sha256": "sha256:71f1a1e3d0c7b0d6f954593b0cf14dcae31e23806deb50890ee6b3ad08078b05"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-operation.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-operation.schema.json",
+          "sha256": "sha256:93efb18f800af21ee4c6acf4d26aa17b84528645f7c7e45e4784d91cdeebf2eb"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-query.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-query.schema.json",
+          "sha256": "sha256:6eb0f804ea03956fa688b74a956db83924c3bcdf4312fe0a3cc788a449690757"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-run-list-record.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run-list-record.schema.json",
+          "sha256": "sha256:1afa00ac0818ae2d3c9a004f8936e969bb6f1f12d343e475babb55f27f2740e0"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-run.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-run.schema.json",
+          "sha256": "sha256:0103ea68b95dcba592c02c84499e48bf683b0dcbd8def7342a3a5ee1ef0af391"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-runs.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-runs.schema.json",
+          "sha256": "sha256:c312a892e7c5651e31b5610c03f9ea1deee26191e663c618bade2bf0d282d8a9"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-signal.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-signal.schema.json",
+          "sha256": "sha256:c42c02f7a54faa082982028482bc231ca29c495a2a00fabce5b0ae580a2505bf"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-start.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-start.schema.json",
+          "sha256": "sha256:a5cf0a2b4b10b0c6a513a44dd2239d7682021f78347a58d090ddc3064bc11b91"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-task-history.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-history.schema.json",
+          "sha256": "sha256:45d6ba4115ef0b48e5133233a93a14ce64c08868cd540109f6ae51887c06b26c"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-task-poll.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-poll.schema.json",
+          "sha256": "sha256:858c079a97708e43068bf4729c060eaf88c6315eb4f695862367cf07007f5491"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-task-result.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+          "sha256": "sha256:d1e887263a1fbdfa65df2ae3e10f4771a5b5a87bfd43ee4ea9ce150a73938eb6"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-update.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-update.schema.json",
+          "sha256": "sha256:854055865e25589407d5d2068904fd840f522250a9b13b7182b592be138720b1"
+        },
+        {
+          "artifact_id": "durable-workflow.cli.output-schema/workflow-v1-projection.schema.json@3",
+          "resolver_url": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-v1-projection.schema.json",
+          "sha256": "sha256:b3ee74f7baaea45833fdd0fd1e6e9ec0276991277e24c92bc9bdbf6189b59919"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/polyglot/cli-reference"
+    },
+    "waterline_observer_envelopes": {
+      "status": "provisional",
+      "description": "The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Promoted to required when the Waterline contract slice lands its public fixture set.",
+      "sources": [
+        {
+          "repository": "waterline",
+          "path": "tests/fixtures/observer/ (planned)"
+        }
+      ],
+      "authority_doc": "waterline/CONFORMANCE.md"
+    },
+    "mcp_discovery_envelopes": {
+      "status": "provisional",
+      "description": "MCP `tools/list`, `tools/call`, and `llms-2.0.txt` discovery envelopes. Promoted to required when the MCP tool surface stabilizes its public fixture set.",
+      "sources": [
+        {
+          "repository": "workflow",
+          "path": "tests/Fixtures/Mcp/ (planned)"
+        },
+        {
+          "repository": "server",
+          "path": "tests/Fixtures/Mcp/ (planned)"
+        }
+      ],
+      "authority_doc": "durable-workflow.github.io/docs/polyglot/ (mcp surface, planned)"
+    },
+    "principal_attribution_contract": {
+      "status": "stable",
+      "description": "Published-artifact scenarios proving server-derived, non-spoofable principal attribution across raw HTTP, CLI, Python SDK, PHP workflow client, and Waterline operator surfaces.",
+      "sources": [
+        {
+          "artifact_id": "durable-workflow.v2.platform-conformance.runtime-scenarios/principal_attribution_contract@38",
+          "resolver_url": "https://raw.githubusercontent.com/durable-workflow/workflow/75dfd5c869823409ef3d6c4b009a7882159ae9a2/resources/conformance/suite-v38/platform-conformance/principal-attribution-scenarios.json",
+          "sha256": "sha256:257dbaaa0c16b62f86f19e304a3de54347da1e0cf03642639c159e0dfac8c19f"
+        }
+      ],
+      "authority_doc": "https://durable-workflow.github.io/docs/2.0/platform-conformance",
+      "required_scenarios": [
+        "published_artifact_install_only",
+        "named_token_actor_matrix",
+        "start_signal_cancel_spoofing",
+        "query_attribution",
+        "completion_failure_attribution",
+        "server_originated_events",
+        "anonymous_attribution",
+        "python_sdk_visibility",
+        "php_client_visibility",
+        "cli_operator_visibility",
+        "waterline_operator_visibility"
+      ]
+    }
+  },
+  "pass_fail_rules": {
+    "guaranteed_field_equality": {
+      "rule": "Every field marked guaranteed in the fixture's schema must be present, type-correct, and value-equal in the implementation's response. Diagnostic-only fields are ignored.",
+      "follows": "durable-workflow.v2.surface-stability.contract#field_visibility_rule"
+    },
+    "unknown_additive_fields_tolerated": {
+      "rule": "An implementation that emits extra fields not present in the fixture passes if and only if those fields are documented diagnostic-only or the fixture is on a stability level that allows additive evolution."
+    },
+    "frozen_shape_exact_match": {
+      "rule": "Fixtures backed by a frozen surface family must match exactly. There is no diagnostic-only allowance for frozen shapes; a frozen-shape mismatch is always a fail.",
+      "applies_to_categories": [
+        "history_replay_bundles"
+      ]
+    },
+    "required_fixtures_must_pass": {
+      "rule": "A release that claims a target must pass every required fixture category for that target. One failed required fixture means the release does not conform for that target."
+    },
+    "stable_runtime_scenario_coverage": {
+      "rule": "A stable runtime fixture category must report every required scenario it declares with one of the statuses published by its runtime scenario manifest: pass, fail, unsupported, not_covered, or runner_blocked. Full conformance requires every required scenario to pass. A smoke-only subset, omitted scenario, unsupported public surface, uncovered cell, or runner-blocked cell is nonconforming and must link the owning finding.",
+      "applies_to_categories": [
+        "signal_query_runtime_contract",
+        "workflow_update_runtime_contract",
+        "search_attribute_runtime_contract",
+        "schedules_runtime_contract",
+        "history_replay_bundles",
+        "namespace_runtime_contract",
+        "child_workflow_runtime_contract",
+        "worker_versioning_runtime_contract",
+        "saga_runtime_contract",
+        "migration_runtime_contract",
+        "skew_refusal_matrix_contract",
+        "principal_attribution_contract",
+        "prerelease_readiness_contract"
+      ]
+    },
+    "provisional_categories_warn_only": {
+      "rule": "A failed fixture in a provisional category emits a warning in the harness output and does not block the release. The category becomes load-bearing when promoted to stable in a later suite version."
+    },
+    "diagnostic_only_mismatches_pass": {
+      "rule": "If only diagnostic-only fields differ, the harness records the difference in its diagnostic_diff output and the fixture passes."
+    }
+  },
+  "harness_contract": {
+    "description": "The conformance harness is the executable that consumes the catalog and emits a result document. It is intentionally language-neutral.",
+    "requirements": {
+      "load_manifest": "Loads the suite manifest from the implementation's `surface_stability_contract` and `platform_conformance_suite` cluster_info entries, or from a vendored copy of the static mirror.",
+      "load_fixtures": "Loads each declared fixture from its source-of-truth path declared in the fixture catalog. Does not fork or vendor fixtures.",
+      "drive_implementation": "Drives the implementation through the fixture's documented operation (HTTP request, worker poll, replay invocation, CLI invocation, MCP discovery call).",
+      "compare_under_rules": "Compares the response against the fixture under the pass / fail rules above.",
+      "emit_result_document": "Emits one harness result document per run, schema `durable-workflow.v2.platform-conformance.result` version 1. The document carries the suite version, the implementation identity, the per-fixture pass / fail / diagnostic diff, and the overall conformance level.",
+      "exit_code": "Exits non-zero if and only if the conformance level is `nonconforming`."
+    },
+    "result_document_required_fields": [
+      "schema",
+      "version",
+      "suite_version",
+      {
+        "implementation": "{ name, version, claimed_targets[] }"
+      },
+      {
+        "per_fixture_results": "{ category, fixture_id, status: pass|fail|warn|skipped, diagnostic_diff }"
+      },
+      "conformance_level",
+      "generated_at"
+    ]
+  },
+  "release_gates": {
+    "description": "A release that publishes a compatibility claim must produce a signed harness result document before tag.",
+    "gates": {
+      "durable-workflow/server": {
+        "required_targets": [
+          "standalone_server",
+          "worker_protocol_implementation",
+          "repair_actionability_surface"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "durable-workflow/workflow": {
+        "required_targets": [
+          "embedded_engine"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "durable-workflow/sdk": {
+        "required_targets": [
+          "official_sdk",
+          "worker_protocol_implementation"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "durable_workflow": {
+        "required_targets": [
+          "official_sdk",
+          "worker_protocol_implementation"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "dw": {
+        "required_targets": [
+          "cli_json_client"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "waterline": {
+        "required_targets": [
+          "waterline_contract_surface"
+        ],
+        "artifact": "GitHub release attaches the harness result document."
+      },
+      "durable-workflow/2.0-release-candidate": {
+        "required_targets": [
+          "prerelease_release_candidate"
+        ],
+        "artifact": "Conformance record stores the published-artifact prerelease readiness result."
+      }
+    },
+    "enforcement": {
+      "machine": "docs site CI runs scripts/check-platform-conformance-authority.js to prove the public authority route and manifest mirror stay aligned, and a per-repo CI job named `platform-conformance` runs the harness against the local build.",
+      "human": "Release reviewers confirm the harness result is attached, the conformance level is `full` or `provisional`, and the suite version matches the build under test before tagging.",
+      "block_on_nonconforming": true
+    }
+  }
+}

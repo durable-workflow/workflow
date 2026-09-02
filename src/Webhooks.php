@@ -95,18 +95,19 @@ class Webhooks
         foreach (self::getSignalMethods($workflow) as $method) {
             if (self::hasWebhookAttributeOnMethod($method)) {
                 $slug = Str::kebab(class_basename($workflow));
-                $signal = Str::kebab($method->getName());
+                $methodName = $method->getName();
+                $signal = Str::kebab($methodName);
                 Route::post(
                     "{$basePath}/signal/{$slug}/{workflowId}/{$signal}",
-                    static function (Request $request, $workflowId) use ($workflow, $method) {
+                    static function (Request $request, $workflowId) use ($workflow, $methodName) {
                         $request = self::validateAuth($request);
                         $workflowInstance = WorkflowStub::load($workflowId);
                         $params = self::resolveNamedParameters(
                             $workflow,
-                            $method->getName(),
+                            $methodName,
                             $request->except('workflowId')
                         );
-                        $workflowInstance->{$method->getName()}(...$params);
+                        $workflowInstance->{$methodName}(...$params);
                         return response()->json([
                             'message' => 'Signal sent',
                         ]);

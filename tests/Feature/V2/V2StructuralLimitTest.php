@@ -1,0 +1,1022 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Facades\Log;
+use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
+use Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow;
+use Tests\Fixtures\V2\TestGreetingActivity;
+use Tests\Fixtures\V2\TestLargeMemoWorkflow;
+use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
+use Tests\Fixtures\V2\TestLargePayloadWorkflow;
+use Tests\Fixtures\V2\TestLargeSearchAttributeWorkflow;
+use Tests\Fixtures\V2\TestLargeWorkflowOutputWorkflow;
+use Tests\Fixtures\V2\TestManyActivitiesWorkflow;
+use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
+use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
+use Workflow\V2\Enums\StructuralLimitKind;
+use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\FailureFactory;
+use Workflow\V2\Support\FailureSnapshots;
+use Workflow\V2\Support\StructuralLimits;
+use Workflow\V2\WorkflowStub;
+
+final class V2StructuralLimitTest extends TestCase
+{
+    public function testCommandBatchSizeLimitFailsRunWithTypedFailure(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Set a very low command batch limit to trigger enforcement.
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 2,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-batch-1');
+        $workflow->start(5); // Tries to dispatch 5 parallel activities, exceeding limit of 2.
+
+        $workflow->refresh();
+
+        // The run should have failed due to structural limit.
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-batch-1')
+            ->firstOrFail();
+
+        $this->assertSame(RunStatus::Failed->value, $run->status->value ?? $run->status);
+
+        // Verify failure row has structural_limit category.
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        // Verify history event carries structural limit metadata.
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('command_batch_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+        $this->assertArrayHasKey('structural_limit_value', $failedEvent->payload);
+        $this->assertArrayHasKey('structural_limit_configured', $failedEvent->payload);
+        $this->assertSame(FailureCategory::StructuralLimit->value, $failedEvent->payload['failure_category']);
+    }
+
+    public function testCommandBatchSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Set batch limit high enough to allow 3 parallel activities.
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 10,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-batch-ok-1');
+        $workflow->start(3);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed.');
+    }
+
+    public function testDisabledLimitsDoNotBlock(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Disable all limits.
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 0,
+        ]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 0,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-disabled-1');
+        $workflow->start(5);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed with limits disabled.');
+    }
+
+    public function testStructuralLimitsSnapshotAppearsInHealthCheck(): void
+    {
+        $snapshot = StructuralLimits::snapshot();
+
+        $this->assertIsArray($snapshot);
+        $this->assertArrayHasKey('pending_activity_count', $snapshot);
+        $this->assertArrayHasKey('payload_size_bytes', $snapshot);
+        $this->assertArrayHasKey('command_batch_size', $snapshot);
+    }
+
+    public function testPayloadSizeLimitFailsActivityScheduling(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Set a very low payload limit (64 bytes) to trigger enforcement.
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        // Build a payload that exceeds 64 bytes when serialized.
+        $largePayload = str_repeat('x', 200);
+
+        $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-act-1');
+        $workflow->start($largePayload);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to payload size limit.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-act-1')
+            ->firstOrFail();
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 1048576,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-ok-1');
+        $workflow->start('short');
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed under payload limit.');
+    }
+
+    public function testPayloadSizeLimitFailsChildWorkflowScheduling(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $largePayload = str_repeat('y', 200);
+
+        $workflow = WorkflowStub::make(TestLargePayloadChildWorkflow::class, 'limit-payload-child-1');
+        $workflow->start($largePayload);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to child payload size limit.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-child-1')
+            ->firstOrFail();
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsContinueAsNewBeforeCreatingNextRun(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(
+            TestContinueAsNewLargePayloadWorkflow::class,
+            'limit-payload-continue-as-new-1'
+        );
+        $workflow->start(str_repeat('c', 200));
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to continue-as-new payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-continue-as-new-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            1,
+            WorkflowRun::query()->where('workflow_instance_id', 'limit-payload-continue-as-new-1')->count(),
+            'Oversize continue-as-new arguments must not create the next run.'
+        );
+        $this->assertSame(RunStatus::Failed->value, $run->status->value ?? $run->status);
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowContinuedAsNew->value)
+                ->count(),
+            'Oversize continue-as-new arguments must not record WorkflowContinuedAsNew.'
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsWorkflowOutputBeforeCompletionIsPersisted(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargeWorkflowOutputWorkflow::class, 'limit-payload-output-1');
+        $workflow->start(str_repeat('o', 200));
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to workflow output payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-output-1')
+            ->firstOrFail();
+
+        $this->assertNull($run->output, 'Oversize workflow output must not be persisted.');
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+                ->count(),
+            'Oversize workflow output must not record WorkflowCompleted.'
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsActivityOutputBeforeCompletionIsPersisted(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, str_repeat('a', 200));
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-activity-output-1');
+        $workflow->start('short');
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to activity output payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-activity-output-1')
+            ->firstOrFail();
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(ActivityStatus::Failed->value, $execution->status->value ?? $execution->status);
+        $this->assertNull($execution->result, 'Oversize activity output must not be persisted.');
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityCompleted->value)
+                ->count(),
+            'Oversize activity output must not record ActivityCompleted.'
+        );
+
+        $failedActivityEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedActivityEvent->payload['structural_limit_kind'] ?? null);
+
+        $exceptionPayload = Serializer::unserializeWithCodec('avro', (string) $execution->exception);
+        $restored = FailureFactory::restoreForReplay($exceptionPayload);
+
+        $this->assertInstanceOf(StructuralLimitExceededException::class, $restored);
+        $this->assertSame(StructuralLimitKind::PayloadSize, $restored->limitKind);
+        $this->assertGreaterThan(64, $restored->currentValue);
+        $this->assertSame(64, $restored->configuredLimit);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+    }
+
+    public function testPayloadSizeLimitRejectsOversizeSignalInputWithoutAcceptingSignal(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-payload-signal-input-1');
+        $workflow->start();
+
+        $result = $workflow->attemptSignal('name-provided', str_repeat('s', 200));
+
+        $this->assertTrue($result->rejected(), 'Signal should have been rejected due to payload size.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-signal-input-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            0,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('status', SignalStatus::Received->value)
+                ->count(),
+            'Oversize signal input must not create a received signal row.'
+        );
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::SignalReceived->value)
+                ->count(),
+            'Oversize signal input must not record SignalReceived.'
+        );
+
+        $rejectedSignal = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Rejected->value)
+            ->firstOrFail();
+
+        $this->assertSame([], $rejectedSignal->signalArguments());
+        $this->assertArrayHasKey('arguments', $rejectedSignal->normalizedValidationErrors());
+    }
+
+    public function testPayloadSizeLimitRejectsOversizeUpdateInputWithoutAcceptingUpdate(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'limit-payload-update-input-1');
+        $workflow->start();
+
+        $result = $workflow->submitUpdate('approve', true, str_repeat('u', 200));
+
+        $this->assertTrue($result->rejected(), 'Update should have been rejected due to payload size.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-update-input-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            0,
+            WorkflowUpdate::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('status', UpdateStatus::Accepted->value)
+                ->count(),
+            'Oversize update input must not create an accepted update row.'
+        );
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::UpdateAccepted->value)
+                ->count(),
+            'Oversize update input must not record UpdateAccepted.'
+        );
+
+        $rejectedUpdate = WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', UpdateStatus::Rejected->value)
+            ->firstOrFail();
+
+        $this->assertSame([], $rejectedUpdate->updateArguments());
+        $this->assertArrayHasKey('arguments', $rejectedUpdate->normalizedValidationErrors());
+    }
+
+    public function testMemoSizeLimitFailsUpsert(): void
+    {
+        WorkflowStub::fake();
+
+        // Set a very low memo limit (32 bytes) to trigger enforcement.
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 32,
+        ]);
+
+        $largeEntries = [
+            'description' => str_repeat('a', 200),
+        ];
+
+        $workflow = WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-1');
+        $workflow->start($largeEntries);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to memo size limit.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-memo-1')
+            ->firstOrFail();
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('memo_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testMemoSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 1048576,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-ok-1');
+        $workflow->start([
+            'status' => 'ok',
+        ]);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed under memo limit.');
+    }
+
+    public function testSearchAttributeSizeLimitFailsUpsert(): void
+    {
+        WorkflowStub::fake();
+
+        // Set a very low search attribute limit (32 bytes) to trigger enforcement.
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 32,
+        ]);
+
+        // Build enough attributes to exceed 32 bytes when JSON-encoded.
+        // Each value stays under the 191-char per-value limit.
+        $attributes = [];
+        for ($i = 0; $i < 20; $i++) {
+            $attributes["attr_{$i}"] = str_repeat('v', 100);
+        }
+
+        $workflow = WorkflowStub::make(TestLargeSearchAttributeWorkflow::class, 'limit-sa-1');
+        $workflow->start($attributes);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to search attribute size limit.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-sa-1')
+            ->firstOrFail();
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('search_attribute_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testSearchAttributeSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 1048576,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargeSearchAttributeWorkflow::class, 'limit-sa-ok-1');
+        $workflow->start([
+            'status' => 'ok',
+        ]);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed under search attribute limit.');
+    }
+
+    public function testDisabledPayloadLimitDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 0,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-disabled-1');
+        $workflow->start(str_repeat('x', 5000));
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed with payload limit disabled.');
+    }
+
+    public function testHistoryTransactionSizeLimitFailsRunWithTypedFailure(): void
+    {
+        WorkflowStub::fake();
+
+        // Set a very low history transaction limit to trigger enforcement.
+        // Each side effect creates one SideEffectRecorded event.
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 3,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-1');
+        $workflow->start(10); // Tries to record 10 side effects, exceeding limit of 3.
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-txn-1')
+            ->firstOrFail();
+
+        $this->assertSame(RunStatus::Failed->value, $run->status->value ?? $run->status);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('history_transaction_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+        $this->assertArrayHasKey('structural_limit_value', $failedEvent->payload);
+        $this->assertArrayHasKey('structural_limit_configured', $failedEvent->payload);
+        $this->assertSame(3, $failedEvent->payload['structural_limit_configured']);
+    }
+
+    public function testHistoryTransactionSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        // Allow enough events for 5 side effects.
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 100,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-ok-1');
+        $workflow->start(5);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed under history transaction limit.');
+    }
+
+    public function testHistoryTransactionSizeLimitDisabledDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-disabled-1');
+        $workflow->start(20);
+
+        $workflow->refresh();
+
+        $this->assertTrue(
+            $workflow->completed(),
+            'Workflow should have completed with history transaction limit disabled.'
+        );
+    }
+
+    public function testFailureSnapshotsIncludeStructuralLimitMetadata(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 1,
+        ]);
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-snapshot-1');
+        $workflow->start(3);
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-snapshot-1')
+            ->firstOrFail();
+
+        $snapshots = FailureSnapshots::forRun($run);
+
+        $this->assertNotEmpty($snapshots, 'Failure snapshots should not be empty.');
+
+        $firstSnapshot = $snapshots[0];
+        $this->assertSame(FailureCategory::StructuralLimit->value, $firstSnapshot['failure_category']);
+        $this->assertSame('command_batch_size', $firstSnapshot['structural_limit_kind']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Soft-limit warning tests
+    // ---------------------------------------------------------------
+
+    public function testSoftLimitWarningLoggedWhenApproachingCommandBatchLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Limit = 10, threshold = 80% → warning at >= 8 items.
+        // Dispatching 9 parallel activities should trigger a warning but succeed.
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 10,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(static function (string $message, array $context = []) {
+                return str_contains(strtolower($message), 'approaching structural limit')
+                    && str_contains($message, 'command_batch_size');
+            });
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-warn-batch-1');
+        $workflow->start(9);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed despite approaching limit.');
+    }
+
+    public function testNoSoftLimitWarningWhenBelowThreshold(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Limit = 1000, threshold = 80% → warning at >= 800.
+        // Only dispatching 3 activities — well below threshold.
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 1000,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
+
+        Log::shouldReceive('warning')
+            ->never()
+            ->withArgs(static function (string $message) {
+                return str_contains($message, 'approaching structural limit');
+            });
+        Log::makePartial();
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-nowarn-batch-1');
+        $workflow->start(3);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed.');
+    }
+
+    public function testSoftLimitWarningDisabledWhenThresholdIsZero(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 5,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 0,
+        ]);
+
+        Log::shouldReceive('warning')
+            ->never()
+            ->withArgs(static function (string $message) {
+                return str_contains($message, 'approaching structural limit');
+            });
+        Log::makePartial();
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-nowarn-disabled-1');
+        $workflow->start(4); // 4/5 = 80%, but threshold is disabled.
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed with warning threshold disabled.');
+    }
+
+    public function testSnapshotIncludesWarningThreshold(): void
+    {
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 90,
+        ]);
+
+        $snapshot = StructuralLimits::snapshot();
+
+        $this->assertSame(90, $snapshot['warning_threshold_percent']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Pending signal count enforcement
+    // ---------------------------------------------------------------
+
+    public function testPendingSignalLimitRejectsSignalCommand(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 2,
+        ]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-signal-1')
+            ->firstOrFail();
+
+        // Seed pending signals up to the limit via accepted commands.
+        for ($i = 0; $i < 2; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'signal',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowSignal::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'signal_name' => 'name-provided',
+                'status' => SignalStatus::Received->value,
+                'received_at' => now(),
+            ]);
+        }
+
+        // The next signal should be rejected.
+        $result = $workflow->attemptSignal('name-provided', 'overflow');
+
+        $this->assertTrue($result->rejected(), 'Signal should have been rejected due to structural limit.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        // Run should still be active (rejection doesn't fail the run).
+        $run->refresh();
+        $this->assertFalse(
+            in_array($run->status, [
+                RunStatus::Failed,
+                RunStatus::Completed,
+                RunStatus::Cancelled,
+                RunStatus::Terminated,
+            ], true)
+        );
+    }
+
+    public function testPendingSignalLimitAllowsWhenUnderLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 100,
+        ]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-ok-1');
+        $workflow->start();
+
+        $result = $workflow->attemptSignal('name-provided', 'allowed');
+
+        $this->assertTrue($result->accepted(), 'Signal should have been accepted under limit.');
+    }
+
+    public function testDisabledPendingSignalLimitDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 0,
+        ]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-disabled-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-signal-disabled-1')
+            ->firstOrFail();
+
+        // Seed many pending signals via accepted commands.
+        for ($i = 0; $i < 10; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'signal',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowSignal::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'signal_name' => 'name-provided',
+                'status' => SignalStatus::Received->value,
+                'received_at' => now(),
+            ]);
+        }
+
+        $result = $workflow->attemptSignal('name-provided', 'allowed');
+
+        $this->assertTrue($result->accepted(), 'Signal should have been accepted with limit disabled.');
+    }
+
+    // ---------------------------------------------------------------
+    //  Pending update count enforcement
+    // ---------------------------------------------------------------
+
+    public function testPendingUpdateLimitRejectsUpdateCommand(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 2,
+        ]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-update-1')
+            ->firstOrFail();
+
+        // Seed pending updates up to the limit via accepted commands.
+        for ($i = 0; $i < 2; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'update',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowUpdate::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'update_name' => 'approve',
+                'status' => UpdateStatus::Accepted->value,
+                'accepted_at' => now(),
+            ]);
+        }
+
+        // The next update should be rejected.
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->rejected(), 'Update should have been rejected due to structural limit.');
+    }
+
+    public function testPendingUpdateLimitAllowsWhenUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 100,
+        ]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-ok-1');
+        $workflow->start();
+
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->accepted(), 'Update should have been accepted under limit.');
+    }
+
+    public function testDisabledPendingUpdateLimitDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 0,
+        ]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-disabled-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-update-disabled-1')
+            ->firstOrFail();
+
+        // Seed many pending updates via accepted commands.
+        for ($i = 0; $i < 10; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'update',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowUpdate::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'update_name' => 'approve',
+                'status' => UpdateStatus::Accepted->value,
+                'accepted_at' => now(),
+            ]);
+        }
+
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->accepted(), 'Update should have been accepted with limit disabled.');
+    }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/activity-list.schema.json",
+  "title": "dw activity:list --json",
+  "type": "object",
+  "required": ["namespace", "activities"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["namespace", "activity_id"],
+        "properties": {
+          "namespace": { "type": "string" },
+          "activity_id": { "type": "string" },
+          "workflow_id": { "type": ["string", "null"] },
+          "workflow_run_id": { "type": ["string", "null"] },
+          "activity_execution_id": { "type": ["string", "null"] },
+          "activity_type": { "type": ["string", "null"] },
+          "activity_class": { "type": ["string", "null"] },
+          "activity_status": { "type": ["string", "null"] },
+          "attempt_count": { "type": ["integer", "null"] },
+          "current_attempt_id": { "type": ["string", "null"] },
+          "current_attempt_status": { "type": ["string", "null"] },
+          "current_attempt": { "type": ["object", "null"], "additionalProperties": true },
+          "attempt_state": { "type": ["object", "null"], "additionalProperties": true },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": ["string", "null"] },
+                "activity_attempt_id": { "type": ["string", "null"] },
+                "activity_execution_id": { "type": ["string", "null"] },
+                "attempt_number": { "type": ["integer", "null"] },
+                "status": { "type": ["string", "null"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "task_queue": { "type": ["string", "null"] },
+          "status": { "type": ["string", "null"] },
+          "status_bucket": { "type": ["string", "null"] },
+          "started_at": { "type": ["string", "null"] },
+          "closed_at": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "activity_count": { "type": ["integer", "null"] },
+    "next_page_token": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/storage-test.schema.json",
+  "title": "dw storage:test --json",
+  "type": "object",
+  "required": ["status", "driver", "small_payload", "large_payload"],
+  "properties": {
+    "status": { "type": "string" },
+    "driver": { "type": "string" },
+    "namespace": { "type": ["string", "null"] },
+    "small_payload": { "$ref": "#/$defs/round_trip" },
+    "large_payload": { "$ref": "#/$defs/round_trip" }
+  },
+  "$defs": {
+    "round_trip": {
+      "type": "object",
+      "required": ["status", "bytes", "sha256"],
+      "properties": {
+        "status": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string" },
+        "reference_uri": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

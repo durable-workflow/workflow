@@ -9,7 +9,7 @@ use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use Workflow\Serializers\Serializer;
-use Workflow\Signal;
+use Workflow\Timer;
 
 trait Timers
 {
@@ -26,33 +26,35 @@ trait Timers
             return resolve(true);
         }
 
-        $log = self::$context->storedWorkflow->logs()
-            ->whereIndex(self::$context->index)
-            ->first();
+        $log = self::$context->storedWorkflow->findLogByIndex(self::$context->index);
 
         if ($log) {
             ++self::$context->index;
             return resolve(Serializer::unserialize($log->result));
         }
 
-        $timer = self::$context->storedWorkflow->timers()
-            ->whereIndex(self::$context->index)
-            ->first();
+        self::$context->storedWorkflow->loadMissing('timers');
+
+        $timer = self::$context->storedWorkflow->findTimerByIndex(self::$context->index);
 
         if ($timer === null) {
             $when = self::$context->now->copy()
                 ->addSeconds($seconds);
 
+            if (self::isProbing()) {
+                self::markProbePendingBeforeMatch();
+                ++self::$context->index;
+                return (new Deferred())->promise();
+            }
+
             if (! self::$context->replaying) {
-                $timer = self::$context->storedWorkflow->timers()
-                    ->create([
-                        'index' => self::$context->index,
-                        'stop_at' => $when,
-                    ]);
+                $timer = self::$context->storedWorkflow->createTimer([
+                    'index' => self::$context->index,
+                    'stop_at' => $when,
+                ]);
             } else {
                 ++self::$context->index;
-                $deferred = new Deferred();
-                return $deferred->promise();
+                return (new Deferred())->promise();
             }
         }
 
@@ -62,13 +64,12 @@ trait Timers
         if ($result === true) {
             if (! self::$context->replaying) {
                 try {
-                    self::$context->storedWorkflow->logs()
-                        ->create([
-                            'index' => self::$context->index,
-                            'now' => self::$context->now,
-                            'class' => Signal::class,
-                            'result' => Serializer::serialize(true),
-                        ]);
+                    self::$context->storedWorkflow->createLog([
+                        'index' => self::$context->index,
+                        'now' => self::$context->now,
+                        'class' => Timer::class,
+                        'result' => Serializer::serialize(true),
+                    ]);
                 } catch (\Illuminate\Database\UniqueConstraintViolationException $exception) {
                     // already logged
                 }
@@ -90,11 +91,19 @@ trait Timers
                 }
             }
 
-            Signal::dispatch(self::$context->storedWorkflow, self::connection(), self::queue())->delay($delay);
+            Timer::dispatch(
+                self::$context->storedWorkflow,
+                self::$context->index,
+                self::connection(),
+                self::queue()
+            )->delay($delay);
+        }
+
+        if (self::isProbing()) {
+            self::markProbePendingBeforeMatch();
         }
 
         ++self::$context->index;
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
     }
 }

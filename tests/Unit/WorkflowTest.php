@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use BadMethodCallException;
+use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Event;
+use Mockery;
+use ReflectionMethod;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestChildWorkflow;
 use Tests\Fixtures\TestContinueAsNewWorkflow;
@@ -26,6 +29,8 @@ use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowContinuedStatus;
 use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\States\WorkflowRunningStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\Workflow;
 use Workflow\WorkflowStub;
 
@@ -175,6 +180,43 @@ final class WorkflowTest extends TestCase
         $this->assertSame(1, $storedWorkflow->logs()->count());
     }
 
+    public function testSetContextPreservesProbePendingBeforeMatch(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->arguments = Serializer::serialize([]);
+        $storedWorkflow->save();
+
+        $workflow = new Workflow($storedWorkflow);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 3,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 7,
+            'probeClass' => TestActivity::class,
+            'probeMatched' => true,
+            'probePendingBeforeMatch' => true,
+        ]);
+
+        $method = new ReflectionMethod(Workflow::class, 'setContext');
+        $method->setAccessible(true);
+        $method->invoke($workflow, [
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 4,
+            'now' => now(),
+            'replaying' => true,
+        ]);
+
+        $this->assertTrue(WorkflowStub::isProbing());
+        $this->assertSame(7, WorkflowStub::probeIndex());
+        $this->assertSame(TestActivity::class, WorkflowStub::probeClass());
+        $this->assertTrue(WorkflowStub::probeMatched());
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+    }
+
     public function testParent(): void
     {
         Carbon::setTestNow('2022-01-01');
@@ -290,6 +332,22 @@ final class WorkflowTest extends TestCase
         $this->assertSame('2022-01-01 00:00:00', WorkflowStub::now()->toDateTimeString());
         $this->assertSame(WorkflowCompletedStatus::class, $childWorkflow->status());
         $this->assertSame('other', $childWorkflow->output());
+    }
+
+    public function testConstructorUsesQueuePropertyWhenEffectiveQueueIsNull(): void
+    {
+        $storedWorkflow = Mockery::mock(StoredWorkflow::class);
+        $storedWorkflow->shouldReceive('effectiveConnection')
+            ->once()
+            ->andReturn('sync');
+        $storedWorkflow->shouldReceive('effectiveQueue')
+            ->once()
+            ->andReturn(null);
+
+        $workflow = new Workflow($storedWorkflow);
+
+        $this->assertSame('sync', $workflow->connection);
+        $this->assertNull($workflow->queue);
     }
 
     public function testThrowsWhenExecuteMethodIsMissing(): void
@@ -419,5 +477,83 @@ final class WorkflowTest extends TestCase
         $workflow->handle();
 
         $this->assertSame(1, $storedWorkflow->continuedWorkflows()->count());
+    }
+
+    public function testContinueAsNewCarriesWorkflowOptions(): void
+    {
+        $storedWorkflow = StoredWorkflow::create([
+            'class' => TestContinueAsNewWorkflow::class,
+            'arguments' => Serializer::serialize([
+                'arguments' => [0, 3],
+                'options' => [
+                    'connection' => 'sync',
+                    'queue' => 'default',
+                ],
+            ]),
+            'status' => WorkflowPendingStatus::class,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => TestCountActivity::class,
+                'result' => Serializer::serialize(0),
+            ]);
+
+        $workflow = new TestContinueAsNewWorkflow($storedWorkflow);
+        $workflow->handle();
+
+        $continuedWorkflow = $storedWorkflow->continuedWorkflows()
+            ->first();
+
+        $this->assertNotNull($continuedWorkflow);
+        $this->assertSame('sync', $continuedWorkflow->workflowOptions()->connection);
+        $this->assertSame('default', $continuedWorkflow->workflowOptions()->queue);
+    }
+
+    public function testRedeliveredJobResumesFromRunningState(): void
+    {
+        $stub = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($stub->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => TestOtherActivity::class,
+                'result' => Serializer::serialize('other'),
+            ]);
+
+        $workflow = new TestWorkflow($storedWorkflow);
+        $workflow->cancel();
+        $workflow->handle();
+
+        $this->assertSame(WorkflowWaitingStatus::class, $stub->status());
+    }
+
+    public function testWaitingWorkflowRedeliveryReleasesForRetry(): void
+    {
+        $stub = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($stub->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowWaitingStatus::$name,
+        ]);
+
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('release')
+            ->once()
+            ->with(0);
+
+        $workflow = new TestWorkflow($storedWorkflow);
+        $workflow->setJob($job);
+        $workflow->handle();
+
+        $this->assertSame(WorkflowWaitingStatus::class, $stub->status());
     }
 }

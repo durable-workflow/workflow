@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Traits;
 
 use Illuminate\Database\QueryException;
+use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use Workflow\Exceptions\VersionNotSupportedException;
@@ -17,9 +18,7 @@ trait Versions
         int $minSupported = self::DEFAULT_VERSION,
         int $maxSupported = 1
     ): PromiseInterface {
-        $log = self::$context->storedWorkflow->logs()
-            ->whereIndex(self::$context->index)
-            ->first();
+        $log = self::$context->storedWorkflow->findLogByIndex(self::$context->index);
 
         if ($log) {
             $version = Serializer::unserialize($log->result);
@@ -35,21 +34,24 @@ trait Versions
             return resolve($version);
         }
 
+        if (self::isProbing()) {
+            self::markProbePendingBeforeMatch();
+            ++self::$context->index;
+            return (new Deferred())->promise();
+        }
+
         $version = $maxSupported;
 
         if (! self::$context->replaying) {
             try {
-                self::$context->storedWorkflow->logs()
-                    ->create([
-                        'index' => self::$context->index,
-                        'now' => self::$context->now,
-                        'class' => 'version:' . $changeId,
-                        'result' => Serializer::serialize($version),
-                    ]);
+                self::$context->storedWorkflow->createLog([
+                    'index' => self::$context->index,
+                    'now' => self::$context->now,
+                    'class' => 'version:' . $changeId,
+                    'result' => Serializer::serialize($version),
+                ]);
             } catch (QueryException $exception) {
-                $log = self::$context->storedWorkflow->logs()
-                    ->whereIndex(self::$context->index)
-                    ->first();
+                $log = self::$context->storedWorkflow->findLogByIndex(self::$context->index, true);
 
                 if ($log) {
                     $version = Serializer::unserialize($log->result);

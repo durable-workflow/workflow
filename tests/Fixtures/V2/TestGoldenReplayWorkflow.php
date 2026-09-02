@@ -1,0 +1,163 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Fixtures\V2;
+
+use Throwable;
+use Workflow\QueryMethod;
+use Workflow\UpdateMethod;
+use function Workflow\V2\activity;
+use Workflow\V2\Attributes\Signal;
+use Workflow\V2\Attributes\Type;
+use function Workflow\V2\await;
+use function Workflow\V2\child;
+use function Workflow\V2\getVersion;
+use function Workflow\V2\signal;
+use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
+
+#[Type('test-golden-replay-workflow')]
+#[Signal('name-provided')]
+final class TestGoldenReplayWorkflow extends Workflow
+{
+    private string $stage = 'booting';
+
+    private ?string $name = null;
+
+    private ?string $greeting = null;
+
+    private bool $approved = false;
+
+    private int $version = WorkflowStub::DEFAULT_VERSION;
+
+    private ?string $versionResult = null;
+
+    private ?string $reservationId = null;
+
+    /**
+     * @var list<string>
+     */
+    private array $events = [];
+
+    public function handle(string $scenario): array
+    {
+        return match ($scenario) {
+            'single-activity' => $this->singleActivity(),
+            'signal-activity' => $this->signalActivity(),
+            'wait-condition' => $this->waitCondition(),
+            'adjacent-condition-waits' => $this->adjacentConditionWaits(),
+            'version-marker' => $this->versionMarker(),
+            'saga-compensation' => $this->sagaCompensation(),
+            default => throw new \InvalidArgumentException("Unknown golden replay scenario [{$scenario}]."),
+        };
+    }
+
+    #[QueryMethod]
+    public function currentState(): array
+    {
+        return [
+            'stage' => $this->stage,
+            'name' => $this->name,
+            'greeting' => $this->greeting,
+            'approved' => $this->approved,
+            'version' => $this->version,
+            'version_result' => $this->versionResult,
+            'reservation_id' => $this->reservationId,
+            'events' => $this->events,
+        ];
+    }
+
+    #[UpdateMethod]
+    public function approve(bool $approved = true): array
+    {
+        $this->approved = $approved;
+        $this->events[] = $approved ? 'approved' : 'unapproved';
+
+        return $this->currentState();
+    }
+
+    private function singleActivity(): array
+    {
+        $this->stage = 'scheduling-activity';
+        $this->greeting = activity(TestGreetingActivity::class, 'Ada');
+        $this->events[] = "activity:{$this->greeting}";
+        $this->stage = 'completed';
+
+        return $this->currentState();
+    }
+
+    private function signalActivity(): array
+    {
+        $this->stage = 'waiting-for-signal';
+        $this->name = signal('name-provided');
+        $this->events[] = "signal:{$this->name}";
+        $this->greeting = activity(TestGreetingActivity::class, $this->name);
+        $this->events[] = "activity:{$this->greeting}";
+        $this->stage = 'completed';
+
+        return $this->currentState();
+    }
+
+    private function waitCondition(): array
+    {
+        $this->stage = 'waiting-for-approval';
+        await(fn (): bool => $this->approved);
+        $this->stage = 'approved';
+        $this->events[] = 'condition-satisfied';
+
+        return $this->currentState();
+    }
+
+    private function adjacentConditionWaits(): array
+    {
+        foreach ([1, 2] as $occurrence) {
+            $this->stage = "waiting-for-approval:{$occurrence}";
+            await(fn (): bool => $this->approved, conditionKey: 'approval.ready');
+            $this->events[] = "condition-satisfied:{$occurrence}";
+            $this->approved = false;
+        }
+
+        $this->stage = 'completed';
+
+        return $this->currentState();
+    }
+
+    private function versionMarker(): array
+    {
+        $this->stage = 'checking-version';
+        $this->version = getVersion('golden-version', WorkflowStub::DEFAULT_VERSION, 2);
+        $this->versionResult = $this->version >= 2
+            ? activity(TestVersionedActivityV3::class)
+            : activity(TestVersionedActivityV2::class);
+        $this->events[] = "version:{$this->version}";
+        $this->stage = 'completed';
+
+        return $this->currentState();
+    }
+
+    private function sagaCompensation(): array
+    {
+        $this->stage = 'reserving-inventory';
+        $this->reservationId = activity(TestSagaBookingActivity::class, 'inventory');
+        $this->addCompensation(
+            fn (): mixed => activity(TestSagaCancelActivity::class, 'inventory', $this->reservationId)
+        );
+
+        try {
+            child(TestFailingChildWorkflow::class);
+        } catch (Throwable $e) {
+            $this->stage = 'compensating';
+            $this->compensate();
+            $this->events[] = "compensated:{$e->getMessage()}";
+            $this->stage = 'compensated';
+
+            return $this->currentState();
+        }
+
+        $this->stage = 'completed';
+        $this->events[] = 'child-completed';
+
+        return $this->currentState();
+    }
+}

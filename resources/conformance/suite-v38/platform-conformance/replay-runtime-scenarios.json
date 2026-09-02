@@ -1,0 +1,738 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 2,
+  "category": "history_replay_bundles",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for deterministic replay conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "observed_outputs",
+    "history_dumps",
+    "replay_diagnostics",
+    "linked_findings"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, and PHP workflow runtime from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_completed_history_activity_replay",
+      "title": "Python completed-history activity replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a Python golden history whose branch depends on an activity result",
+        "compare the replayed final command sequence with the fixture expectation"
+      ],
+      "pass_criteria": [
+        "the replay reaches the recorded terminal decision",
+        "activity output state and the final command sequence match the fixture exactly"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_completed_history_signal_update_replay",
+      "title": "Python completed-history signal and update replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a Python golden history containing signal and update handler mutations",
+        "query the replayed state after applying recorded events"
+      ],
+      "pass_criteria": [
+        "signal and update state is reproduced from history",
+        "the final command sequence matches the fixture exactly"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_completed_history_wait_condition_replay",
+      "title": "Python completed-history wait-condition replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a Python golden history containing a wait condition that resolves from recorded state",
+        "compare replay progress and final commands with the fixture"
+      ],
+      "pass_criteria": [
+        "the wait condition resolves at the recorded history point",
+        "no extra timer, activity, or completion command is emitted"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_completed_history_version_marker_replay",
+      "title": "Python completed-history version marker replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a Python golden history containing a version marker",
+        "verify the replayed branch follows the recorded marker value"
+      ],
+      "pass_criteria": [
+        "the marker value is read from history",
+        "the replayed branch and final command sequence match the fixture"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_completed_history_saga_compensation_replay",
+      "title": "Python completed-history saga compensation replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a Python golden history containing a compensated activity failure",
+        "compare compensation decisions with the fixture expectation"
+      ],
+      "pass_criteria": [
+        "the compensation path is reproduced from history",
+        "no silent alternate success path is accepted"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_completed_history_activity_replay",
+      "title": "PHP completed-history activity replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a PHP golden history whose branch depends on an activity result",
+        "compare the replayed final command sequence with the fixture expectation"
+      ],
+      "pass_criteria": [
+        "the replay reaches the recorded terminal decision",
+        "activity output state and the final command sequence match the fixture exactly"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_completed_history_signal_update_replay",
+      "title": "PHP completed-history signal and update replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a PHP golden history containing signal and update handler mutations",
+        "query the replayed state after applying recorded events"
+      ],
+      "pass_criteria": [
+        "signal and update state is reproduced from history",
+        "the final command sequence matches the fixture exactly"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_completed_history_wait_condition_replay",
+      "title": "PHP completed-history wait-condition replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a PHP golden history containing a wait condition that resolves from recorded state",
+        "compare replay progress and final commands with the fixture"
+      ],
+      "pass_criteria": [
+        "the wait condition resolves at the recorded history point",
+        "no extra timer, activity, or completion command is emitted"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_completed_history_version_marker_replay",
+      "title": "PHP completed-history version marker replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a PHP golden history containing a version marker",
+        "verify the replayed branch follows the recorded marker value"
+      ],
+      "pass_criteria": [
+        "the marker value is read from history",
+        "the replayed branch and final command sequence match the fixture"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_completed_history_saga_compensation_replay",
+      "title": "PHP completed-history saga compensation replay",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a PHP golden history containing a compensated activity failure",
+        "compare compensation decisions with the fixture expectation"
+      ],
+      "pass_criteria": [
+        "the compensation path is reproduced from history",
+        "no silent alternate success path is accepted"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_completed_query",
+      "title": "Python completed workflow query after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a Python workflow, capture its query result, restart the worker with server history unchanged",
+        "query the completed workflow through a fresh worker process"
+      ],
+      "pass_criteria": [
+        "the fresh worker replays from history",
+        "the replay query answer matches the original answer byte-for-byte after documented normalization"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_activity_state",
+      "title": "Python activity state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a Python workflow whose query result depends on recorded activity output",
+        "restart the worker and query the state"
+      ],
+      "pass_criteria": [
+        "the query answer reproduces activity-derived state from history",
+        "no cached in-memory state is required"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_signal_update_state",
+      "title": "Python signal and update state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "mutate a Python workflow with signal and update handlers",
+        "restart the worker and query the handler-derived state"
+      ],
+      "pass_criteria": [
+        "the query answer reproduces signal and update state from history",
+        "the result matches the pre-restart answer"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_wait_condition_state",
+      "title": "Python wait-condition state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "drive a Python workflow through a wait condition",
+        "restart the worker and query state that depends on the resolved condition"
+      ],
+      "pass_criteria": [
+        "the replayed state reflects the recorded condition resolution",
+        "the worker does not issue a divergent wait/timer decision"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_version_marker_state",
+      "title": "Python version marker state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a Python workflow whose branch depends on a version marker",
+        "restart the worker and query the selected branch"
+      ],
+      "pass_criteria": [
+        "the marker-selected branch is reproduced from history",
+        "the query answer matches the original branch state"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_worker_restart_saga_compensation_state",
+      "title": "Python saga compensation state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a Python workflow that records compensation after failure",
+        "restart the worker and query compensation state"
+      ],
+      "pass_criteria": [
+        "the compensation state is reconstructed from history",
+        "the worker does not re-run or skip compensating decisions"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_completed_query",
+      "title": "PHP completed workflow query after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a PHP workflow, capture its query result, restart the worker with server history unchanged",
+        "query the completed workflow through a fresh worker process"
+      ],
+      "pass_criteria": [
+        "the fresh worker replays from history",
+        "the replay query answer matches the original answer byte-for-byte after documented normalization"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_activity_state",
+      "title": "PHP activity state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a PHP workflow whose query result depends on recorded activity output",
+        "restart the worker and query the state"
+      ],
+      "pass_criteria": [
+        "the query answer reproduces activity-derived state from history",
+        "no cached in-memory state is required"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_signal_update_state",
+      "title": "PHP signal and update state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "mutate a PHP workflow with signal and update handlers",
+        "restart the worker and query the handler-derived state"
+      ],
+      "pass_criteria": [
+        "the query answer reproduces signal and update state from history",
+        "the result matches the pre-restart answer"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_wait_condition_state",
+      "title": "PHP wait-condition state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "drive a PHP workflow through a wait condition",
+        "restart the worker and query state that depends on the resolved condition"
+      ],
+      "pass_criteria": [
+        "the replayed state reflects the recorded condition resolution",
+        "the worker does not issue a divergent wait/timer decision"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_version_marker_state",
+      "title": "PHP version marker state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a PHP workflow whose branch depends on a version marker",
+        "restart the worker and query the selected branch"
+      ],
+      "pass_criteria": [
+        "the marker-selected branch is reproduced from history",
+        "the query answer matches the original branch state"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_worker_restart_saga_compensation_state",
+      "title": "PHP saga compensation state after worker restart",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "complete a PHP workflow that records compensation after failure",
+        "restart the worker and query compensation state"
+      ],
+      "pass_criteria": [
+        "the compensation state is reconstructed from history",
+        "the worker does not re-run or skip compensating decisions"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_code_divergence_refusal",
+      "title": "Python divergent workflow code refusal",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a completed Python history against workflow code with a changed deterministic decision",
+        "capture the replay error type, message, and structured fields"
+      ],
+      "pass_criteria": [
+        "the worker refuses with a non-determinism error",
+        "the diagnostics name the workflow sequence, expected shape, recorded event types, and message"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_code_divergence_refusal",
+      "title": "PHP divergent workflow code refusal",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "replay a completed PHP history against workflow code with a changed deterministic decision",
+        "capture the replay error type, message, and structured fields"
+      ],
+      "pass_criteria": [
+        "the worker refuses with a non-determinism error",
+        "the diagnostics name the workflow sequence, expected shape, recorded event types, and message"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "server_history_mutation_refusal",
+      "title": "Server history mutation refusal",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "mutate a recorded server history event or activity result in a replay bundle",
+        "verify the bundle through the documented replay verification surface"
+      ],
+      "pass_criteria": [
+        "the mutated bundle is refused as invalid or drifted",
+        "the report includes integrity rule, integrity path, replay diff reason, and message"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "malformed_history_refusal",
+      "title": "Malformed history refusal",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "delete or corrupt a required history field in a replay bundle",
+        "verify the bundle through the documented replay verification surface"
+      ],
+      "pass_criteria": [
+        "the malformed bundle is refused as invalid or failed",
+        "the report includes integrity rule, path, and message"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "python_in_flight_signal_restart_timing",
+      "title": "Python in-flight signal replay timing",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start a Python workflow awaiting a signal",
+        "send the signal and restart the worker around history reload before the next activity decision",
+        "compare the next decision with the original execution"
+      ],
+      "pass_criteria": [
+        "the signal is applied at the same deterministic replay point",
+        "the next decision sequence matches the original execution"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    },
+    {
+      "id": "php_in_flight_signal_restart_timing",
+      "title": "PHP in-flight signal replay timing",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "cli"
+      ],
+      "operations": [
+        "start a PHP workflow awaiting a signal",
+        "send the signal and restart the worker around history reload before the next activity decision",
+        "compare the next decision with the original execution"
+      ],
+      "pass_criteria": [
+        "the signal is applied at the same deterministic replay point",
+        "the next decision sequence matches the original execution"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the runtime or surface under test"
+      ]
+    }
+  ]
+}

@@ -10,10 +10,11 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 
-final class Signal implements ShouldBeEncrypted, ShouldQueue
+class Signal implements ShouldBeEncrypted, ShouldQueue
 {
     use Dispatchable;
     use InteractsWithQueue;
@@ -29,8 +30,11 @@ final class Signal implements ShouldBeEncrypted, ShouldQueue
         $connection = null,
         $queue = null
     ) {
-        $connection = $connection ?? config('queue.default');
-        $queue = $queue ?? config('queue.connections.' . $connection . '.queue', 'default');
+        $connection = $connection ?? $this->storedWorkflow->effectiveConnection() ?? config('queue.default');
+        $queue = $queue ?? $this->storedWorkflow->effectiveQueue() ?? config(
+            'queue.connections.' . $connection . '.queue',
+            'default'
+        );
         $this->onConnection($connection);
         $this->onQueue(get_queue_name());
     }
@@ -38,7 +42,12 @@ final class Signal implements ShouldBeEncrypted, ShouldQueue
     public function middleware()
     {
         return [
-            new WithoutOverlappingMiddleware($this->storedWorkflow->id, WithoutOverlappingMiddleware::WORKFLOW),
+            new WithoutOverlappingMiddleware(
+                $this->storedWorkflow->id,
+                WithoutOverlappingMiddleware::WORKFLOW,
+                0,
+                15
+            ),
         ];
     }
 
@@ -48,7 +57,7 @@ final class Signal implements ShouldBeEncrypted, ShouldQueue
 
         try {
             $workflow->resume();
-        } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
+        } catch (TransitionNotFound) {
             if ($workflow->running()) {
                 $this->release();
             }

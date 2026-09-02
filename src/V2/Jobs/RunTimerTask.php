@@ -1,0 +1,348 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Jobs;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
+use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\TaskBackendCapabilities;
+use Workflow\V2\Support\TaskCompatibility;
+use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TimerRecovery;
+use Workflow\V2\Support\TimerTransportChunker;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkflowTaskLease;
+use Workflow\V2\Support\WorkflowTaskPayload;
+
+final class RunTimerTask implements ShouldQueue
+{
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
+
+    /**
+     * Relations the history-projection role consumes for a timer-task
+     * projection. Hydrated by {@see self::projectRun()} before the role is
+     * invoked so the role implementation always sees an up-to-date graph,
+     * regardless of which exit path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = ['instance', 'tasks', 'activityExecutions', 'timers', 'failures'];
+
+    /**
+     * Run relations plus the history-event graph required when a timer
+     * could not be restored from durable history. Both the claim-side and
+     * handler-side missing-timer exits use this shape so the projection
+     * sees the history events the operator views surface alongside the
+     * unrecoverable-state markers.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+    ];
+
+    public int $tries = 5;
+
+    public function __construct(
+        public readonly string $taskId,
+    ) {
+        $this->afterCommit();
+    }
+
+    public function handle(): void
+    {
+        WorkerCompatibilityFleet::heartbeat(
+            is_string($this->connection ?? null) ? $this->connection : null,
+            is_string($this->queue ?? null) ? $this->queue : null,
+        );
+
+        [$timerId, $releaseIn] = $this->claimTask();
+
+        if ($releaseIn !== null) {
+            $this->release(TimerTransportChunker::cappedReleaseDelay(
+                $releaseIn,
+                is_string($this->connection ?? null) ? $this->connection : null,
+            ));
+
+            return;
+        }
+
+        if ($timerId === null) {
+            return;
+        }
+
+        $resumeTask = DB::transaction(function () use ($timerId): ?WorkflowTask {
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()
+                ->lockForUpdate()
+                ->findOrFail($this->taskId);
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()
+                ->lockForUpdate()
+                ->findOrFail($task->workflow_run_id);
+            $timer = TimerRecovery::restore($run, $timerId);
+
+            if (! $timer instanceof WorkflowTimer) {
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                    'last_error' => sprintf(
+                        'Timer %s could not be restored from durable history for timer task %s.',
+                        $timerId,
+                        $task->id,
+                    ),
+                ])->save();
+
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS);
+
+                return null;
+            }
+
+            if (
+                in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
+                || $timer->status === TimerStatus::Cancelled
+            ) {
+                $task->forceFill([
+                    'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                if ($timer->status !== TimerStatus::Cancelled) {
+                    $timer->forceFill([
+                        'status' => TimerStatus::Cancelled,
+                    ])->save();
+                }
+
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return null;
+            }
+
+            $timer->forceFill([
+                'status' => TimerStatus::Fired,
+                'fired_at' => now(),
+            ])->save();
+            $conditionWaitId = is_string($task->payload['condition_wait_id'] ?? null)
+                ? $task->payload['condition_wait_id']
+                : null;
+            $conditionWaitOccurrenceId = is_string($task->payload['condition_wait_occurrence_id'] ?? null)
+                ? $task->payload['condition_wait_occurrence_id']
+                : null;
+            $conditionKey = is_string($task->payload['condition_key'] ?? null)
+                ? $task->payload['condition_key']
+                : null;
+            $conditionDefinitionFingerprint = is_string($task->payload['condition_definition_fingerprint'] ?? null)
+                ? $task->payload['condition_definition_fingerprint']
+                : null;
+            $signalWaitId = is_string($task->payload['signal_wait_id'] ?? null)
+                ? $task->payload['signal_wait_id']
+                : null;
+            $signalName = is_string($task->payload['signal_name'] ?? null)
+                ? $task->payload['signal_name']
+                : null;
+            $timerKind = match (true) {
+                $conditionWaitId !== null => 'condition_timeout',
+                $signalWaitId !== null => 'signal_timeout',
+                default => null,
+            };
+            $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload($task->payload);
+            $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+
+            $firedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
+                'timer_id' => $timer->id,
+                'sequence' => $timer->sequence,
+                'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
+                'fired_at' => $timer->fired_at?->toJSON(),
+                'timer_kind' => $timerKind,
+                'condition_wait_id' => $conditionWaitId,
+                'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
+                'condition_key' => $conditionKey,
+                'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                'signal_wait_id' => $signalWaitId,
+                'signal_name' => $signalName,
+                ...$parallelMetadata,
+            ], static fn (mixed $value): bool => $value !== null), $task);
+
+            $task->forceFill([
+                'status' => TaskStatus::Completed,
+                'lease_expires_at' => null,
+            ])->save();
+
+            if ($parallelMetadataPath !== []) {
+                ParallelChildGroup::claimSelectionWinner(
+                    $run,
+                    $parallelMetadataPath,
+                    match (true) {
+                        $conditionWaitId !== null => 'condition',
+                        $signalWaitId !== null => 'signal',
+                        default => 'timer',
+                    },
+                    $firedEvent,
+                );
+            }
+
+            if (
+                $parallelMetadataPath !== []
+                && ! ParallelChildGroup::shouldWakeParentOnTimerClosure(
+                    $run,
+                    $parallelMetadataPath,
+                    TimerStatus::Fired,
+                )
+            ) {
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return null;
+            }
+
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forTimerResolution($firedEvent),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return $resumeTask;
+        });
+
+        if ($resumeTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($resumeTask);
+        }
+    }
+
+    /**
+     * @return array{0: ?string, 1: ?int}
+     */
+    private function claimTask(): array
+    {
+        return DB::transaction(function (): array {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->lockForUpdate()
+                ->find($this->taskId);
+
+            if ($task === null || $task->task_type !== TaskType::Timer || $task->status !== TaskStatus::Ready) {
+                return [null, null];
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
+
+                return [null, (int) ceil($remainingMilliseconds / 1000)];
+            }
+
+            $timerId = $task->payload['timer_id'] ?? null;
+
+            if (! is_string($timerId)) {
+                return [null, null];
+            }
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
+            $timer = TimerRecovery::restore($run, $timerId);
+
+            if (! $timer instanceof WorkflowTimer) {
+                $task->forceFill([
+                    'last_claim_failed_at' => now(),
+                    'last_claim_error' => sprintf(
+                        'Timer %s could not be restored from durable history.',
+                        $timerId,
+                    ),
+                ])->save();
+
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS);
+
+                return [null, null];
+            }
+
+            TaskCompatibility::sync($task, $run);
+
+            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return [null, null];
+            }
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return [null, null];
+            }
+
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'leased_at' => now(),
+                'lease_owner' => $this->taskId,
+                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
+                'attempt_count' => $task->attempt_count + 1,
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
+            ])->save();
+
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return [$timerId, null];
+        });
+    }
+
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by
+     * the timer-task job flows through this helper so the role contract is
+     * the single entry point — no call site reaches into `RunSummaryProjector`
+     * directly, and the relation-hydration shape lives in one place rather
+     * than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private function projectRun(WorkflowRun $run, array $with = []): void
+    {
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
+
+        $this->historyProjectionRole()
+            ->projectRun($run);
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
+    }
+}

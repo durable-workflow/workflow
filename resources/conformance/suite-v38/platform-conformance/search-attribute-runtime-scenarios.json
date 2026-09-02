@@ -1,0 +1,460 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "search_attribute_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for Temporal-parity search-attribute conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "topology",
+    "query_verdicts",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "sdk_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP SDK runtime, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the actor or target under test"
+      ]
+    },
+    {
+      "id": "schema_definition_and_reserved_name_refusal",
+      "title": "Schema definition and reserved-name refusal",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "define string, int, double, bool, datetime, keyword, and keyword-list search-attribute keys in one namespace",
+        "read the schema back through the server, CLI, and at least one SDK client path",
+        "attempt to define reserved or system-prefixed names including wf_id and __internal"
+      ],
+      "pass_criteria": [
+        "all documented search-attribute types are durable and readable through public surfaces",
+        "reserved names are rejected with typed user-facing errors",
+        "schema evidence is scoped to the namespace under test"
+      ]
+    },
+    {
+      "id": "python_worker_start_and_upsert_visibility",
+      "title": "Python worker start and upsert visibility",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_worker",
+        "python_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start Python-worker runs with typed search attributes at workflow start",
+        "upsert at least one attribute from workflow code while a run is executing",
+        "query the start and upserted values through public visibility paths"
+      ],
+      "pass_criteria": [
+        "start attributes and upserted attributes are both visible by query",
+        "the merged value set matches the workflow source data exactly",
+        "CLI and Python SDK readers identify the same workflow runs"
+      ]
+    },
+    {
+      "id": "php_worker_start_and_upsert_visibility",
+      "title": "PHP worker start and upsert visibility",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "php_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start PHP-worker runs with typed search attributes at workflow start",
+        "upsert at least one attribute from PHP workflow code while a run is executing",
+        "query the start and upserted values through public visibility paths"
+      ],
+      "pass_criteria": [
+        "start attributes and upserted attributes are both visible by query",
+        "the merged value set matches the workflow source data exactly",
+        "CLI and PHP SDK readers identify the same workflow runs"
+      ]
+    },
+    {
+      "id": "cli_query_and_error_surface",
+      "title": "CLI query and error surface",
+      "claim_targets": [
+        "cli_json_client",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "cli_client"
+      ],
+      "operations": [
+        "create, list, and delete custom search-attribute definitions through the CLI",
+        "list workflows with equality, range, boolean, keyword-list, OR, and NOT query expressions",
+        "submit a malformed or type-invalid query and capture the CLI error"
+      ],
+      "pass_criteria": [
+        "CLI JSON and human-readable output expose successful schema operations",
+        "workflow list query results match the source dataset counts exactly",
+        "query syntax or type errors surface as typed operator-facing errors"
+      ]
+    },
+    {
+      "id": "waterline_operator_visibility",
+      "title": "Waterline operator visibility",
+      "claim_targets": [
+        "waterline_contract_surface",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "waterline"
+      ],
+      "operations": [
+        "filter the workflow list by a search-attribute key and value",
+        "inspect a selected run detail view containing typed search attributes",
+        "save and reload a Waterline view with a search-attribute filter"
+      ],
+      "pass_criteria": [
+        "Waterline list filters return the same runs as the server query surface",
+        "selected run detail shows the merged search-attribute map",
+        "saved filter state round-trips without dropping the search-attribute predicate"
+      ]
+    },
+    {
+      "id": "python_to_php_codec_round_trip",
+      "title": "Python to PHP codec round trip",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_worker",
+        "php_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "write all supported search-attribute value types from a Python workflow or client",
+        "read and verify those values from a PHP-facing client path",
+        "mirror the verification through CLI workflow list or describe output"
+      ],
+      "pass_criteria": [
+        "PHP-facing readers observe the same scalar, datetime, and keyword-list values written by Python",
+        "no value changes type, precision, timezone, or list ordering semantics during round trip",
+        "CLI evidence agrees with the PHP-facing reader"
+      ]
+    },
+    {
+      "id": "php_to_python_codec_round_trip",
+      "title": "PHP to Python codec round trip",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "python_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "write all supported search-attribute value types from a PHP workflow or client",
+        "read and verify those values from a Python client path",
+        "mirror the verification through CLI workflow list or describe output"
+      ],
+      "pass_criteria": [
+        "Python readers observe the same scalar, datetime, and keyword-list values written by PHP",
+        "no value changes type, precision, timezone, or list ordering semantics during round trip",
+        "CLI evidence agrees with the Python reader"
+      ]
+    },
+    {
+      "id": "equality_range_bool_query_behavior",
+      "title": "Equality, range, and bool query behavior",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "seed a known workflow dataset with string, int, double, bool, datetime, keyword, and keyword-list values",
+        "query exact string or keyword matches",
+        "query numeric and datetime ranges plus boolean predicates"
+      ],
+      "pass_criteria": [
+        "every query reports expected and actual counts",
+        "actual counts equal expected counts for the source dataset",
+        "returned run ids are a subset of the matching source records with no over-return"
+      ]
+    },
+    {
+      "id": "or_not_query_grammar",
+      "title": "OR and NOT query grammar",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "query disjunctions with OR across two attribute values",
+        "query conjunctions that include NOT against a boolean or keyword predicate",
+        "verify operator precedence using a source dataset with distinguishable matches"
+      ],
+      "pass_criteria": [
+        "OR expressions include every matching source run and no non-matching runs",
+        "NOT expressions exclude the negated predicate without filtering unrelated matches",
+        "server, CLI, and SDK query paths agree on the same run set"
+      ]
+    },
+    {
+      "id": "keyword_list_membership",
+      "title": "Keyword-list membership",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "set keyword-list attributes with the same values in different orders",
+        "query membership for one keyword-list value",
+        "inspect returned values through describe or SDK read paths"
+      ],
+      "pass_criteria": [
+        "membership queries match all runs containing the requested value",
+        "list ordering does not affect membership matching",
+        "keyword-list values remain arrays in read responses"
+      ]
+    },
+    {
+      "id": "type_safety_wrong_literal",
+      "title": "Wrong literal type safety",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "submit a query comparing an integer search attribute to a string literal",
+        "submit a query comparing a bool search attribute to a non-bool literal",
+        "capture server, CLI, and SDK error envelopes"
+      ],
+      "pass_criteria": [
+        "wrong-type literals fail with typed errors",
+        "the query is not silently coerced",
+        "the query does not return an empty success result that hides the type error"
+      ]
+    },
+    {
+      "id": "undefined_key_rejection",
+      "title": "Undefined key rejection",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "attempt to start a workflow with an undefined search-attribute key",
+        "attempt to upsert an undefined key from workflow code",
+        "inspect the run state and history after rejection"
+      ],
+      "pass_criteria": [
+        "undefined keys are rejected with typed errors",
+        "the workflow does not advance with bad search-attribute state",
+        "history and visibility do not persist the undefined key"
+      ]
+    },
+    {
+      "id": "indexing_latency_distribution",
+      "title": "Indexing latency distribution",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "set or upsert a search attribute and poll the query path until it is visible",
+        "repeat the measurement at least twenty times",
+        "record min, p50, p95, max, sample count, and the documented latency bound"
+      ],
+      "pass_criteria": [
+        "every sample becomes queryable within the documented bound",
+        "the result records the full latency distribution",
+        "query results after visibility match the source run exactly"
+      ]
+    },
+    {
+      "id": "load_and_bounded_latency",
+      "title": "Load and bounded latency",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "seed at least one thousand workflow runs with varied search attributes",
+        "run representative equality, range, OR, NOT, and keyword-list queries",
+        "record p50, p95, and max latency under the load profile"
+      ],
+      "pass_criteria": [
+        "all queries return exact source-dataset matches under load",
+        "latency remains within the documented or result-declared bounded profile",
+        "the result identifies workflow count and latency distribution fields"
+      ]
+    },
+    {
+      "id": "namespace_isolation",
+      "title": "Namespace isolation",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client",
+        "waterline"
+      ],
+      "operations": [
+        "define the same search-attribute name in two namespaces",
+        "start distinguishable workflows with that attribute in each namespace",
+        "query definitions and values from each namespace and through Waterline when claimed"
+      ],
+      "pass_criteria": [
+        "schema reads are scoped to the selected namespace",
+        "value queries never return runs from another namespace",
+        "Waterline and API visibility agree on namespace-scoped results"
+      ]
+    },
+    {
+      "id": "query_injection_hardening",
+      "title": "Query injection hardening",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "submit a query containing OR 1=1 outside the documented grammar",
+        "submit a query containing an embedded SQL comment marker",
+        "submit a query containing shell metacharacters after a valid predicate"
+      ],
+      "pass_criteria": [
+        "all injection probes are rejected with typed syntax errors",
+        "no rejected query partially executes or returns a result set",
+        "error evidence is consistent across server, CLI, and SDK surfaces"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+name: Release Verification
+
+on:
+  push:
+    tags:
+      - '2.*'
+      - '!2.*-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Stable 2.x release tag, for example 2.0.1'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  published-package:
+    name: Verify published Workflow package
+    runs-on: ubuntu-latest
+    outputs:
+      laravel_published_matrix: ${{ steps.laravel-matrix.outputs.matrix }}
+      release_tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.3'
+          tools: composer
+
+      - name: Derive supported Laravel upgrade matrix
+        id: laravel-matrix
+        run: echo "matrix=$(php scripts/ci/laravel-embedded-upgrade-matrix.php --scope=published)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve stable release tag
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          tag="${tag#v}"
+          if ! printf '%s\n' "$tag" | grep -Eq '^2\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Expected a stable Workflow 2.x tag, got: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Packagist release
+        env:
+          PACKAGIST_PACKAGE_NAME: durable-workflow/workflow
+          PACKAGIST_PACKAGE_VERSION: ${{ steps.release.outputs.tag }}
+        run: scripts/ci/check-packagist-release.sh
+
+      - name: Verify published platform contract
+        env:
+          WORKFLOW_PLATFORM_CONFORMANCE_VERSION: ${{ steps.release.outputs.tag }}
+        run: scripts/ci/check-platform-conformance-mirror.sh
+
+  laravel-upgrade:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published upgrade
+    needs: published-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer
+
+      - name: Run the published-package upgrade journey
+        env:
+          LARAVEL_VERSION: ${{ matrix.laravel }}
+          WORKFLOW_V2_VERSION: ${{ needs.published-package.outputs.release_tag }}
+        run: scripts/ci/laravel-embedded-upgrade-smoke.sh
+

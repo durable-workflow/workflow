@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/external-storage-policy.schema.json",
+  "title": "dw namespace:set-storage-driver --json",
+  "type": "object",
+  "required": ["name", "namespace"],
+  "properties": {
+    "name": { "type": "string" },
+    "namespace": { "type": "string" },
+    "external_payload_storage": {
+      "type": "object",
+      "required": ["driver", "enabled"],
+      "properties": {
+        "driver": { "type": "string", "enum": ["local", "s3", "gcs", "azure"] },
+        "enabled": { "type": "boolean" },
+        "threshold_bytes": { "type": ["integer", "null"], "minimum": 1 },
+        "config": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "integer", "boolean", "null"]
+          }
+        },
+        "updated_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

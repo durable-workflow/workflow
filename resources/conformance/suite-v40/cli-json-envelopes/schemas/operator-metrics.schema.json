@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/operator-metrics.schema.json",
+  "title": "dw system:operator-metrics --json",
+  "type": "object",
+  "required": ["operator_metrics"],
+  "properties": {
+    "namespace": { "type": ["string", "null"] },
+    "operator_metrics": {
+      "type": "object",
+      "properties": {
+        "generated_at": { "type": ["string", "null"] },
+        "runs": {
+          "type": "object",
+          "properties": {
+            "repair_needed": { "type": ["integer", "null"] },
+            "oldest_repair_needed_at": { "type": ["string", "null"] },
+            "max_repair_needed_age_ms": { "type": ["integer", "null"] },
+            "claim_failed": { "type": ["integer", "null"] },
+            "compatibility_blocked": { "type": ["integer", "null"] },
+            "waiting": { "type": ["integer", "null"] },
+            "oldest_wait_started_at": { "type": ["string", "null"] },
+            "max_wait_age_ms": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "tasks": {
+          "type": "object",
+          "properties": {
+            "ready": { "type": ["integer", "null"] },
+            "ready_due": { "type": ["integer", "null"] },
+            "delayed": { "type": ["integer", "null"] },
+            "leased": { "type": ["integer", "null"] },
+            "dispatch_failed": { "type": ["integer", "null"] },
+            "claim_failed": { "type": ["integer", "null"] },
+            "dispatch_overdue": { "type": ["integer", "null"] },
+            "lease_expired": { "type": ["integer", "null"] },
+            "oldest_lease_expired_at": { "type": ["string", "null"] },
+            "max_lease_expired_age_ms": { "type": ["integer", "null"] },
+            "oldest_ready_due_at": { "type": ["string", "null"] },
+            "max_ready_due_age_ms": { "type": ["integer", "null"] },
+            "oldest_dispatch_overdue_since": { "type": ["string", "null"] },
+            "max_dispatch_overdue_age_ms": { "type": ["integer", "null"] },
+            "oldest_claim_failed_at": { "type": ["string", "null"] },
+            "max_claim_failed_age_ms": { "type": ["integer", "null"] },
+            "oldest_dispatch_failed_at": { "type": ["string", "null"] },
+            "max_dispatch_failed_age_ms": { "type": ["integer", "null"] },
+            "unhealthy": { "type": ["integer", "null"] },
+            "oldest_unhealthy_at": { "type": ["string", "null"] },
+            "max_unhealthy_age_ms": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "backlog": {
+          "type": "object",
+          "properties": {
+            "runnable_tasks": { "type": ["integer", "null"] },
+            "delayed_tasks": { "type": ["integer", "null"] },
+            "leased_tasks": { "type": ["integer", "null"] },
+            "unhealthy_tasks": { "type": ["integer", "null"] },
+            "repair_needed_runs": { "type": ["integer", "null"] },
+            "claim_failed_runs": { "type": ["integer", "null"] },
+            "compatibility_blocked_runs": { "type": ["integer", "null"] },
+            "oldest_compatibility_blocked_started_at": { "type": ["string", "null"] },
+            "max_compatibility_blocked_age_ms": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "repair": {
+          "type": "object",
+          "properties": {
+            "missing_task_candidates": { "type": ["integer", "null"] },
+            "selected_missing_task_candidates": { "type": ["integer", "null"] },
+            "oldest_missing_run_started_at": { "type": ["string", "null"] },
+            "max_missing_run_age_ms": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "workers": {
+          "type": "object",
+          "properties": {
+            "required_compatibility": { "type": ["string", "null"] },
+            "active_workers": { "type": ["integer", "null"] },
+            "active_worker_scopes": { "type": ["integer", "null"] },
+            "active_workers_supporting_required": { "type": ["integer", "null"] },
+            "fleet": {
+              "type": ["array", "null"],
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "additionalProperties": true
+        },
+        "backend": {
+          "type": "object",
+          "properties": {
+            "supported": { "type": ["boolean", "null"] },
+            "severity": { "type": ["string", "null"] },
+            "database": { "type": ["object", "null"], "additionalProperties": true },
+            "queue": { "type": ["object", "null"], "additionalProperties": true },
+            "cache": { "type": ["object", "null"], "additionalProperties": true },
+            "issues": {
+              "type": ["array", "null"],
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "additionalProperties": true
+        },
+        "schedules": {
+          "type": "object",
+          "properties": {
+            "active": { "type": ["integer", "null"] },
+            "paused": { "type": ["integer", "null"] },
+            "missed": { "type": ["integer", "null"] },
+            "oldest_overdue_at": { "type": ["string", "null"] },
+            "max_overdue_ms": { "type": ["integer", "null"] },
+            "fires_total": { "type": ["integer", "null"] },
+            "failures_total": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "activities": {
+          "type": "object",
+          "properties": {
+            "open": { "type": ["integer", "null"] },
+            "pending": { "type": ["integer", "null"] },
+            "running": { "type": ["integer", "null"] },
+            "retrying": { "type": ["integer", "null"] },
+            "oldest_retrying_started_at": { "type": ["string", "null"] },
+            "max_retrying_age_ms": { "type": ["integer", "null"] },
+            "timeout_overdue": { "type": ["integer", "null"] },
+            "oldest_timeout_overdue_at": { "type": ["string", "null"] },
+            "max_timeout_overdue_age_ms": { "type": ["integer", "null"] },
+            "failed_attempts": { "type": ["integer", "null"] },
+            "max_attempt_count": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "repair_policy": {
+          "type": "object",
+          "properties": {
+            "redispatch_after_seconds": { "type": ["integer", "null"] },
+            "loop_throttle_seconds": { "type": ["integer", "null"] },
+            "scan_limit": { "type": ["integer", "null"] },
+            "failure_backoff_max_seconds": { "type": ["integer", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "matching_role": {
+          "type": "object",
+          "properties": {
+            "queue_wake_enabled": { "type": ["boolean", "null"] },
+            "shape": { "type": ["string", "null"] },
+            "task_dispatch_mode": { "type": ["string", "null"] },
+            "partition_primitives": {
+              "type": ["array", "null"],
+              "items": { "type": "string" }
+            },
+            "backpressure_model": { "type": ["string", "null"] },
+            "discovery_limits": {
+              "type": ["object", "null"],
+              "properties": {
+                "poll_batch_cap": { "type": ["integer", "null"] },
+                "availability_ceiling_seconds": { "type": ["integer", "null"] },
+                "wake_signal_ttl_seconds": { "type": ["integer", "null"] },
+                "workflow_task_lease_seconds": { "type": ["integer", "null"] },
+                "activity_task_lease_seconds": { "type": ["integer", "null"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "projections": {
+          "type": "object",
+          "properties": {
+            "run_summaries": {
+              "type": "object",
+              "properties": {
+                "oldest_missing_run_started_at": { "type": ["string", "null"] },
+                "max_missing_run_age_ms": { "type": ["integer", "null"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

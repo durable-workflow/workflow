@@ -1,0 +1,519 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "worker_versioning_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for safe-deploy worker-versioning conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "requires_artifact_sources_for_each_required_artifact": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "not_exercised"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "resolved_artifact_versions",
+    "artifact_sources",
+    "published_artifact_install_evidence",
+    "published_worker_execution_evidence",
+    "local_product_source_checkouts_used",
+    "implementation_identity",
+    "runtime_matrix",
+    "topology",
+    "versioning_observations",
+    "history_version_pins",
+    "operator_controls",
+    "mixed_version_polling",
+    "no_compatible_worker",
+    "cross_language_matrix",
+    "adversarial_outcomes",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "required_matrix": {
+    "runtimes": [
+      "sdk-php",
+      "sdk-python"
+    ],
+    "client_paths": [
+      "cli",
+      "sdk-python",
+      "sdk-php"
+    ],
+    "operator_visibility_paths": [
+      "dw worker:list",
+      "dw task-queue:build-ids <queue>",
+      "dw workflow:describe <workflow-id>",
+      "dw workflow:show-run <workflow-id> <run-id>",
+      "dw workflow:history <workflow-id> <run-id>",
+      "dw workflow:history-export <workflow-id> <run-id>",
+      "GET /api/workers",
+      "GET /api/task-queues/{taskQueue}/build-ids",
+      "GET /api/workflows/{workflowId}",
+      "GET /api/workflows/{workflowId}/runs/{runId}",
+      "GET /api/workflows/{workflowId}/runs/{runId}/history",
+      "GET /api/workflows/{workflowId}/runs/{runId}/history/export",
+      "GET /waterline/api/stats",
+      "GET /waterline/api/instances/{instanceId}",
+      "GET /waterline/api/instances/{instanceId}/runs/{runId}"
+    ],
+    "worker_cohorts": [
+      "v1",
+      "v2",
+      "draining-v1",
+      "promoted-v2",
+      "no-compatible-worker"
+    ],
+    "cross_language_cells": [
+      {
+        "started_by": "sdk-php-v1",
+        "incompatible_worker": "sdk-python-v2",
+        "scenario": "php_v1_not_delivered_to_python_v2"
+      },
+      {
+        "started_by": "sdk-python-v1",
+        "incompatible_worker": "sdk-php-v2",
+        "scenario": "python_v1_not_delivered_to_php_v2"
+      }
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "resolved_artifact_versions",
+        "artifact_sources",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "worker_registration_build_ids": {
+      "required_fields": [
+        "registered_build_ids",
+        "worker_registration_responses",
+        "worker_list_build_ids",
+        "task_queue_build_ids",
+        "active_worker_counts_per_cohort"
+      ]
+    },
+    "operator_rollout_visibility": {
+      "required_fields": [
+        "worker_cohorts",
+        "rollout_state",
+        "new_start_build_id",
+        "workflow_run_compatibility",
+        "waterline_operator_visibility"
+      ]
+    },
+    "drain_resume_operator_controls": {
+      "required_fields": [
+        "drain_command",
+        "drain_state_visible",
+        "resume_command",
+        "resume_state_visible",
+        "draining_worker_claim_count"
+      ]
+    },
+    "pin_on_start": {
+      "required_fields": [
+        "run_compatibility",
+        "first_task_compatibility",
+        "history_or_visibility_field"
+      ]
+    },
+    "replay_only_by_compatible_workers": {
+      "required_fields": [
+        "v1_worker_task_count",
+        "v2_worker_task_count_for_v1_run",
+        "workflow_result"
+      ]
+    },
+    "new_starts_to_promoted_version": {
+      "required_fields": [
+        "promotion_command",
+        "new_run_compatibility",
+        "old_run_continues_on"
+      ]
+    },
+    "replay_across_cache_eviction": {
+      "required_fields": [
+        "cache_eviction_observed",
+        "replay_worker_build_id",
+        "incompatible_delivery_count"
+      ]
+    },
+    "no_compatible_worker_behavior": {
+      "required_fields": [
+        "operator_visible_signal",
+        "pending_or_typed_error",
+        "incompatible_worker_task_count",
+        "published_artifact_worker_execution",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "operator_visibility_surfaces": {
+      "required_fields": [
+        "worker_list",
+        "task_queue_build_ids",
+        "workflow_visibility",
+        "waterline_operator_visibility"
+      ]
+    },
+    "cross_language_php_python_pinning": {
+      "required_fields": [
+        "php_worker_build_id",
+        "python_worker_build_id",
+        "worker_runtime_identities",
+        "workflow_runs",
+        "rollout_state",
+        "php_v1_to_python_v2_incompatible_delivery_count",
+        "python_v1_to_php_v2_incompatible_delivery_count",
+        "cross_language_delivery",
+        "public_outcome",
+        "published_artifact_worker_execution",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "adversarial_no_version_bump": {
+      "required_fields": [
+        "observed_behavior",
+        "operator_audit_signal"
+      ]
+    },
+    "history_api_version_pin": {
+      "required_fields": [
+        "history_field",
+        "compatibility_value"
+      ]
+    }
+  },
+  "host_runner_contract": {
+    "status": "required_for_passing_worker_versioning_conformance",
+    "result_schema": "durable-workflow.v2.worker-versioning-runtime.result",
+    "must_execute_against_published_artifacts": true,
+    "must_record_runner_blocked_false_for_product_evidence": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "smoke_summary_only_outcome": "non_passing_smoke_only",
+    "unexecuted_required_scenario_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness",
+    "published_worker_execution_evidence": {
+      "result_schema": "durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence",
+      "required_for_passing_scenarios": [
+        "replay_only_by_compatible_workers",
+        "replay_across_cache_eviction",
+        "no_compatible_worker_behavior",
+        "cross_language_php_python_pinning"
+      ],
+      "no_compatible_worker_behavior_required_fields": [
+        "scenario_results.no_compatible_worker_behavior.observed_outputs.published_artifact_worker_execution",
+        "scenario_results.no_compatible_worker_behavior.observed_outputs.local_product_source_checkouts_used",
+        "local_product_source_checkouts_used"
+      ],
+      "source_policy": {
+        "requires_top_level_local_product_source_checkouts_used_false": true,
+        "requires_scenario_local_product_source_checkouts_used_false": true,
+        "requires_published_worker_execution_local_product_source_checkouts_used_false": true,
+        "forbidden_artifact_sources": [
+          "local_product_source_checkout",
+          "workspace_repo_as_artifact_under_test",
+          "not_exercised"
+        ]
+      }
+    },
+    "evidence_shards": [
+      "published_artifact_versions",
+      "published_artifact_install_evidence",
+      "worker_registration_and_rollout_surfaces",
+      "compatible_replay_delivery_counts",
+      "cache_eviction_delivery_counts",
+      "no_compatible_worker_diagnostics",
+      "published_artifact_worker_execution",
+      "published_php_python_worker_protocol_client_shard",
+      "cross_language_php_python_delivery_counts",
+      "history_and_visibility_pin_capture"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "sdk_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP SDK, Workflow engine, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ]
+    },
+    {
+      "id": "worker_registration_build_ids",
+      "title": "Worker registration build IDs",
+      "actors": [
+        "server",
+        "cli",
+        "sdk_php_runtime",
+        "python_sdk_runtime"
+      ],
+      "operations": [
+        "register at least two live worker cohorts on the same task queue with distinct build IDs",
+        "record the registration response for each worker",
+        "verify public worker-list and task-queue build-id surfaces expose both cohorts"
+      ],
+      "pass_criteria": [
+        "each registered worker retains the requested build ID",
+        "both build ID cohorts are visible without reading server storage internals",
+        "the result records active worker counts per cohort"
+      ]
+    },
+    {
+      "id": "operator_rollout_visibility",
+      "title": "Operator rollout visibility",
+      "actors": [
+        "server",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "observe a mixed v1/v2 worker pool through the CLI and Waterline/operator surfaces",
+        "capture rollout state, active worker counts, draining state, and per-run compatibility fields"
+      ],
+      "pass_criteria": [
+        "operators can distinguish v1 and v2 cohorts",
+        "operators can identify which build ID new starts will use",
+        "operators can inspect existing workflow runs and see their compatibility value"
+      ]
+    },
+    {
+      "id": "drain_resume_operator_controls",
+      "title": "Drain and resume operator controls",
+      "actors": [
+        "server",
+        "cli"
+      ],
+      "operations": [
+        "mark the v1 build ID cohort draining through the documented operator command",
+        "verify worker polls and task-queue build-id surfaces expose draining state",
+        "resume the cohort and verify active state is visible again"
+      ],
+      "pass_criteria": [
+        "drain and resume commands are idempotent and operator-visible",
+        "draining workers cannot silently claim new work",
+        "resumed workers become active without waiting for an unrelated heartbeat"
+      ]
+    },
+    {
+      "id": "pin_on_start",
+      "title": "Pin on start",
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "start the divergent Sequence workflow while v1 is the selected build",
+        "inspect the run, first workflow task, and public visibility/history fields before v2 claims any task"
+      ],
+      "pass_criteria": [
+        "the workflow run records v1 compatibility at start time",
+        "the first workflow task records v1 compatibility",
+        "a public visibility or history surface exposes the compatibility value"
+      ]
+    },
+    {
+      "id": "replay_only_by_compatible_workers",
+      "title": "Replay only by compatible workers",
+      "actors": [
+        "server",
+        "sdk_php_runtime",
+        "python_sdk_runtime"
+      ],
+      "operations": [
+        "run v1 and v2 workers on the same task queue with deliberately divergent Sequence implementations",
+        "advance a v1-pinned workflow past activity A while v2 workers are polling",
+        "record which worker receives every workflow task for the v1 run"
+      ],
+      "pass_criteria": [
+        "all workflow tasks for the v1-pinned run are delivered only to v1-compatible workers",
+        "v2 receives zero tasks for the v1 run",
+        "the v1 workflow completes with the v1 result ordering"
+      ]
+    },
+    {
+      "id": "new_starts_to_promoted_version",
+      "title": "New starts to promoted version",
+      "actors": [
+        "server",
+        "cli",
+        "sdk_client",
+        "worker"
+      ],
+      "operations": [
+        "promote v2 for new starts through the documented operator surface",
+        "start a new Sequence workflow while older v1 runs remain in flight",
+        "record old-run and new-run compatibility and delivery workers"
+      ],
+      "pass_criteria": [
+        "the new run is pinned to v2",
+        "the new run executes on v2 and returns the v2 result ordering",
+        "older v1 runs continue only on v1-compatible workers"
+      ]
+    },
+    {
+      "id": "replay_across_cache_eviction",
+      "title": "Replay across cache eviction",
+      "actors": [
+        "server",
+        "worker"
+      ],
+      "operations": [
+        "evict or restart the v1 worker while a v1-pinned run is in flight",
+        "keep v2 workers polling the same task queue",
+        "record the worker build ID used for replay after eviction"
+      ],
+      "pass_criteria": [
+        "replay after eviction is handled by a v1-compatible worker",
+        "v2 receives zero tasks for the v1 run",
+        "the workflow completes without nondeterminism"
+      ]
+    },
+    {
+      "id": "no_compatible_worker_behavior",
+      "title": "No compatible worker behavior",
+      "actors": [
+        "server",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "remove all v1-compatible workers for a v1-pinned run while v2 workers continue polling",
+        "observe the run through worker polls and operator visibility surfaces",
+        "record whether the run remains pending or fails with a typed no-compatible-worker error"
+      ],
+      "pass_criteria": [
+        "the v2 worker receives zero tasks for the v1-pinned run",
+        "operators see an explicit pending/no-compatible-worker signal",
+        "the run does not silently hang without any public diagnostic"
+      ]
+    },
+    {
+      "id": "operator_visibility_surfaces",
+      "title": "Operator visibility surfaces",
+      "actors": [
+        "server",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "capture worker list, task-queue build-id rollout, workflow show/list, history, and Waterline outputs for a mixed pool",
+        "compare build IDs, draining state, active worker counts, and workflow compatibility fields across surfaces"
+      ],
+      "pass_criteria": [
+        "CLI and Waterline expose enough state to operate the rollout",
+        "workflow visibility exposes per-run compatibility",
+        "history or replay-export output contains a durable version pin"
+      ]
+    },
+    {
+      "id": "cross_language_php_python_pinning",
+      "title": "Cross-language PHP/Python pinning",
+      "actors": [
+        "server",
+        "sdk_php_runtime",
+        "python_sdk_runtime"
+      ],
+      "operations": [
+        "start a PHP v1 workflow while a Python v2 worker polls the same queue",
+        "start a Python v1 workflow while a PHP v2 worker polls the same queue",
+        "record PHP and Python worker runtime identity, workflow IDs, run IDs, and rollout state for both directions",
+        "record cross-language task delivery, result ordering, and compatibility fields"
+      ],
+      "pass_criteria": [
+        "PHP-started v1 history is not delivered to Python v2",
+        "Python-started v1 history is not delivered to PHP v2",
+        "the PHP v1 to Python v2 incompatible delivery count is recorded as zero",
+        "the Python v1 to PHP v2 incompatible delivery count is recorded as zero",
+        "workflow and run identity are recorded for both PHP-started and Python-started v1 workflows",
+        "task-queue rollout state is recorded for the promoted PHP v1 and Python v1 cohorts",
+        "the public outcome used to verify pinning names the poll and rollout surfaces",
+        "published sdk-php and sdk-python worker artifacts are identified with install source and version",
+        "the PHP/Python worker evidence records that no local product source checkout was used",
+        "both runtimes agree on build-id compatibility semantics"
+      ]
+    },
+    {
+      "id": "adversarial_no_version_bump",
+      "title": "Adversarial no version bump",
+      "actors": [
+        "server",
+        "worker",
+        "operator"
+      ],
+      "operations": [
+        "ship divergent v2 workflow code under the existing v1 build ID",
+        "start a new workflow and capture whether the server accepts, rejects, warns, or exposes an audit signal",
+        "link any missing warning or audit surface as a product or documentation finding"
+      ],
+      "pass_criteria": [
+        "the observed behavior is recorded explicitly",
+        "operators have an audit signal or linked finding for silent acceptance",
+        "the result does not mark undocumented behavior as passing without evidence"
+      ]
+    },
+    {
+      "id": "history_api_version_pin",
+      "title": "History API version pin",
+      "actors": [
+        "server",
+        "cli",
+        "sdk_client"
+      ],
+      "operations": [
+        "fetch full history or replay-export output for a pinned workflow run",
+        "record the event, run field, or bundle field that contains the worker-version pin"
+      ],
+      "pass_criteria": [
+        "a durable compatibility value is present in public history or replay-export output",
+        "the value matches the run's selected build ID",
+        "the field is documented enough for replay and operator tooling to consume"
+      ]
+    }
+  ]
+}

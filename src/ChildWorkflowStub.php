@@ -8,6 +8,8 @@ use function React\Promise\all;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
+use RuntimeException;
+use Throwable;
 use Workflow\Serializers\Serializer;
 
 final class ChildWorkflowStub
@@ -20,35 +22,90 @@ final class ChildWorkflowStub
     public static function make($workflow, ...$arguments): PromiseInterface
     {
         $context = WorkflowStub::getContext();
+        $result = null;
 
-        $log = $context->storedWorkflow->logs()
-            ->whereIndex($context->index)
-            ->first();
+        while (true) {
+            $log = $context->storedWorkflow->findLogByIndex($context->index);
+            $result = null;
 
-        if (WorkflowStub::faked()) {
-            $mocks = WorkflowStub::mocks();
+            if (WorkflowStub::faked()) {
+                $mocks = WorkflowStub::mocks();
 
-            if (! $log && array_key_exists($workflow, $mocks)) {
-                $result = $mocks[$workflow];
+                if (! $log && array_key_exists($workflow, $mocks)) {
+                    $mockedResult = $mocks[$workflow];
 
-                $log = $context->storedWorkflow->logs()
-                    ->create([
+                    $log = $context->storedWorkflow->createLog([
                         'index' => $context->index,
                         'now' => $context->now,
                         'class' => $workflow,
                         'result' => Serializer::serialize(
-                            is_callable($result) ? $result($context, ...$arguments) : $result
+                            is_callable($mockedResult) ? $mockedResult($context, ...$arguments) : $mockedResult
                         ),
                     ]);
 
-                WorkflowStub::recordDispatched($workflow, $arguments);
+                    WorkflowStub::recordDispatched($workflow, $arguments);
+                }
             }
+
+            if (! $log) {
+                break;
+            }
+
+            if ($log->class !== Exception::class) {
+                break;
+            }
+
+            $result = Serializer::unserialize($log->result);
+
+            if (! self::isForeignExceptionResult($result, $workflow)) {
+                break;
+            }
+
+            ++$context->index;
+            WorkflowStub::setContext($context);
         }
 
         if ($log) {
+            $result ??= Serializer::unserialize($log->result);
+
+            if (
+                WorkflowStub::isProbing()
+                && WorkflowStub::probeIndex() === $context->index
+                && (
+                    WorkflowStub::probeClass() === null
+                    || WorkflowStub::probeClass() === $workflow
+                )
+                && $log->class === Exception::class
+            ) {
+                WorkflowStub::markProbeMatched();
+            }
+
             ++$context->index;
             WorkflowStub::setContext($context);
-            return resolve(Serializer::unserialize($log->result));
+            if (
+                is_array($result)
+                && array_key_exists('class', $result)
+                && is_subclass_of($result['class'], Throwable::class)
+            ) {
+                try {
+                    $throwable = new $result['class']($result['message'] ?? '', (int) ($result['code'] ?? 0));
+                } catch (Throwable $throwable) {
+                    throw new RuntimeException(
+                        sprintf('[%s] %s', $result['class'], (string) ($result['message'] ?? '')),
+                        (int) ($result['code'] ?? 0),
+                        $throwable
+                    );
+                }
+                throw $throwable;
+            }
+            return resolve($result);
+        }
+
+        if (WorkflowStub::isProbing()) {
+            WorkflowStub::markProbePendingBeforeMatch();
+            ++$context->index;
+            WorkflowStub::setContext($context);
+            return (new Deferred())->promise();
         }
 
         if (! $context->replaying) {
@@ -58,20 +115,34 @@ final class ChildWorkflowStub
 
             $childWorkflow = $storedChildWorkflow ? $storedChildWorkflow->toWorkflow() : WorkflowStub::make($workflow);
 
-            if ($childWorkflow->running() && ! $childWorkflow->created()) {
-                try {
-                    $childWorkflow->resume();
-                } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
-                    // already running
+            $hasOptions = collect($arguments)
+                ->contains(static fn ($argument): bool => $argument instanceof WorkflowOptions);
+
+            if (! $hasOptions) {
+                $options = $context->storedWorkflow->workflowOptions();
+
+                if ($options->connection !== null || $options->queue !== null) {
+                    $arguments[] = $options;
                 }
-            } elseif (! $childWorkflow->completed()) {
+            }
+
+            $runningStartedChildWorkflow = $childWorkflow->running() && ! $childWorkflow->created();
+
+            if (! $runningStartedChildWorkflow && ! $childWorkflow->completed()) {
                 $childWorkflow->startAsChild($context->storedWorkflow, $context->index, $context->now, ...$arguments);
             }
         }
 
         ++$context->index;
         WorkflowStub::setContext($context);
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
+    }
+
+    private static function isForeignExceptionResult(mixed $result, string $workflow): bool
+    {
+        return is_array($result)
+            && isset($result['sourceClass'])
+            && is_string($result['sourceClass'])
+            && $result['sourceClass'] !== $workflow;
     }
 }

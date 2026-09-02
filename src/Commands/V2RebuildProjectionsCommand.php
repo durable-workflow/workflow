@@ -1,0 +1,378 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\Commands;
+
+use Illuminate\Console\Command;
+use JsonException;
+use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\RunSummaryProjectionDrift;
+use Workflow\V2\Support\SelectedRunProjectionDrift;
+
+class V2RebuildProjectionsCommand extends Command
+{
+    protected $signature = 'workflow:v2:rebuild-projections
+        {--run-id=* : Rebuild one or more selected workflow run ids}
+        {--instance-id= : Rebuild every run for one workflow instance id}
+        {--namespace= : Limit rebuild candidates to one workflow namespace}
+        {--missing : Only rebuild runs that do not have a run-summary row}
+        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, timer, or lineage projections need rebuild}
+        {--prune-stale : Delete projection rows whose durable workflow run or history row no longer exists}
+        {--dry-run : Report the affected rows without changing projection tables}
+        {--json : Output the rebuild report as JSON}';
+
+    protected $description = 'Rebuild Workflow v2 projection rows from durable runtime state';
+
+    public function __construct(
+        private readonly HistoryProjectionMaintenanceRole $historyProjectionRole,
+    ) {
+        parent::__construct();
+    }
+
+    public function handle(): int
+    {
+        $runIds = $this->runIds();
+        $instanceId = $this->stringOption('instance-id');
+        $namespace = $this->stringOption('namespace');
+        $missingOnly = (bool) $this->option('missing');
+        $needsRebuildOnly = (bool) $this->option('needs-rebuild');
+        $pruneStale = (bool) $this->option('prune-stale');
+        $dryRun = (bool) $this->option('dry-run');
+
+        if ($namespace !== null && $pruneStale) {
+            $this->error(
+                'The --namespace and --prune-stale options cannot be combined because orphaned rows have no durable namespace authority.'
+            );
+
+            return self::FAILURE;
+        }
+
+        $runQuery = $this->runQuery($runIds, $instanceId, $namespace, $missingOnly, $needsRebuildOnly);
+        $matchedRuns = (clone $runQuery)->count();
+        $historyProjectionRole = $this->historyProjectionRole;
+
+        $report = [
+            'dry_run' => $dryRun,
+            'runs_matched' => $matchedRuns,
+            'run_summaries_rebuilt' => 0,
+            'run_summaries_would_rebuild' => $dryRun ? $matchedRuns : 0,
+            'run_summaries_pruned' => 0,
+            'run_summaries_would_prune' => 0,
+            'run_waits_pruned' => 0,
+            'run_waits_would_prune' => 0,
+            'run_timeline_entries_pruned' => 0,
+            'run_timeline_entries_would_prune' => 0,
+            'run_timer_entries_pruned' => 0,
+            'run_timer_entries_would_prune' => 0,
+            'run_lineage_entries_pruned' => 0,
+            'run_lineage_entries_would_prune' => 0,
+            'failures' => [],
+        ];
+
+        $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun, $historyProjectionRole): void {
+            foreach ($runs as $run) {
+                try {
+                    if ($dryRun) {
+                        continue;
+                    }
+
+                    $historyProjectionRole->projectRun($run);
+                    $report['run_summaries_rebuilt']++;
+                } catch (Throwable $exception) {
+                    $report['failures'][] = [
+                        'run_id' => $run->id,
+                        'message' => $exception->getMessage(),
+                    ];
+                }
+            }
+        });
+
+        if ($pruneStale) {
+            $pruneReport = $this->historyProjectionRole->pruneStaleProjections($runIds, $instanceId, $dryRun);
+
+            if ($dryRun) {
+                $report['run_summaries_would_prune'] = $pruneReport['run_summaries'];
+                $report['run_waits_would_prune'] = $pruneReport['run_waits'];
+                $report['run_timeline_entries_would_prune'] = $pruneReport['run_timeline_entries'];
+                $report['run_timer_entries_would_prune'] = $pruneReport['run_timer_entries'];
+                $report['run_lineage_entries_would_prune'] = $pruneReport['run_lineage_entries'];
+            } else {
+                $report['run_summaries_pruned'] = $pruneReport['run_summaries'];
+                $report['run_waits_pruned'] = $pruneReport['run_waits'];
+                $report['run_timeline_entries_pruned'] = $pruneReport['run_timeline_entries'];
+                $report['run_timer_entries_pruned'] = $pruneReport['run_timer_entries'];
+                $report['run_lineage_entries_pruned'] = $pruneReport['run_lineage_entries'];
+            }
+        }
+
+        $this->renderReport($report);
+
+        return $report['failures'] === []
+            ? self::SUCCESS
+            : self::FAILURE;
+    }
+
+    /**
+     * @param list<string> $runIds
+     */
+    private function runQuery(
+        array $runIds,
+        ?string $instanceId,
+        ?string $namespace,
+        bool $missingOnly,
+        bool $needsRebuildOnly,
+    ) {
+        $runModel = $this->runModel();
+        $summaryModel = $this->summaryModel();
+        $runTable = (new $runModel())->getTable();
+        $summaryTable = (new $summaryModel())->getTable();
+
+        $query = $runModel::query()
+            ->with([
+                'instance.runs',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+            ]);
+
+        if ($runIds !== []) {
+            $query->whereKey($runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where('workflow_instance_id', $instanceId);
+        }
+
+        if ($namespace !== null) {
+            $query->where(sprintf('%s.namespace', $runTable), $namespace);
+        }
+
+        if ($needsRebuildOnly) {
+            $staleSummaryIds = RunSummaryProjectionDrift::staleSummaryQuery($runIds, $instanceId, $namespace)
+                ->select(sprintf('%s.id', $summaryTable));
+            $schemaOutdatedIds = RunSummaryProjectionDrift::schemaOutdatedQuery($runIds, $instanceId, $namespace)
+                ->select(sprintf('%s.id', $summaryTable));
+            $selectedRunWaitIds = SelectedRunProjectionDrift::waitRunIdsNeedingRebuild(
+                $runIds,
+                $instanceId,
+                $namespace,
+            );
+            $selectedRunTimelineIds = SelectedRunProjectionDrift::timelineRunIdsNeedingRebuild(
+                $runIds,
+                $instanceId,
+                $namespace,
+            );
+            $selectedRunTimerIds = SelectedRunProjectionDrift::timerRunIdsNeedingRebuild(
+                $runIds,
+                $instanceId,
+                $namespace,
+            );
+            $selectedRunLineageIds = SelectedRunProjectionDrift::lineageRunIdsNeedingRebuild(
+                $runIds,
+                $instanceId,
+                $namespace,
+            );
+
+            $query->where(static function ($query) use (
+                $selectedRunLineageIds,
+                $selectedRunTimerIds,
+                $selectedRunTimelineIds,
+                $selectedRunWaitIds,
+                $summaryModel,
+                $staleSummaryIds,
+                $schemaOutdatedIds,
+                $runTable,
+            ): void {
+                $query->whereNotIn(sprintf('%s.id', $runTable), $summaryModel::query()->select('id'))
+                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds)
+                    ->orWhereIn(sprintf('%s.id', $runTable), $schemaOutdatedIds);
+
+                if ($selectedRunWaitIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunWaitIds);
+                }
+
+                if ($selectedRunTimelineIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunTimelineIds);
+                }
+
+                if ($selectedRunTimerIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunTimerIds);
+                }
+
+                if ($selectedRunLineageIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunLineageIds);
+                }
+            });
+        } elseif ($missingOnly) {
+            $query->whereNotIn('id', $summaryModel::query()->select('id'));
+        }
+
+        return $query;
+    }
+
+    /**
+     * @return class-string<WorkflowRun>
+     */
+    private function runModel(): string
+    {
+        /** @var class-string<WorkflowRun> $model */
+        $model = config('workflows.v2.run_model', WorkflowRun::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowRunSummary>
+     */
+    private function summaryModel(): string
+    {
+        /** @var class-string<WorkflowRunSummary> $model */
+        $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
+
+        return $model;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function runIds(): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            static fn (mixed $value): string => is_scalar($value) ? trim((string) $value) : '',
+            (array) $this->option('run-id'),
+        ))));
+    }
+
+    private function stringOption(string $name): ?string
+    {
+        $value = $this->option($name);
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * @param array{
+     *     dry_run: bool,
+     *     runs_matched: int,
+     *     run_summaries_rebuilt: int,
+     *     run_summaries_would_rebuild: int,
+     *     run_summaries_pruned: int,
+     *     run_summaries_would_prune: int,
+     *     run_waits_pruned: int,
+     *     run_waits_would_prune: int,
+     *     run_timeline_entries_pruned: int,
+     *     run_timeline_entries_would_prune: int,
+     *     run_timer_entries_pruned: int,
+     *     run_timer_entries_would_prune: int,
+     *     run_lineage_entries_pruned: int,
+     *     run_lineage_entries_would_prune: int,
+     *     failures: list<array{run_id: string, message: string}>
+     * } $report
+     */
+    private function renderReport(array $report): void
+    {
+        if ((bool) $this->option('json')) {
+            try {
+                $this->line(json_encode($report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            } catch (JsonException $exception) {
+                $this->error($exception->getMessage());
+            }
+
+            return;
+        }
+
+        if ($report['dry_run']) {
+            $this->info(sprintf(
+                'Would rebuild %d run-summary projection row(s).',
+                $report['run_summaries_would_rebuild'],
+            ));
+
+            if ($report['run_summaries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale run-summary projection row(s).',
+                    $report['run_summaries_would_prune'],
+                ));
+            }
+
+            if ($report['run_waits_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale wait projection row(s).',
+                    $report['run_waits_would_prune'],
+                ));
+            }
+
+            if ($report['run_timeline_entries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale timeline projection row(s).',
+                    $report['run_timeline_entries_would_prune'],
+                ));
+            }
+
+            if ($report['run_timer_entries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale timer projection row(s).',
+                    $report['run_timer_entries_would_prune'],
+                ));
+            }
+
+            if ($report['run_lineage_entries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale lineage projection row(s).',
+                    $report['run_lineage_entries_would_prune'],
+                ));
+            }
+        } else {
+            $this->info(sprintf('Rebuilt %d run-summary projection row(s).', $report['run_summaries_rebuilt']));
+
+            if ($report['run_summaries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale run-summary projection row(s).',
+                    $report['run_summaries_pruned'],
+                ));
+            }
+
+            if ($report['run_waits_pruned'] > 0) {
+                $this->info(sprintf('Pruned %d stale wait projection row(s).', $report['run_waits_pruned']));
+            }
+
+            if ($report['run_timeline_entries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale timeline projection row(s).',
+                    $report['run_timeline_entries_pruned'],
+                ));
+            }
+
+            if ($report['run_timer_entries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale timer projection row(s).',
+                    $report['run_timer_entries_pruned'],
+                ));
+            }
+
+            if ($report['run_lineage_entries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale lineage projection row(s).',
+                    $report['run_lineage_entries_pruned'],
+                ));
+            }
+        }
+
+        foreach ($report['failures'] as $failure) {
+            $this->error(sprintf('Failed to rebuild run [%s]: %s', $failure['run_id'], $failure['message']));
+        }
+    }
+}

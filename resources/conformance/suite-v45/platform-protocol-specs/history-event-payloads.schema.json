@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.history-event-payloads",
+  "title": "Durable Workflow history event payloads",
+  "description": "Normative JSON Schema set for the persisted workflow_history_events and workflow_schedule_history_events payload surface. The top-level schema validates a history event record; the payload object remains event-type specific and frozen for replay compatibility. Unknown additive payload keys may be ignored, but removing, renaming, narrowing, or repurposing an existing key is a protocol break. New incompatible shapes must be introduced as parallel event types.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "history_event_payloads",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "parallel_primitive_only",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "workflow_history_events",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "workflow_schedule_history_events",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable event id when the record comes from the database."
+    },
+    "workflow_run_id": {
+      "type": "string"
+    },
+    "workflow_schedule_id": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "$ref": "#/$defs/historyEventType"
+    },
+    "type": {
+      "$ref": "#/$defs/historyEventType",
+      "description": "Exported aliases may use type instead of event_type."
+    },
+    "payload": {
+      "$ref": "#/$defs/eventPayload"
+    },
+    "recorded_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "workflow_command_id": {
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "eventPayload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Event-type-specific payload. Stable event types freeze all already documented keys. Consumers must ignore unknown additive keys."
+    },
+    "historyEventType": {
+      "type": "string",
+      "enum": [
+        "StartAccepted",
+        "StartRejected",
+        "WorkflowStarted",
+        "WorkflowContinuedAsNew",
+        "ChildWorkflowScheduled",
+        "ChildRunStarted",
+        "ChildRunCompleted",
+        "ChildRunFailed",
+        "ChildRunCancelled",
+        "ChildRunTerminated",
+        "ConditionWaitOpened",
+        "ConditionWaitSatisfied",
+        "ConditionWaitTimedOut",
+        "SignalWaitOpened",
+        "SignalReceived",
+        "SignalApplied",
+        "UpdateAccepted",
+        "UpdateRejected",
+        "UpdateApplied",
+        "UpdateCompleted",
+        "RepairRequested",
+        "CancelRequested",
+        "WorkflowCancelled",
+        "TerminateRequested",
+        "WorkflowTerminated",
+        "ArchiveRequested",
+        "WorkflowArchived",
+        "ActivityScheduled",
+        "ActivityStarted",
+        "ActivityHeartbeatRecorded",
+        "ActivityRetryScheduled",
+        "ActivityCompleted",
+        "ActivityFailed",
+        "ActivityCancelled",
+        "ActivityTimedOut",
+        "FailureHandled",
+        "SideEffectRecorded",
+        "VersionMarkerRecorded",
+        "TimerScheduled",
+        "TimerFired",
+        "TimerCancelled",
+        "SearchAttributesUpserted",
+        "MemoUpserted",
+        "WorkflowTimedOut",
+        "WorkflowCompleted",
+        "WorkflowFailed",
+        "ParentClosePolicyApplied",
+        "ParentClosePolicyFailed",
+        "MessageCursorAdvanced",
+        "ScheduleCreated",
+        "SchedulePaused",
+        "ScheduleResumed",
+        "ScheduleUpdated",
+        "ScheduleTriggered",
+        "ScheduleDeleted",
+        "ScheduleTriggerSkipped"
+      ]
+    }
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/server-info.schema.json",
+  "title": "dw server:info --output=json",
+  "description": "Server capability, compatibility, topology, coordination-health, and protocol discovery output.",
+  "type": "object",
+  "required": ["server_id", "version"],
+  "properties": {
+    "server_id": { "type": ["string", "null"] },
+    "version": { "type": ["string", "null"] },
+    "default_namespace": { "type": ["string", "null"] },
+    "capabilities": {
+      "type": "object",
+      "description": "Server capability flags and enumerations.",
+      "additionalProperties": true
+    },
+    "limits": {
+      "type": "object",
+      "description": "Server-published operational limits.",
+      "additionalProperties": { "type": ["integer", "number", "string", "null"] }
+    },
+    "client_compatibility": {
+      "type": "object",
+      "properties": {
+        "authority": { "type": ["string", "null"] },
+        "top_level_version_role": { "type": ["string", "null"] },
+        "fail_closed": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "control_plane": {
+      "type": "object",
+      "properties": {
+        "version": { "type": ["string", "integer", "null"] },
+        "header": { "type": ["string", "null"] },
+        "response_contract": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "request_contract": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "topology": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": ["string", "null"] },
+        "version": { "type": ["string", "integer", "null"] },
+        "supported_shapes": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "current_shape": { "type": ["string", "null"] },
+        "current_process_class": { "type": ["string", "null"] },
+        "current_roles": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "execution_mode": { "type": ["string", "null"] },
+        "matching_role": {
+          "type": ["object", "null"],
+          "properties": {
+            "queue_wake_enabled": { "type": ["boolean", "null"] },
+            "shape": { "type": ["string", "null"] },
+            "wake_owner": { "type": ["string", "null"] },
+            "task_dispatch_mode": { "type": ["string", "null"] },
+            "partition_primitives": {
+              "type": ["array", "null"],
+              "items": { "type": "string" }
+            },
+            "backpressure_model": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "coordination_health": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": ["string", "null"] },
+        "version": { "type": ["string", "integer", "null"] },
+        "namespace_scope": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "http_status": { "type": ["integer", "null"] },
+        "generated_at": { "type": ["string", "null"] },
+        "categories": {
+          "type": ["object", "array", "null"],
+          "additionalProperties": true
+        },
+        "warning_checks": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "error_checks": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "checks": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": ["string", "null"] },
+              "status": { "type": ["string", "null"] },
+              "category": { "type": ["string", "null"] },
+              "message": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "worker_protocol": {
+      "type": "object",
+      "properties": {
+        "version": { "type": ["string", "integer", "null"] },
+        "server_capabilities": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "worker_fleet": {
+      "type": "object",
+      "properties": {
+        "namespace": { "type": ["string", "null"] },
+        "active_workers": { "type": ["integer", "null"] },
+        "active_worker_scopes": { "type": ["integer", "null"] },
+        "build_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "queues": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

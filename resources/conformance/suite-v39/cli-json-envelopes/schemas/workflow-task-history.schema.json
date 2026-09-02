@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/workflow-task-history.schema.json",
+  "title": "dw workflow-task:history --json",
+  "type": "object",
+  "required": ["history_events"],
+  "properties": {
+    "history_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event_type"],
+        "properties": {
+          "event_id": { "type": ["integer", "null"] },
+          "sequence": { "type": ["integer", "null"] },
+          "event_type": { "type": "string" },
+          "timestamp": { "type": ["string", "null"] },
+          "payload": true
+        },
+        "additionalProperties": true
+      }
+    },
+    "total_history_events": { "type": ["integer", "null"] },
+    "next_history_page_token": { "type": ["string", "null"] },
+    "protocol_version": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

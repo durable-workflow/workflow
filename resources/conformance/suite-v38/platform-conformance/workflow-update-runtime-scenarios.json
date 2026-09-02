@@ -1,0 +1,657 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "workflow_update_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for the stable workflow update runtime contract. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "local_vendor_tree"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "published_artifact_versions",
+    "artifact_sources",
+    "implementation_identity",
+    "runtime_matrix",
+    "observed_outputs",
+    "local_product_source_checkouts_used",
+    "linked_findings"
+  ],
+  "required_matrix": {
+    "runtimes": [
+      "sdk-php",
+      "sdk-python"
+    ],
+    "client_paths": [
+      "raw-api",
+      "cli",
+      "sdk-php",
+      "sdk-python"
+    ],
+    "observer_paths": [
+      "control-plane-response",
+      "history-api",
+      "run-detail-api",
+      "waterline-selected-run-detail",
+      "waterline-update-history"
+    ],
+    "principal_paths": [
+      "raw-http-token",
+      "cli-token",
+      "sdk-python-token",
+      "sdk-php-token"
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "published_artifact_versions",
+        "artifact_sources",
+        "artifact_install_evidence",
+        "local_product_source_checkouts_used",
+        "source_policy"
+      ]
+    },
+    "declared_update_contract_visibility": {
+      "required_fields": [
+        "workflow_type",
+        "declared_updates",
+        "declared_update_contracts",
+        "start_response",
+        "history_start_event"
+      ]
+    },
+    "accepted_update_control_plane_and_history": {
+      "required_fields": [
+        "update_request",
+        "update_response",
+        "update_id",
+        "update_status",
+        "history_update_accepted_event",
+        "run_detail_update_view"
+      ]
+    },
+    "running_or_waiting_update_operator_visibility": {
+      "required_fields": [
+        "update_id",
+        "workflow_status",
+        "update_status",
+        "waiting_or_running_surface",
+        "waterline_update_view"
+      ]
+    },
+    "completed_update_result_round_trip": {
+      "required_fields": [
+        "update_id",
+        "request_payload",
+        "result_payload",
+        "result_envelope",
+        "history_update_completed_event",
+        "cli_update_json",
+        "sdk_update_result"
+      ]
+    },
+    "failed_update_outcome": {
+      "required_fields": [
+        "update_id",
+        "failure_type",
+        "failure_message",
+        "history_update_completed_or_failed_event",
+        "control_plane_error_envelope",
+        "operator_failure_view"
+      ]
+    },
+    "duplicate_request_idempotency": {
+      "required_fields": [
+        "idempotency_key_or_update_id",
+        "first_response",
+        "duplicate_response",
+        "history_event_count",
+        "handler_observation_count",
+        "documented_contract"
+      ]
+    },
+    "unknown_update_refusal": {
+      "required_fields": [
+        "unknown_update_name",
+        "error_type",
+        "http_status_or_sdk_error",
+        "history_absence_or_rejection_event",
+        "operator_visible_refusal"
+      ]
+    },
+    "invalid_input_refusal": {
+      "required_fields": [
+        "invalid_payload",
+        "error_type",
+        "validation_errors",
+        "handler_not_invoked",
+        "history_absence_or_rejection_event",
+        "operator_visible_refusal"
+      ]
+    },
+    "payload_envelope_round_trip": {
+      "required_fields": [
+        "codec",
+        "request_envelope",
+        "history_arguments_envelope",
+        "history_result_envelope",
+        "control_plane_result_envelope",
+        "sdk_decoded_result"
+      ]
+    },
+    "terminal_workflow_update_behavior": {
+      "required_fields": [
+        "terminal_workflow_status",
+        "update_request",
+        "error_type",
+        "http_status_or_sdk_error",
+        "history_absence_or_rejection_event",
+        "operator_visible_refusal"
+      ]
+    },
+    "principal_attribution_with_auth": {
+      "required_fields": [
+        "auth_mode",
+        "principal",
+        "update_request_surface",
+        "control_plane_principal_fields",
+        "history_principal_fields",
+        "waterline_principal_fields"
+      ]
+    },
+    "php_client_worker_update_surface": {
+      "required_fields": [
+        "sdk_php_artifact_version",
+        "php_worker_update_handler",
+        "php_client_update_request",
+        "covered_cells",
+        "unsupported_cells",
+        "typed_errors"
+      ]
+    },
+    "python_client_worker_update_surface": {
+      "required_fields": [
+        "sdk_python_artifact_version",
+        "python_worker_update_handler",
+        "python_client_update_request",
+        "covered_cells",
+        "unsupported_cells",
+        "typed_errors"
+      ]
+    },
+    "operator_diagnostics_surfaces": {
+      "required_fields": [
+        "workflow_id",
+        "run_id",
+        "cli_fields",
+        "api_fields",
+        "history_fields",
+        "waterline_fields",
+        "diagnostic_transition_matrix"
+      ]
+    }
+  },
+  "host_runner_contract": {
+    "runner_id": "workflow-updates",
+    "status": "focused_server_runtime_probe_php_python_and_operator_diagnostics_shards_implemented",
+    "host_runner_implemented": true,
+    "must_exercise_published_artifacts": true,
+    "must_execute_against_published_artifacts": true,
+    "must_record_runner_blocked_false_for_product_evidence": true,
+    "focused_evidence_schema": "durable-workflow.v2.workflow-updates.focused-evidence",
+    "php_evidence_schema": "durable-workflow.v2.workflow-updates.php-sdk-evidence",
+    "python_evidence_schema": "durable-workflow.v2.workflow-updates.python-sdk-evidence",
+    "operator_diagnostics_evidence_schema": "durable-workflow.v2.workflow-updates.operator-diagnostics-evidence",
+    "focused_probe_covers": [
+      "published_artifact_install_only",
+      "declared_update_contract_visibility",
+      "accepted_update_control_plane_and_history",
+      "running_or_waiting_update_operator_visibility",
+      "completed_update_result_round_trip",
+      "failed_update_outcome",
+      "duplicate_request_idempotency",
+      "unknown_update_refusal",
+      "invalid_input_refusal",
+      "payload_envelope_round_trip",
+      "terminal_workflow_update_behavior",
+      "principal_attribution_with_auth"
+    ],
+    "python_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_python_sdk_artifact",
+      "covers_required_scenarios": [
+        "python_client_worker_update_surface"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "must_record_package_version_artifact_source_handler_request_and_cells": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
+    },
+    "php_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_packagist_sdk_php_artifact",
+      "covers_required_scenarios": [
+        "php_client_worker_update_surface"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "must_record_package_version_artifact_source_handler_request_and_cells": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
+    },
+    "operator_diagnostics_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_cli_release_and_packagist_waterline_artifact",
+      "covers_required_scenarios": [
+        "operator_diagnostics_surfaces"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "uses_official_cli_workflow_update_json_surface": true,
+      "uses_packagist_waterline_selected_run_update_history_surface": true,
+      "must_record_request_ids_state_outcome_reason_payload_result_error_and_history_references": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
+    },
+    "typed_coverage_gaps": {}
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+    "sdk_php",
+        "python_sdk",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "install each claimed implementation from a released package, container, or documented download artifact",
+        "record the concrete pinned artifact name and version for every actor",
+        "refuse to count local product source checkouts or local vendor trees as pass evidence"
+      ],
+      "pass_criteria": [
+        "all claimed actors start from published artifacts only",
+        "the result document records concrete pinned artifact versions for every claimed actor",
+        "no scenario step depends on repository-local implementation tests"
+      ]
+    },
+    {
+      "id": "declared_update_contract_visibility",
+      "title": "Declared update contract visibility",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "start a workflow that declares at least one update handler",
+        "capture the public start response and first history event",
+        "inspect declared update names and argument contracts before an update is accepted"
+      ],
+      "pass_criteria": [
+        "declared update names are visible through public control-plane or history surfaces",
+        "declared update argument contracts can be mapped to the accepted payload shape",
+        "the workflow remains runnable after declaration inspection"
+      ]
+    },
+    {
+      "id": "accepted_update_control_plane_and_history",
+      "title": "Accepted update through control plane and history",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send an update with wait-for accepted through a public client",
+        "capture the control-plane response and update id",
+        "read workflow history and run detail surfaces for the accepted update"
+      ],
+      "pass_criteria": [
+        "the control-plane response reports a stable accepted update status",
+        "history records the same update id and update name",
+        "run detail surfaces expose the accepted update without requiring source inspection"
+      ]
+    },
+    {
+      "id": "running_or_waiting_update_operator_visibility",
+      "title": "Running or waiting update operator visibility",
+      "claim_targets": [
+        "standalone_server",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "waterline"
+      ],
+      "operations": [
+        "send an update whose handler waits or runs long enough to observe an intermediate state",
+        "capture API run detail while the update is not terminal",
+        "capture Waterline or operator-readable update state for the same run"
+      ],
+      "pass_criteria": [
+        "the operator surface identifies the workflow id, run id, update id, and update name",
+        "the update state is distinguishable from completed and rejected states",
+        "operator-readable evidence is captured before the update reaches a terminal state"
+      ]
+    },
+    {
+      "id": "completed_update_result_round_trip",
+      "title": "Completed update result round trip",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send an update with wait-for completed",
+        "return a typed result payload from the update handler",
+        "compare the control-plane, history, CLI, and SDK result envelopes"
+      ],
+      "pass_criteria": [
+        "the completed response reports the same update id that history records",
+        "the typed result round trips through the public envelope without corruption",
+        "CLI and SDK clients decode the same result value"
+      ]
+    },
+    {
+      "id": "failed_update_outcome",
+      "title": "Failed update outcome",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client",
+        "waterline"
+      ],
+      "operations": [
+        "invoke an update handler that fails or refuses after acceptance",
+        "capture the public client error or failed update response",
+        "inspect history and operator surfaces for the same update id"
+      ],
+      "pass_criteria": [
+        "failed or refused update outcomes use stable typed error envelopes",
+        "history ties the failure to the update id and update name",
+        "operator surfaces preserve failure type and message without exposing implementation internals"
+      ]
+    },
+    {
+      "id": "duplicate_request_idempotency",
+      "title": "Duplicate update request or idempotency behavior",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send two update requests with the same documented idempotency token or update id",
+        "capture both public responses",
+        "inspect history and handler observations for duplicate execution"
+      ],
+      "pass_criteria": [
+        "the implementation either returns the original outcome or a documented duplicate refusal",
+        "history and handler observations do not conflict with the documented duplicate behavior",
+        "clients can distinguish duplicate behavior from transport retry failure"
+      ],
+      "unsupported_when": [
+        "the implementation documents that update idempotency tokens are not supported and returns a typed unsupported outcome"
+      ]
+    },
+    {
+      "id": "unknown_update_refusal",
+      "title": "Unknown update refusal",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send an update name that the workflow did not declare",
+        "capture public API, CLI, and SDK error surfaces where they exist",
+        "verify the workflow remains able to process a known update afterward"
+      ],
+      "pass_criteria": [
+        "unknown update attempts return a stable typed refusal",
+        "the refusal names the update operation or handler identity",
+        "the unknown attempt does not invoke any update handler"
+      ]
+    },
+    {
+      "id": "invalid_input_refusal",
+      "title": "Invalid update input refusal",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send a malformed or type-invalid update payload",
+        "capture validation or decode errors from every public client path that exists",
+        "verify the handler is not invoked for rejected input"
+      ],
+      "pass_criteria": [
+        "invalid input returns stable typed validation or decode errors",
+        "the workflow remains healthy after the invalid request",
+        "history and operator surfaces do not report a successful handler application"
+      ]
+    },
+    {
+      "id": "payload_envelope_round_trip",
+      "title": "Payload envelope round trip",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "send an update with a structured payload that exercises the public payload envelope",
+        "return a structured result from the update handler",
+        "compare request, history, result, and SDK decoded payload evidence"
+      ],
+      "pass_criteria": [
+        "the same codec and envelope identity are visible in request and history evidence",
+        "the result envelope can be decoded by the public SDK path",
+        "no local serialization helper from a source checkout is required to inspect the evidence"
+      ]
+    },
+    {
+      "id": "terminal_workflow_update_behavior",
+      "title": "Terminal workflow update behavior",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "complete or otherwise terminate a workflow run",
+        "send an update to the terminal workflow or terminal run",
+        "capture control-plane, history, and operator evidence for the refusal"
+      ],
+      "pass_criteria": [
+        "terminal workflows do not silently accept updates that cannot run",
+        "the refusal is typed and names the terminal workflow state",
+        "history and operator evidence do not imply the update handler executed"
+      ]
+    },
+    {
+      "id": "principal_attribution_with_auth",
+      "title": "Principal attribution when authentication is enabled",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "sdk_client",
+        "cli_client",
+        "waterline"
+      ],
+      "operations": [
+        "enable the documented authentication mode for the conformance run",
+        "send accepted and refused updates through authenticated public clients",
+        "capture control-plane, history, and Waterline principal fields"
+      ],
+      "pass_criteria": [
+        "principal attribution is derived from authentication state rather than user payload fields",
+        "accepted and refused update evidence carry the same authenticated principal",
+        "operator-readable surfaces expose enough principal context for audit"
+      ],
+      "unsupported_when": [
+        "the artifact tuple does not expose an authentication mode for this conformance topology"
+      ]
+    },
+    {
+      "id": "php_client_worker_update_surface",
+      "title": "PHP client and worker update surface",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "sdk_php",
+        "php_worker",
+        "server"
+      ],
+      "operations": [
+        "run a PHP-authored update-capable workflow from the exact published durable-workflow/sdk package",
+        "drive supported update cells through PHP client or worker surfaces",
+        "record typed unsupported evidence for any missing first-class update API"
+      ],
+      "pass_criteria": [
+        "supported PHP update cells execute against the published package",
+        "unsupported PHP update cells return documented typed unsupported outcomes",
+        "the record identifies the exact Packagist artifact version"
+      ]
+    },
+    {
+      "id": "python_client_worker_update_surface",
+      "title": "Python client and worker update surface",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "python_sdk",
+        "python_worker",
+        "server"
+      ],
+      "operations": [
+        "run a Python-authored update-capable workflow from the published Python package when supported",
+        "drive supported update cells through Python client or worker surfaces",
+        "record typed unsupported evidence for any missing first-class update API"
+      ],
+      "pass_criteria": [
+        "supported Python update cells execute against the published package",
+        "unsupported Python update cells return documented typed unsupported outcomes",
+        "the record identifies the exact PyPI artifact version"
+      ]
+    },
+    {
+      "id": "operator_diagnostics_surfaces",
+      "title": "Operator diagnostics surfaces",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "execute at least one accepted, one completed, one failed or refused, and one terminal-workflow update case",
+        "capture API, CLI, history, and Waterline diagnostic fields",
+        "build a transition matrix from public surfaces only"
+      ],
+      "pass_criteria": [
+        "operators can correlate workflow id, run id, update id, update name, status, and outcome across surfaces",
+        "diagnostics distinguish accepted, running or waiting, completed, failed, refused, duplicate, and terminal-workflow cases",
+        "diagnostic fields are public and do not require repository-local source inspection"
+      ]
+    }
+  ]
+}

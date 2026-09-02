@@ -4,18 +4,20 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
+use InvalidArgumentException;
+use Laravel\SerializableClosure\SerializableClosure;
 use Tests\Fixtures\TestEnum;
 use Tests\TestCase;
 use Throwable;
+use Workflow\Serializers\AvroBinaryValue;
+use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Base64;
 use Workflow\Serializers\Serializer;
 use Workflow\Serializers\Y;
 
 final class SerializeTest extends TestCase
 {
-    /**
-     * @dataProvider dataProvider
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('dataProvider')]
     public function testSerialize($data): void
     {
         $this->testSerializeUnserialize($data, Y::class, Y::class);
@@ -63,6 +65,88 @@ final class SerializeTest extends TestCase
         $this->assertFalse(Serializer::serializable(static function () {
             return 'test';
         }));
+    }
+
+    public function testLegacyUnserializeSniffsAvroPayload(): void
+    {
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $serialized = Serializer::serialize([
+            'message' => 'hello',
+            'count' => 2,
+        ]);
+
+        config([
+            'workflows.serializer' => Y::class,
+        ]);
+
+        $this->assertSame([
+            'message' => 'hello',
+            'count' => 2,
+        ], Serializer::unserialize($serialized));
+    }
+
+    public function testLegacyYPayloadStillWinsOverAvroDefault(): void
+    {
+        config([
+            'workflows.serializer' => Y::class,
+        ]);
+
+        $serialized = Serializer::serialize([
+            'legacy' => true,
+        ]);
+
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $this->assertSame([
+            'legacy' => true,
+        ], Serializer::unserialize($serialized));
+    }
+
+    public function testLegacySerializeKeepsPhpOnlyValuesOnPhpSerializerWhenAvroIsConfigured(): void
+    {
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $serialized = Serializer::serialize([
+            new SerializableClosure(static fn (): string => 'ok'),
+        ]);
+
+        $unserialized = Serializer::unserialize($serialized);
+
+        $this->assertInstanceOf(SerializableClosure::class, $unserialized[0]);
+        $this->assertSame('ok', $unserialized[0]->getClosure()());
+    }
+
+    public function testV2CodecSelectionNeverFallsBackFromAvro(): void
+    {
+        $value = AvroMapValue::fromPairs([
+            ['nested', AvroMapValue::fromPairs([['bytes', AvroBinaryValue::fromBytes("\x00\xFF")]])],
+        ]);
+
+        $this->assertSame('avro', Serializer::chooseCodecForData('avro', $value));
+        $this->assertSame(
+            'avro',
+            Serializer::chooseCodecForData(
+                'avro',
+                AvroMapValue::fromPairs([
+                    ['callback', new SerializableClosure(static fn (): string => 'php-only')],
+                ]),
+            ),
+        );
+    }
+
+    public function testV2AvroRejectsUnadaptedSerializableClosures(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('unsupported_value_type');
+
+        Serializer::serializeWithCodec('avro', [new SerializableClosure(static fn (): string => 'php-only')]);
     }
 
     private function testSerializeUnserialize($data, $serializer, $unserializer): void

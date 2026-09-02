@@ -1,0 +1,595 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "principal_attribution_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Published-artifact scenarios proving server-derived, non-spoofable principal attribution on workflow history and operator surfaces.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "requires_resolved_versions": true,
+    "requires_downloadable_release_assets": true,
+    "requires_artifact_sources_for_each_required_artifact": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "release_tag_without_required_assets",
+      "rolling_server_image_tag"
+    ],
+    "required_artifacts": [
+      "server",
+      "cli",
+      "sdk-python",
+      "sdk-php",
+      "workflow",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow": [
+        "workflow-php",
+        "durable-workflow/workflow"
+      ],
+      "sdk-php": [
+        "durable-workflow/sdk"
+      ],
+      "sdk-python": [
+        "durable_workflow"
+      ],
+      "cli": [
+        "dw"
+      ]
+    },
+    "required_artifact_provenance": {
+      "sdk-php": {
+        "package": "durable-workflow/sdk",
+        "source": "packagist",
+        "role": "standalone_remote_php_client_and_worker",
+        "required_fields": [
+          "resolved_version",
+          "dist_type",
+          "dist_url",
+          "dist_reference"
+        ]
+      },
+      "workflow": {
+        "package": "durable-workflow/workflow",
+        "source": "packagist",
+        "role": "embedded_laravel_and_waterline_engine",
+        "required_fields": [
+          "resolved_version",
+          "dist_type",
+          "dist_url",
+          "dist_reference"
+        ]
+      }
+    },
+    "required_run_record_fields": [
+      "published_artifact_versions",
+      "resolved_artifact_versions",
+      "artifact_sources",
+      "local_product_source_checkouts_used",
+      "started_at",
+      "finished_at",
+      "generated_at",
+      "outcome",
+      "runner_blocked",
+      "scenario_results",
+      "findings",
+      "topology",
+      "actor_matrix",
+      "history_dumps",
+      "spoofing_attempts",
+      "spoofing_matrix",
+      "operator_visibility",
+      "anonymous_observations"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "published_artifact_versions",
+    "resolved_artifact_versions",
+    "artifact_sources",
+    "local_product_source_checkouts_used",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "scenario_results",
+    "implementation_identity",
+    "topology",
+    "actor_matrix",
+    "history_dumps",
+    "spoofing_attempts",
+    "spoofing_matrix",
+    "operator_visibility",
+    "anonymous_observations",
+    "observed_outputs",
+    "findings",
+    "finding_links"
+  ],
+  "required_top_level_fields": [
+    "published_artifact_versions",
+    "resolved_artifact_versions",
+    "artifact_sources",
+    "local_product_source_checkouts_used",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "scenario_results",
+    "findings",
+    "topology",
+    "actor_matrix",
+    "history_dumps",
+    "spoofing_attempts",
+    "spoofing_matrix",
+    "operator_visibility",
+    "sdk_principal_attribution_parity",
+    "anonymous_observations"
+  ],
+  "worker_terminal_event_policy": {
+    "events": [
+      "WorkflowCompleted",
+      "WorkflowFailed"
+    ],
+    "expected_authenticated_worker_principal": {
+      "type": "auth:token",
+      "id": "worker:principal-attribution"
+    },
+    "documented_system_principals": [],
+    "pass_condition": "each worker-caused terminal event principal matches the authenticated worker principal unless a system principal is listed here"
+  },
+  "spoofing_guards": {
+    "request_body_fields": [
+      "principal",
+      "principal_id",
+      "principal_type",
+      "actor",
+      "user"
+    ],
+    "request_body_field_values": {
+      "principal": "mallory",
+      "principal_id": "mallory",
+      "principal_type": "attacker",
+      "actor": "mallory",
+      "user": "mallory"
+    },
+    "request_headers": [
+      "X-Workflow-Principal-Id",
+      "X-Workflow-Principal-Type",
+      "X-Workflow-Principal-Label",
+      "X-Workflow-Caller-Type",
+      "X-Workflow-Caller-Label",
+      "X-Workflow-Auth-Status",
+      "X-Workflow-Auth-Method",
+      "X-Forwarded-User",
+      "X-Forwarded-Email",
+      "X-Remote-User",
+      "Authorization-Override"
+    ],
+    "request_header_values": {
+      "X-Workflow-Principal-Id": "mallory",
+      "X-Workflow-Principal-Type": "attacker",
+      "X-Workflow-Principal-Label": "Mallory",
+      "X-Workflow-Caller-Type": "spoofed-gateway",
+      "X-Workflow-Caller-Label": "Mallory Gateway",
+      "X-Workflow-Auth-Status": "trusted_elsewhere",
+      "X-Workflow-Auth-Method": "gateway_token",
+      "X-Forwarded-User": "mallory",
+      "X-Forwarded-Email": "mallory@example.invalid",
+      "X-Remote-User": "mallory",
+      "Authorization-Override": "Bearer mallory"
+    },
+    "expected_behavior": "recorded principal is derived only from authenticated server Principal"
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact installation",
+      "required_fields": [
+        "resolved_artifact_versions",
+        "artifact_sources",
+        "local_product_source_checkouts_used"
+      ],
+      "operations": [
+        "Resolve latest complete published artifact versions for server, CLI, Python SDK, the standalone durable-workflow/sdk PHP SDK, the durable-workflow/workflow embedded Laravel and Waterline engine, and Waterline.",
+        "Install each artifact from its public release channel without using local product source checkouts; use durable-workflow/sdk for the remote PHP client and worker, and retain durable-workflow/workflow only for embedded Laravel and Waterline execution.",
+        "Record resolved versions, artifact sources, Packagist dist type, URL, and reference for both PHP packages, and install/import smoke evidence."
+      ],
+      "pass_criteria": [
+        "All required artifacts are pinned to concrete published versions.",
+        "artifact_sources records the exact Packagist durable-workflow/sdk distribution used by the standalone PHP client and worker separately from durable-workflow/workflow, which is recorded only as the embedded Laravel and Waterline engine.",
+        "Every artifact source is a public release channel, both PHP package records include resolved version and dist provenance, and local_product_source_checkouts_used is false.",
+        "Install/import smoke evidence is present for server, CLI, Python SDK, PHP SDK, embedded Workflow engine, and Waterline."
+      ]
+    },
+    {
+      "id": "named_token_actor_matrix",
+      "title": "Named token actor matrix",
+      "required_fields": [
+        "actors",
+        "credentials",
+        "rotation_observations",
+        "credential_rotation",
+        "action_credentials"
+      ],
+      "operations": [
+        "Start a workflow with alice credential v1, signal as bob, and cancel with alice credential v2.",
+        "Record the credential used for each action and the principal recorded in history.",
+        "Compare alice credential rotation before and after labels with observed principal ids."
+      ],
+      "pass_criteria": [
+        "The actor matrix distinguishes alice and bob and records alice-token-v1, alice-token-v2, and bob-token.",
+        "Alice actions record principal id alice before and after credential rotation.",
+        "Credential material is not recorded as the user-visible principal id."
+      ]
+    },
+    {
+      "id": "start_signal_cancel_spoofing",
+      "title": "Start, signal, cancel, and spoofing attribution",
+      "required_fields": [
+        "history_events",
+        "recorded_principals",
+        "spoofing_attempts",
+        "spoofing_matrix",
+        "action_credentials"
+      ],
+      "operations": [
+        "Send start, signal, and cancel requests with authenticated alice/bob credentials.",
+        "Attach adversarial caller-controlled principal payload fields and gateway-style headers to each request.",
+        "Read workflow history through the history API and record spoofing matrix rows."
+      ],
+      "pass_criteria": [
+        "Start records principal id alice, signal records principal id bob, and cancel records principal id alice.",
+        "Every spoofing matrix row records the requested spoof values and the observed server-derived principal.",
+        "No caller-controlled spoof value appears in recorded history principals."
+      ]
+    },
+    {
+      "id": "query_attribution",
+      "title": "Query attribution",
+      "required_fields": [
+        "query_result",
+        "recorded_principal",
+        "history_or_query_task_surface",
+        "spoofing_attempts",
+        "spoofing_matrix"
+      ],
+      "operations": [
+        "Execute an authenticated workflow query as bob.",
+        "Capture the query response and any query task audit surface exposed by the server.",
+        "Attempt caller-controlled principal spoofing values on the query path."
+      ],
+      "pass_criteria": [
+        "A server-controlled query audit surface records principal id bob.",
+        "The query scenario records query_result, recorded_principal, and history_or_query_task_surface evidence.",
+        "No caller-controlled spoof value appears in the recorded query principal."
+      ]
+    },
+    {
+      "id": "completion_failure_attribution",
+      "title": "Completion and failure attribution",
+      "required_fields": [
+        "completion_event_principal",
+        "failure_event_principal",
+        "worker_principal",
+        "expected_worker_principal",
+        "documented_system_principals"
+      ],
+      "operations": [
+        "Complete one workflow task and fail another through an authenticated worker principal.",
+        "Read completion and failure workflow histories.",
+        "Record worker principal expectations and any documented system-principal alternatives."
+      ],
+      "pass_criteria": [
+        "WorkflowCompleted and WorkflowFailed expose the authenticated worker principal id worker:principal-attribution, unless a documented system principal is listed.",
+        "Completion and failure event principal samples are recorded.",
+        "Missing or null worker-caused terminal-event principals are routed as server or worker-protocol findings."
+      ]
+    },
+    {
+      "id": "server_originated_events",
+      "title": "Server-originated event classification",
+      "required_fields": [
+        "event_types",
+        "principal_values",
+        "classification"
+      ],
+      "operations": [
+        "Inspect server-originated history events from the exercised workflows.",
+        "Classify events without caller-generated control-plane commands.",
+        "Record principal values for those event types."
+      ],
+      "pass_criteria": [
+        "Server-originated events are classified as explicit null or a documented system principal.",
+        "The result records event_types, principal_values, and classification.",
+        "Undefined or leaking internal principal values are reported as non-passing evidence."
+      ]
+    },
+    {
+      "id": "anonymous_attribution",
+      "title": "Anonymous attribution",
+      "required_fields": [
+        "anonymous_principal",
+        "documented_value",
+        "history_events",
+        "recorded_principals",
+        "spoofing_attempts",
+        "spoofing_matrix",
+        "anonymous_auth_driver"
+      ],
+      "operations": [
+        "Run start, signal, and cancel operations against an auth-disabled or documented anonymous topology.",
+        "Attach adversarial payload fields and gateway-style headers to anonymous requests.",
+        "Read anonymous workflow history and record observed principals."
+      ],
+      "pass_criteria": [
+        "Anonymous start, signal, and cancel events record the documented principal type server id anonymous.",
+        "The result records anonymous_auth_driver as none and includes the documented_value evidence.",
+        "Anonymous spoofing attempts do not write caller-controlled principal values into history."
+      ]
+    },
+    {
+      "id": "python_sdk_visibility",
+      "title": "Python SDK visibility",
+      "required_fields": [
+        "client_operation",
+        "sdk_package_version",
+        "credential_used",
+        "expected_principal",
+        "raw_http_reference_principal",
+        "history_api_principal_samples",
+        "operation_outputs",
+        "operation_output_sample",
+        "recorded_principal",
+        "shape_matches_http"
+      ],
+      "operations": [
+        "Install the published durable-workflow Python SDK package.",
+        "Use the Python SDK client with bob credentials to start and signal a workflow.",
+        "Read history through the API and compare SDK principals with equivalent raw HTTP principal shape."
+      ],
+      "pass_criteria": [
+        "The scenario records sdk_package_version, credential_used, client_operation, operation_outputs, and operation_output_sample.",
+        "WorkflowStarted and SignalReceived samples record principal type auth:token id bob.",
+        "The recorded SDK principal shape matches the raw HTTP reference principal shape."
+      ]
+    },
+    {
+      "id": "php_client_visibility",
+      "title": "PHP SDK client visibility",
+      "required_fields": [
+        "client_operation",
+        "sdk_package_version",
+        "credential_used",
+        "expected_principal",
+        "raw_http_reference_principal",
+        "history_api_principal_samples",
+        "operation_outputs",
+        "operation_output_sample",
+        "recorded_principal",
+        "shape_matches_http"
+      ],
+      "operations": [
+        "Install the exact published durable-workflow/sdk PHP package.",
+        "Use the durable-workflow/sdk client with alice credentials to start and signal a workflow.",
+        "Read history through the API and compare PHP client principals with equivalent raw HTTP principal shape."
+      ],
+      "pass_criteria": [
+        "The scenario records sdk_package_version, credential_used, client_operation, operation_outputs, and operation_output_sample.",
+        "WorkflowStarted and SignalReceived samples record principal type auth:token id alice.",
+        "The recorded PHP client principal shape matches the raw HTTP reference principal shape."
+      ]
+    },
+    {
+      "id": "cli_operator_visibility",
+      "title": "CLI operator visibility",
+      "required_fields": [
+        "command",
+        "output_sample",
+        "principal_visible"
+      ],
+      "operations": [
+        "Run the published dw workflow:history command against an attributed workflow run.",
+        "Capture JSON or operator-facing output.",
+        "Inspect whether event principals are visible without custom API queries."
+      ],
+      "pass_criteria": [
+        "The result records the command, output_sample, and principal_visible fields.",
+        "Operator output shows event principals clearly.",
+        "Missing CLI principal visibility is routed to the CLI surface."
+      ]
+    },
+    {
+      "id": "waterline_operator_visibility",
+      "title": "Waterline operator visibility",
+      "required_fields": [
+        "surface",
+        "output_sample",
+        "principal_visible"
+      ],
+      "operations": [
+        "Run the published Waterline principal-attribution operator visibility shard or equivalent selected-run surface.",
+        "Capture selected-run command and timeline output samples.",
+        "Inspect whether event principals are visible in Waterline operator surfaces."
+      ],
+      "pass_criteria": [
+        "The result records surface, output_sample, and principal_visible fields.",
+        "Waterline selected-run output exposes event principals clearly.",
+        "Missing Waterline visibility is routed to the Waterline surface with a focused finding."
+      ]
+    }
+  ],
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "resolved_artifact_versions",
+        "artifact_sources",
+        "local_product_source_checkouts_used"
+      ]
+    },
+    "named_token_actor_matrix": {
+      "required_fields": [
+        "actors",
+        "credentials",
+        "rotation_observations",
+        "credential_rotation",
+        "action_credentials"
+      ]
+    },
+    "start_signal_cancel_spoofing": {
+      "required_fields": [
+        "history_events",
+        "recorded_principals",
+        "spoofing_attempts",
+        "spoofing_matrix",
+        "action_credentials"
+      ]
+    },
+    "query_attribution": {
+      "required_fields": [
+        "query_result",
+        "recorded_principal",
+        "history_or_query_task_surface",
+        "spoofing_attempts",
+        "spoofing_matrix"
+      ]
+    },
+    "completion_failure_attribution": {
+      "required_fields": [
+        "completion_event_principal",
+        "failure_event_principal",
+        "worker_principal",
+        "expected_worker_principal",
+        "documented_system_principals"
+      ]
+    },
+    "server_originated_events": {
+      "required_fields": [
+        "event_types",
+        "principal_values",
+        "classification"
+      ]
+    },
+    "anonymous_attribution": {
+      "required_fields": [
+        "anonymous_principal",
+        "documented_value",
+        "history_events",
+        "recorded_principals",
+        "spoofing_attempts",
+        "spoofing_matrix",
+        "anonymous_auth_driver"
+      ]
+    },
+    "python_sdk_visibility": {
+      "required_fields": [
+        "client_operation",
+        "sdk_package_version",
+        "credential_used",
+        "expected_principal",
+        "raw_http_reference_principal",
+        "history_api_principal_samples",
+        "operation_outputs",
+        "operation_output_sample",
+        "recorded_principal",
+        "shape_matches_http"
+      ]
+    },
+    "php_client_visibility": {
+      "required_fields": [
+        "client_operation",
+        "sdk_package_version",
+        "credential_used",
+        "expected_principal",
+        "raw_http_reference_principal",
+        "history_api_principal_samples",
+        "operation_outputs",
+        "operation_output_sample",
+        "recorded_principal",
+        "shape_matches_http"
+      ]
+    },
+    "cli_operator_visibility": {
+      "required_fields": [
+        "command",
+        "output_sample",
+        "principal_visible"
+      ]
+    },
+    "waterline_operator_visibility": {
+      "required_fields": [
+        "surface",
+        "output_sample",
+        "principal_visible"
+      ]
+    }
+  },
+  "host_runner_contract": {
+    "status": "required_for_passing_principal_attribution_conformance",
+    "result_schema": "durable-workflow.v2.principal-attribution-conformance.result",
+    "must_execute_against_published_artifacts": true,
+    "must_record_runner_blocked_false_for_product_evidence": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "must_attempt_spoofing_payloads_and_headers": true,
+    "must_record_spoofing_matrix": true,
+    "smoke_summary_only_outcome": "non_passing_smoke_only",
+    "unexecuted_required_scenario_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness",
+    "required_execution_scopes": [
+      "published-artifact-install",
+      "named-token-actor-matrix",
+      "credential-rotation-stable-identity",
+      "start-signal-query-cancel-history",
+      "completion-failure-history",
+      "anonymous-history",
+      "anonymous-no-auth-topology",
+      "anonymous-spoofing-payload-header",
+      "spoofing-payload-header",
+      "adversarial-gateway-header-matrix",
+      "cli-history-operator-output",
+      "python-sdk-client",
+      "php-client",
+      "waterline-operator-visibility"
+    ],
+    "routing_policy": {
+      "spoofing_success": {
+        "scenario_status": "fail",
+        "finding_type": "security_blocker",
+        "owner": "server"
+      },
+      "missing_principal_field": {
+        "scenario_status": "fail",
+        "finding_type": "audit_contract_gap",
+        "owner": "server"
+      },
+      "missing_operator_visibility": {
+        "scenario_status": "unsupported",
+        "finding_type": "operator_visibility_gap",
+        "owner": "cli_or_waterline"
+      },
+      "host_environment_failure": {
+        "scenario_status": "runner_blocked",
+        "finding_type": "runner_gap",
+        "owner": "conformance_harness"
+      }
+    }
+  }
+}

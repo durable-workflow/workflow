@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-update.schema.json",
+  "title": "dw workflow:update --json",
+  "type": "object",
+  "required": ["namespace", "workflow_id", "update_name", "outcome", "update_diagnostics", "cli_fields"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "workflow_id": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "requested_run_id": { "type": ["string", "null"] },
+    "resolved_run_id": { "type": ["string", "null"] },
+    "update_name": { "type": "string" },
+    "update_id": { "type": ["string", "null"] },
+    "request_id": { "type": ["string", "null"] },
+    "outcome": { "type": "string" },
+    "state": { "type": ["string", "null"] },
+    "update_state": { "type": ["string", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "rejection_reason": { "type": ["string", "null"] },
+    "rejection_category": { "type": ["string", "null"] },
+    "command_status": { "type": ["string", "null"] },
+    "command_source": { "type": ["string", "null"] },
+    "command_id": { "type": ["string", "null"] },
+    "workflow_command_id": { "type": ["string", "null"] },
+    "command_reason": { "type": ["string", "null"] },
+    "command_sequence": { "type": ["integer", "null"] },
+    "target_scope": { "type": ["string", "null"] },
+    "update_status": { "type": ["string", "null"] },
+    "workflow_sequence": { "type": ["integer", "null"] },
+    "wait_for": { "type": ["string", "null"] },
+    "wait_timed_out": { "type": ["boolean", "null"] },
+    "wait_timeout_seconds": { "type": ["integer", "null"] },
+    "accepted": { "type": ["boolean", "null"] },
+    "accepted_at": { "type": ["string", "null"] },
+    "applied_at": { "type": ["string", "null"] },
+    "rejected_at": { "type": ["string", "null"] },
+    "closed_at": { "type": ["string", "null"] },
+    "failure_id": { "type": ["string", "null"] },
+    "failure_message": { "type": ["string", "null"] },
+    "message": { "type": ["string", "null"] },
+    "validation_errors": { "type": ["object", "null"] },
+    "principal": { "type": ["object", "null"] },
+    "payload": true,
+    "request": {
+      "type": "object",
+      "properties": {
+        "workflow_id": { "type": "string" },
+        "run_id": { "type": ["string", "null"] },
+        "update_name": { "type": "string" },
+        "request_id": { "type": ["string", "null"] },
+        "wait_for": { "type": ["string", "null"] },
+        "input": true
+      },
+      "additionalProperties": true
+    },
+    "cli_fields": {
+      "type": "object",
+      "required": ["surface", "fields_present", "state", "request_id", "update_id", "outcome", "reason", "payload", "result", "error", "history_references"],
+      "properties": {
+        "surface": { "const": "workflow:update --json" },
+        "fields_present": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "state": { "type": ["string", "null"] },
+        "request_id": { "type": ["string", "null"] },
+        "update_id": { "type": ["string", "null"] },
+        "outcome": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "payload": true,
+        "result": true,
+        "error": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "history_references": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "history_references": {
+      "type": ["object", "null"],
+      "properties": {
+        "workflow_sequence": { "type": ["integer", "null"] },
+        "command_sequence": { "type": ["integer", "null"] },
+        "accepted_at": { "type": ["string", "null"] },
+        "applied_at": { "type": ["string", "null"] },
+        "rejected_at": { "type": ["string", "null"] },
+        "closed_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "error_details": {
+      "type": ["object", "null"],
+      "properties": {
+        "status_code": { "type": ["integer", "null"] },
+        "message": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "outcome": { "type": ["string", "null"] },
+        "validation_errors": { "type": ["object", "null"] },
+        "failure_id": { "type": ["string", "null"] },
+        "failure_message": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "update_diagnostics": {
+      "type": "object",
+      "properties": {
+        "state": { "type": ["string", "null"] },
+        "update_state": { "type": ["string", "null"] },
+        "namespace": { "type": ["string", "null"] },
+        "workflow_id": { "type": ["string", "null"] },
+        "run_id": { "type": ["string", "null"] },
+        "requested_run_id": { "type": ["string", "null"] },
+        "resolved_run_id": { "type": ["string", "null"] },
+        "update_name": { "type": ["string", "null"] },
+        "update_id": { "type": ["string", "null"] },
+        "request_id": { "type": ["string", "null"] },
+        "outcome": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "rejection_reason": { "type": ["string", "null"] },
+        "rejection_category": { "type": ["string", "null"] },
+        "command_status": { "type": ["string", "null"] },
+        "command_source": { "type": ["string", "null"] },
+        "command_id": { "type": ["string", "null"] },
+        "command_sequence": { "type": ["integer", "null"] },
+        "update_status": { "type": ["string", "null"] },
+        "workflow_sequence": { "type": ["integer", "null"] },
+        "wait_for": { "type": ["string", "null"] },
+        "wait_timed_out": { "type": ["boolean", "null"] },
+        "wait_timeout_seconds": { "type": ["integer", "null"] },
+        "failure_id": { "type": ["string", "null"] },
+        "failure_message": { "type": ["string", "null"] },
+        "principal": { "type": ["object", "null"] },
+        "request": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "payload": true,
+        "history_references": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "result": true,
+        "result_envelope": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "error": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "result": true,
+    "result_envelope": {
+      "type": ["object", "null"],
+      "properties": {
+        "codec": { "type": "string" },
+        "blob": { "type": "string" }
+      },
+      "required": ["codec", "blob"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

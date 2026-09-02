@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/workflow-v1-projection.schema.json",
+  "title": "dw workflow:migrate-v1 --json",
+  "type": "object",
+  "required": ["namespace", "schema", "schema_version", "status", "projection_only", "identity", "unsupported_fields"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "schema": { "const": "durable-workflow.v2.waterline-v1-projection.report" },
+    "schema_version": { "const": 1 },
+    "status": { "enum": ["projected", "already_projected", "dry_run"] },
+    "projection_only": { "const": true },
+    "dedupe_key": { "type": ["string", "null"] },
+    "identity": {
+      "type": "object",
+      "required": ["waterline", "standalone", "relationship", "collision_policy"],
+      "properties": {
+        "waterline": {
+          "type": "object",
+          "required": ["source_id", "qualified_workflow_id", "legacy_workflow_id"],
+          "properties": {
+            "source_id": { "type": "string" },
+            "qualified_workflow_id": { "type": "string", "pattern": "^v1:.+" },
+            "legacy_workflow_id": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "standalone": {
+          "type": "object",
+          "required": ["namespace", "workflow_id", "run_id"],
+          "properties": {
+            "namespace": { "type": "string" },
+            "workflow_id": { "type": "string" },
+            "run_id": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "relationship": { "const": "deterministic_source_qualified_projection" },
+        "collision_policy": { "const": "reject_without_overwrite" }
+      },
+      "additionalProperties": true
+    },
+    "unsupported_fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "reason", "remediation"],
+        "properties": {
+          "field": { "type": "string" },
+          "reason": { "type": "string" },
+          "remediation": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

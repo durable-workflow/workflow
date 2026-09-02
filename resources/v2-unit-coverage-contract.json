@@ -1,0 +1,21 @@
+{
+    "schema_version": 1,
+    "branch": "main",
+    "measurement": {
+        "metric": "line",
+        "test_suite": "unit",
+        "source": {
+            "root": "src",
+            "suffix": ".php",
+            "excluded_paths": []
+        }
+    },
+    "ratchet": {
+        "accepted_baseline_basis_points": 6000,
+        "target_basis_points": 10000
+    },
+    "provenance": {
+        "observed_at": "2026-09-01",
+        "evidence": "The local unit-only command retains the existing 60.00% floor for fast feedback. Public main-branch qualification uses the combined unit and MySQL feature contract in v2-coverage-contract.json."
+    }
+}

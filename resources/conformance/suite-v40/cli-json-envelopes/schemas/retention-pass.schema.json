@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/retention-pass.schema.json",
+  "title": "dw system:retention-pass --json",
+  "type": "object",
+  "required": ["processed", "pruned", "skipped", "failed", "results"],
+  "properties": {
+    "processed": { "type": "integer" },
+    "pruned": { "type": "integer" },
+    "skipped": { "type": "integer" },
+    "failed": { "type": "integer" },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["outcome"],
+        "properties": {
+          "run_id": { "type": ["string", "null"] },
+          "outcome": { "type": "string" },
+          "reason": { "type": ["string", "null"] },
+          "history_events_deleted": { "type": ["integer", "null"] },
+          "tasks_deleted": { "type": ["integer", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

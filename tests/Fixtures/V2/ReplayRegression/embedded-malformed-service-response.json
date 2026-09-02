@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-malformed-service-response",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "workflow-executor",
+    "query-state-replayer"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestServiceResponseReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-07-30T10:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ServiceCallCompleted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "service-call-1",
+        "endpoint_name": "payments",
+        "service_name": "Payments",
+        "operation_name": "authorize",
+        "operation_mode": "async",
+        "wait_for": "accepted",
+        "status": "completed",
+        "outcome": "completed",
+        "response_payload": {
+          "codec": "avro",
+          "blob": "{\"truncated\":"
+        }
+      },
+      "recorded_at": "2026-07-30T10:00:01+00:00"
+    }
+  ],
+  "expected_failure": {
+    "type": "malformed_service_response_envelope",
+    "exception": "Workflow\\Serializers\\CodecDecodeException"
+  }
+}

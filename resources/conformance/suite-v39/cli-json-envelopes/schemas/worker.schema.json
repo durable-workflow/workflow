@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/worker.schema.json",
+  "title": "dw worker:describe --json",
+  "type": "object",
+  "required": ["namespace", "worker_id"],
+  "properties": {
+    "worker_id": { "type": "string" },
+    "namespace": { "type": ["string", "null"] },
+    "task_queue": { "type": ["string", "null"] },
+    "runtime": { "type": ["string", "null"] },
+    "sdk_version": { "type": ["string", "null"] },
+    "build_id": { "type": ["string", "null"] },
+    "status": { "type": ["string", "null"] },
+    "max_concurrent_workflow_tasks": { "type": ["integer", "null"] },
+    "max_concurrent_activity_tasks": { "type": ["integer", "null"] },
+    "max_concurrent_worker_sessions": { "type": ["integer", "null"] },
+    "supported_workflow_types": { "type": ["array", "null"], "items": { "type": "string" } },
+    "supported_activity_types": { "type": ["array", "null"], "items": { "type": "string" } },
+    "task_slots": {
+      "type": ["object", "null"],
+      "properties": {
+        "workflow_available": { "type": ["integer", "null"] },
+        "workflow_capacity": { "type": ["integer", "null"] },
+        "activity_available": { "type": ["integer", "null"] },
+        "activity_capacity": { "type": ["integer", "null"] },
+        "session_available": { "type": ["integer", "null"] },
+        "session_capacity": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "process_metrics": {
+      "type": ["object", "null"],
+      "properties": {
+        "cpu_percent": { "type": ["number", "null"] },
+        "memory_bytes": { "type": ["integer", "null"] },
+        "process_uptime_seconds": { "type": ["integer", "null"] },
+        "process_id": { "type": ["integer", "null"] },
+        "host": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "heartbeat_interval_seconds": { "type": ["integer", "null"] },
+    "last_heartbeat_at": { "type": ["string", "null"] },
+    "registered_at": { "type": ["string", "null"] },
+    "updated_at": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

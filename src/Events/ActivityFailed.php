@@ -17,6 +17,8 @@ class ActivityFailed
         public string $activityId,
         public string $output,
         public string $timestamp,
+        public string $class,
+        public int $index
     ) {
     }
 }

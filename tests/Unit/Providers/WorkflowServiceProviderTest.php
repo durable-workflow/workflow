@@ -4,16 +4,55 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
+use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
+use Workflow\Serializers\Serializer;
+use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
+use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\SchedulerRole;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\TaskWatchdog;
+use Workflow\Watchdog;
 
 final class WorkflowServiceProviderTest extends TestCase
 {
     protected function setUp(): void
     {
         parent::setUp();
+
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
         $this->app->register(WorkflowServiceProvider::class);
+    }
+
+    protected function tearDown(): void
+    {
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        parent::tearDown();
     }
 
     public function testProviderLoads(): void
@@ -21,6 +60,229 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertTrue(
             $this->app->getProvider(WorkflowServiceProvider::class) instanceof WorkflowServiceProvider
         );
+    }
+
+    public function testProviderBootRejectsConfiguredInstanceModelThatChangesInferredForeignKeys(): void
+    {
+        config()->set('workflows.v2.instance_model', MisconfiguredProviderWorkflowInstance::class);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('workflows.v2.instance_model');
+        $this->expectExceptionMessage('workflow_instance_id');
+        $this->expectExceptionMessage('runs()');
+
+        (new WorkflowServiceProvider($this->app))->boot();
+    }
+
+    public function testProviderBootAllowsConfiguredInstanceModelWithExplicitRelationOverrides(): void
+    {
+        config()->set('workflows.v2.instance_model', ValidatedProviderWorkflowInstance::class);
+
+        (new WorkflowServiceProvider($this->app))->boot();
+
+        $this->assertTrue(true);
+    }
+
+    public function testOperatorObservabilityRepositoryBindingDefersToAppBinding(): void
+    {
+        // The customization matrix documents OperatorObservabilityRepository
+        // as a user-replaceable container binding. When an application binds
+        // its own implementation before the package service provider runs
+        // (e.g. from an app service provider loaded earlier, or via test
+        // setup), the package must not overwrite that binding.
+        $custom = $this->createMock(OperatorObservabilityRepository::class);
+
+        $this->app->offsetUnset(OperatorObservabilityRepository::class);
+        $this->app->singleton(OperatorObservabilityRepository::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(OperatorObservabilityRepository::class));
+    }
+
+    public function testHistoryProjectionRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionRole::class));
+    }
+
+    public function testHistoryProjectionMaintenanceRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionMaintenanceRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionMaintenanceRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionMaintenanceRole::class));
+    }
+
+    public function testHistoryProjectionMaintenanceRoleDefaultsToHistoryProjectionRoleBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionMaintenanceRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionMaintenanceRole::class));
+    }
+
+    public function testHistoryProjectionMaintenanceRoleFallsBackWhenBoundRoleLacksMaintenance(): void
+    {
+        $projectionOnly = $this->createMock(HistoryProjectionRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $projectionOnly);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $resolved = $this->app->make(HistoryProjectionMaintenanceRole::class);
+
+        $this->assertInstanceOf(HistoryProjectionMaintenanceRole::class, $resolved);
+        $this->assertNotSame($projectionOnly, $resolved);
+    }
+
+    public function testMatchingRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(MatchingRole::class);
+
+        $this->app->offsetUnset(MatchingRole::class);
+        $this->app->singleton(MatchingRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(MatchingRole::class));
+    }
+
+    public function testSchedulerRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(SchedulerRole::class);
+
+        $this->app->offsetUnset(SchedulerRole::class);
+        $this->app->singleton(SchedulerRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(SchedulerRole::class));
+    }
+
+    public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void
+    {
+        config()->set('workflows', [
+            'stored_workflow_model' => StoredWorkflow::class,
+            'serializer' => Serializer::class,
+            'webhooks_route' => 'legacy-webhooks',
+        ]);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame('legacy-webhooks', config('workflows.webhooks_route'));
+        $this->assertSame(Serializer::class, config('workflows.serializer'));
+        $this->assertSame(\Workflow\V2\Models\WorkflowInstance::class, config('workflows.v2.instance_model'));
+        $this->assertSame(\Workflow\V2\Models\WorkflowCommand::class, config('workflows.v2.command_model'));
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowTimelineEntry::class,
+            config('workflows.v2.run_timeline_entry_model')
+        );
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowServiceEndpoint::class,
+            config('workflows.v2.service_endpoint_model')
+        );
+        $this->assertSame(\Workflow\V2\Models\WorkflowService::class, config('workflows.v2.service_model'));
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowServiceOperation::class,
+            config('workflows.v2.service_operation_model')
+        );
+        $this->assertSame(\Workflow\V2\Models\WorkflowServiceCall::class, config('workflows.v2.service_call_model'));
+        $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
+        $this->assertSame(10, config('workflows.v2.update_wait.completion_timeout_seconds'));
+        $this->assertSame(50, config('workflows.v2.update_wait.poll_interval_milliseconds'));
+        $this->assertSame(300, config('workflows.v2.workflow_task_lease_seconds'));
+        $this->assertSame(3, config('workflows.v2.task_repair.redispatch_after_seconds'));
+        $this->assertSame(5, config('workflows.v2.task_repair.loop_throttle_seconds'));
+        $this->assertSame(25, config('workflows.v2.task_repair.scan_limit'));
+        $this->assertSame(60, config('workflows.v2.task_repair.failure_backoff_max_seconds'));
+        $this->assertSame(5000, config('workflows.storage.sqlite_busy_timeout_ms'));
+        $this->assertSame(5, config('workflows.storage.transaction_attempts'));
+    }
+
+    public function testProviderConfiguresDefaultSqliteStorageBusyTimeout(): void
+    {
+        $originalDefault = config('database.default');
+        $connection = 'workflow_test_sqlite_timeout';
+        config()
+            ->set('database.default', $connection);
+        config()
+            ->set("database.connections.{$connection}", [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+                'busy_timeout' => null,
+                'options' => [],
+            ]);
+        config()
+            ->set('workflows.storage.connection', null);
+        config()
+            ->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
+
+        try {
+            (new WorkflowServiceProvider($this->app))->boot();
+
+            $this->assertSame(7000, config("database.connections.{$connection}.busy_timeout"));
+
+            $options = config("database.connections.{$connection}.options");
+            $this->assertIsArray($options);
+            $this->assertSame(7, $options[\PDO::ATTR_TIMEOUT] ?? null);
+        } finally {
+            config()->set('database.default', $originalDefault);
+        }
+    }
+
+    public function testProviderDoesNotOverrideExplicitSqliteStorageTimeout(): void
+    {
+        $originalDefault = config('database.default');
+        $connection = 'workflow_test_sqlite_timeout';
+        config()
+            ->set('database.default', $connection);
+        config()
+            ->set("database.connections.{$connection}", [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+                'busy_timeout' => 250,
+                'options' => [
+                    \PDO::ATTR_TIMEOUT => 1,
+                ],
+            ]);
+        config()
+            ->set('workflows.storage.connection', null);
+        config()
+            ->set('workflows.storage.sqlite_busy_timeout_ms', 7000);
+
+        try {
+            (new WorkflowServiceProvider($this->app))->boot();
+
+            $this->assertSame(250, config("database.connections.{$connection}.busy_timeout"));
+
+            $options = config("database.connections.{$connection}.options");
+            $this->assertIsArray($options);
+            $this->assertSame(1, $options[\PDO::ATTR_TIMEOUT] ?? null);
+        } finally {
+            config()->set('database.default', $originalDefault);
+        }
     }
 
     public function testConfigIsPublished(): void
@@ -46,7 +308,16 @@ final class WorkflowServiceProviderTest extends TestCase
     {
         $registeredCommands = array_keys(Artisan::all());
 
-        $expectedCommands = ['make:activity', 'make:workflow'];
+        $expectedCommands = [
+            'make:activity',
+            'make:workflow',
+            'workflow:v2:doctor',
+            'workflow:v2:history-export',
+            'workflow:v2:repair-pass',
+            'workflow:v2:rebuild-projections',
+            'workflow:v2:replay-conformance',
+            'workflow:v2:schedule-tick',
+        ];
 
         foreach ($expectedCommands as $command) {
             $this->assertContains(
@@ -55,5 +326,282 @@ final class WorkflowServiceProviderTest extends TestCase
                 "Command [{$command}] is not registered in Artisan."
             );
         }
+
+        foreach ([
+            'workflow:v2:namespace-conformance',
+            'workflow:v2:schedule-conformance',
+            'workflow:v2:search-attributes-conformance',
+            'workflow:v2:workflow-updates-conformance',
+        ] as $remoteConformanceCommand) {
+            $this->assertNotContains(
+                $remoteConformanceCommand,
+                $registeredCommands,
+                "Standalone conformance command [{$remoteConformanceCommand}] belongs to the SDK/server harness."
+            );
+        }
+
+        $this->assertNotContains(
+            'workflow:v2:backfill-parallel-group-metadata',
+            $registeredCommands,
+            'Final v2 must not ship preview-era parallel-group metadata backfill commands.'
+        );
+    }
+
+    public function testHistoryExportRegistersRunSelectorsAsOptionsOnly(): void
+    {
+        $commands = Artisan::all();
+
+        $historyExport = $commands['workflow:v2:history-export']->getDefinition();
+
+        $this->assertArrayNotHasKey('run', $historyExport->getArguments());
+        $this->assertArrayHasKey('run', $historyExport->getOptions());
+        $this->assertArrayHasKey('run-id', $historyExport->getOptions());
+    }
+
+    public function testLoopingEventWakesWatchdog(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
+            return $watchdog->connection === 'redis'
+                && $watchdog->queue === 'high';
+        });
+    }
+
+    public function testLoopingEventThrottlesWake(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+        Event::dispatch(new Looping('redis', 'high,default'));
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertPushed(Watchdog::class, 1);
+    }
+
+    public function testLoopingEventSkipsWhenThrottleAlreadyHeld(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::put('workflow:watchdog:looping', true, 60);
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testLoopingEventSkipsWhenNoRecoverablePendingWorkflowsExist(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testLoopingEventRepairsOverdueV2Task(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'provider-v2-repair-inst',
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds(20),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $task->refresh();
+
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
+    }
+
+    public function testLoopingEventRoutesV2WakeThroughMatchingRoleBinding(): void
+    {
+        $matchingRole = $this->createMock(MatchingRole::class);
+        $matchingRole->expects($this->once())
+            ->method('wake')
+            ->with('redis', 'high,default');
+
+        $this->app->instance(MatchingRole::class, $matchingRole);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+    }
+
+    public function testLoopingEventSkipsTaskWatchdogWakeWhenMatchingRoleDisabled(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        config()
+            ->set('workflows.v2.matching_role.queue_wake_enabled', false);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'provider-v2-execution-only-inst',
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds(20),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(RunWorkflowTask::class);
+
+        $task->refresh();
+
+        $this->assertSame(0, $task->repair_count);
+        $this->assertFalse(Cache::has(TaskWatchdog::LOOP_THROTTLE_KEY));
+    }
+}
+
+final class MisconfiguredProviderWorkflowInstance extends WorkflowInstance
+{
+    protected $table = 'misconfigured_provider_workflow_instances';
+}
+
+final class ValidatedProviderWorkflowInstance extends WorkflowInstance
+{
+    protected $table = 'validated_provider_workflow_instances';
+
+    public function runs(): HasMany
+    {
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_instance_id'
+        );
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('command_model', WorkflowCommand::class),
+            'workflow_instance_id',
+        )->oldest('created_at');
+    }
+
+    public function updates(): HasMany
+    {
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('update_model', WorkflowUpdate::class),
+            'workflow_instance_id',
+        )
+            ->orderBy('command_sequence')
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
     }
 }

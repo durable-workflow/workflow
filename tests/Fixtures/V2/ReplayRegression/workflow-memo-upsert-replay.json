@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-memo-upsert-replay",
+  "protocol_version": "1.14",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMemoUpsertWorkflow",
+    "arguments": [
+      "Ada"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-24T20:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "payload": {
+        "sequence": 2,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4GGmN1c3RvbWVyX25hbWUKBkFkYQxzdGF0dXMKFHByb2Nlc3NpbmcIdGFncwwEChBncmVldGluZwoIdGVzdAAA"
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4GGmN1c3RvbWVyX25hbWUKBkFkYQxzdGF0dXMKFHByb2Nlc3NpbmcIdGFncwwEChBncmVldGluZwoIdGVzdAAA"
+        }
+      },
+      "recorded_at": "2026-08-24T20:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 3,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-08-24T20:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "MemoUpserted",
+      "payload": {
+        "sequence": 4,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EHHJlc3VsdF9zdW1tYXJ5ChZIZWxsbywgQWRhIQxzdGF0dXMKEmNvbXBsZXRlZAA="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4IGmN1c3RvbWVyX25hbWUKBkFkYRxyZXN1bHRfc3VtbWFyeQoWSGVsbG8sIEFkYSEMc3RhdHVzChJjb21wbGV0ZWQIdGFncwwEChBncmVldGluZwoIdGVzdAAA"
+        }
+      },
+      "recorded_at": "2026-08-24T20:00:03+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "greeting": "Hello, Ada!",
+      "workflow_id": "regression-corpus-workflow-memo-upsert-replay",
+      "run_id": "regression-corpus-run-workflow-memo-upsert-replay"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

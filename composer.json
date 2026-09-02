@@ -1,14 +1,18 @@
 {
-    "name": "laravel-workflow/laravel-workflow",
-    "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
+    "name": "durable-workflow/workflow",
+    "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
     "type": "library",
     "license": "MIT",
+    "replace": {
+        "laravel-workflow/laravel-workflow": "self.version"
+    },
     "autoload": {
         "psr-4": {
             "Workflow\\": "src/"
         },
         "files": [
-            "src/functions.php"
+            "src/functions.php",
+            "src/V2/functions.php"
         ]
     },
     "autoload-dev": {
@@ -22,10 +26,16 @@
     "scripts": {
         "ecs": "vendor/bin/ecs check --fix",
         "stan": "vendor/bin/phpstan analyse src tests",
-        "feature": "phpunit --testdox --testsuite feature",
+        "feature": [
+            "Composer\\Config::disableProcessTimeout",
+            "phpunit --testdox --testsuite feature"
+        ],
         "unit": "phpunit --testdox --testsuite unit",
         "test": "phpunit --testdox",
-        "coverage": "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",
+        "coverage": [
+            "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",
+            "@php scripts/ci/check-v2-coverage.php --contract=resources/v2-unit-coverage-contract.json"
+        ],
         "post-autoload-dump": [
             "@clear",
             "@prepare"
@@ -44,22 +54,35 @@
     },
     "authors": [
         {
-            "name": "Richard McDaniel",
-            "email": "richard.lee.mcdaniel@gmail.com"
+            "name": "Durable Workflow",
+            "email": "support@durable-workflow.com"
         }
     ],
     "require": {
         "php": "^8.1",
-        "laravel/framework": "^9.0|^10.0|^11.0|^12.0",
-        "spatie/laravel-model-states": "^2.0",
-        "react/promise": "^2.9|^3.0"
+        "laravel/framework": "^9.52.17|^10.48.29|^11.44.1|^12.61.1|^13.12.0",
+        "react/promise": "^2.9|^3.0",
+        "apache/avro": "^1.12",
+        "symfony/yaml": "^6.0|^7.0|^8.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^8.0",
+        "doctrine/dbal": "^3.7",
+        "orchestra/testbench": "^8.0|^11.0",
         "phpstan/phpstan": "^2.0",
         "symplify/easy-coding-standard": "^11.0"
     },
+    "suggest": {
+        "durable-workflow/sdk": "Framework-neutral client and remote-worker SDK for the standalone Durable Workflow server."
+    },
     "extra": {
+        "branch-alias": {
+            "dev-main": "2.0.x-dev"
+        },
+        "durable-workflow": {
+            "product-train": "2.0.2",
+            "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
+            "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
+        },
         "laravel": {
             "providers": [
                 "Workflow\\Providers\\WorkflowServiceProvider"

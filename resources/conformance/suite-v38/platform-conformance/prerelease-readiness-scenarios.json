@@ -1,0 +1,524 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 2,
+  "category": "prerelease_readiness_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for Durable Workflow 2.0 prerelease readiness. Harnesses use these scenario ids and criteria when evaluating the coordinated published artifact set, including the standalone PHP, Python, and Rust quickstart paths and the separate embedded Laravel path.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "requires_resolved_versions": true,
+    "requires_downloadable_release_assets": true,
+    "requires_public_user_facing_docs": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "requires_artifact_sources_for_each_required_artifact": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test",
+      "release_tag_without_required_assets",
+      "rolling_server_image_tag",
+      "unversioned_prerelease_docs_alias"
+    ],
+    "required_artifacts": [
+      "server",
+      "cli",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust",
+      "workflow",
+      "waterline",
+      "sample-app",
+      "public-docs"
+    ],
+    "release_artifact_aliases": {
+      "workflow": [
+        "workflow-php"
+      ],
+      "sdk-php": [
+        "durable-workflow/sdk"
+      ],
+      "sdk-python": [
+        "durable_workflow"
+      ],
+      "sdk-rust": [
+        "durable-workflow"
+      ],
+      "cli": [
+        "dw"
+      ],
+      "public-docs": [
+        "durable-workflow.github.io"
+      ]
+    }
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "artifact_sources",
+    "local_product_source_checkouts_used",
+    "workflow_readiness_verdict",
+    "waterline_readiness_verdict",
+    "category_verdicts",
+    "public_docs_urls",
+    "install_logs",
+    "migration_observations",
+    "api_stability_observations",
+    "configuration_observations",
+    "cross_component_observations",
+    "sample_app_observations",
+    "quickstart_php_observations",
+    "quickstart_python_observations",
+    "quickstart_rust_observations",
+    "quickstart_laravel_observations",
+    "wall_clock_times",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "required_matrix": {
+    "primary_verdicts": [
+      "workflow",
+      "waterline"
+    ],
+    "readiness_categories": [
+      "core_feature_completeness",
+      "migration_readiness",
+      "public_api_stability",
+      "documentation_accuracy",
+      "configuration_understandability",
+      "cross_component_compatibility"
+    ],
+    "ecosystem_artifacts": [
+      "server",
+      "cli",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust",
+      "workflow",
+      "waterline",
+      "sample-app",
+      "public-docs"
+    ],
+    "release_channels": [
+      "server-release",
+      "cli-release",
+      "php-package",
+      "python-package",
+      "rust-crate",
+      "composer-prerelease",
+      "waterline-prerelease",
+      "versioned-prerelease-docs"
+    ]
+  },
+  "optional_scenarios": [
+    "quickstart_standalone_php_completion",
+    "quickstart_python_completion",
+    "quickstart_rust_completion"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_release_set",
+      "title": "Published artifact release set",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust",
+        "workflow",
+        "waterline",
+        "sample-app",
+        "public-docs"
+      ],
+      "operations": [
+        "resolve the current server release, CLI release, standalone PHP package, Python package, Rust crate, Workflow Composer package, Waterline Composer package, sample app release surface, and public docs routes from published channels",
+        "install or fetch each artifact from its public distribution channel without reading product code from a local checkout",
+        "record the exact artifact name, version, source URL or package index, and generated timestamp for every artifact"
+      ],
+      "pass_criteria": [
+        "every required artifact is present on its public channel and resolves to a concrete version",
+        "the result document records published_artifact_versions, artifact_sources, started_at, finished_at, and generated_at",
+        "the run rejects placeholder versions such as latest, current, head, branch names, or unresolved prerelease aliases",
+        "local_product_source_checkouts_used is false for every artifact under test"
+      ],
+      "unsupported_when": [
+        "a required public artifact has not been published for the release candidate"
+      ]
+    },
+    {
+      "id": "workflow_feature_completeness_verdict",
+      "title": "Workflow core feature completeness verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "workflow",
+        "server",
+        "cli",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "install the published Workflow package into a fresh application using the documented prerelease channel instructions",
+        "exercise the documented core Workflow 2.0 user flows through public commands or user-facing APIs: start, activity execution, completion, signals, queries, updates, schedules, child workflows, sagas, replay, search attributes, and worker versioning",
+        "compare each exercised flow with the public 2.0 documentation and conformance manifests"
+      ],
+      "pass_criteria": [
+        "Workflow receives a separate GO or NO-GO verdict in workflow_readiness_verdict",
+        "each core user flow documented as available either passes from published artifacts or has a focused linked finding",
+        "no public docs page promises a Workflow 2.0 capability that the published package cannot exercise",
+        "incomplete or stubbed user-facing behavior is recorded as fail with an owning finding"
+      ]
+    },
+    {
+      "id": "workflow_migration_readiness_verdict",
+      "title": "Workflow migration readiness verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "workflow",
+        "server",
+        "cli",
+        "waterline",
+        "public-docs"
+      ],
+      "operations": [
+        "follow the public v1 to v2 migration guide exactly against published artifacts",
+        "start from realistic v1 state with completed histories, in-flight workflows, pending activities, schedules, and worker registrations",
+        "verify post-upgrade replay, progress, CLI access, Waterline visibility, new v2 starts, rollback behavior, and unsupported version-skew refusal"
+      ],
+      "pass_criteria": [
+        "the migration guide is discoverable from public user-facing docs and names every required command or config step",
+        "completed histories, in-flight progress, schedules, activity retry state, and worker registration projections survive the upgrade or produce focused product findings",
+        "rollback and version-skew behavior are documented and observed",
+        "undocumented or broken migration steps are recorded as fail with owning findings"
+      ]
+    },
+    {
+      "id": "workflow_public_api_stability_verdict",
+      "title": "Workflow public API stability verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "workflow",
+        "server",
+        "cli",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "enumerate public Workflow 2.0 contracts, model surfaces, commands, documented config keys, and package metadata from the published artifact and public docs",
+        "verify server, CLI, and Python SDK integrations can use the published Workflow 2.0 API without depending on internal methods or requiring a breaking API addition",
+        "check public methods and documented JSON shapes for implementation-detail leakage that would force a near-term major change"
+      ],
+      "pass_criteria": [
+        "public Workflow 2.0 API surfaces needed by server, CLI, and Python SDK are present and documented",
+        "public API observations do not expose internal-only models or methods as required user contracts",
+        "any missing API, unstable naming, or breaking-change risk is recorded as fail with an owning finding",
+        "the verdict is based on published artifacts and public docs, not source-only assumptions"
+      ]
+    },
+    {
+      "id": "workflow_documentation_and_config_verdict",
+      "title": "Workflow documentation and configuration verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "workflow",
+        "sample-app",
+        "public-docs"
+      ],
+      "operations": [
+        "follow the public Workflow 2.0 quickstart, API examples, migration guide, and configuration guide from versioned prerelease docs",
+        "compare every documented required config key with the published package defaults and generated application config",
+        "run or statically validate sample app paths that the docs advertise as the first-time Workflow 2.0 experience"
+      ],
+      "pass_criteria": [
+        "public docs contain runnable first-time, migration, API, and configuration guidance for Workflow 2.0",
+        "documented examples match published artifact behavior and do not rely on local source paths",
+        "configuration required for normal users is understandable, has safe defaults, and avoids unexplained internal options",
+        "stale docs, broken examples, or overwhelming undocumented config are recorded as fail with owning findings"
+      ]
+    },
+    {
+      "id": "quickstart_local_server_hosted_completion",
+      "title": "Quickstart local-server hosted workflow completion",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "start from the live public 2.0 quickstart route and record the exact versioned URL walked without using an unversioned prerelease docs alias",
+        "follow the documented Start A Local Server path using only the published server image named by the page, including server bootstrap, container start, /api/ready, and authenticated /api/cluster/info checks",
+        "keep that server running as the host for the documented Python quickstart branch, install the published Python SDK pin named by the page, run the documented workflow, and observe status=completed within 10 minutes",
+        "run the documented operator CLI checks against the same server profile and observe the completed workflow through workflow describe, history, and completed-list JSON output"
+      ],
+      "pass_criteria": [
+        "the result records exact artifact versions for server, CLI, sdk-python, workflow, waterline, and public-docs, plus source URLs or package channels for the published artifacts used",
+        "the result records the exact commands executed, command outputs, exit statuses, and wall-clock time from first quickstart command to completed workflow observation",
+        "/api/ready returns success and authenticated /api/cluster/info returns standalone server topology for the server that hosts the workflow run",
+        "the documented workflow branch reaches an observable completed workflow result within 10 minutes, and the CLI operator commands observe that same completed workflow on the same local server",
+        "if completion fails, times out, or requires an undocumented workaround, the result is fail with user-visible output and a focused owning finding; if the runner does not execute this branch, the result is not_covered or runner_blocked rather than pass"
+      ]
+    },
+    {
+      "id": "quickstart_standalone_php_completion",
+      "title": "Quickstart standalone PHP workflow completion",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "sdk-php",
+        "public-docs"
+      ],
+      "operations": [
+        "start from the live public 2.0 quickstart route and record the exact versioned URL walked without using an unversioned prerelease docs alias",
+        "resolve the server setup and php_user_local_server_completion transcript from the published quickstart execution contract, then execute it without a product source checkout",
+        "install the exact durable-workflow/sdk Composer package from Packagist, run the remote PHP worker, start the documented workflow, and inspect the selected run's durable status and decoded result",
+        "record Composer provenance for durable-workflow/sdk and its official apache/avro dependency"
+      ],
+      "pass_criteria": [
+        "the result records exact artifact versions and public sources for server, sdk-php, and public-docs, including Packagist distribution provenance for durable-workflow/sdk and apache/avro",
+        "the result records the exact commands executed, command outputs, exit statuses, and wall-clock time from server setup to completed workflow observation",
+        "/api/ready returns success and authenticated /api/cluster/info returns standalone server topology for the server that hosts the workflow run",
+        "the PHP path prints a quickstart-php-greeter workflow id, status=completed, and a result containing Hello, PHP! within 10 minutes",
+        "if completion fails, times out, requires Laravel, or needs an undocumented workaround, the result is fail with user-visible output and a focused owning finding; if the runner does not execute this path, the result is not_covered or runner_blocked rather than pass"
+      ]
+    },
+    {
+      "id": "quickstart_python_completion",
+      "title": "Quickstart Python workflow completion",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "start from the live public 2.0 quickstart route and record the exact versioned URL walked without using an unversioned prerelease docs alias",
+        "resolve the server setup and python_user_local_server_completion transcript from the published quickstart execution contract, then execute it without a product source checkout",
+        "install the exact durable-workflow Python package from PyPI, run the Python worker, start the documented workflow, and inspect the selected run's durable status and decoded result",
+        "record package-index provenance for durable-workflow and its official avro dependency"
+      ],
+      "pass_criteria": [
+        "the result records exact artifact versions and public sources for server, sdk-python, and public-docs, including PyPI provenance for durable-workflow and avro",
+        "the result records the exact commands executed, command outputs, exit statuses, and wall-clock time from server setup to completed workflow observation",
+        "/api/ready returns success and authenticated /api/cluster/info returns standalone server topology for the server that hosts the workflow run",
+        "the Python path prints a quickstart-python-greeter workflow id, status=completed, and a result containing Hello, Python! within 10 minutes",
+        "if completion fails, times out, requires another language's setup, or needs an undocumented workaround, the result is fail with user-visible output and a focused owning finding; if the runner does not execute this path, the result is not_covered or runner_blocked rather than pass"
+      ]
+    },
+    {
+      "id": "quickstart_rust_completion",
+      "title": "Quickstart Rust workflow completion",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "sdk-rust",
+        "public-docs"
+      ],
+      "operations": [
+        "start from the live public 2.0 quickstart route and record the exact versioned URL walked without using an unversioned prerelease docs alias",
+        "resolve the server setup and rust_user_local_server_completion transcript from the published quickstart execution contract, then execute it without a product source checkout",
+        "install the exact durable-workflow crate from crates.io, run the Rust worker, start the documented workflow, and inspect the selected run's durable status and decoded result",
+        "record crates.io source and checksum provenance for durable-workflow and its official apache-avro dependency"
+      ],
+      "pass_criteria": [
+        "the result records exact artifact versions and public sources for server, sdk-rust, and public-docs, including crates.io provenance for durable-workflow and apache-avro",
+        "the result records the exact commands executed, command outputs, exit statuses, and wall-clock time from server setup to completed workflow observation",
+        "/api/ready returns success and authenticated /api/cluster/info returns standalone server topology for the server that hosts the workflow run",
+        "the Rust path prints a quickstart-rust-greeter workflow id, status=completed, and a result containing Hello, Rust! within 10 minutes",
+        "if completion fails, times out, requires another language's setup, or needs an undocumented workaround, the result is fail with user-visible output and a focused owning finding; if the runner does not execute this path, the result is not_covered or runner_blocked rather than pass"
+      ]
+    },
+    {
+      "id": "quickstart_laravel_branch_completion",
+      "title": "Quickstart Laravel branch workflow completion",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "workflow",
+        "waterline",
+        "public-docs"
+      ],
+      "operations": [
+        "start from the live public 2.0 quickstart route and record the exact versioned URL walked without using an unversioned prerelease docs alias",
+        "confirm the page presents embedded Laravel after the standalone SDK paths and links to the embedded installation guidance without implying that Laravel is required by the standalone platform",
+        "resolve laravel_user_embedded_completion from the published quickstart execution contract and execute its full transcript without reading product source from a local checkout",
+        "install the exact Workflow and Waterline Composer package pins, create the contracted activity, workflow, and command, and run the Laravel queue worker through observable completion"
+      ],
+      "pass_criteria": [
+        "the result records exact artifact versions for workflow, waterline, and public-docs, plus Composer package sources and the versioned public docs URL used",
+        "the result records the exact commands executed, command outputs, exit statuses, and wall-clock time from first Laravel quickstart command to completed workflow observation",
+        "composer show durable-workflow/workflow and composer show durable-workflow/waterline print the resolved published package versions installed into the fresh Laravel app",
+        "php artisan app:quickstart-workflow prints status=completed and output=Hello, Laravel! while the Laravel queue worker is running within 10 minutes",
+        "if completion fails, times out, requires an undocumented workaround, or exposes docs drift, the result is fail with user-visible output and a focused owning finding; if the runner does not execute this branch, the result is not_covered or runner_blocked rather than pass"
+      ]
+    },
+    {
+      "id": "waterline_feature_completeness_verdict",
+      "title": "Waterline core feature completeness verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "waterline",
+        "server",
+        "workflow",
+        "cli",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "install the published Waterline package into a fresh application using the documented prerelease channel instructions",
+        "exercise operator visibility for workflows, runs, tasks, signals, queries, schedules, search attributes, namespaces, sagas, worker versioning, and health/readiness where the docs or conformance manifests advertise those surfaces",
+        "compare Waterline API and UI observations with public docs and the published runtime scenario manifests"
+      ],
+      "pass_criteria": [
+        "Waterline receives a separate GO or NO-GO verdict in waterline_readiness_verdict",
+        "operator-visible surfaces documented as available either pass from published artifacts or have focused linked findings",
+        "Waterline does not silently omit required Workflow 2.0 state needed by operators during prerelease evaluation",
+        "incomplete or stale advertised Waterline behavior is recorded as fail with an owning finding"
+      ]
+    },
+    {
+      "id": "waterline_migration_and_config_verdict",
+      "title": "Waterline migration and configuration verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "waterline",
+        "server",
+        "workflow",
+        "public-docs"
+      ],
+      "operations": [
+        "follow public Waterline install and upgrade guidance against published Waterline and Workflow prerelease packages",
+        "verify root-project Composer stability requirements, engine-source configuration, server connection settings, auth expectations, and operator-surface readiness diagnostics",
+        "confirm migrated or upgraded Waterline installations keep access to preupgrade workflow visibility that the docs claim"
+      ],
+      "pass_criteria": [
+        "Waterline prerelease install and upgrade steps work from public docs with published packages",
+        "required configuration is documented with safe defaults or explicit remediation",
+        "operator readiness failures are understandable and actionable to a user installing public artifacts",
+        "missing migration steps or confusing required config are recorded as fail with owning findings"
+      ]
+    },
+    {
+      "id": "waterline_public_api_and_docs_verdict",
+      "title": "Waterline public API and documentation verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "waterline",
+        "server",
+        "cli",
+        "sdk-python",
+        "public-docs"
+      ],
+      "operations": [
+        "enumerate Waterline public operator API routes, dashboard JSON shapes, documented UI workflows, and package metadata from published artifacts and public docs",
+        "verify server, CLI, Python SDK, and Workflow integrations can supply the data Waterline requires without depending on internal or breaking API shapes",
+        "check public docs for stale route names, mismatched payloads, missing examples, or prerelease guidance exposed only through unversioned stable-default routes"
+      ],
+      "pass_criteria": [
+        "public Waterline API and UI contracts are documented enough for operators and integrations to use",
+        "Waterline's required cross-component inputs are available from current server, CLI, Python SDK, and Workflow artifacts",
+        "docs and package metadata keep Waterline on the intended prerelease channel without changing the stable default docs line",
+        "stale docs, missing API contracts, or cross-component breaking-change risks are recorded as fail with owning findings"
+      ]
+    },
+    {
+      "id": "ecosystem_compatibility_verdict",
+      "title": "Ecosystem release-candidate compatibility verdict",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust",
+        "workflow",
+        "waterline",
+        "sample-app",
+        "public-docs"
+      ],
+      "operations": [
+        "evaluate the current published server, CLI, PHP, Python, and Rust SDKs, Workflow, Waterline, sample app, and public docs as one coordinated release-candidate tuple",
+        "verify installability, version constraints, release-channel labels, docs links, CLI commands, SDK client paths, sample app setup, and server compatibility surfaces agree across artifacts",
+        "check that no component requires an unpublished artifact, rolling tag, source checkout, or breaking Workflow or Waterline API change"
+      ],
+      "pass_criteria": [
+        "every required artifact installs or is publicly reachable from the documented channel for the same release-candidate tuple",
+        "cross-component observations prove server, CLI, PHP, Python, and Rust SDKs, Workflow, Waterline, sample app, and docs are mutually compatible or link focused findings",
+        "release-channel metadata is consistent: stable 1.x remains the default docs line and explicit 2.0 guidance stays on versioned prerelease surfaces",
+        "any installability gap, stale docs link, API mismatch, version constraint conflict, or release-channel mismatch is recorded as fail with an owning finding"
+      ]
+    },
+    {
+      "id": "focused_finding_routing",
+      "title": "Focused finding routing",
+      "claim_targets": [
+        "prerelease_release_candidate"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust",
+        "workflow",
+        "waterline",
+        "sample-app",
+        "public-docs"
+      ],
+      "operations": [
+        "for every non-pass scenario, file or link a focused finding against the public surface that owns the root cause",
+        "include user impact, observed artifact versions, reproduction or audit step, expected behavior, and unblock condition for each finding",
+        "mark runner-only problems as runner_blocked without product evidence and keep the prerelease readiness result non-passing"
+      ],
+      "pass_criteria": [
+        "every fail, unsupported, not_covered, or runner_blocked cell links at least one focused finding or root-cause tracker entry",
+        "product failures are routed to the owning product surface rather than the aggregate prerelease readiness result",
+        "runner-only evidence never counts as a passing prerelease readiness result",
+        "the aggregate result remains non-passing until all required scenarios pass from published artifacts"
+      ]
+    }
+  ]
+}

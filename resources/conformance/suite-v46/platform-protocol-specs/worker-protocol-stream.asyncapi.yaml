@@ -1,0 +1,406 @@
+asyncapi: 2.6.0
+id: durable-workflow.v2.worker-protocol-stream
+info:
+  title: Durable Workflow worker-protocol long-poll stream semantics
+  version: "11"
+  description: >
+    Normative AsyncAPI description of the public worker-protocol stream
+    semantics. Durable uses HTTP long-poll request/response rather than a
+    broker topic, but the externally observable contract is event-stream
+    shaped: workers subscribe by polling, the server leases at most one
+    task per successful poll, workers renew the lease with heartbeat
+    events, and terminal completion/failure events close the lease.
+x-durable-workflow-worker-protocol-negotiation:
+  advertised_version_path: worker_protocol.version
+  default_advertised_version: "1.18"
+  request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
+  response_version: advertised_version
+  fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
+x-durable-workflow-catalog-entry: worker_protocol_stream
+x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
+x-durable-workflow-catalog-version: 16
+x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-message-streams-contract:
+  discovery_path: /cluster/info#/message_streams_contract
+  minimum_protocol_version: "1.15"
+  worker_capability: message_streams
+  completion_fields: [message_stream_cursors, message_stream_waits]
+  cursor_advancement: highest_contiguous_consumed_position
+  replay_identity: [stream_name, message_id, position]
+  payload_envelope:
+    field: payload_envelope
+    worker_delivery: inline_avro_blob
+    persistence: exact_inline_bytes_or_external_storage_reference
+  version_gate:
+    workers_below_minimum:
+      advertise_capability: forbidden
+      submit_completion_fields: forbidden
+    workers_at_or_above_minimum:
+      advertise_capability: allowed
+      submit_completion_fields: allowed
+    rejection_status: 409
+    rejection_reason: message_streams_unavailable
+x-durable-workflow-typed-search-attributes-contract:
+  minimum_protocol_version: "1.16"
+  worker_capability: typed_search_attributes
+  canonical_type_names: [string, keyword, keyword_list, int, float, bool, datetime]
+  completion_field: commands[].attribute_types
+  history:
+    event_type: SearchAttributesUpserted
+    payload_field: attribute_types
+    replay_identity: [sequence, attributes, attribute_types]
+    legacy_missing_metadata: unknown_type_identity_compare_value_only
+  version_gate:
+    rejection_status: 409
+    rejection_reason: typed_search_attributes_unavailable
+x-durable-workflow-condition-wait-occurrence-identity-contract:
+  minimum_protocol_version: "1.17"
+  worker_capability: condition_wait_occurrence_identity
+  command_type: open_condition_wait
+  command_field: condition_wait_occurrence_id
+  authored_identity: explicit_deterministic_authored_ordinal
+  history:
+    lifecycle_event_types: [ConditionWaitOpened, ConditionWaitSatisfied, ConditionWaitTimedOut]
+    timeout_event_types: [TimerScheduled, TimerCancelled, TimerFired]
+    timeout_event_selector: { timer_kind: condition_timeout }
+    payload_field: condition_wait_occurrence_id
+    propagation: exact_value_on_every_event_for_one_wait_lifecycle
+    replay_identity: [sequence, condition_wait_occurrence_id, condition_key, condition_definition_fingerprint, timeout_seconds]
+    physical_reevaluations: reuse_open_occurrence_identity
+    adjacent_authored_waits: distinct_occurrence_identity
+    legacy_missing_occurrence_id: legacy_condition_wait_without_occurrence_identity
+  version_gate:
+    workers_below_minimum:
+      advertise_capability: forbidden
+      submit_occurrence_id: forbidden
+    capable_workers:
+      submit_occurrence_id: required
+    servers_below_minimum:
+      reject_before_execution: required
+    rejection_status: 400
+    rejection_reason: unsupported_protocol_version
+x-durable-workflow-portable-worker-affinity-contract:
+  minimum_protocol_version: "1.18"
+  worker_capabilities: [local_activities, worker_sessions, sticky_execution]
+  local_activities:
+    command_type: record_local_activity
+    runtime_schema:
+      $ref: ./local-activity-runtime.schema.json#/$defs/localActivityRuntimeContract
+    execution_mode: local
+    recorded_terminal_side_effect_on_cold_replay: reuse_without_execution
+  worker_sessions:
+    runtime_schema:
+      $ref: ./worker-sessions-runtime.schema.json#/$defs/workerSessionRuntimeContract
+    lifecycle_verbs: [create, heartbeat, close]
+    holder_loss: replacement_worker_reacquires_and_rebuilds_process_local_state
+  sticky_execution:
+    cache_owner: worker_process
+    cache_key_fields: [workflow_id, run_id, build_id]
+    correctness_fallback: cold_replay
+  version_gate:
+    workers_below_minimum:
+      advertise_capabilities: forbidden
+      submit_local_activity_command: forbidden
+    workers_at_or_above_minimum:
+      advertise_only_implemented_capabilities: required
+    servers_below_minimum:
+      reject_before_execution: required
+    rejection_status: 400
+    rejection_reason: unsupported_protocol_version
+x-durable-workflow-object-families:
+  - name: worker_poll_stream
+    owner_repo: durable-workflow/server
+  - name: worker_task_lease
+    owner_repo: durable-workflow/server
+  - name: worker_task_heartbeat
+    owner_repo: durable-workflow/server
+defaultContentType: application/json
+channels:
+  worker.workflow_tasks:
+    description: Workflow task long-poll and lease lifecycle.
+    subscribe:
+      operationId: subscribeWorkflowTaskPoll
+      summary: Worker polls until a workflow task is leased, the poll times out, or the worker is draining.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/WorkflowTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+          - $ref: "#/components/messages/WorkerDraining"
+    publish:
+      operationId: publishWorkflowTaskLeaseEvent
+      summary: Worker renews or closes a workflow-task lease.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/TaskHeartbeat"
+          - $ref: "#/components/messages/WorkflowTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+  worker.activity_tasks:
+    description: Activity task long-poll and lease lifecycle.
+    subscribe:
+      operationId: subscribeActivityTaskPoll
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ActivityTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+          - $ref: "#/components/messages/WorkerDraining"
+    publish:
+      operationId: publishActivityTaskLeaseEvent
+      message:
+        oneOf:
+          - $ref: "#/components/messages/TaskHeartbeat"
+          - $ref: "#/components/messages/ActivityTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+  worker.query_tasks:
+    description: Ephemeral worker-routed query task lifecycle.
+    subscribe:
+      operationId: subscribeQueryTaskPoll
+      message:
+        oneOf:
+          - $ref: "#/components/messages/QueryTaskLeased"
+          - $ref: "#/components/messages/PollTimedOut"
+    publish:
+      operationId: publishQueryTaskTerminalEvent
+      message:
+        oneOf:
+          - $ref: "#/components/messages/QueryTaskCompleted"
+          - $ref: "#/components/messages/TaskFailed"
+components:
+  messages:
+    WorkflowTaskLeased:
+      name: WorkflowTaskLeased
+      title: Workflow task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    ActivityTaskLeased:
+      name: ActivityTaskLeased
+      title: Activity task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    QueryTaskLeased:
+      name: QueryTaskLeased
+      title: Query task leased
+      payload:
+        $ref: "#/components/schemas/TaskLeased"
+    PollTimedOut:
+      name: PollTimedOut
+      title: Poll timed out without a task
+      payload:
+        $ref: "#/components/schemas/PollTerminal"
+    WorkerDraining:
+      name: WorkerDraining
+      title: Worker is draining and must stop accepting new work
+      payload:
+        $ref: "#/components/schemas/PollTerminal"
+    TaskHeartbeat:
+      name: TaskHeartbeat
+      title: Worker renewed a task lease
+      payload:
+        $ref: "#/components/schemas/LeaseEvent"
+    WorkflowTaskCompleted:
+      name: WorkflowTaskCompleted
+      title: Worker completed a workflow task
+      payload:
+        $ref: "#/components/schemas/WorkflowTaskCompletionEvent"
+    ActivityTaskCompleted:
+      name: ActivityTaskCompleted
+      title: Worker completed an activity task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+    QueryTaskCompleted:
+      name: QueryTaskCompleted
+      title: Worker completed a query task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+    TaskFailed:
+      name: TaskFailed
+      title: Worker failed a leased task
+      payload:
+        $ref: "#/components/schemas/LeaseTerminalEvent"
+  schemas:
+    ProtocolEnvelope:
+      type: object
+      required: [protocol_version, server_capabilities]
+      additionalProperties: true
+      properties:
+        protocol_version:
+          type: string
+          const: "1.18"
+        server_capabilities:
+          type: object
+          additionalProperties: true
+    TaskLeased:
+      allOf:
+        - $ref: "#/components/schemas/ProtocolEnvelope"
+        - type: object
+          required: [task, lease]
+          properties:
+            task:
+              type: object
+              additionalProperties: true
+              required: [task_id]
+              properties:
+                task_id: { type: string }
+                task_type: { type: string, enum: [workflow, activity, query] }
+                history:
+                  type: array
+                  items: { $ref: "#/components/schemas/WorkerHistoryEvent" }
+            lease:
+              type: object
+              additionalProperties: true
+              required: [leased_at, lease_expires_at]
+              properties:
+                leased_at: { type: string, format: date-time }
+                lease_expires_at: { type: string, format: date-time }
+    PollTerminal:
+      allOf:
+        - $ref: "#/components/schemas/ProtocolEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            task: { type: "null" }
+            poll_status:
+              type: string
+              enum: [timeout, empty, draining]
+            retry_after_seconds:
+              type: [integer, "null"]
+              minimum: 0
+    LeaseEvent:
+      type: object
+      required: [worker_id, task_id, event]
+      additionalProperties: true
+      properties:
+        worker_id: { type: string }
+        task_id: { type: string }
+        event:
+          type: string
+          enum: [heartbeat]
+        progress: true
+    LeaseTerminalEvent:
+      type: object
+      required: [worker_id, task_id, event]
+      additionalProperties: true
+      properties:
+        worker_id: { type: string }
+        task_id: { type: string }
+        event:
+          type: string
+          enum: [complete, fail]
+        result: true
+        failure:
+          type: [object, "null"]
+          additionalProperties: true
+    WorkflowTaskCompletionEvent:
+      allOf:
+        - $ref: "#/components/schemas/LeaseTerminalEvent"
+        - type: object
+          properties:
+            commands:
+              type: array
+              items: { $ref: "#/components/schemas/WorkflowCommand" }
+            message_stream_cursors:
+              type: array
+              maxItems: 100
+              x-durable-workflow-minimum-protocol-version: "1.15"
+              items: { $ref: "#/components/schemas/MessageStreamCursorAdvance" }
+            message_stream_waits:
+              type: array
+              maxItems: 100
+              x-durable-workflow-minimum-protocol-version: "1.15"
+              items: { $ref: "#/components/schemas/MessageStreamWait" }
+    WorkflowCommand:
+      type: object
+      additionalProperties: true
+      required: [type]
+      properties:
+        type: { type: string }
+      allOf:
+        - if:
+            properties:
+              type: { const: open_condition_wait }
+            required: [type]
+          then:
+            properties:
+              condition_key: { type: string, minLength: 1 }
+              condition_definition_fingerprint: { type: string, minLength: 1 }
+              condition_wait_occurrence_id:
+                type: string
+                minLength: 1
+                x-durable-workflow-minimum-protocol-version: "1.17"
+                x-durable-workflow-worker-capability: condition_wait_occurrence_identity
+              timeout_seconds: { type: integer, minimum: 0 }
+        - if:
+            properties:
+              type: { const: record_local_activity }
+            required: [type]
+          then:
+            required: [activity_type, outcome]
+            x-durable-workflow-minimum-protocol-version: "1.18"
+            x-durable-workflow-worker-capability: local_activities
+            properties:
+              activity_type: { type: string, minLength: 1 }
+              arguments: true
+              result: true
+              payload_codec: { type: string, minLength: 1 }
+              outcome: { type: string, enum: [completed, failed, timed_out, cancelled] }
+              message: { type: [string, "null"] }
+              exception_type: { type: [string, "null"] }
+              non_retryable: { type: boolean }
+              attempts:
+                type: array
+                minItems: 1
+                items: { type: object, additionalProperties: true }
+              retry_policy: { type: object, additionalProperties: true }
+              start_to_close_timeout: { type: integer, minimum: 1 }
+              schedule_to_close_timeout: { type: integer, minimum: 1 }
+              heartbeat_timeout: { type: integer, minimum: 1 }
+              execution_mode: { type: string, const: local }
+    WorkerHistoryEvent:
+      type: object
+      additionalProperties: true
+      properties:
+        event_type: { type: string }
+        payload: { type: object, additionalProperties: true }
+      allOf:
+        - if:
+            required: [event_type]
+            properties:
+              event_type:
+                enum: [ConditionWaitOpened, ConditionWaitSatisfied, ConditionWaitTimedOut]
+          then:
+            required: [payload]
+            properties:
+              payload: { $ref: "#/components/schemas/ConditionWaitHistoryPayload" }
+    ConditionWaitHistoryPayload:
+      type: object
+      additionalProperties: true
+      required: [sequence, condition_wait_id]
+      properties:
+        sequence: { type: integer, minimum: 0 }
+        condition_wait_id: { type: string, minLength: 1 }
+        condition_wait_occurrence_id:
+          type: string
+          minLength: 1
+          x-durable-workflow-minimum-protocol-version: "1.17"
+        condition_key: { type: [string, "null"] }
+        condition_definition_fingerprint: { type: [string, "null"] }
+        timeout_seconds: { type: [integer, "null"], minimum: 0 }
+    MessageStreamCursorAdvance:
+      type: object
+      additionalProperties: false
+      required: [stream_name, through_position]
+      properties:
+        stream_name: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        through_position: { type: integer, minimum: 0 }
+    MessageStreamWait:
+      type: object
+      additionalProperties: false
+      required: [stream_name, after_position]
+      properties:
+        stream_name: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        after_position: { type: integer, minimum: 0 }
+x-durable-workflow-semantics:
+  long_poll_timeout: The server may hold a poll request until a task is available or the advertised timeout elapses.
+  lease_ownership: Only the worker that owns the active lease may heartbeat, complete, or fail the task.
+  task_ordering: Queue routing, build-id rollout, and compatibility filters are evaluated before a task is leased.
+  terminal_events: Complete and fail are terminal for a lease. Retrying after a terminal event must be idempotent and return the current terminal outcome.

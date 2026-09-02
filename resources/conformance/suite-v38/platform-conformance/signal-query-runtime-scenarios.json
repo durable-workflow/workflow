@@ -1,0 +1,529 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 5,
+  "category": "signal_query_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for the stable signal and query runtime contract. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "sdk_php",
+        "python_sdk",
+        "rust_sdk",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "install each claimed implementation from a released package, container, or documented download artifact",
+        "start the server and at least one worker without reading from a source checkout",
+        "record the concrete pinned artifact name and version for every actor"
+      ],
+      "pass_criteria": [
+        "all claimed actors start from published artifacts only",
+        "the result document records concrete pinned artifact versions for every claimed actor",
+        "placeholder or unresolved artifact version tokens are rejected",
+        "no scenario step depends on repository-local implementation tests"
+      ],
+      "unsupported_when": [
+        "the implementation does not publish one of the actors for a claimed target"
+      ]
+    },
+    {
+      "id": "python_worker_cli_and_sdk_baseline",
+      "title": "Python worker controlled by CLI and Python SDK clients",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_worker",
+        "python_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start a signal-aware workflow on the Python worker",
+        "send a signal through the Python SDK client",
+        "send a signal through the CLI client",
+        "query the run through both clients",
+        "record the CLI current-query task routed by the server to the Python SDK worker"
+      ],
+      "pass_criteria": [
+        "both signals are delivered exactly once in the observed workflow state",
+        "both clients observe the same query result",
+        "CLI JSON output and SDK result envelopes identify the same run",
+        "the current query proof includes public query-task metadata for the expected workflow id, run id, worker id, task queue, and query task id"
+      ]
+    },
+    {
+      "id": "php_worker_cli_and_sdk_baseline",
+      "title": "PHP worker controlled by CLI and PHP SDK clients",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "php_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start a signal-aware workflow on the PHP worker",
+        "send a signal through the PHP SDK client",
+        "send a signal through the CLI client",
+        "query the run through both clients"
+      ],
+      "pass_criteria": [
+        "both signals are delivered exactly once in the observed workflow state",
+        "both clients observe the same query result",
+        "CLI JSON output and SDK result envelopes identify the same run"
+      ]
+    },
+    {
+      "id": "python_worker_php_facing_and_cli_clients",
+      "title": "Python worker controlled by PHP-facing and CLI clients",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_worker",
+        "php_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start a Python-worker run from a PHP-facing client",
+        "send one signal from the PHP-facing client",
+        "send one signal from the CLI client",
+        "query the run from both clients"
+      ],
+      "pass_criteria": [
+        "client language does not change signal delivery semantics",
+        "query results agree across clients",
+        "wire envelopes remain compatible with the worker protocol"
+      ]
+    },
+    {
+      "id": "php_worker_python_and_cli_clients",
+      "title": "PHP worker controlled by Python and CLI clients",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "python_sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "start a PHP-worker run from the Python SDK client",
+        "send one signal from the Python SDK client",
+        "send one signal from the CLI client",
+        "query the run from both clients"
+      ],
+      "pass_criteria": [
+        "client language does not change signal delivery semantics",
+        "query results agree across clients",
+        "wire envelopes remain compatible with the worker protocol"
+      ]
+    },
+    {
+      "id": "rust_worker_rust_php_python_clients",
+      "title": "Rust snapshot-query worker controlled by Rust, PHP, and Python clients",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "rust_worker",
+        "rust_sdk_client",
+        "php_sdk_client",
+        "python_sdk_client"
+      ],
+      "artifact": {
+        "package": "durable-workflow",
+        "version": "0.1.2",
+        "source": "crates.io",
+        "cargo_requirement": "=0.1.2"
+      },
+      "query_state_model": "snapshot_derived_transport_state",
+      "operations": [
+        "install the exact Rust SDK crate from crates.io and record Cargo registry source and checksum provenance",
+        "run a Rust worker with ordered signals and a named read-only snapshot query",
+        "exercise running and completed query state through Rust, PHP, and Python callers",
+        "send and query at least one valid Apache Avro payload and record the observed value"
+      ],
+      "pass_criteria": [
+        "all three callers observe equivalent running and completed state",
+        "the exact Cargo-resolved Rust SDK version matches worker registration evidence",
+        "the valid Avro round trip uses the SDK's resolved apache-avro dependency",
+        "repeat queries return the same answer without an intervening state change"
+      ]
+    },
+    {
+      "id": "python_worker_rust_client",
+      "title": "Python worker controlled by the Rust SDK client",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_worker",
+        "rust_sdk_client"
+      ],
+      "operations": [
+        "send ordered Avro signals from the exact crates.io Rust client to a Python workflow",
+        "query the state repeatedly from the Rust client"
+      ],
+      "pass_criteria": [
+        "the Python worker applies the Rust client's signals in order",
+        "Rust query results equal the Python workflow state",
+        "repeat queries are consistent"
+      ]
+    },
+    {
+      "id": "php_worker_rust_client",
+      "title": "PHP worker controlled by the Rust SDK client",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "rust_sdk_client"
+      ],
+      "operations": [
+        "send ordered Avro signals from the exact crates.io Rust client to a PHP workflow",
+        "query the state repeatedly from the Rust client"
+      ],
+      "pass_criteria": [
+        "the PHP worker applies the Rust client's signals in order",
+        "Rust query results equal the PHP workflow state",
+        "repeat queries are consistent"
+      ]
+    },
+    {
+      "id": "rust_query_error_and_immutability",
+      "title": "Rust snapshot-query errors and read-only invariants",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "rust_worker",
+        "rust_sdk_client"
+      ],
+      "query_state_model": "snapshot_derived_transport_state",
+      "operations": [
+        "capture history and workflow-command counts before the first successful measured query",
+        "run successful and repeat queries",
+        "exercise unknown query, malformed payload, unavailable handler, incompatible protocol, missing workflow, and terminal signal outcomes",
+        "query the known handler again after all failure paths"
+      ],
+      "pass_criteria": [
+        "every failure has a stable machine-readable reason",
+        "successful and failed queries append no history and emit no workflow commands",
+        "the answer after failure paths equals the answer recorded before them"
+      ]
+    },
+    {
+      "id": "ordered_signal_delivery",
+      "title": "Ordered signal delivery",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send at least three ordered signals to the same running workflow",
+        "mix SDK and CLI clients when the target claims both surfaces",
+        "query the workflow state before completion and after completion"
+      ],
+      "pass_criteria": [
+        "the workflow observes the signals in the submitted order",
+        "intermediate and final query results expose the same order",
+        "the terminal result preserves the ordered signal state"
+      ]
+    },
+    {
+      "id": "dedup_contract_observation",
+      "title": "Signal deduplication contract observation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "submit duplicate signals that carry the same deduplication key or documented idempotency token",
+        "query the workflow after each duplicate submission",
+        "complete the workflow and inspect the final state"
+      ],
+      "pass_criteria": [
+        "the implementation either applies one transition or returns a documented duplicate outcome",
+        "duplicate handling is visible in the result evidence",
+        "query responses never report conflicting state for the duplicate submissions"
+      ],
+      "unsupported_when": [
+        "the implementation documents that signal deduplication keys are not supported"
+      ]
+    },
+    {
+      "id": "signal_during_replay",
+      "title": "Signal delivery while history is replaying",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "resume a workflow from non-empty history",
+        "send a signal while the worker is replaying the history",
+        "continue execution until the signal can be observed through a query or final result"
+      ],
+      "pass_criteria": [
+        "replay does not drop the signal",
+        "the live state after replay matches the documented deterministic state",
+        "the result evidence identifies whether the signal was buffered or delivered after replay"
+      ]
+    },
+    {
+      "id": "query_during_replay",
+      "title": "Query behavior while history is replaying",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "resume a workflow from non-empty history",
+        "issue a query while the worker is replaying",
+        "issue the same query after replay reaches live execution"
+      ],
+      "pass_criteria": [
+        "the query either returns a documented replay-safe snapshot or a documented retryable response",
+        "query execution does not mutate workflow state",
+        "the post-replay query returns a state consistent with the final live execution"
+      ]
+    },
+    {
+      "id": "rust_replayed_instance_state_query_after_cold_restart",
+      "title": "Rust replayed workflow-instance state query after cold restart",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "rust_worker",
+        "rust_sdk_client",
+        "php_sdk_client",
+        "python_sdk_client"
+      ],
+      "artifact": {
+        "package": "durable-workflow",
+        "version": "0.1.2",
+        "source": "crates.io",
+        "cargo_requirement": "=0.1.2"
+      },
+      "query_state_model": "replayed_workflow_instance_state",
+      "operations": [
+        "register the workflow with register_replayed_workflow and its query with register_replayed_query",
+        "query running state through Rust, PHP, and Python callers",
+        "cold-stop the first Rust worker and start a fresh worker process against durable history",
+        "query restored state, complete the workflow, and query completed state through all three callers"
+      ],
+      "pass_criteria": [
+        "the fresh worker restores the committed pre-restart state from durable history",
+        "all callers observe equivalent running, restored, and completed state",
+        "successful and failed replayed queries append no history and emit no workflow commands at every checkpoint",
+        "failed queries do not alter the state returned by a later query",
+        "deterministic workflow replay evidence remains distinct from snapshot-derived transport evidence"
+      ]
+    },
+    {
+      "id": "completed_run_signal_and_query",
+      "title": "Signal and query behavior for completed runs",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "complete a workflow run cleanly with a replayable declared query handler and a known final query state",
+        "attempt to signal the completed run",
+        "restart or detach the worker when needed so completed-run queries prove replayed state instead of live in-memory state",
+        "query the completed run through every claimed public query surface"
+      ],
+      "pass_criteria": [
+        "signals sent to terminal runs return a stable rejection or documented no-op result",
+        "queries against a completed cleanly run with a replayable declared query handler return the documented final state through every claimed public query surface",
+        "a generic completed-run terminal error does not satisfy the completed cleanly query requirement",
+        "terminal-run operations do not reopen or mutate the completed run"
+      ],
+      "allowed_terminal_state_error_cases": [
+        "queries for explicitly unsupported terminal states other than completed cleanly may return a stable terminal-state error that names the unsupported state",
+        "queries for completed runs without an available declared query handler may return a stable handler-unavailable error that names the query surface and handler"
+      ]
+    },
+    {
+      "id": "unknown_signal_and_query_errors",
+      "title": "Unknown signal and query errors",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "send an unknown signal name to a running workflow",
+        "issue an unknown query name to a running workflow",
+        "query a known handler after the error attempts"
+      ],
+      "pass_criteria": [
+        "unknown signal and query attempts produce stable error envelopes",
+        "error envelopes include actionable handler or operation identity",
+        "the workflow remains queryable through known handlers"
+      ]
+    },
+    {
+      "id": "malformed_signal_and_query_payloads",
+      "title": "Malformed signal and query payloads",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli_client"
+      ],
+      "operations": [
+        "submit a signal payload that cannot be decoded by the handler contract",
+        "submit a query payload that cannot be decoded by the handler contract",
+        "send a valid signal and valid query after the malformed attempts"
+      ],
+      "pass_criteria": [
+        "malformed payloads produce stable validation or decoding errors",
+        "malformed payloads do not crash the worker or server",
+        "the run remains able to process subsequent valid signal and query operations"
+      ]
+    },
+    {
+      "id": "waterline_operator_visibility",
+      "title": "Waterline operator visibility",
+      "claim_targets": [
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "waterline"
+      ],
+      "operations": [
+        "execute at least one successful signal and one successful query against a running workflow",
+        "execute at least one rejected or malformed signal or query attempt",
+        "inspect the Waterline workflow detail and operator API surfaces"
+      ],
+      "pass_criteria": [
+        "Waterline identifies the workflow run for successful and rejected signal or query activity",
+        "operator-visible state distinguishes applied, rejected, and terminal-run outcomes",
+        "diagnostic fields remain additive and do not replace guaranteed run identifiers"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the waterline_contract_surface target"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-task-result.schema.json",
+  "title": "dw workflow-task:complete/fail --json",
+  "type": "object",
+  "required": ["task_id", "workflow_task_attempt"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "workflow_task_attempt": { "type": "integer" },
+    "outcome": { "type": ["string", "null"] },
+    "recorded": { "type": ["boolean", "null"] },
+    "run_id": { "type": ["string", "null"] },
+    "run_status": { "type": ["string", "null"] },
+    "created_task_ids": { "type": ["array", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "protocol_version": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

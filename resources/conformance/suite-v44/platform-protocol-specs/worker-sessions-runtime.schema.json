@@ -1,0 +1,431 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.worker-sessions-runtime",
+  "title": "Durable Workflow worker-session runtime contract",
+  "description": "Normative JSON Schema for worker-session affinity across worker-protocol capabilities, schedule_activity worker_session command options, explicit lifecycle responses, activity task affinity snapshots, and operator visibility envelopes.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "worker_sessions_runtime",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "worker_session_runtime_contract",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "worker_session_options",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "worker_session_lifecycle",
+      "owner_repo": "durable-workflow/server"
+    },
+    {
+      "name": "worker_session_visibility",
+      "owner_repo": "durable-workflow/server"
+    }
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "worker_sessions": {
+      "$ref": "#/$defs/workerSessionRuntimeContract"
+    },
+    "worker_session": {
+      "$ref": "#/$defs/workerSessionOptions"
+    },
+    "session": {
+      "$ref": "#/$defs/workerSessionSnapshot"
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workerSessionSnapshot"
+      }
+    },
+    "metrics": {
+      "$ref": "#/$defs/workerSessionMetrics"
+    }
+  },
+  "$defs": {
+    "workerSessionRuntimeContract": {
+      "type": "object",
+      "required": [
+        "feature",
+        "contract_version",
+        "command_field",
+        "activity_options_field",
+        "verbs",
+        "lifecycle",
+        "ownership",
+        "lease",
+        "admission",
+        "limits",
+        "default_max_concurrent_activities",
+        "renewal",
+        "failure_detection",
+        "holder_loss",
+        "cancellation",
+        "routing",
+        "visibility",
+        "statuses",
+        "terminal_statuses",
+        "terminal_conditions",
+        "authoring_guidance"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "feature": { "type": "string", "const": "worker_sessions" },
+        "contract_version": { "type": "string", "const": "1.0" },
+        "command_field": { "type": "string", "const": "worker_session" },
+        "activity_options_field": { "type": "string", "const": "worker_session" },
+        "verbs": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["create", "heartbeat", "close"] }
+        },
+        "lifecycle": {
+          "type": "object",
+          "required": ["creation", "renewal", "close", "lease_expiry", "ttl_expiry"],
+          "additionalProperties": true,
+          "properties": {
+            "creation": { "type": "string", "const": "lazy_create_on_first_admitted_activity_or_explicit_worker_create" },
+            "renewal": { "type": "string", "const": "activity_heartbeat_or_explicit_session_heartbeat" },
+            "close": { "type": "string", "const": "explicit_holder_close" },
+            "lease_expiry": { "type": "string", "const": "session_expires_when_lease_is_not_renewed" },
+            "ttl_expiry": { "type": "string", "const": "absolute_session_ttl_is_terminal_for_that_session_id" }
+          }
+        },
+        "ownership": { "type": "string", "const": "single_worker_lease_owner" },
+        "lease": {
+          "type": "object",
+          "required": ["scope", "owner", "activity_attempt_leases_remain_independent"],
+          "additionalProperties": true,
+          "properties": {
+            "scope": { "type": "string", "const": "namespace_session_id" },
+            "owner": { "type": "string", "const": "registered_worker_id" },
+            "activity_attempt_leases_remain_independent": { "type": "boolean", "const": true }
+          }
+        },
+        "admission": {
+          "type": "object",
+          "required": [
+            "queue_routing_first",
+            "requires_registered_worker",
+            "requires_capabilities",
+            "create_if_missing_default",
+            "allow_reacquire_after_failure_default"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "queue_routing_first": { "type": "boolean", "const": true },
+            "requires_registered_worker": { "type": "boolean", "const": true },
+            "requires_capabilities": { "type": "boolean", "const": true },
+            "create_if_missing_default": { "type": "boolean", "const": true },
+            "allow_reacquire_after_failure_default": { "type": "boolean", "const": true }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["max_concurrent_worker_sessions", "max_concurrent_activities"],
+          "additionalProperties": true,
+          "properties": {
+            "max_concurrent_worker_sessions": { "type": "string", "const": "worker_registration" },
+            "max_concurrent_activities": { "type": "string", "const": "session" }
+          }
+        },
+        "default_max_concurrent_activities": { "type": "integer", "minimum": 1 },
+        "renewal": {
+          "type": "object",
+          "required": ["activity_heartbeat_renews_session", "explicit_session_heartbeat"],
+          "additionalProperties": true,
+          "properties": {
+            "activity_heartbeat_renews_session": { "type": "boolean", "const": true },
+            "explicit_session_heartbeat": { "type": "boolean", "const": true }
+          }
+        },
+        "failure_detection": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["lease_expiry", "registered_worker_heartbeat_staleness"] },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "holder_loss": {
+          "type": "object",
+          "required": [
+            "in_flight_activities_keep_at_least_once_attempt_semantics",
+            "replacement_worker_must_reacquire_session",
+            "process_local_state_must_be_rebuilt_after_reacquire"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "in_flight_activities_keep_at_least_once_attempt_semantics": { "type": "boolean", "const": true },
+            "replacement_worker_must_reacquire_session": { "type": "boolean", "const": true },
+            "process_local_state_must_be_rebuilt_after_reacquire": { "type": "boolean", "const": true }
+          }
+        },
+        "cancellation": {
+          "type": "object",
+          "required": [
+            "workflow_cancellation_observed_through_activity_heartbeat",
+            "session_lease_does_not_override_activity_cancel_requested",
+            "planned_shutdown_should_close_sessions"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "workflow_cancellation_observed_through_activity_heartbeat": { "type": "boolean", "const": true },
+            "session_lease_does_not_override_activity_cancel_requested": { "type": "boolean", "const": true },
+            "planned_shutdown_should_close_sessions": { "type": "boolean", "const": true }
+          }
+        },
+        "routing": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["queue", "connection", "requirements"] },
+          "minItems": 3,
+          "uniqueItems": true
+        },
+        "visibility": {
+          "$ref": "#/$defs/workerSessionStatusList"
+        },
+        "statuses": {
+          "$ref": "#/$defs/workerSessionStatusList"
+        },
+        "terminal_statuses": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["closed"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "terminal_conditions": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["explicit_close", "ttl_expired", "allow_reacquire_after_failure_false"] },
+          "minItems": 3,
+          "uniqueItems": true
+        },
+        "authoring_guidance": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        }
+      }
+    },
+    "workerSessionOptions": {
+      "type": "object",
+      "required": ["session_id"],
+      "additionalProperties": true,
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "connection": { "type": ["string", "null"], "minLength": 1, "maxLength": 255 },
+        "queue": { "type": ["string", "null"], "minLength": 1, "maxLength": 255 },
+        "requirements": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "uniqueItems": true
+        },
+        "lease_seconds": { "type": "integer", "minimum": 1, "default": 120 },
+        "ttl_seconds": { "type": "integer", "minimum": 1, "default": 1800 },
+        "max_concurrent_activities": { "type": "integer", "minimum": 1, "default": 1 },
+        "create_if_missing": { "type": "boolean", "default": true },
+        "allow_reacquire_after_failure": { "type": "boolean", "default": true }
+      }
+    },
+    "workerSessionCreateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/workerSessionOptions" },
+        {
+          "type": "object",
+          "required": ["worker_id"],
+          "additionalProperties": true,
+          "properties": {
+            "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 }
+          }
+        }
+      ]
+    },
+    "workerSessionHeartbeatRequest": {
+      "type": "object",
+      "required": ["worker_id"],
+      "additionalProperties": true,
+      "properties": {
+        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "lease_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workerSessionCloseRequest": {
+      "type": "object",
+      "required": ["worker_id"],
+      "additionalProperties": true,
+      "properties": {
+        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 }
+      }
+    },
+    "workerSessionOperationResult": {
+      "type": "object",
+      "required": ["admitted", "status", "reason"],
+      "additionalProperties": true,
+      "properties": {
+        "admitted": { "type": "boolean" },
+        "outcome": {
+          "type": "string",
+          "enum": ["created", "reused", "reacquired", "heartbeat_recorded", "already_closed", "closed"]
+        },
+        "session": { "$ref": "#/$defs/workerSessionSnapshot" },
+        "activity_task_id": { "type": ["string", "null"] },
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "invalid_worker_session",
+            "worker_not_registered",
+            "session_queue_mismatch",
+            "session_not_found",
+            "session_not_active",
+            "session_owner_mismatch",
+            "session_missing",
+            "session_requirements_not_met",
+            "worker_session_limit_exceeded",
+            "session_owned_by_another_worker",
+            "session_activity_limit_exceeded",
+            "session_closed",
+            "session_reacquire_disallowed"
+          ]
+        },
+        "error": { "type": "string" },
+        "missing_requirements": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "max_concurrent_worker_sessions": { "type": "integer", "minimum": 0 },
+        "max_concurrent_activities": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workerSessionVisibility": {
+      "type": "object",
+      "required": ["namespace", "metrics", "sessions"],
+      "additionalProperties": true,
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "metrics": { "$ref": "#/$defs/workerSessionMetrics" },
+        "sessions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workerSessionSnapshot" }
+        }
+      }
+    },
+    "workerSessionDetail": {
+      "type": "object",
+      "required": ["namespace", "session"],
+      "additionalProperties": true,
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "session": { "$ref": "#/$defs/workerSessionSnapshot" }
+      }
+    },
+    "workerSessionMetrics": {
+      "type": "object",
+      "required": ["total", "active", "closed", "expired", "failed", "orphaned"],
+      "additionalProperties": true,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "active": { "type": "integer", "minimum": 0 },
+        "closed": { "type": "integer", "minimum": 0 },
+        "expired": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "orphaned": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "workerSessionTaskAffinity": {
+      "allOf": [
+        { "$ref": "#/$defs/workerSessionOptions" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": { "$ref": "#/$defs/workerSessionStatus" },
+            "lease_owner": { "type": ["string", "null"] },
+            "lease_expires_at": { "type": ["string", "null"], "format": "date-time" },
+            "ttl_expires_at": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "workerSessionSnapshot": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "namespace",
+        "requirements",
+        "status",
+        "lease_owner",
+        "holder",
+        "lease_seconds",
+        "ttl_seconds",
+        "max_concurrent_activities",
+        "create_if_missing",
+        "allow_reacquire_after_failure",
+        "active_activity_count"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "namespace": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "connection": { "type": ["string", "null"] },
+        "queue": { "type": ["string", "null"] },
+        "requirements": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "status": { "$ref": "#/$defs/workerSessionStatus" },
+        "lease_owner": { "type": ["string", "null"] },
+        "holder": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/workerSessionHolder" }
+          ]
+        },
+        "lease_expires_at": { "type": ["string", "null"], "format": "date-time" },
+        "ttl_expires_at": { "type": ["string", "null"], "format": "date-time" },
+        "closed_at": { "type": ["string", "null"], "format": "date-time" },
+        "failure_reason": { "$ref": "#/$defs/workerSessionFailureReason" },
+        "lease_seconds": { "type": "integer", "minimum": 1 },
+        "ttl_seconds": { "type": "integer", "minimum": 1 },
+        "max_concurrent_activities": { "type": "integer", "minimum": 1 },
+        "create_if_missing": { "type": "boolean" },
+        "allow_reacquire_after_failure": { "type": "boolean" },
+        "active_activity_count": { "type": "integer", "minimum": 0 },
+        "last_heartbeat_at": { "type": ["string", "null"], "format": "date-time" },
+        "created_at": { "type": ["string", "null"], "format": "date-time" },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "workerSessionHolder": {
+      "type": "object",
+      "required": ["worker_id", "task_queue", "status", "last_heartbeat_at", "is_stale"],
+      "additionalProperties": true,
+      "properties": {
+        "worker_id": { "type": "string", "minLength": 1 },
+        "task_queue": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "last_heartbeat_at": { "type": ["string", "null"], "format": "date-time" },
+        "is_stale": { "type": "boolean" }
+      }
+    },
+    "workerSessionStatusList": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/workerSessionStatus" }
+    },
+    "workerSessionStatus": {
+      "type": "string",
+      "enum": ["active", "closed", "expired", "failed", "orphaned"]
+    },
+    "workerSessionFailureReason": {
+      "type": ["string", "null"],
+      "enum": [null, "ttl_expired", "lease_expired", "worker_heartbeat_stale"]
+    }
+  }
+}

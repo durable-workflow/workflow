@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.history-export-bundle",
+  "title": "Durable Workflow history export bundle",
+  "description": "Normative JSON Schema for the history-export bundle emitted by the server and Waterline and consumed by replay tooling, SDKs, operators, and archival systems. The schema is defined once for the v2 release: the schema id `durable-workflow.v2.history-export` is the canonical version anchor, and the accompanying `schema_version` field is a frozen structural marker fixed at 1 for the lifetime of v2. There is no schema_version ladder within v2; a breaking shape change requires a parallel primitive (a new schema id alongside the existing one) under the `parallel_primitive_only` evolution rule. Nested history events are governed by durable-workflow.v2.history-event-payloads.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "history_export_bundle",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "parallel_primitive_only",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "history_export_bundle",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "required": [
+    "schema",
+    "schema_version",
+    "exported_at",
+    "dedupe_key",
+    "history_complete",
+    "workflow",
+    "payloads",
+    "history_events",
+    "integrity"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "durable-workflow.v2.history-export",
+      "description": "Canonical version anchor for the bundle. The schema id is the only version authority for the v2 history-export bundle; a breaking shape change ships as a parallel primitive (a new schema id) rather than as a bump within v2."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Frozen structural marker for the v2 bundle; fixed at 1 for the lifetime of v2. There is no schema_version ladder within v2."
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "dedupe_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "history_complete": {
+      "type": "boolean"
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflowSnapshot"
+    },
+    "payloads": {
+      "$ref": "#/$defs/payloadSection"
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "selected_run": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "waits_projection_source": { "type": ["string", "null"] },
+        "timeline_projection_source": { "type": ["string", "null"] },
+        "timers_projection_source": { "type": ["string", "null"] },
+        "lineage_projection_source": { "type": ["string", "null"] }
+      }
+    },
+    "history_events": {
+      "type": "array",
+      "items": {
+        "$ref": "./history-event-payloads.schema.json"
+      }
+    },
+    "waits": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "timeline": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "linked_intakes_scope": {
+      "type": ["string", "null"]
+    },
+    "linked_intakes": {
+      "type": ["array", "object", "null"]
+    },
+    "commands": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "signals": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "updates": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "tasks": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "activities": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "timers": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "failures": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "links": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "projection_source": { "type": ["string", "null"] },
+        "parents": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+        "children": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+      }
+    },
+    "codec_schemas": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "payload_manifest": {
+      "$ref": "#/$defs/payloadManifest"
+    },
+    "integrity": {
+      "$ref": "#/$defs/integrity"
+    },
+    "redaction": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "workflowSnapshot": {
+      "type": "object",
+      "required": ["instance_id", "run_id", "run_number", "workflow_type", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "instance_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "run_number": { "type": "integer", "minimum": 1 },
+        "is_current_run": { "type": "boolean" },
+        "current_run_id": { "type": ["string", "null"] },
+        "current_run_source": { "type": ["string", "null"] },
+        "workflow_type": { "type": ["string", "null"] },
+        "workflow_class": { "type": ["string", "null"] },
+        "business_key": { "type": ["string", "null"] },
+        "visibility_labels": { "type": "array", "items": { "type": "string" } },
+        "memo": { "type": "object", "additionalProperties": true },
+        "search_attributes": { "type": "object", "additionalProperties": true },
+        "status": { "type": "string" },
+        "status_bucket": { "type": ["string", "null"] },
+        "closed_reason": { "type": ["string", "null"] },
+        "last_history_sequence": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "payloadSection": {
+      "type": "object",
+      "required": ["codec", "arguments", "output"],
+      "additionalProperties": true,
+      "properties": {
+        "codec": { "type": "string" },
+        "arguments": { "$ref": "#/$defs/payloadValue" },
+        "output": { "$ref": "#/$defs/payloadValue" }
+      }
+    },
+    "payloadValue": {
+      "type": "object",
+      "required": ["available"],
+      "additionalProperties": true,
+      "properties": {
+        "available": { "type": "boolean" },
+        "data": true
+      }
+    },
+    "payloadManifest": {
+      "type": "object",
+      "required": ["version", "entries"],
+      "additionalProperties": true,
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "available"],
+            "additionalProperties": true,
+            "properties": {
+              "path": { "type": "string" },
+              "available": { "type": "boolean" },
+              "codec": { "type": ["string", "null"] },
+              "redacted": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["canonicalization", "checksum_algorithm", "checksum"],
+      "additionalProperties": true,
+      "properties": {
+        "canonicalization": { "type": "string", "const": "json-recursive-ksort-v1" },
+        "checksum_algorithm": { "type": "string", "const": "sha256" },
+        "checksum": { "type": "string" },
+        "signature": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

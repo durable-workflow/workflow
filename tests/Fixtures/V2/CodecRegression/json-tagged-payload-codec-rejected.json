@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "json-tagged-payload-codec-rejected",
+  "protocol": {
+    "codec": "json",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": null
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "stale",
+        "value": {
+          "type": "boolean",
+          "value": true
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "utf8-json",
+    "wire_base64": "eyJzdGFsZSI6dHJ1ZX0="
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "unsupported_payload_codec"
+  }
+}

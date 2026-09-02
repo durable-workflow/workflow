@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/retention-status.schema.json",
+  "title": "dw system:retention-status --json",
+  "type": "object",
+  "required": ["namespace", "retention_days", "cutoff", "expired_run_count", "expired_run_ids", "scan_limit", "scan_pressure"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "retention_days": { "type": "integer" },
+    "cutoff": { "type": "string" },
+    "expired_run_count": { "type": "integer" },
+    "expired_run_ids": { "type": "array", "items": { "type": "string" } },
+    "scan_limit": { "type": "integer" },
+    "scan_pressure": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

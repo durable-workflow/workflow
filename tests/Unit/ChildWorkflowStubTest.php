@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Exception;
+use Mockery;
 use Tests\Fixtures\TestChildWorkflow;
+use Tests\Fixtures\TestExceptionWorkflow;
 use Tests\Fixtures\TestParentWorkflow;
 use Tests\TestCase;
 use Workflow\ChildWorkflowStub;
+use Workflow\Exception as WorkflowException;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\WorkflowOptions;
 use Workflow\WorkflowStub;
 
 final class ChildWorkflowStubTest extends TestCase
@@ -89,6 +94,404 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertNull($result);
     }
 
+    public function testSkipsStoredExceptionForDifferentSourceClass(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => WorkflowStub::now(),
+                'class' => TestChildWorkflow::class,
+                'result' => Serializer::serialize('test'),
+            ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertSame('test', $result);
+        $this->assertSame(2, WorkflowStub::getContext()->index);
+    }
+
+    public function testSkipsMultipleStoredExceptionsForDifferentSourceClass(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child 1',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child 2',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 2,
+                'now' => WorkflowStub::now(),
+                'class' => TestChildWorkflow::class,
+                'result' => Serializer::serialize('test'),
+            ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertSame('test', $result);
+        $this->assertSame(3, WorkflowStub::getContext()->index);
+    }
+
+    public function testMarksProbeMatchedForMatchingStoredException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'matching child failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestChildWorkflow::class,
+            'probeMatched' => false,
+        ]);
+
+        try {
+            ChildWorkflowStub::make(TestChildWorkflow::class);
+            $this->fail('Expected child exception to be thrown.');
+        } catch (Exception $exception) {
+            $this->assertSame('matching child failure', $exception->getMessage());
+        }
+
+        $this->assertTrue(WorkflowStub::probeMatched());
+    }
+
+    public function testDoesNotMarkProbeMatchedForForeignStoredException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child failure',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestChildWorkflow::class,
+            'probeMatched' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertFalse(WorkflowStub::probeMatched());
+        $this->assertSame(2, WorkflowStub::getContext()->index);
+    }
+
+    public function testReturnsUnresolvedPromiseWhenProbingWithoutStoredChildWorkflow(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestChildWorkflow::class,
+            'probeMatched' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+    }
+
+    public function testDoesNotResumeRunningStartedChildWorkflow(): void
+    {
+        $childWorkflow = Mockery::mock();
+        $childWorkflow->shouldReceive('running')
+            ->once()
+            ->andReturn(true);
+        $childWorkflow->shouldReceive('created')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldNotReceive('completed');
+        $childWorkflow->shouldNotReceive('resume');
+        $childWorkflow->shouldNotReceive('startAsChild');
+
+        $storedChildWorkflow = Mockery::mock();
+        $storedChildWorkflow->status = new \stdClass();
+        $storedChildWorkflow->shouldReceive('toWorkflow')
+            ->once()
+            ->andReturn($childWorkflow);
+
+        $children = Mockery::mock();
+        $children->shouldReceive('wherePivot')
+            ->once()
+            ->with('parent_index', 0)
+            ->andReturnSelf();
+        $children->shouldReceive('first')
+            ->once()
+            ->andReturn($storedChildWorkflow);
+
+        $storedWorkflow = Mockery::mock();
+        $storedWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(null);
+        $storedWorkflow->shouldReceive('children')
+            ->once()
+            ->andReturn($children);
+        $storedWorkflow->shouldReceive('workflowOptions')
+            ->once()
+            ->andReturn(new WorkflowOptions());
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class);
+
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+    }
+
+    public function testUsesParentContextForInheritedWorkflowOptions(): void
+    {
+        $childContextStoredWorkflow = Mockery::mock();
+        $childContextStoredWorkflow->shouldNotReceive('workflowOptions');
+
+        $parentStoredWorkflow = Mockery::mock();
+        $parentStoredWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(null);
+        $parentStoredWorkflow->shouldReceive('workflowOptions')
+            ->once()
+            ->andReturn(new WorkflowOptions('sync', 'parent-queue'));
+
+        $childWorkflow = Mockery::mock();
+        $childWorkflow->shouldReceive('running')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldReceive('completed')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldReceive('startAsChild')
+            ->once()
+            ->withArgs(
+                static function (...$arguments) use ($parentStoredWorkflow): bool {
+                    if (count($arguments) !== 4) {
+                        return false;
+                    }
+
+                    [$parentWorkflow, $index, $_now, $options] = $arguments;
+
+                    return $parentWorkflow === $parentStoredWorkflow
+                        && $index === 0
+                        && $options instanceof WorkflowOptions
+                        && $options->connection === 'sync'
+                        && $options->queue === 'parent-queue';
+                }
+            );
+
+        $storedChildWorkflow = Mockery::mock();
+        $storedChildWorkflow->status = new \stdClass();
+        $storedChildWorkflow->shouldReceive('toWorkflow')
+            ->once()
+            ->andReturnUsing(static function () use ($childWorkflow, $childContextStoredWorkflow) {
+                WorkflowStub::setContext([
+                    'storedWorkflow' => $childContextStoredWorkflow,
+                    'index' => 0,
+                    'now' => now(),
+                    'replaying' => false,
+                ]);
+
+                return $childWorkflow;
+            });
+
+        $children = Mockery::mock();
+        $children->shouldReceive('wherePivot')
+            ->once()
+            ->with('parent_index', 0)
+            ->andReturnSelf();
+        $children->shouldReceive('first')
+            ->once()
+            ->andReturn($storedChildWorkflow);
+
+        $parentStoredWorkflow->shouldReceive('children')
+            ->once()
+            ->andReturn($children);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $parentStoredWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class);
+
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame($parentStoredWorkflow, WorkflowStub::getContext()->storedWorkflow);
+    }
+
+    public function testDoesNotPassWorkflowOptionsWhenParentOptionsAreUnset(): void
+    {
+        $parentStoredWorkflow = Mockery::mock();
+        $parentStoredWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(null);
+        $parentStoredWorkflow->shouldReceive('workflowOptions')
+            ->once()
+            ->andReturn(new WorkflowOptions());
+
+        $childWorkflow = Mockery::mock();
+        $childWorkflow->shouldReceive('running')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldReceive('completed')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldReceive('startAsChild')
+            ->once()
+            ->withArgs(
+                static function (...$arguments) use ($parentStoredWorkflow): bool {
+                    if (count($arguments) !== 3) {
+                        return false;
+                    }
+
+                    [$parentWorkflow, $index, $_now] = $arguments;
+
+                    return $parentWorkflow === $parentStoredWorkflow
+                        && $index === 0;
+                }
+            );
+
+        $storedChildWorkflow = Mockery::mock();
+        $storedChildWorkflow->status = new \stdClass();
+        $storedChildWorkflow->shouldReceive('toWorkflow')
+            ->once()
+            ->andReturn($childWorkflow);
+
+        $children = Mockery::mock();
+        $children->shouldReceive('wherePivot')
+            ->once()
+            ->with('parent_index', 0)
+            ->andReturnSelf();
+        $children->shouldReceive('first')
+            ->once()
+            ->andReturn($storedChildWorkflow);
+
+        $parentStoredWorkflow->shouldReceive('children')
+            ->once()
+            ->andReturn($children);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $parentStoredWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class);
+
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame($parentStoredWorkflow, WorkflowStub::getContext()->storedWorkflow);
+    }
+
     public function testAll(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
@@ -111,5 +514,73 @@ final class ChildWorkflowStubTest extends TestCase
             });
 
         $this->assertSame(['test'], $result);
+    }
+
+    public function testThrowsExceptionWhenLogContainsException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => \Workflow\Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \Exception::class,
+                    'message' => 'child failed',
+                    'code' => 0,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => false,
+        ]);
+
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('child failed');
+
+        ChildWorkflowStub::make(TestChildWorkflow::class);
+    }
+
+    public function testThrowsRuntimeExceptionWhenExceptionClassCannotBeInstantiated(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => \Workflow\Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \Tests\Fixtures\TestRequiredArgException::class,
+                    'message' => 'bad',
+                    'code' => 0,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => false,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('[Tests\Fixtures\TestRequiredArgException] bad');
+
+        ChildWorkflowStub::make(TestChildWorkflow::class);
     }
 }

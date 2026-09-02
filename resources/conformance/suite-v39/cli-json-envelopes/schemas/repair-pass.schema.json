@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/repair-pass.schema.json",
+  "title": "dw system:repair-pass --json",
+  "type": "object",
+  "properties": {
+    "throttled": { "type": ["boolean", "null"] },
+    "selected_existing_task_candidates": { "type": ["integer", "null"] },
+    "selected_missing_task_candidates": { "type": ["integer", "null"] },
+    "repaired_existing_tasks": { "type": ["integer", "null"] },
+    "repaired_missing_tasks": { "type": ["integer", "null"] },
+    "dispatched_tasks": { "type": ["integer", "null"] },
+    "selected_command_contract_candidates": { "type": ["integer", "null"] },
+    "backfilled_command_contracts": { "type": ["integer", "null"] },
+    "command_contract_backfill_unavailable": { "type": ["integer", "null"] },
+    "existing_task_failures": { "type": ["array", "null"], "items": { "type": "object", "additionalProperties": true } },
+    "missing_run_failures": { "type": ["array", "null"], "items": { "type": "object", "additionalProperties": true } },
+    "command_contract_failures": { "type": ["array", "null"], "items": { "type": "object", "additionalProperties": true } }
+  },
+  "additionalProperties": true
+}

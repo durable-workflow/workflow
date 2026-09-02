@@ -1,0 +1,22 @@
+{
+    "schema_version": 1,
+    "branch": "main",
+    "measurement": {
+        "metric": "line",
+        "test_suite": "unit+feature-mysql",
+        "coverage_driver": "pcov",
+        "source": {
+            "root": "src",
+            "suffix": ".php",
+            "excluded_paths": []
+        }
+    },
+    "ratchet": {
+        "accepted_baseline_basis_points": 8674,
+        "target_basis_points": 10000
+    },
+    "provenance": {
+        "observed_at": "2026-09-02",
+        "evidence": "Public full qualification run 33581395929 measured 52,361 of 60,359 executable lines (86.74%) at commit a03509a515bf149ee27f4971171820c34f01370e by unioning one unit report with all four MySQL feature-shard reports across the complete production source inventory."
+    }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/workflow-history-export.schema.json",
+  "title": "dw workflow:history-export",
+  "type": "object",
+  "required": ["namespace", "schema", "workflow", "history_events"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "schema": { "const": "durable-workflow.v2.history-export" },
+    "workflow": {
+      "type": "object",
+      "required": ["instance_id", "run_id"],
+      "properties": {
+        "instance_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "workflow_type": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "history_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sequence", "type", "payload"],
+        "properties": {
+          "id": { "type": ["string", "null"] },
+          "sequence": { "type": "integer" },
+          "type": { "type": "string" },
+          "recorded_at": { "type": ["string", "null"] },
+          "payload": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "migration_projection": {
+      "type": "object",
+      "required": ["origin", "identity", "task_queue_context", "unsupported_fields", "projection"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

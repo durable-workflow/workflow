@@ -1,0 +1,324 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "child_workflow_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for child workflow runtime conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "parent_child_correlation_ids",
+    "history_dumps",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP workflow runtime, and observer from published channels",
+        "start the server and both PHP and Python workers without reading from a source checkout",
+        "record the resolved artifact name and version for every actor"
+      ],
+      "pass_criteria": [
+        "all claimed actors start from published artifacts only",
+        "the result document records artifact versions and a generated_at timestamp for every claimed actor",
+        "no scenario step depends on repository-local implementation tests"
+      ],
+      "unsupported_when": [
+        "the implementation does not publish one of the actors for a claimed target"
+      ]
+    },
+    {
+      "id": "python_parent_python_child_baseline",
+      "title": "Python parent starts Python child",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_parent_worker",
+        "python_child_worker",
+        "python_sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a Python parent workflow on a shared task queue",
+        "have the parent start a Python child workflow by workflow type with a string input",
+        "wait for the parent result and dump parent and child histories"
+      ],
+      "pass_criteria": [
+        "the child run is created with a stable child_call_id linked to the parent run",
+        "the child receives the input and returns the expected transformed value",
+        "the parent receives the typed child result and returns the expected aggregate output"
+      ]
+    },
+    {
+      "id": "php_parent_php_child_baseline",
+      "title": "PHP parent starts PHP child",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "php_parent_worker",
+        "php_child_worker",
+        "php_sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a PHP parent workflow on a shared task queue",
+        "have the parent start a PHP child workflow by workflow type with a string input",
+        "wait for the parent result and dump parent and child histories"
+      ],
+      "pass_criteria": [
+        "the child run is created with a stable child_call_id linked to the parent run",
+        "the child receives the input and returns the expected transformed value",
+        "the parent receives the typed child result and returns the expected aggregate output"
+      ]
+    },
+    {
+      "id": "php_parent_python_child_cross_language",
+      "title": "PHP parent starts Python child",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "php_parent_worker",
+        "python_child_worker",
+        "php_sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a PHP parent workflow configured to call a Python child workflow type",
+        "execute the Python child on the same shared task queue",
+        "wait for the PHP parent result and dump parent and child histories"
+      ],
+      "pass_criteria": [
+        "workflow type is the cross-language contract and no PHP class name is required by the Python child",
+        "the Python child result decodes in the PHP parent with the same value and type shape",
+        "parent and child histories carry matching correlation ids"
+      ]
+    },
+    {
+      "id": "python_parent_php_child_cross_language",
+      "title": "Python parent starts PHP child",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_parent_worker",
+        "php_child_worker",
+        "python_sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a Python parent workflow configured to call a PHP child workflow type",
+        "execute the PHP child on the same shared task queue",
+        "wait for the Python parent result and dump parent and child histories"
+      ],
+      "pass_criteria": [
+        "workflow type is the cross-language contract and no Python module path is required by the PHP child",
+        "the PHP child result decodes in the Python parent with the same value and type shape",
+        "parent and child histories carry matching correlation ids"
+      ]
+    },
+    {
+      "id": "child_failure_round_trip_matrix",
+      "title": "Child failure round trip matrix",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "php_worker",
+        "python_worker",
+        "php_sdk_client",
+        "python_sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "run failing children for Python-to-Python, PHP-to-PHP, PHP-to-Python, and Python-to-PHP parent/child combinations",
+        "capture the typed failure observed by each parent",
+        "dump the child terminal history and the parent child-resolution history"
+      ],
+      "pass_criteria": [
+        "each parent observes a typed child failure rather than a timeout or string-only error",
+        "the original error class name and message survive the parent/child boundary",
+        "the parent run reaches the workflow code path documented for child failure handling"
+      ]
+    },
+    {
+      "id": "parent_cancellation_propagates_to_child",
+      "title": "Parent cancellation propagates to child",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a parent workflow that schedules a long-running child with a cancel-on-close policy",
+        "cancel the parent through the public control-plane client",
+        "poll child status until the documented propagation window expires"
+      ],
+      "pass_criteria": [
+        "the child transitions to cancelled within the documented propagation window",
+        "the child worker observes typed cancellation and stops running user code",
+        "parent and child histories record the cancellation relationship without orphaning the child"
+      ]
+    },
+    {
+      "id": "direct_child_cancellation_observed_by_parent",
+      "title": "Direct child cancellation is observed by parent",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a parent workflow that is waiting on a long-running child",
+        "cancel the child run directly through the public control-plane client",
+        "resume the parent and capture the child outcome it observes"
+      ],
+      "pass_criteria": [
+        "the child run reaches cancelled state",
+        "the parent observes a typed cancelled child outcome rather than a timeout",
+        "the parent history records a child cancellation resolution for the same child_call_id"
+      ]
+    },
+    {
+      "id": "worker_restart_replay_preserves_child_outcome",
+      "title": "Worker restart replay preserves child outcome",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a parent workflow that is waiting on a child",
+        "stop the parent worker while the child is still running",
+        "complete the child, restart the parent worker, and wait for the parent result"
+      ],
+      "pass_criteria": [
+        "the restarted parent worker replays history and observes the recorded child outcome",
+        "the final parent result is byte-for-byte equal to the no-restart result",
+        "the decision sequence after restart does not schedule a duplicate child"
+      ]
+    },
+    {
+      "id": "concurrent_child_fan_out",
+      "title": "Concurrent child fan-out",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start a parent workflow that schedules five child workflows concurrently",
+        "record each child start timestamp and terminal timestamp",
+        "aggregate all child results in the parent"
+      ],
+      "pass_criteria": [
+        "all five child runs are present in parent history with distinct child_call_id values",
+        "the aggregate parent result matches the expected value",
+        "per-child timestamps demonstrate concurrent scheduling rather than serialized child execution"
+      ]
+    },
+    {
+      "id": "child_workflow_namespace_contract",
+      "title": "Child workflow namespace contract",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client",
+        "cli"
+      ],
+      "operations": [
+        "start parent and child workflows under the same namespace and verify lineage isolation",
+        "attempt a documented cross-namespace child workflow start when the implementation advertises support",
+        "record whether cross-namespace child starts are supported, rejected with a typed error, or undocumented"
+      ],
+      "pass_criteria": [
+        "same-namespace child starts remain scoped to the parent's namespace and task queue contract",
+        "cross-namespace behavior is either supported with explicit parent and child namespaces or rejected with a stable typed error",
+        "undocumented or inconsistent namespace behavior is recorded as a product finding"
+      ]
+    }
+  ]
+}

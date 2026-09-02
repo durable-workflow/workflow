@@ -1,0 +1,52 @@
+{
+  "schema": "durable_workflow.protocol.Value",
+  "fingerprint": "e2a33dff55802237",
+  "magic_hex": "c301",
+  "cases": [
+    {"name": "null", "kind": "null", "wire_base64": "wwHioz3/VYAiNwA="},
+    {"name": "boolean_false", "kind": "boolean", "value": false, "wire_base64": "wwHioz3/VYAiNwIA"},
+    {"name": "boolean_true", "kind": "boolean", "value": true, "wire_base64": "wwHioz3/VYAiNwIB"},
+    {"name": "long_min", "kind": "long", "value": "-9223372036854775808", "wire_base64": "wwHioz3/VYAiNwT///////////8B"},
+    {"name": "long_max", "kind": "long", "value": "9223372036854775807", "wire_base64": "wwHioz3/VYAiNwT+//////////8B"},
+    {"name": "long_7", "kind": "long", "value": "7", "wire_base64": "wwHioz3/VYAiNwQO"},
+    {"name": "double_7", "kind": "double", "value": 7.0, "wire_base64": "wwHioz3/VYAiNwYAAAAAAAAcQA=="},
+    {"name": "negative_zero", "kind": "double", "value": "-0.0", "wire_base64": "wwHioz3/VYAiNwYAAAAAAAAAgA=="},
+    {"name": "bytes_00ff", "kind": "bytes", "value_base64": "AP8=", "wire_base64": "wwHioz3/VYAiNwgEAP8="},
+    {"name": "string_utf8", "kind": "string", "value": "héllo", "wire_base64": "wwHioz3/VYAiNwoMaMOpbGxv"},
+    {"name": "array", "kind": "array", "wire_base64": "wwHioz3/VYAiNwwMAAIBBA4GAAAAAAAAHEAIBAD/Cgh0ZXh0AA=="},
+    {"name": "map", "kind": "map", "wire_base64": "wwHioz3/VYAiNw4EAmEEAgJiDAICAAAA"},
+    {"name": "map_empty", "kind": "map", "wire_base64": "wwHioz3/VYAiNw4A"},
+    {"name": "map_key_0", "kind": "map", "wire_base64": "wwHioz3/VYAiNw4CAjAKCHplcm8A"},
+    {"name": "map_keys_0_1", "kind": "map", "wire_base64": "wwHioz3/VYAiNw4EAjAKCHplcm8CMQoGb25lAA=="},
+    {"name": "nested", "kind": "map", "wire_base64": "wwHioz3/VYAiNw4CCml0ZW1zDAYOAg5lbmFibGVkAgEACApieXRlcwYAAAAAAAAEwAAA"}
+  ],
+  "alternate_map_orders": [
+    {
+      "name": "nested_map_list",
+      "wire_base64": [
+        "wwHioz3/VYAiNw4ECm91dGVyDAIOBAhsZWZ0BAIKcmlnaHQIAngAAAh0YWlsCghkb25lAA==",
+        "wwHioz3/VYAiNw4ECHRhaWwKCGRvbmUKb3V0ZXIMAg4ECnJpZ2h0CAJ4CGxlZnQEAgAAAA=="
+      ]
+    }
+  ],
+  "malformed_frames": [
+    {"name": "empty_blob", "error": "invalid_payload_framing", "wire_base64": ""},
+    {"name": "decoded_non_magic_bytes", "error": "invalid_payload_framing", "wire_base64": "JSUl"},
+    {"name": "short_frame", "error": "invalid_payload_framing", "wire_base64": "wwE="},
+    {"name": "no_datum", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNw=="},
+    {"name": "truncated_boolean", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwI="},
+    {"name": "truncated_long", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwQ="},
+    {"name": "truncated_double", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwY="},
+    {"name": "truncated_bytes", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwg="},
+    {"name": "truncated_string", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwo="},
+    {"name": "truncated_array", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNww="},
+    {"name": "truncated_map", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNw4="},
+    {"name": "trailing_bytes", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwAA"},
+    {"name": "invalid_union_branch", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNxA="},
+    {"name": "nan_double", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwwCDgICeAYAAAAAAAD4fwAA"},
+    {"name": "positive_infinity_double", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwwCDgICeAYAAAAAAADwfwAA"},
+    {"name": "negative_infinity_double", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwwCDgICeAYAAAAAAADw/wAA"},
+    {"name": "invalid_utf8_string", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwwCDgICeAoC/wAA"},
+    {"name": "unknown_fingerprint", "error": "unsupported_payload_schema", "wire_base64": "wwEdoz3/VYAiNwA="}
+  ]
+}

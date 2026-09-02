@@ -1,0 +1,265 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "signal-resumed-mixed-group-command-sequence",
+  "protocol_version": "1.19",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSignalResumedParallelWorkflow",
+    "arguments": [
+      false
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 1,
+        "result": "wwHioz3/VYAiNwoQcHJlcGFyZWQ="
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 2,
+        "result": "wwHioz3/VYAiNwoKcmVhZHk="
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 3,
+        "condition_wait_id": "condition-wait-3",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "condition-fp-signal-parallel",
+        "timeout_seconds": 60
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "condition-timer-3",
+        "sequence": 3,
+        "delay_seconds": 60,
+        "timer_kind": "condition_timeout",
+        "condition_wait_id": "condition-wait-3",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "condition-fp-signal-parallel"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "approval-signal",
+        "signal_name": "approve",
+        "arguments": "wwHioz3/VYAiNwIB",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 3,
+        "condition_wait_id": "condition-wait-3",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "condition-fp-signal-parallel",
+        "timer_id": "condition-timer-3",
+        "timeout_seconds": 60,
+        "workflow_signal_id": "approval-signal",
+        "signal_name": "approve"
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "TimerCancelled",
+      "payload": {
+        "timer_id": "condition-timer-3",
+        "sequence": 3,
+        "delay_seconds": 60,
+        "timer_kind": "condition_timeout",
+        "condition_wait_id": "condition-wait-3",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "condition-fp-signal-parallel"
+      }
+    },
+    {
+      "sequence": 8,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "activity-4",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 4,
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 9,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "child_workflow_run_id": "child-run-5",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "sequence": 5,
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 10,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "parallel-timer-6",
+        "sequence": 6,
+        "delay_seconds": 0,
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 11,
+      "event_type": "TimerFired",
+      "payload": {
+        "timer_id": "parallel-timer-6",
+        "sequence": 6,
+        "delay_seconds": 0,
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 12,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "activity-4",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 4,
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro",
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 13,
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "child_workflow_run_id": "child-run-5",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_status": "completed",
+        "sequence": 5,
+        "output": "wwHioz3/VYAiNw4CDHdhaXRlZAIBAA==",
+        "payload_codec": "avro",
+        "parallel_group_id": "parallel-calls:4:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 4,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:4:3",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 4,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "approved": true,
+      "nested": false,
+      "results": [
+        "Hello, Ada!",
+        {
+          "waited": true
+        },
+        true
+      ]
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

@@ -71,6 +71,25 @@ final class WorkflowFakerTest extends TestCase
         $this->assertSame($workflow->output(), 'workflow_activity_other_activity');
     }
 
+    public function testParentWorkflowWithCallableChildMock(): void
+    {
+        WorkflowStub::fake();
+
+        WorkflowStub::mock(TestActivity::class, 'activity');
+
+        WorkflowStub::mock(TestChildWorkflow::class, static function ($context) {
+            return 'other_activity';
+        });
+
+        $workflow = WorkflowStub::make(TestParentWorkflow::class);
+        $workflow->start();
+
+        WorkflowStub::assertDispatchedTimes(TestActivity::class, 1);
+        WorkflowStub::assertDispatchedTimes(TestChildWorkflow::class, 1);
+
+        $this->assertSame($workflow->output(), 'workflow_activity_other_activity');
+    }
+
     public function testConcurrentWorkflow(): void
     {
         WorkflowStub::fake();

@@ -4,22 +4,395 @@ declare(strict_types=1);
 
 namespace Workflow\Serializers;
 
+use Illuminate\Queue\SerializesAndRestoresModelIdentifiers;
+use InvalidArgumentException;
+use Laravel\SerializableClosure\SerializableClosure;
+use Throwable;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Support\ExternalPayloadStorage;
+
 final class Serializer
 {
+    /**
+     * Shared codec-independent normalization helpers live on this object so
+     * that static calls like {@see Serializer::serializable()} can reach them
+     * without coupling callers to the configured codec.
+     */
+    private static ?ModelIdentifierHelper $helper = null;
+
+    /**
+     * Legacy magic dispatch — preserves the pre-codec-registry behavior for
+     * the codec-specific surface: {@see serialize()} / {@see unserialize()}.
+     *
+     * - serialize(): uses config('workflows.serializer') (default "avro").
+     * - unserialize(): is the explicitly internal v1 import/drain reader. It
+     *   sniffs legacy untagged blobs ("base64:" prefix → Base64,
+     *   JSON-like → Json, else Y). Avro blobs are detected by their frame,
+     *   so call sites with codec context should prefer
+     *   {@see self::unserializeWithCodec()}.
+     *
+     * Codec-independent helpers ({@see serializable()}, {@see serializeModels()},
+     * {@see unserializeModels()}) are declared as first-class static methods
+     * on this class and short-circuit before __callStatic so they produce the
+     * same result regardless of the configured codec. They keep non-
+     * AbstractSerializer codec implementations safe and avoid silently dropping
+     * exception trace frames and failure-property values during v2 failure
+     * normalization.
+     *
+     * New code should prefer {@see self::serializeWithCodec()} /
+     * {@see self::unserializeWithCodec()} which make the codec choice explicit.
+     */
     public static function __callStatic(string $name, array $arguments)
     {
         if ($name === 'unserialize') {
-            if (str_starts_with($arguments[0], 'base64:')) {
-                $instance = Base64::getInstance();
-            } else {
-                $instance = Y::getInstance();
-            }
+            $class = self::legacyUnserializeClass((string) ($arguments[0] ?? ''));
         } else {
-            $instance = config('workflows.serializer', Y::class)::getInstance();
+            $class = self::defaultCodecClass();
         }
 
-        if (method_exists($instance, $name)) {
-            return $instance->{$name}(...$arguments);
+        if ($name === 'serialize' && $class === Avro::class && self::containsPhpOnlyValue($arguments[0] ?? null)) {
+            $class = Y::class;
         }
+
+        if ($name === 'serialize' && ! is_subclass_of($class, AbstractSerializer::class)) {
+            $arguments[0] = self::normalizeForCodec($arguments[0] ?? null);
+        }
+
+        if (method_exists($class, $name)) {
+            return $class::{$name}(...$arguments);
+        }
+    }
+
+    /**
+     * Codec-independent replacement for the legacy AbstractSerializer helper:
+     * is this value safe to pass to PHP's native serialize()?
+     *
+     * Used by exception-trace filtering and v2 failure property capture. Must
+     * be safe to call regardless of the configured codec.
+     */
+    public static function serializable(mixed $data): bool
+    {
+        try {
+            serialize($data);
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Recursively replace Eloquent models inside $data with their serialized
+     * identifier representation, and convert Throwable instances into plain
+     * arrays. Always applied by v1 and v2 failure normalization paths.
+     *
+     * Codec-independent: returns the same shape regardless of whether the
+     * configured codec is Avro, Y, or Base64.
+     */
+    public static function serializeModels(mixed $data): mixed
+    {
+        if ($data instanceof Throwable) {
+            return self::throwableToArray($data);
+        }
+
+        if (is_array($data)) {
+            return self::helper()->serializeValue($data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Inverse of {@see serializeModels()} for nested arrays. Scalars and
+     * non-array values are returned unchanged.
+     */
+    public static function unserializeModels(mixed $data): mixed
+    {
+        if (is_array($data)) {
+            return self::helper()->unserializeValue($data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Serialize using an explicit codec name.
+     *
+     * If $codec is null, falls back to the final v2 default codec (Avro).
+     */
+    public static function serializeWithCodec(?string $codec, $data): string
+    {
+        $class = CodecRegistry::resolve($codec);
+
+        if (! is_subclass_of($class, AbstractSerializer::class)) {
+            $data = self::normalizeForCodec($data);
+        }
+
+        return $class::serialize($data);
+    }
+
+    /**
+     * Pick the codec name actually used to serialize a v2 payload. Durable
+     * values are Avro-only; PHP-only values must be adapted before they cross
+     * a v2 payload boundary and are never silently moved to a legacy codec.
+     */
+    public static function chooseCodecForData(?string $preferred, mixed $data): string
+    {
+        CodecRegistry::resolve($preferred);
+        return CodecRegistry::canonicalize($preferred);
+    }
+
+    /**
+     * Encode a value and offload to external storage when the blob exceeds the threshold.
+     *
+     * Payloads whose encoded byte length is greater than $thresholdBytes are
+     * stored through $driver and returned as a {codec, external_storage} envelope
+     * so that workflow history carries a stable reference instead of the raw bytes.
+     * Payloads at or below the threshold are returned as the normal {codec, blob}
+     * inline envelope.
+     *
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}
+     */
+    public static function externalStorageEnvelope(
+        mixed $value,
+        string $codec,
+        ExternalPayloadStorageDriver $driver,
+        int $thresholdBytes,
+    ): array {
+        if ($thresholdBytes < 1) {
+            throw new InvalidArgumentException('External storage threshold must be at least 1 byte.');
+        }
+
+        $canonicalCodec = CodecRegistry::canonicalize($codec);
+        $blob = self::serializeWithCodec($canonicalCodec, $value);
+
+        if (strlen($blob) <= $thresholdBytes) {
+            return [
+                'codec' => $canonicalCodec,
+                'blob' => $blob,
+            ];
+        }
+
+        $reference = ExternalPayloadStorage::store($driver, $blob, $canonicalCodec);
+
+        return [
+            'codec' => $canonicalCodec,
+            'external_storage' => $reference->toArray(),
+        ];
+    }
+
+    /**
+     * Unserialize using an explicit codec name.
+     */
+    public static function unserializeWithCodec(?string $codec, string $data)
+    {
+        $class = CodecRegistry::resolve($codec);
+        return $class::unserialize($data);
+    }
+
+    /**
+     * @return class-string<SerializerInterface>
+     */
+    private static function defaultCodecClass(): string
+    {
+        $configured = function_exists('config') ? config('workflows.serializer') : null;
+
+        if (is_string($configured) && $configured !== '') {
+            $legacy = ltrim($configured, '\\');
+            if ($legacy === Y::class || $legacy === 'workflow-serializer-y') {
+                return Y::class;
+            }
+            if ($legacy === Base64::class || $legacy === 'workflow-serializer-base64') {
+                return Base64::class;
+            }
+
+            return CodecRegistry::resolve($configured);
+        }
+
+        return CodecRegistry::resolve(null);
+    }
+
+    /**
+     * Pre-normalize $data before handing it to a codec that does not itself
+     * apply model/Throwable normalization. Legacy codecs that extend
+     * {@see AbstractSerializer} already call serializeModels internally and
+     * must not be double-normalized here.
+     */
+    private static function normalizeForCodec(mixed $data): mixed
+    {
+        return self::serializeModels($data);
+    }
+
+    private static function containsPhpOnlyValue(mixed $data): bool
+    {
+        if ($data instanceof Throwable) {
+            return false;
+        }
+
+        if ($data instanceof SerializableClosure) {
+            return true;
+        }
+
+        if ($data instanceof AvroBinaryValue) {
+            return false;
+        }
+
+        if ($data instanceof AvroMapValue) {
+            foreach ($data->pairs as [, $value]) {
+                if (self::containsPhpOnlyValue($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (is_array($data)) {
+            foreach ($data as $value) {
+                if (self::containsPhpOnlyValue($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return is_object($data) || is_resource($data);
+    }
+
+    /**
+     * @return array{class: class-string<Throwable>, message: string, code: int|string, line: int, file: string, trace: list<array<string, mixed>>}
+     */
+    private static function throwableToArray(Throwable $throwable): array
+    {
+        return [
+            'class' => get_class($throwable),
+            'message' => $throwable->getMessage(),
+            'code' => $throwable->getCode(),
+            'line' => $throwable->getLine(),
+            'file' => $throwable->getFile(),
+            'trace' => self::portableThrowableTrace($throwable),
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function portableThrowableTrace(Throwable $throwable): array
+    {
+        return collect($throwable->getTrace())
+            ->filter(static fn (mixed $frame): bool => is_array($frame))
+            ->map(static function (array $frame): array {
+                $portable = [];
+
+                foreach ($frame as $key => $value) {
+                    if (is_string($key) && self::isPortableAvroValue($value)) {
+                        $portable[$key] = $value;
+                    }
+                }
+
+                return $portable;
+            })
+            ->filter(static fn (array $frame): bool => $frame !== [])
+            ->values()
+            ->toArray();
+    }
+
+    private static function isPortableAvroValue(mixed $value): bool
+    {
+        try {
+            Avro::serialize($value);
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    private static function helper(): ModelIdentifierHelper
+    {
+        if (self::$helper === null) {
+            self::$helper = new ModelIdentifierHelper();
+        }
+
+        return self::$helper;
+    }
+
+    /**
+     * @return class-string<SerializerInterface>
+     */
+    private static function legacyUnserializeClass(string $blob): string
+    {
+        if (str_starts_with($blob, 'base64:')) {
+            return Base64::class;
+        }
+
+        if (self::looksLikeAvro($blob)) {
+            return Avro::class;
+        }
+
+        // JSON blobs always start with "{", "[", a digit, quote, minus, "t"/"f"/"n".
+        // PHP-serialized-closure blobs start with "O:".
+        if ($blob !== '' && $blob[0] !== 'O' && self::looksLikeJson($blob)) {
+            return Json::class;
+        }
+
+        return Y::class;
+    }
+
+    private static function looksLikeJson(string $blob): bool
+    {
+        $first = $blob[0] ?? '';
+        if ($first === '[' || $first === '{' || $first === '"') {
+            return true;
+        }
+        if ($first === '-' || ($first >= '0' && $first <= '9')) {
+            return true;
+        }
+        return in_array($blob, ['true', 'false', 'null'], true);
+    }
+
+    private static function looksLikeAvro(string $blob): bool
+    {
+        $bytes = base64_decode($blob, true);
+
+        return $bytes !== false
+            && str_starts_with($bytes, Avro::SINGLE_OBJECT_MAGIC);
+    }
+}
+
+/**
+ * @internal
+ */
+final class ModelIdentifierHelper
+{
+    use SerializesAndRestoresModelIdentifiers {
+        getSerializedPropertyValue as public;
+        getRestoredPropertyValue as public;
+    }
+
+    public function serializeValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $nested) {
+                $value[$key] = $this->serializeValue($nested);
+            }
+
+            return $value;
+        }
+
+        return $this->getSerializedPropertyValue($value);
+    }
+
+    public function unserializeValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $nested) {
+                $value[$key] = $this->unserializeValue($nested);
+            }
+
+            return $value;
+        }
+
+        return $this->getRestoredPropertyValue($value);
     }
 }

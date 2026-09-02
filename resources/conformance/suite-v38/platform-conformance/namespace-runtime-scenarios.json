@@ -1,0 +1,404 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "namespace_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for Temporal-parity namespace conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "namespace_topology",
+    "runtime_matrix",
+    "observed_outputs",
+    "api_captures",
+    "cleanup_evidence",
+    "linked_findings"
+  ],
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "sdk_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP SDK runtime, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the actor or target under test"
+      ]
+    },
+    {
+      "id": "namespace_create_update_describe_and_list",
+      "title": "Namespace create, update, describe, and list",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "create tenant-a, tenant-b, and shared namespaces through the CLI and at least one SDK client path",
+        "describe and update namespace metadata through documented control-plane surfaces",
+        "list namespaces and capture the namespace fields exposed to operators"
+      ],
+      "pass_criteria": [
+        "create, update, describe, and list operations return stable success envelopes",
+        "CLI JSON and SDK responses agree on namespace name, status, retention, and timestamps",
+        "operator-visible namespace fields do not require reading server internals"
+      ]
+    },
+    {
+      "id": "workflow_cross_namespace_visibility_isolation",
+      "title": "Workflow cross-namespace visibility isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "start a long-running workflow in tenant-a on task queue iso",
+        "from tenant-b, describe and query the tenant-a workflow id",
+        "from tenant-b, list workflows filtered by the shared task queue name"
+      ],
+      "pass_criteria": [
+        "tenant-b describe and query attempts return not-found without confirming tenant-a existence",
+        "tenant-b workflow lists never include tenant-a runs",
+        "not-found envelopes include stable operation identity without leaking cross-namespace state"
+      ]
+    },
+    {
+      "id": "workflow_cross_namespace_mutation_isolation",
+      "title": "Workflow cross-namespace mutation isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "start a long-running workflow in tenant-a",
+        "from tenant-b, attempt to signal, cancel, and terminate the tenant-a workflow id",
+        "query tenant-a after the tenant-b attempts"
+      ],
+      "pass_criteria": [
+        "tenant-b mutation attempts return not-found or an equally non-enumerating typed error",
+        "tenant-b attempts do not alter tenant-a workflow history or status",
+        "tenant-a remains controllable through tenant-a scoped clients"
+      ]
+    },
+    {
+      "id": "php_worker_task_queue_namespace_isolation",
+      "title": "PHP worker task-queue namespace isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "sdk_php_runtime",
+        "php_worker_tenant_a",
+        "php_worker_tenant_b"
+      ],
+      "operations": [
+        "register one PHP worker in tenant-a:iso and one PHP worker in tenant-b:iso",
+        "start a tenant-a workflow on task queue iso",
+        "mirror the test with a tenant-b workflow on task queue iso"
+      ],
+      "pass_criteria": [
+        "only the worker registered for the workflow namespace receives the workflow task",
+        "shared task queue names do not cause cross-namespace task delivery",
+        "worker registration and poll evidence names the namespace used for matching"
+      ]
+    },
+    {
+      "id": "cli_namespace_context_and_default_scope",
+      "title": "CLI namespace context and default scope",
+      "claim_targets": [
+        "cli_json_client",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "cli_client"
+      ],
+      "operations": [
+        "run workflow, schedule, search-attribute, and worker visibility commands with explicit --namespace values",
+        "run workflow list without --namespace after creating tenant-a and tenant-b state",
+        "capture JSON and human-readable output for namespace context"
+      ],
+      "pass_criteria": [
+        "explicit --namespace commands scope every request to the selected namespace",
+        "omitting --namespace uses only the documented default namespace and never enumerates all tenant state",
+        "machine-readable output exposes the namespace context needed by operators"
+      ]
+    },
+    {
+      "id": "sdk_namespace_selection_parity",
+      "title": "SDK namespace selection parity",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_runtime",
+        "sdk_php_runtime",
+        "sdk_client"
+      ],
+      "operations": [
+        "start equivalent workflows through Python and PHP SDK-facing clients in tenant-a and tenant-b",
+        "query each run through same-namespace SDK clients",
+        "attempt cross-namespace SDK reads using the same workflow ids"
+      ],
+      "pass_criteria": [
+        "SDK namespace options select the same server namespace as CLI and HTTP control-plane requests",
+        "same-namespace SDK reads succeed and cross-namespace SDK reads fail without existence leaks",
+        "SDK result envelopes preserve namespace identity where the public contract exposes it"
+      ]
+    },
+    {
+      "id": "search_attribute_schema_and_value_query_isolation",
+      "title": "Search-attribute schema and value query isolation",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "define customer_id as a tenant-a search attribute",
+        "start a tenant-a workflow with a customer_id value",
+        "from tenant-b, list search-attribute definitions and query workflows by the tenant-a customer_id value"
+      ],
+      "pass_criteria": [
+        "tenant-b schema reads do not include tenant-a custom search attributes",
+        "tenant-b value queries return an empty result or a stable typed error without tenant-a values",
+        "search-attribute evidence distinguishes schema isolation from per-workflow value isolation"
+      ]
+    },
+    {
+      "id": "schedule_namespace_isolation",
+      "title": "Schedule namespace isolation",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "cli_client"
+      ],
+      "operations": [
+        "create a schedule in tenant-a",
+        "list and describe schedules from tenant-b",
+        "trigger or observe the schedule from tenant-a"
+      ],
+      "pass_criteria": [
+        "tenant-b schedule lists never include tenant-a schedules",
+        "tenant-b describe attempts for tenant-a schedule ids do not leak existence",
+        "tenant-a schedule behavior remains observable from tenant-a"
+      ]
+    },
+    {
+      "id": "namespace_lifecycle_cleanup_and_recreate",
+      "title": "Namespace lifecycle cleanup and recreate",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client",
+        "worker"
+      ],
+      "operations": [
+        "populate tenant-a with workflows, schedules, search attributes, and worker registrations",
+        "configure tenant-a and tenant-b with distinct external payload storage contexts",
+        "create cross-namespace workflow and service-call records whose caller names tenant-a while payload data is owned by tenant-b",
+        "delete or retire tenant-a through the documented namespace lifecycle surface",
+        "resolve retained tenant-b payload references through the tenant-b storage context",
+        "recreate tenant-a and inspect workflows, schedules, search attributes, and worker registrations"
+      ],
+      "pass_criteria": [
+        "namespace deletion only removes external payload references owned by the deleted namespace",
+        "tenant-b-owned cross-namespace workflow and service-call records remain readable after tenant-a deletion",
+        "tenant-b-owned payload references remain intact and resolve through tenant-b external payload storage",
+        "unsafe cleanup is refused with a typed operator-visible reason instead of deleting or resolving through the wrong namespace storage context",
+        "namespace deletion or retirement removes listable workflows and schedules from the active namespace",
+        "search-attribute definitions and server-side worker registration records do not survive recreate",
+        "a recreated namespace does not inherit any prior tenant-a state"
+      ],
+      "unsupported_when": [
+        "the implementation documents that namespace deletion is not yet a supported lifecycle surface; the result must link the product finding"
+      ]
+    },
+    {
+      "id": "waterline_operator_namespace_visibility",
+      "title": "Waterline operator namespace visibility",
+      "claim_targets": [
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "waterline",
+        "worker"
+      ],
+      "operations": [
+        "run workflows in tenant-a and tenant-b with distinguishable ids and search attributes",
+        "inspect Waterline list, detail, and operator API views scoped to each namespace",
+        "attempt any Waterline default or unscoped view advertised by the product"
+      ],
+      "pass_criteria": [
+        "Waterline scoped views show only workflows and metadata from the selected namespace",
+        "detail views include enough namespace identity for operator diagnosis",
+        "unscoped views either use the documented default namespace or require an explicit operator-wide authority"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the waterline_contract_surface target"
+      ]
+    },
+    {
+      "id": "nexus_explicit_cross_namespace_invocation",
+      "title": "Explicit Nexus cross-namespace invocation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "expose a Nexus service in the shared namespace",
+        "invoke that service from workflows in tenant-a and tenant-b",
+        "repeat direct workflow access checks without Nexus registration"
+      ],
+      "pass_criteria": [
+        "explicit Nexus calls from tenant-a and tenant-b to shared succeed and return results to the caller workflow",
+        "Nexus evidence records caller namespace and target namespace independently",
+        "direct cross-namespace workflow access remains blocked without the explicit Nexus surface"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the documented Nexus surface; the result must link the product finding"
+      ]
+    },
+    {
+      "id": "reserved_namespace_name_refusal",
+      "title": "Reserved namespace name refusal",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "sdk_client"
+      ],
+      "operations": [
+        "attempt to create empty, whitespace, path-like, control-character, and reserved namespace names",
+        "capture CLI JSON, SDK, and HTTP error envelopes",
+        "verify that refused names do not become usable namespaces"
+      ],
+      "pass_criteria": [
+        "invalid namespace names are refused with stable typed validation errors",
+        "error messages identify the namespace-name field without creating side effects",
+        "subsequent list and describe calls do not show refused namespaces"
+      ]
+    },
+    {
+      "id": "result_record_and_product_finding_routing",
+      "title": "Result record and product finding routing",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "conformance_harness"
+      ],
+      "operations": [
+        "emit one result record for every required namespace scenario",
+        "record generated_at, outcome, artifact versions, topology, observed outputs, and linked findings",
+        "route each product behavior gap to the owning tracker based on user-visible evidence"
+      ],
+      "pass_criteria": [
+        "every required scenario has a status from the published result_statuses set",
+        "non-pass product evidence links to an owning product finding with concrete reproduction output",
+        "smoke-only namespace evidence is recorded as not_covered or fail, never as pass"
+      ]
+    }
+  ],
+  "host_runner_contract": {
+    "status": "required_for_passing_namespace_conformance",
+    "result_schema": "durable-workflow.v2.namespace-runtime.result",
+    "must_execute_against_published_artifacts": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "smoke_summary_only_outcome": "non_passing_smoke_only",
+    "unexecuted_required_scenario_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness"
+  }
+}

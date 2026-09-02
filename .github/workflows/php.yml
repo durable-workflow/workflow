@@ -2,53 +2,259 @@ name: build
 
 on:
   push:
-    branches: [ master ]
+    branches: [main]
   pull_request:
-    branches: [ master ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-
+  action-policy:
+    name: Central action policy preflight
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Check out candidate source
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+    - name: Check out central action policy
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        repository: durable-workflow/.github
+        ref: main
+        path: .central-action-policy
+        persist-credentials: false
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+      with:
+        python-version: "3.13"
+    - name: Install policy dependencies
+      run: python -m pip install PyYAML==6.0.2
+    - name: Require centrally approved immutable action commits
+      run: >-
+        python .central-action-policy/scripts/qualification_policy.py validate
+        --policy .central-action-policy/qualification/policy.json
+        --target workflow
+        --workflow-directory .github/workflows
+
+  preflight:
+    name: Validate repository contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      laravel_source_matrix: ${{ steps.laravel-matrix.outputs.matrix }}
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Verify build and feature selection contracts
+      run: python scripts/ci/test-build-routing.py
+
+    - name: Verify complete feature inventories
+      run: php scripts/ci/verify-feature-shards.php
+
+    - name: Validate workflow YAML syntax
+      run: yq eval-all '.' .github/workflows/*.yml >/dev/null
+
+    - name: Validate CI script syntax
+      run: |
+        bash -n \
+          scripts/ci/laravel-embedded-upgrade-smoke.sh \
+          scripts/ci/check-packagist-release.sh \
+          scripts/ci/check-platform-conformance-mirror.sh \
+          scripts/ci/test-platform-conformance-resolver-audit.sh
+        php -l scripts/ci/compare-platform-conformance-mirrors.php
+        php -l scripts/ci/check-v2-coverage.php
+        php -l scripts/ci/list-worker-protocol-resolvers.php
+        php -l scripts/ci/check-laravel-dependency-security.php
+        php -l scripts/ci/laravel-embedded-upgrade-matrix.php
+        php -l scripts/ci/verify-history-export-source-identity.php
+        php scripts/ci/check-v2-coverage.php --self-test
+        python - <<'PY'
+        import ast
+        from pathlib import Path
+
+        for path in Path("scripts/ci").glob("*.py"):
+            ast.parse(path.read_text(), filename=str(path))
+        PY
+
+    - name: Verify platform conformance resolver audit
+      run: scripts/ci/test-platform-conformance-resolver-audit.sh
+
+    - name: Validate Laravel dependency security policy
+      run: php scripts/ci/check-laravel-dependency-security.php --policy-only
+
+    - name: Install payload consumer dependencies
+      run: composer install --prefer-dist --no-progress --no-dev --no-scripts
+
+    - name: Derive bounded Laravel source qualification
+      id: laravel-matrix
+      run: echo "matrix=$(php scripts/ci/laravel-embedded-upgrade-matrix.php --scope=source)" >> "$GITHUB_OUTPUT"
+
+    - name: Require durable replay and codec evidence
+      env:
+        CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        arguments=()
+        if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+          arguments+=(--base-ref "$CORPUS_BASE_REF")
+        fi
+        python scripts/ci/validate-regression-corpus.py \
+          --skip-counterfactual \
+          "${arguments[@]}"
+        python scripts/ci/test-regression-corpus-policy.py
+
+    - name: Scan public boundary
+      shell: bash
+      env:
+        BUILD_EVENT_NAME: ${{ github.event_name }}
+        BUILD_BEFORE_SHA: ${{ github.event.before }}
+        BUILD_HEAD_SHA: ${{ github.sha }}
+        PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PULL_REQUEST_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: |
+        set -euo pipefail
+
+        baseline=""
+        if [ "$BUILD_EVENT_NAME" = "pull_request" ]; then
+          range="${PULL_REQUEST_BASE_SHA}..${PULL_REQUEST_HEAD_SHA}"
+          base_ref="origin/${PULL_REQUEST_BASE_REF}"
+          if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+            baseline="$base_ref"
+          else
+            baseline="$PULL_REQUEST_BASE_SHA"
+          fi
+        elif [[ "$BUILD_BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+          && [[ ! "$BUILD_BEFORE_SHA" =~ ^0+$ ]] \
+          && git cat-file -e "${BUILD_BEFORE_SHA}^{commit}"; then
+          range="${BUILD_BEFORE_SHA}..${BUILD_HEAD_SHA}"
+        elif git rev-parse --verify --quiet "${BUILD_HEAD_SHA}^" >/dev/null; then
+          range="${BUILD_HEAD_SHA}^..${BUILD_HEAD_SHA}"
+        else
+          range="$BUILD_HEAD_SHA"
+        fi
+
+        PUBLIC_BOUNDARY_GIT_RANGE="$range" \
+          PUBLIC_BOUNDARY_GIT_BASELINE="$baseline" \
+          scripts/check-public-boundary.sh
+
+  regression-corpus:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
 
     services:
-      mysql:
-        image: mysql
-        env:
-          MYSQL_ROOT_PASSWORD: password
-        ports:
-        - 3306:3306
-
-      postgres:
-        image: postgres
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: testbench
-        ports:
-        - 5432:5432
-
       redis:
         image: redis
         ports:
-        - 6379:6379
+        - 6379
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Prepare official consumer runtime
+      env:
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          temporary_root=/dev/shm
+        else
+          temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        fi
+        run_token="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        corpus_db="${temporary_root}/workflow-regression-corpus-${run_token}.sqlite"
+        touch "$corpus_db"
+
+        if getent hosts redis > /dev/null 2>&1; then
+          redis_host=redis
+          redis_port=6379
+        elif [ -n "$REDIS_PUBLISHED_PORT" ]; then
+          redis_host=127.0.0.1
+          redis_port="$REDIS_PUBLISHED_PORT"
+        else
+          echo "::error::Unable to resolve Redis service endpoint" >&2
+          exit 1
+        fi
+
+        {
+          echo "CORPUS_DB_PATH=$corpus_db"
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_CONNECTION=sqlite"
+          echo "DB_DATABASE=$corpus_db"
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+          echo "QUEUE_CONNECTION=sync"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_HOST=$redis_host"
+          echo "REDIS_PORT=$redis_port"
+          echo "REDIS_PASSWORD="
+        } >> "$GITHUB_ENV"
+
+    - name: Prove new regression evidence against base and current bindings
+      env:
+        CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        arguments=()
+        if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+          arguments+=(--base-ref "$CORPUS_BASE_REF")
+        fi
+        python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+
+    - name: Remove regression-corpus database
+      if: ${{ always() }}
+      run: |
+        if [ -n "${CORPUS_DB_PATH:-}" ] \
+          && [[ "${CORPUS_DB_PATH##*/}" == workflow-regression-corpus-*.sqlite ]]; then
+          rm -f -- "$CORPUS_DB_PATH"
+        fi
+
+  quality:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       with:
           fetch-depth: 10
+          persist-credentials: false
 
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
 
     - name: Cache Composer packages
-      id: composer-cache
-      uses: actions/cache@v3
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
         path: vendor
-        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
         restore-keys: |
-          ${{ runner.os }}-php-
+          ${{ github.event_name }}-${{ runner.os }}-php-
 
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
@@ -59,63 +265,847 @@ jobs:
     - name: Run static analysis via PHPStan
       run: vendor/bin/phpstan analyse src tests
 
-    - name: Create databases
-      run: |
-        touch testbench.sqlite
-        mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
+  laravel-embedded-upgrade-source:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} embedded upgrade
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
-    - name: Run test suite (MySQL)
-      run: vendor/bin/phpunit --testdox --debug --testsuite feature
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.laravel_source_matrix) }}
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: ${{ matrix.php }}
+        tools: composer
+
+    - name: Run the clean stable-v1 to source-v2 journey
+      env:
+        LARAVEL_VERSION: ${{ matrix.laravel }}
+        WORKFLOW_V2_PATH: ${{ github.workspace }}
+      run: scripts/ci/laravel-embedded-upgrade-smoke.sh
+
+  pr-unit-contracts:
+    needs: preflight
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve bounded pull-request test selection
+      run: >-
+        php scripts/ci/select-pr-tests.php
+        --config=.github/pr-test-selection.json
+        --weights=.github/feature-test-timings.json
+        --weight-profile=mysql
+        --output-dir=build/pr-selection
+
+    - name: Run database-independent unit contracts
+      run: |
+        mkdir -p build/test-results
+        xargs -a build/pr-selection/unit-files.txt \
+          vendor/bin/phpunit --testdox \
+          --log-junit build/test-results/pr-unit-contracts.xml
+
+  pr-feature-mysql:
+    needs: preflight
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
+        ports:
+        - 3306
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 20
+          persist-credentials: false
+
+    - name: Resolve changed files
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        mkdir -p build/pr-selection
+        if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] \
+          && git cat-file -e "${BASE_SHA}^{commit}" \
+          && git cat-file -e "${HEAD_SHA}^{commit}"; then
+          git diff --name-only --diff-filter=ACMRT "$BASE_SHA" "$HEAD_SHA" \
+            > build/pr-selection/changed-files.txt
+        else
+          : > build/pr-selection/changed-files.txt
+          echo "Changed-file targeting unavailable; using the high-signal fallback."
+        fi
+
+    - name: Resolve bounded pull-request test selection
+      run: >-
+        php scripts/ci/select-pr-tests.php
+        --config=.github/pr-test-selection.json
+        --weights=.github/feature-test-timings.json
+        --weight-profile=mysql
+        --changed-files=build/pr-selection/changed-files.txt
+        --output-dir=build/pr-selection
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_PASSWORD="
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
+
+    - name: Create MySQL database
+      run: >-
+        mysql
+        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; CREATE DATABASE testbench'
+        -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+
+    - name: Run bounded MySQL smoke selection
+      id: pr_mysql_suite
+      run: |
+        mkdir -p build/test-results
+        cat build/pr-selection/summary.txt
+        set +e
+        # shellcheck disable=SC2016
+        timeout --foreground 8m bash -euo pipefail -c '
+          filter=$(cat build/pr-selection/mysql-fallback-filter.txt)
+          xargs -a build/pr-selection/mysql-fallback-files.txt \
+            vendor/bin/phpunit --testdox --testsuite feature \
+            --filter "$filter" \
+            --log-junit build/test-results/pr-smoke-fallback.xml
+
+          if [ -s build/pr-selection/mysql-changed-files.txt ]; then
+            xargs -a build/pr-selection/mysql-changed-files.txt \
+              vendor/bin/phpunit --testdox --testsuite feature \
+              --log-junit build/test-results/pr-smoke-changed.xml
+          fi
+        '
+        status=$?
+        set -e
+
+        for report in build/test-results/pr-smoke-*.xml; do
+          [ -f "$report" ] || continue
+          name=$(basename "$report" .xml)
+          php scripts/ci/summarize-junit-times.php \
+            --input="$report" \
+            --output="build/test-results/${name}-timing.md" \
+            --csv="build/test-results/${name}-timing.csv"
+          cat "build/test-results/${name}-timing.md"
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "build/test-results/${name}-timing.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        done
+
+        exit "$status"
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Upload pull-request MySQL smoke timing report
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: pr-feature-timing-mysql
+        path: |
+          build/pr-selection/*
+          build/test-results/pr-smoke-*
+
+    - name: Upload laravel.log if pull-request MySQL smoke fails
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pr_mysql_suite.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: laravel-log-pr-mysql
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
+  feature-mysql:
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        # Keep disposable test data on tmpfs so schema setup and committed-row
+        # truncation are not gated by the container overlay's fsync latency.
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
+        ports:
+        - 3306
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+
+    - name: Set up PHP coverage driver
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.3'
+        coverage: pcov
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service mysql 3306 "$MYSQL_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_PASSWORD="
+          # Testbench defaults cache to array (per-process, in-memory). The V2
+          # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
+          # visible to the two queue:work worker processes so their wake()
+          # poll short-circuits — array cache means the workers never see the
+          # test's throttle and runPass races the test's DB state (originally
+          # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
+          # The local docker stack uses tests/.env.feature which already sets
+          # CACHE_DRIVER=redis for the same reason; mirror it here.
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
+
+    - name: Create MySQL database
+      run: >-
+        mysql
+        -e 'SET GLOBAL innodb_flush_log_at_trx_commit=2; SET GLOBAL sync_binlog=0; SET GLOBAL max_connections=500; CREATE DATABASE testbench'
+        -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+
+    - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
+      id: mysql_suite
+      timeout-minutes: 12
+      run: |
+        mkdir -p build/test-results
+        php scripts/ci/split-feature-tests.php \
+          --dir=tests/Feature \
+          --shard=${{ matrix.shard }} \
+          --shards=4 \
+          --weights=.github/feature-test-timings.json \
+          --weight-profile=mysql \
+          --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
+          > /tmp/mysql-shard-files
+        cat /tmp/mysql-shard-files
+        cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
+        started_at=$(date +%s)
+        set +e
+        timeout --foreground 12m xargs -a /tmp/mysql-shard-files \
+          vendor/bin/phpunit --testdox --testsuite feature \
+          --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
+          --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
+        status=$?
+        elapsed=$(( $(date +%s) - started_at ))
+        set -e
+        printf 'mysql shard=%s exit=%s elapsed_seconds=%s\n' '${{ matrix.shard }}' "$status" "$elapsed" \
+          | tee "build/test-results/mysql-shard-${{ matrix.shard }}-elapsed.txt"
+        if [ -f "build/test-results/mysql-shard-${{ matrix.shard }}.xml" ]; then
+          php scripts/ci/summarize-junit-times.php \
+            --input="build/test-results/mysql-shard-${{ matrix.shard }}.xml" \
+            --output="build/test-results/mysql-shard-${{ matrix.shard }}-timing.md" \
+            --csv="build/test-results/mysql-shard-${{ matrix.shard }}-timing.csv"
+        fi
+        exit "$status"
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Emit MySQL shard diagnostics
+      if: ${{ always() }}
+      env:
+        SUITE_OUTCOME: ${{ steps.mysql_suite.outcome }}
+      run: |
+        cat "build/test-results/mysql-shard-${{ matrix.shard }}-elapsed.txt" 2>/dev/null || true
+        cat "build/test-results/mysql-shard-${{ matrix.shard }}-timing.md" 2>/dev/null || true
+        if [ "$SUITE_OUTCOME" != "success" ]; then
+          echo "MySQL shard ${{ matrix.shard }} failed; assigned files:"
+          cat "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt" 2>/dev/null || true
+          tail -n 300 vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log 2>/dev/null || true
+        fi
+
+    - name: Upload MySQL feature timing report
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: feature-timing-mysql-${{ matrix.shard }}
+        path: build/test-results/mysql-shard-${{ matrix.shard }}*
+
+    - name: Upload laravel.log if MySQL tests fail
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.mysql_suite.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: laravel-log-mysql-${{ matrix.shard }}
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
+  feature-postgresql:
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: testbench
+          POSTGRES_INITDB_ARGS: --no-sync
+        ports:
+        - 5432
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        POSTGRES_PUBLISHED_PORT: ${{ job.services.postgres.ports['5432'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service postgres 5432 "$POSTGRES_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_PASSWORD="
+          # Testbench defaults cache to array (per-process, in-memory). The V2
+          # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
+          # visible to the two queue:work worker processes so their wake()
+          # poll short-circuits — array cache means the workers never see the
+          # test's throttle and runPass races the test's DB state (originally
+          # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
+          # The local docker stack uses tests/.env.feature which already sets
+          # CACHE_DRIVER=redis for the same reason; mirror it here.
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
+
+    - name: Run feature test suite (PostgreSQL shard ${{ matrix.shard }})
+      id: pgsql_suite
+      timeout-minutes: 12
+      run: |
+        mkdir -p build/test-results
+        php scripts/ci/split-feature-tests.php \
+          --dir=tests/Feature \
+          --shard=${{ matrix.shard }} \
+          --shards=4 \
+          --weights=.github/feature-test-timings.json \
+          --weight-profile=postgresql \
+          --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
+          > /tmp/pgsql-shard-files
+        cat /tmp/pgsql-shard-files
+        cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
+        started_at=$(date +%s)
+        set +e
+        timeout --foreground 10m xargs -a /tmp/pgsql-shard-files \
+          vendor/bin/phpunit --testdox --testsuite feature \
+          --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
+        status=$?
+        elapsed=$(( $(date +%s) - started_at ))
+        set -e
+        printf 'postgresql shard=%s exit=%s elapsed_seconds=%s\n' '${{ matrix.shard }}' "$status" "$elapsed" \
+          | tee "build/test-results/pgsql-shard-${{ matrix.shard }}-elapsed.txt"
+        if [ -f "build/test-results/pgsql-shard-${{ matrix.shard }}.xml" ]; then
+          php scripts/ci/summarize-junit-times.php \
+            --input="build/test-results/pgsql-shard-${{ matrix.shard }}.xml" \
+            --output="build/test-results/pgsql-shard-${{ matrix.shard }}-timing.md" \
+            --csv="build/test-results/pgsql-shard-${{ matrix.shard }}-timing.csv"
+        fi
+        exit "$status"
+      env:
+        DB_CONNECTION: pgsql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+        # Safety net kept after #427: libpq honors PGOPTIONS on every
+        # connection, so any runaway query or lock wait fails loudly inside
+        # the bounded shard budget. The numbers are well above legitimate
+        # individual query cost but well below the step budget, so a future
+        # regression surfaces with the offending SQL in laravel.log rather
+        # than a silent hang.
+        PGOPTIONS: "-c synchronous_commit=off -c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
+
+    - name: Emit PostgreSQL shard diagnostics
+      if: ${{ always() }}
+      env:
+        SUITE_OUTCOME: ${{ steps.pgsql_suite.outcome }}
+      run: |
+        cat "build/test-results/pgsql-shard-${{ matrix.shard }}-elapsed.txt" 2>/dev/null || true
+        cat "build/test-results/pgsql-shard-${{ matrix.shard }}-timing.md" 2>/dev/null || true
+        if [ "$SUITE_OUTCOME" != "success" ]; then
+          echo "PostgreSQL shard ${{ matrix.shard }} failed; assigned files:"
+          cat "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt" 2>/dev/null || true
+          tail -n 300 vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log 2>/dev/null || true
+        fi
+
+    - name: Upload PostgreSQL feature timing report
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: feature-timing-postgresql-${{ matrix.shard }}
+        path: build/test-results/pgsql-shard-${{ matrix.shard }}*
+
+    - name: Upload laravel.log if PostgreSQL tests fail
+      if: ${{ github.server_url == 'https://github.com' && (failure() || steps.pgsql_suite.outcome == 'failure') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: laravel-log-postgresql-${{ matrix.shard }}
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
+  feature-mariadb:
+    needs: preflight
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:10.5
+        env:
+          MARIADB_ROOT_PASSWORD: password
+          MARIADB_DATABASE: testbench
+        options: >-
+          --health-cmd "mariadb-admin ping -ppassword"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+        - 3306
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        MARIADB_PUBLISHED_PORT: ${{ job.services.mariadb.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service mariadb 3306 "$MARIADB_PUBLISHED_PORT" DB
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+        } >> "$GITHUB_ENV"
+
+    - name: Run bounded locking and history regressions on MariaDB 10.5
+      run: >-
+        vendor/bin/phpunit --testdox --testsuite feature
+        --filter
+        '/(testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory|testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale|testEmbeddedHeartbeatAndTimeoutEnforcementUseOneConcurrentLockOrder)/'
+        tests/Feature/V2/V2WorkflowTaskBridgeTest.php
+        tests/Feature/V2/V2ActivityTimeoutTest.php
       env:
         APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
         DB_CONNECTION: mysql
         DB_DATABASE: testbench
-        DB_HOST: 127.0.0.1
-        DB_PORT: 3306
         DB_USERNAME: root
         DB_PASSWORD: password
+        CACHE_DRIVER: redis
+        CACHE_STORE: redis
         QUEUE_CONNECTION: redis
-        QUEUE_FAILED_DRIVER: "null"
-        REDIS_HOST: 127.0.0.1
-        REDIS_PASSWORD:
-        REDIS_PORT: 6379
+        QUEUE_FAILED_DRIVER: 'null'
+        REDIS_PASSWORD: ''
+        XDEBUG_MODE: off
 
-    - name: Run test suite (PostgreSQL)
-      run: vendor/bin/phpunit --testdox --debug --testsuite feature
-      env:
-        APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
-        DB_CONNECTION: pgsql
-        DB_DATABASE: testbench
-        DB_HOST: 127.0.0.1
-        DB_PORT: 5432
-        DB_USERNAME: root
-        DB_PASSWORD: password
-        QUEUE_CONNECTION: redis
-        QUEUE_FAILED_DRIVER: "null"
-        REDIS_HOST: 127.0.0.1
-        REDIS_PASSWORD:
-        REDIS_PORT: 6379
-
-    - name: Upload laravel.log if tests fail
-      if: failure()
-      uses: actions/upload-artifact@v4
+    - name: Upload Laravel log if MariaDB tests fail
+      if: ${{ github.server_url == 'https://github.com' && failure() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
       with:
-        name: laravel-log
+        name: laravel-log-mariadb
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
-    - name: Code Coverage
+  coverage:
+    needs:
+    - preflight
+    - feature-mysql
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+
+    env:
+      COVERAGE_BRANCH: ${{ github.head_ref || github.ref_name }}
+      COVERAGE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    services:
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+          ref: ${{ env.COVERAGE_COMMIT }}
+
+    - name: Set up PHP coverage driver
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.3'
+        coverage: pcov
+
+    - name: Cache Composer packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Download MySQL feature coverage
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+      with:
+        pattern: feature-timing-mysql-*
+        path: build/feature-coverage
+        merge-multiple: true
+
+    - name: Create SQLite database on fast temporary storage
       run: |
-        vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          temporary_root=/dev/shm
+        else
+          temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        fi
+        run_token="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        coverage_db="${temporary_root}/workflow-coverage-${run_token}.sqlite"
+        touch "$coverage_db"
+        echo "COVERAGE_DB_PATH=$coverage_db" >> "$GITHUB_ENV"
+        echo "TMPDIR=$temporary_root" >> "$GITHUB_ENV"
+
+    - name: Resolve service endpoint and export coverage test defaults
       env:
-        APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        resolve_service() {
+          service="$1"
+          container_port="$2"
+          published_port="$3"
+          prefix="$4"
+
+          if getent hosts "$service" > /dev/null 2>&1; then
+            echo "${prefix}_HOST=${service}"
+            echo "${prefix}_PORT=${container_port}"
+          elif [ -n "$published_port" ]; then
+            echo "${prefix}_HOST=127.0.0.1"
+            echo "${prefix}_PORT=${published_port}"
+          else
+            echo "::error::Unable to resolve ${service} or determine its published port" >&2
+            exit 1
+          fi
+        }
+
+        {
+          resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "REDIS_PASSWORD="
+          echo "QUEUE_FAILED_DRIVER=null"
+        } >> "$GITHUB_ENV"
+
+    - name: Code Coverage
+      run: >-
+        php scripts/ci/run-with-resource-metrics.php
+        --output=build/test-results/coverage-resource-metrics.md
+        -- php vendor/bin/phpunit --testdox
+        --coverage-clover=coverage.xml --testsuite unit
+      env:
         DB_CONNECTION: sqlite
-        DB_DATABASE: testbench.sqlite
+        DB_DATABASE: ${{ env.COVERAGE_DB_PATH }}
         QUEUE_CONNECTION: sync
-        XDEBUG_MODE: coverage
+        XDEBUG_MODE: off
+
+    - name: Enforce the v2 coverage ratchet
+      run: >-
+        php scripts/ci/check-v2-coverage.php
+        --clover=coverage.xml
+        --clover=build/feature-coverage/mysql-shard-0-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-1-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-2-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-3-coverage.xml
+
+    - name: Upload coverage resource metrics
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: coverage-resource-metrics
+        path: build/test-results/coverage-resource-metrics.md
+
+    - name: Upload machine-readable v2 coverage summary
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: v2-coverage-summary
+        path: build/coverage/v2-coverage-summary.json
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+      if: ${{ github.server_url == 'https://github.com' }}
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
       with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
-        token: ${{ secrets.CODECOV_TOKEN }}
+        flags: v2
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml
+        fail_ci_if_error: true
+        name: v2
+        override_branch: ${{ env.COVERAGE_BRANCH }}
+        override_commit: ${{ env.COVERAGE_COMMIT }}
+
+    - name: Remove SQLite database from tmpfs
+      if: ${{ always() }}
+      run: rm -f "$COVERAGE_DB_PATH" "$COVERAGE_DB_PATH-journal" "$COVERAGE_DB_PATH-wal" "$COVERAGE_DB_PATH-shm"
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs:
+    - preflight
+    - regression-corpus
+    - quality
+    - pr-unit-contracts
+    - pr-feature-mysql
+    - feature-mysql
+    - feature-mariadb
+    - feature-postgresql
+    - coverage
+    - laravel-embedded-upgrade-source
+    - action-policy
+    if: always()
+
+    steps:
+    - name: Require central action policy preflight
+      if: ${{ github.server_url == 'https://github.com' }}
+      env:
+        ACTION_POLICY_RESULT: ${{ needs.action-policy.result }}
+      run: test "$ACTION_POLICY_RESULT" = success
+
+    - name: Require repository preflight
+      run: test "${{ needs.preflight.result }}" = "success"
+
+    - name: Check pull-request gate
+      if: ${{ github.event_name == 'pull_request' }}
+      run: |
+        test "${{ needs.regression-corpus.result }}" = "success"
+        test "${{ needs.quality.result }}" = "success"
+        test "${{ needs.pr-unit-contracts.result }}" = "success"
+        test "${{ needs.pr-feature-mysql.result }}" = "success"
+        test "${{ needs.feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mariadb.result }}" = "skipped"
+        test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage.result }}" = "skipped"
+        test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
+        echo "Pull-request validation succeeded."
+
+    - name: Check target-branch matrix
+      if: ${{ github.event_name != 'pull_request' }}
+      run: |
+        test "${{ needs.regression-corpus.result }}" = "success"
+        test "${{ needs.quality.result }}" = "success"
+        test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-feature-mysql.result }}" = "skipped"
+        test "${{ needs.feature-mysql.result }}" = "success"
+        test "${{ needs.feature-mariadb.result }}" = "success"
+        test "${{ needs.feature-postgresql.result }}" = "success"
+        test "${{ needs.coverage.result }}" = "success"
+        test "${{ needs.laravel-embedded-upgrade-source.result }}" = "success"
+        echo "The target-branch test matrix succeeded for this SHA."

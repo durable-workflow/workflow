@@ -135,3 +135,6 @@ if (! function_exists(__NAMESPACE__ . '\\years')) {
         return WorkflowStub::timer("{$years} years");
     }
 }
+
+// Keep straight-line V2 helpers available for consumers still autoloading only the root helper file.
+require_once __DIR__ . '/V2/functions.php';

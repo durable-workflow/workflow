@@ -1,90 +1,103 @@
+# Durable Workflow for Laravel
+
 <p align="center">
-<img alt="logo" src="https://user-images.githubusercontent.com/1130888/210139313-43f0d7ed-2005-4b71-9149-540f124c2c2f.png">
+  <a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Amain"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=main" alt="Build status"></a>
+  <a href="https://codecov.io/gh/durable-workflow/workflow/branch/main"><img src="https://codecov.io/gh/durable-workflow/workflow/branch/main/graph/badge.svg" alt="Code coverage"></a>
+  <a href="https://packagist.org/packages/durable-workflow/workflow"><img src="https://img.shields.io/packagist/v/durable-workflow/workflow" alt="Latest Packagist version"></a>
+  <a href="https://packagist.org/packages/durable-workflow/workflow/stats"><img src="https://img.shields.io/packagist/dt/durable-workflow/workflow" alt="Packagist downloads"></a>
+  <a href="https://github.com/durable-workflow/workflow/blob/main/LICENSE"><img src="https://img.shields.io/packagist/l/durable-workflow/workflow" alt="MIT license"></a>
 </p>
-<p align="center"><a href="https://github.com/laravel-workflow/laravel-workflow/actions/workflows/php.yml"><img src="https://img.shields.io/github/actions/workflow/status/laravel-workflow/laravel-workflow/php.yml" alt="GitHub Workflow Status"></a> <a href="https://codecov.io/gh/laravel-workflow/laravel-workflow"><img alt="Codecov" src="https://img.shields.io/codecov/c/github/laravel-workflow/laravel-workflow"></a> <a href="https://packagist.org/packages/laravel-workflow/laravel-workflow/stats"><img alt="Packagist Downloads (custom server)" src="https://img.shields.io/packagist/dt/laravel-workflow/laravel-workflow"></a>
- <a href="https://laravel-workflow.com/docs/installation"><img src="https://img.shields.io/badge/docs-read%20now-brightgreen" alt="Docs"></a> <a href="https://github.com/laravel-workflow/laravel-workflow/blob/master/LICENSE"><img alt="Packagist License" src="https://img.shields.io/packagist/l/laravel-workflow/laravel-workflow?color=bright-green"></a></p>
 
-Laravel Workflow is a package for the Laravel web framework that provides tools for defining and managing workflows and activities. A workflow is a series of interconnected activities that are executed in a specific order to achieve a desired result. Activities are individual tasks or pieces of logic that are executed as part of a workflow.
+Durable Workflow is the embedded Laravel runtime for durable execution. Write
+long-running workflows as ordinary PHP, keep completed work recorded through
+worker restarts and application deploys, and use Laravel's queues, cache, and
+database as the runtime.
 
-Laravel Workflow can be used to automate and manage complex processes, such as agentic workflows (AI-driven), financial transactions, data analysis, data pipelines, microservices, job tracking, user signup flows, sagas and other business processes. By using Laravel Workflow, developers can break down large, complex processes into smaller, modular units that can be easily maintained and updated.
+This package also provides the orchestration engine hosted by
+[Durable Workflow Server](https://github.com/durable-workflow/server). Use the
+[PHP SDK](https://github.com/durable-workflow/sdk-php) with Server or
+[Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
+to run outside the Laravel application or across PHP, Python, and Rust.
 
-Some key features and benefits of Laravel Workflow include:
+## Install
 
-- Support for defining workflows and activities using simple, declarative PHP classes.
-- Tools for starting, monitoring, and managing workflows, including support for queuing and parallel execution.
-- Built-in support for handling errors and retries, ensuring that workflows are executed reliably and consistently.
-- Integration with Laravel's queue and event systems, allowing workflows to be executed asynchronously on worker servers.
-- Extensive documentation and a growing community of developers who use and contribute to Laravel Workflow.
-
-## Documentation
-
-Documentation for Laravel Workflow can be found on the [Laravel Workflow website](https://laravel-workflow.com/docs/installation).
-
-## Community
-
-You can find us in the [GitHub discussions](https://github.com/laravel-workflow/laravel-workflow/discussions) and also on our [Discord channel](https://discord.gg/xu5aDDpqVy).
-
-## Sample App
-
-There's also a [sample application](https://github.com/laravel-workflow/sample-app) that you can run directly from GitHub in your browser.
-
-## Usage
-
-**1. Create a workflow**
-```php
-use function Workflow\activity;
-use Workflow\Workflow;
-
-class MyWorkflow extends Workflow
-{
-    public function execute($name)
-    {
-        $result = yield activity(MyActivity::class, $name);
-
-        return $result;
-    }
-}
+```bash
+composer require durable-workflow/workflow:^2.0
+php artisan migrate
 ```
 
-**2. Create an activity**
-```php
-use Workflow\Activity;
+Run a Laravel queue worker or Horizon to execute workflows and activities:
 
-class MyActivity extends Activity
+```bash
+php artisan queue:work
+```
+
+## Your First Workflow
+
+```php
+<?php
+
+use Workflow\V2\Activity;
+use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
+use function Workflow\V2\activity;
+
+final class GreetActivity extends Activity
 {
-    public function execute($name)
+    public function handle(string $name): string
     {
         return "Hello, {$name}!";
     }
 }
-```
 
-**3. Run the workflow**
-```php
-use Workflow\WorkflowStub;
+final class GreetWorkflow extends Workflow
+{
+    public function handle(string $name): string
+    {
+        return activity(GreetActivity::class, $name);
+    }
+}
 
-$workflow = WorkflowStub::make(MyWorkflow::class);
+$workflow = WorkflowStub::make(GreetWorkflow::class);
 $workflow->start('world');
+
+echo $workflow->output(); // Hello, world!
 ```
 
-```php
-$workflow->output();
-=> 'Hello, world!'
-```
+Workflow code can coordinate activities, timers, signals, queries, updates,
+child workflows, sagas, cancellation, retries, parallel work, side effects,
+continue-as-new, search attributes, memo, and message streams. The runtime
+persists execution history so replay can resume after process or host failure
+without repeating completed activities.
 
-## Monitoring
+## Choose a Deployment
 
-[Waterline](https://github.com/laravel-workflow/waterline) is a separate UI that works nicely alongside Horizon. Think of Waterline as being to workflows what Horizon is to queues.
+| Deployment | Use it when | Runtime owner |
+| --- | --- | --- |
+| Embedded Laravel | Workflows and activities live inside one Laravel application. | Your application owns persistence and queue execution. |
+| Self-hosted Server | Workers run independently or in multiple languages. | Your team operates Server, MySQL, Redis, and optional Waterline. |
+| Durable Workflow Cloud | You want a managed runtime for PHP, Python, and Rust workers. | Durable Workflow operates the runtime and persistence. |
 
-### Dashboard View
+Embedded runs remain owned by the Laravel application. Moving new work to
+Server or Cloud does not reinterpret existing embedded history.
 
-![waterline_dashboard](https://user-images.githubusercontent.com/1130888/202866614-4adad485-60d1-403c-976f-d3063e928287.png)
+## Learn More
 
-### Workflow View
+- [Embedded installation](https://durable-workflow.com/docs/2.0/installation/)
+- [Embedded feature guides](https://durable-workflow.com/docs/2.0/category/embedded/)
+- [Configuration reference](https://durable-workflow.com/docs/2.0/configuration/options/)
+- [Deployment modes](https://durable-workflow.com/docs/2.0/polyglot/deployment-modes/)
+- [Monitoring with Waterline](https://durable-workflow.com/docs/2.0/monitoring/)
+- [Runnable Sample App](https://github.com/durable-workflow/sample-app)
 
-![workflow](https://user-images.githubusercontent.com/1130888/202866616-98a214d3-a916-4ae1-952e-ca8267ddf4a7.png)
+Questions and design discussions are welcome in
+[GitHub Discussions](https://github.com/durable-workflow/workflow/discussions)
+and [Discord](https://discord.gg/xu5aDDpqVy).
 
-Refer to https://github.com/laravel-workflow/waterline for installation and configuration instructions.
+## Sponsors
 
+Durable Workflow is sustained by contributors and sponsors:
 
-<sub><sup>"Laravel" is a registered trademark of Taylor Otwell. This project is not affiliated, associated, endorsed, or sponsored by Taylor Otwell, nor has it been reviewed, tested, or certified by Taylor Otwell. The use of the trademark "Laravel" is for informational and descriptive purposes only. Laravel Workflow is not officially related to the Laravel trademark or Taylor Otwell.</sup></sub>
+- [Andriy Karpishyn](https://github.com/discovery-ukraine)
+- [Freispace Resource Scheduling](https://freispace.com)
+- [Translate a Book](https://translateabook.com)

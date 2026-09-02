@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.history-export-bundle",
+  "title": "Durable Workflow history export bundle version 2",
+  "description": "Normative JSON Schema for history-export schema version 2 emitted by the server and embedded runtime and consumed by replay tooling, SDKs, operators, and archival systems. During the 2.0 prerelease, consumers match the schema id and schema_version exactly; compatibility with earlier prerelease shapes is not implied. This version adds a JSON-safe memo projection for operator consumers and a dedicated lossless Avro memo payload for import and replay reconstruction. Nested history events are governed by durable-workflow.v2.history-event-payloads.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "history_export_bundle",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-history-export-schema-version": 2,
+  "x-durable-workflow-evolution-rule": "parallel_primitive_only",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "history_export_bundle",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "required": [
+    "schema",
+    "schema_version",
+    "exported_at",
+    "dedupe_key",
+    "history_complete",
+    "workflow",
+    "payloads",
+    "history_events",
+    "integrity"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "durable-workflow.v2.history-export",
+      "description": "History-export family identifier. Consumers must combine it with schema_version while the 2.0 release is prerelease."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Exact structural version of this prerelease bundle. Version 2 includes workflow.memo_payload as the lossless portable memo authority."
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "dedupe_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "history_complete": {
+      "type": "boolean"
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflowSnapshot"
+    },
+    "payloads": {
+      "$ref": "#/$defs/payloadSection"
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "selected_run": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "waits_projection_source": { "type": ["string", "null"] },
+        "timeline_projection_source": { "type": ["string", "null"] },
+        "timers_projection_source": { "type": ["string", "null"] },
+        "lineage_projection_source": { "type": ["string", "null"] }
+      }
+    },
+    "history_events": {
+      "type": "array",
+      "items": {
+        "$ref": "./history-event-payloads.schema.json"
+      }
+    },
+    "waits": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "timeline": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "linked_intakes_scope": {
+      "type": ["string", "null"]
+    },
+    "linked_intakes": {
+      "type": ["array", "object", "null"]
+    },
+    "commands": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "signals": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "updates": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "tasks": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "activities": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "timers": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "failures": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "links": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "projection_source": { "type": ["string", "null"] },
+        "parents": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+        "children": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+      }
+    },
+    "codec_schemas": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "payload_manifest": {
+      "$ref": "#/$defs/payloadManifest"
+    },
+    "integrity": {
+      "$ref": "#/$defs/integrity"
+    },
+    "redaction": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["redaction"],
+        "properties": {
+          "redaction": {
+            "type": "object",
+            "required": ["paths"],
+            "properties": {
+              "paths": {
+                "type": "array",
+                "contains": { "const": "workflow.memo" }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "workflow": {
+            "properties": {
+              "memo": { "$ref": "#/$defs/memoJsonProjection" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["redaction"],
+        "properties": {
+          "redaction": {
+            "type": "object",
+            "required": ["paths"],
+            "properties": {
+              "paths": {
+                "type": "array",
+                "contains": { "const": "workflow.memo_payload" }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "workflow": {
+            "properties": {
+              "memo_payload": { "$ref": "#/$defs/memoPayloadEnvelope" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "workflowSnapshot": {
+      "type": "object",
+      "required": [
+        "instance_id",
+        "run_id",
+        "run_number",
+        "workflow_type",
+        "memo",
+        "memo_payload",
+        "status"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "instance_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "run_number": { "type": "integer", "minimum": 1 },
+        "is_current_run": { "type": "boolean" },
+        "current_run_id": { "type": ["string", "null"] },
+        "current_run_source": { "type": ["string", "null"] },
+        "workflow_type": { "type": ["string", "null"] },
+        "workflow_class": { "type": ["string", "null"] },
+        "business_key": { "type": ["string", "null"] },
+        "visibility_labels": { "type": "array", "items": { "type": "string" } },
+        "memo": {
+          "description": "JSON-safe Avro value projection unless workflow.memo is listed among the bundle's redacted paths."
+        },
+        "memo_payload": {
+          "description": "Lossless Avro authority unless workflow.memo_payload is listed among the bundle's redacted paths."
+        },
+        "search_attributes": { "type": "object", "additionalProperties": true },
+        "status": { "type": "string" },
+        "status_bucket": { "type": ["string", "null"] },
+        "closed_reason": { "type": ["string", "null"] },
+        "last_history_sequence": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "memoJsonProjection": {
+      "description": "JSON-safe memo projection. PHP serializes an empty map as an empty JSON array; memo_payload remains the map-type authority.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "array",
+          "maxItems": 0
+        }
+      ]
+    },
+    "memoPayloadEnvelope": {
+      "type": "object",
+      "description": "Lossless portable memo authority. The base64 blob is an Avro Value map and is the source used by import and replay reconstruction; memo is only its JSON-safe operator projection.",
+      "required": ["codec", "blob"],
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "type": "string",
+          "const": "avro"
+        },
+        "blob": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+          "contentEncoding": "base64",
+          "contentMediaType": "application/vnd.apache.avro+binary"
+        }
+      }
+    },
+    "payloadSection": {
+      "type": "object",
+      "required": ["codec", "arguments", "output"],
+      "additionalProperties": true,
+      "properties": {
+        "codec": { "type": "string" },
+        "arguments": { "$ref": "#/$defs/payloadValue" },
+        "output": { "$ref": "#/$defs/payloadValue" }
+      }
+    },
+    "payloadValue": {
+      "type": "object",
+      "required": ["available"],
+      "additionalProperties": true,
+      "properties": {
+        "available": { "type": "boolean" },
+        "data": true
+      }
+    },
+    "payloadManifest": {
+      "type": "object",
+      "required": ["version", "entries"],
+      "additionalProperties": true,
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "available"],
+            "additionalProperties": true,
+            "properties": {
+              "path": { "type": "string" },
+              "available": { "type": "boolean" },
+              "codec": { "type": ["string", "null"] },
+              "redacted": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["canonicalization", "checksum_algorithm", "checksum"],
+      "additionalProperties": true,
+      "properties": {
+        "canonicalization": { "type": "string", "const": "json-recursive-ksort-v1" },
+        "checksum_algorithm": { "type": "string", "const": "sha256" },
+        "checksum": { "type": "string" },
+        "signature": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/schedule-history.schema.json",
+  "title": "dw schedule:history --json",
+  "type": "object",
+  "required": ["schedule_id", "namespace", "events"],
+  "properties": {
+    "schedule_id": { "type": "string" },
+    "namespace": { "type": "string" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sequence", "namespace", "event_type"],
+        "properties": {
+          "id": { "type": ["string", "null"] },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "namespace": { "type": "string" },
+          "event_type": { "type": ["string", "null"] },
+          "recorded_at": { "type": ["string", "null"] },
+          "workflow_instance_id": { "type": ["string", "null"] },
+          "workflow_run_id": { "type": ["string", "null"] },
+          "payload": { "type": ["object", "array"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "has_more": { "type": "boolean" },
+    "next_cursor": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": true
+}

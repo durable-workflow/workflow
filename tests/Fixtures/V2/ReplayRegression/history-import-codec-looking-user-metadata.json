@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "history-import-codec-looking-user-metadata",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "embedded-history-import"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "single-activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-14T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "payload": {
+        "sequence": 2,
+        "entries": {
+          "codec_metadata": {
+            "payload_codec": "customer-codec",
+            "nested": {
+              "codec": "customer-codec",
+              "blob": "user data"
+            }
+          }
+        },
+        "merged": {
+          "codec_metadata": {
+            "payload_codec": "customer-codec",
+            "nested": {
+              "codec": "customer-codec",
+              "blob": "user data"
+            }
+          }
+        }
+      },
+      "recorded_at": "2026-08-14T12:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "payload": {
+        "sequence": 3,
+        "attributes": {
+          "payload_codec": "customer-codec"
+        },
+        "merged": {
+          "payload_codec": "customer-codec"
+        }
+      },
+      "recorded_at": "2026-08-14T12:00:02+00:00"
+    }
+  ],
+  "history_import_metadata": {
+    "memo": {
+      "codec_metadata": {
+        "payload_codec": "customer-codec",
+        "nested": {
+          "codec": "customer-codec",
+          "blob": "user data"
+        }
+      }
+    },
+    "search_attributes": {
+      "payload_codec": "customer-codec"
+    }
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity"
+      }
+    ]
+  }
+}

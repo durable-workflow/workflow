@@ -1,0 +1,142 @@
+{
+  "schema": "durable-workflow.laravel-embedded-upgrade.contract",
+  "version": 1,
+  "transition": {
+    "from": {
+      "package": "durable-workflow/workflow",
+      "channel": "^1.0",
+      "engine": "v1"
+    },
+    "to": {
+      "package": "durable-workflow/workflow",
+      "channel": "^2.0@rc",
+      "engine": "embedded_v2"
+    },
+    "legacy_package_alias": {
+      "package": "laravel-workflow/laravel-workflow",
+      "role": "composer_replace_only"
+    },
+    "deployment_owner": "laravel_application",
+    "requires_service_mode": false
+  },
+  "supported_intersection": {
+    "authority": {
+      "stable_v1": {
+        "php": "^8.1",
+        "laravel": "^9.0|^10.0|^11.0|^12.0|^13.0"
+      },
+      "embedded_v2": {
+        "php": "^8.1",
+        "laravel": "^9.52.17|^10.48.29|^11.44.1|^12.61.1|^13.12.0"
+      },
+      "qualified_php_minors": ["8.1", "8.2", "8.3", "8.4"],
+      "laravel_minimum_php": {
+        "9.*": "8.1",
+        "10.*": "8.1",
+        "11.*": "8.2",
+        "12.*": "8.2",
+        "13.*": "8.3"
+      }
+    },
+    "cells": [
+      {"php": "8.1", "laravel": "9.*"},
+      {"php": "8.1", "laravel": "10.*"},
+      {"php": "8.2", "laravel": "9.*"},
+      {"php": "8.2", "laravel": "10.*"},
+      {"php": "8.2", "laravel": "11.*"},
+      {"php": "8.2", "laravel": "12.*"},
+      {"php": "8.3", "laravel": "9.*"},
+      {"php": "8.3", "laravel": "10.*"},
+      {"php": "8.3", "laravel": "11.*"},
+      {"php": "8.3", "laravel": "12.*"},
+      {"php": "8.3", "laravel": "13.*"},
+      {"php": "8.4", "laravel": "9.*"},
+      {"php": "8.4", "laravel": "10.*"},
+      {"php": "8.4", "laravel": "11.*"},
+      {"php": "8.4", "laravel": "12.*"},
+      {"php": "8.4", "laravel": "13.*"}
+    ]
+  },
+  "state_ownership": {
+    "v1": {
+      "engine": "v1",
+      "tables": [
+        "workflows",
+        "workflow_logs",
+        "workflow_signals",
+        "workflow_timers",
+        "workflow_exceptions",
+        "workflow_relationships"
+      ],
+      "history_policy": "finish_on_v1",
+      "reinterpret_as_v2": false
+    },
+    "embedded_v2": {
+      "engine": "embedded_v2",
+      "root_tables": [
+        "workflow_instances",
+        "workflow_runs",
+        "workflow_history_events",
+        "workflow_tasks"
+      ],
+      "accepts_v1_history": false
+    },
+    "composer_change_migrates_history": false
+  },
+  "strategies": {
+    "drain": {
+      "status_command": "php artisan workflow:v2:upgrade-status --strategy=drain --json",
+      "new_v1_starts": "stop",
+      "new_v2_starts": "after_v1_open_runs_reach_zero"
+    },
+    "coexist": {
+      "status_command": "php artisan workflow:v2:upgrade-status --strategy=coexist --json",
+      "v2_queue_config": "workflows.v2.queue",
+      "v2_queue_env": "DW_V2_QUEUE",
+      "queue_isolation_required": true,
+      "new_starts": "embedded_v2"
+    }
+  },
+  "continuity": {
+    "workflow_type": "explicit_v2_type_key",
+    "workflow_id": "application_owned_logical_identity",
+    "payloads": "adapt_application_inputs_to_v2_avro_values",
+    "queues": "route_by_engine_during_coexistence",
+    "memo_and_search_metadata": "set_on_v2_start_options",
+    "signals": "route_to_the_engine_that_owns_the_run",
+    "updates": "v2_runs_only",
+    "rollback": {
+      "composer_command": "composer require durable-workflow/workflow:^1.0 --with-all-dependencies",
+      "state_policy": "restore_v1_code_and_workers_for_v1_runs_without_replaying_v2_history"
+    },
+    "durable_state_transfer": "none"
+  },
+  "laravel_experience": {
+    "straight_line_authoring": true,
+    "constructor_injection": true,
+    "handle_method_injection": true,
+    "application_config": "workflows",
+    "queue_runtime": "laravel_queue",
+    "logging": "laravel_log",
+    "events": "laravel_events",
+    "testing_fake": "Workflow\\V2\\WorkflowStub::fake",
+    "testing_assertions": [
+      "Workflow\\V2\\WorkflowStub::assertDispatched",
+      "Workflow\\V2\\WorkflowStub::assertSignalSent",
+      "Workflow\\V2\\WorkflowStub::assertUpdateSent"
+    ]
+  },
+  "journey": {
+    "stable_docs": "/docs/migration",
+    "v2_docs": "/docs/2.0/migration",
+    "php_sdk_laravel": "https://github.com/durable-workflow/sdk-php#laravel-service-mode"
+  },
+  "qualification": {
+    "source_script": "scripts/ci/laravel-embedded-upgrade-smoke.sh",
+    "dependency_security_policy": "resources/laravel-dependency-security-policy.json",
+    "published_artifacts_required": true,
+    "clean_application_required": true,
+    "application_bootstrap_patch_allowed": false,
+    "eol_framework_fixture_policy": "composer_no_blocking_only_for_disposable_compatibility_qualification"
+  }
+}

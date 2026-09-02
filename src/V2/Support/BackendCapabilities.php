@@ -1,0 +1,424 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use Carbon\CarbonInterface;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Support\Facades\Cache;
+use Workflow\Serializers\Base64;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Y;
+
+final class BackendCapabilities
+{
+    /**
+     * Stable-v1 serializer settings that may remain while v1 runs drain.
+     *
+     * These values are diagnostic inputs only. They are intentionally absent
+     * from CodecRegistry so they cannot select a codec for a v2 payload.
+     *
+     * @var list<string>
+     */
+    private const LEGACY_V1_SERIALIZERS = [
+        Y::class,
+        Base64::class,
+        'workflow-serializer-y',
+        'workflow-serializer-base64',
+    ];
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function snapshot(
+        ?CarbonInterface $now = null,
+        ?string $databaseConnection = null,
+        ?string $queueConnection = null,
+        ?string $cacheStore = null,
+    ): array {
+        $now ??= now();
+
+        $database = self::database($databaseConnection);
+        $queue = self::queue($queueConnection);
+        $cache = self::cache($cacheStore);
+        $codec = self::codec();
+        $limits = self::structuralLimits($database, $queue);
+        $issues = array_values(array_merge(
+            $database['issues'],
+            $queue['issues'],
+            $cache['issues'],
+            $codec['issues'],
+            $limits['issues'],
+        ));
+
+        return [
+            'generated_at' => $now->toJSON(),
+            'readiness_contract' => ReadinessContract::forBackendCapabilities(),
+            'supported' => self::hasErrors($issues) === false,
+            'database' => $database,
+            'queue' => $queue,
+            'cache' => $cache,
+            'codec' => $codec,
+            'structural_limits' => $limits,
+            'severity' => self::severityRollup($issues),
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     */
+    public static function isSupported(array $snapshot): bool
+    {
+        return ($snapshot['supported'] ?? false) === true && self::hasErrors($snapshot['issues'] ?? []) === false;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function database(?string $configuredConnection = null): array
+    {
+        $connection = self::normalize($configuredConnection) ?? self::normalize(config('database.default'));
+        $driver = $connection === null
+            ? null
+            : self::normalize(config(sprintf('database.connections.%s.driver', $connection)));
+        $issues = [];
+
+        $driverSupported = is_string($driver) && in_array($driver, ['mysql', 'pgsql', 'sqlite', 'sqlsrv'], true);
+
+        if ($connection === null || $driver === null) {
+            $issues[] = self::issue(
+                'database',
+                'error',
+                'database_connection_missing',
+                'Workflow v2 requires a configured database connection for durable history, projections, and task leases.',
+            );
+        } elseif (! $driverSupported) {
+            $issues[] = self::issue(
+                'database',
+                'error',
+                'database_driver_unsupported',
+                sprintf(
+                    'Workflow v2 does not have an explicit capability profile for the [%s] database driver.',
+                    $driver
+                ),
+            );
+        }
+
+        return [
+            'connection' => $connection,
+            'driver' => $driver,
+            'supported' => self::hasErrors($issues) === false,
+            'capabilities' => [
+                'transactions' => $driverSupported,
+                'after_commit_callbacks' => $driverSupported,
+                'durable_ordering' => $driverSupported,
+                'row_locks' => $driverSupported && $driver !== 'sqlite',
+            ],
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function queue(?string $configuredConnection = null): array
+    {
+        $connection = self::normalize($configuredConnection) ?? self::normalize(config('queue.default'));
+        $driver = $connection === null
+            ? null
+            : self::normalize(config(sprintf('queue.connections.%s.driver', $connection)));
+        $issues = [];
+
+        // In poll mode, tasks are delivered to workers via HTTP poll rather than
+        // through a Laravel queue, so a sync or missing queue driver is an
+        // acceptable configuration — the queue backend is simply unused for
+        // task delivery. We still surface an informational note so operators
+        // can see what will happen if they later flip back to queue mode.
+        $pollMode = self::normalize(config('workflows.v2.task_dispatch_mode')) === 'poll';
+
+        if ($connection === null || $driver === null) {
+            $issues[] = self::issue(
+                'queue',
+                $pollMode ? 'info' : 'error',
+                'queue_connection_missing',
+                $pollMode
+                    ? 'No queue connection is configured; task dispatch runs in poll mode so workers receive tasks over HTTP instead of a queue worker.'
+                    : 'Workflow v2 requires a configured asynchronous queue connection for durable task delivery.',
+            );
+        } elseif ($driver === 'sync') {
+            $issues[] = self::issue(
+                'queue',
+                $pollMode ? 'info' : 'error',
+                'queue_sync_unsupported',
+                $pollMode
+                    ? 'Queue driver is [sync], which is acceptable in poll mode because tasks are delivered over HTTP instead of a queue worker.'
+                    : 'Workflow v2 requires an asynchronous queue worker; the sync queue driver executes jobs inline and cannot provide the worker/lease boundary.',
+            );
+        }
+
+        return [
+            'connection' => $connection,
+            'driver' => $driver,
+            'supported' => self::hasErrors($issues) === false,
+            'capabilities' => [
+                'async_delivery' => $driver !== null && $driver !== 'sync',
+                'delayed_delivery' => $driver !== null && $driver !== 'sync',
+                'requires_worker' => ! $pollMode,
+                'max_delay_seconds' => $driver === 'sqs' ? 900 : null,
+                'after_commit_option' => $connection === null ? null : config(
+                    sprintf('queue.connections.%s.after_commit', $connection)
+                ),
+            ],
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function cache(?string $configuredStore = null): array
+    {
+        $store = self::normalize($configuredStore) ?? self::normalize(
+            config('cache.default') ?? config('cache.driver')
+        );
+        $driver = $store === null
+            ? null
+            : self::normalize(config(sprintf('cache.stores.%s.driver', $store)));
+        $lockSupported = $store !== null && self::cacheStoreSupportsLocks($store);
+        $issues = [];
+
+        if ($store === null || $driver === null) {
+            $issues[] = self::issue(
+                'cache',
+                'warning',
+                'cache_store_missing',
+                'No cache store is configured. Wake acceleration, repair-loop throttles, and cache-backed fleet fallbacks may be degraded, but durable dispatch remains correct.',
+            );
+        } elseif (! $lockSupported) {
+            $issues[] = self::issue(
+                'cache',
+                'warning',
+                'cache_locks_unsupported',
+                sprintf(
+                    'The [%s] cache store does not advertise Laravel atomic lock support. Wake acceleration remains optional, but repair-loop throttles and cache-backed fleet fallbacks may be degraded.',
+                    $store,
+                ),
+            );
+        }
+
+        return [
+            'store' => $store,
+            'driver' => $driver,
+            'supported' => self::hasErrors($issues) === false,
+            'capabilities' => [
+                'atomic_locks' => $lockSupported,
+            ],
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * Publish the structural-limit contract adjusted for the current backend.
+     *
+     * Most limits are backend-independent (they are pure config values). The
+     * queue driver, however, may impose additional ceiling constraints — for
+     * example, SQS caps delayed delivery at 900 seconds, which affects the
+     * maximum timer delay that can be expressed in a single queue message.
+     *
+     * @param array<string, mixed> $database
+     * @param array<string, mixed> $queue
+     * @return array<string, mixed>
+     */
+    private static function structuralLimits(array $database, array $queue): array
+    {
+        $configured = StructuralLimits::snapshot();
+        $issues = [];
+
+        $queueDriver = $queue['driver'] ?? null;
+        $maxQueueDelay = $queue['capabilities']['max_delay_seconds'] ?? null;
+
+        $backendAdjustments = [];
+
+        if (is_int($maxQueueDelay) && $maxQueueDelay > 0) {
+            $backendAdjustments['max_single_timer_delay_seconds'] = $maxQueueDelay;
+
+            $issues[] = self::issue(
+                'structural_limits',
+                'info',
+                'queue_max_delay_constraint',
+                sprintf(
+                    'The [%s] queue driver limits delayed dispatch to %d seconds; timers exceeding this are chunked by the transport layer.',
+                    $queueDriver ?? 'unknown',
+                    $maxQueueDelay,
+                ),
+            );
+        }
+
+        $dbDriver = $database['driver'] ?? null;
+
+        if ($dbDriver === 'sqlite') {
+            $backendAdjustments['concurrent_write_safety'] = 'limited';
+
+            $issues[] = self::issue(
+                'structural_limits',
+                'info',
+                'sqlite_concurrency_note',
+                'SQLite serializes writes; high pending-count limits may cause lock contention under concurrent worker load.',
+            );
+        }
+
+        return [
+            'configured' => $configured,
+            'backend_adjustments' => $backendAdjustments,
+            'effective' => array_merge($configured, $backendAdjustments),
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function codec(): array
+    {
+        $configured = config('workflows.serializer');
+        $issues = [];
+        $default = CodecRegistry::defaultCodec();
+
+        $configuredCanonical = null;
+        if (is_string($configured) && $configured !== '') {
+            if (in_array(ltrim($configured, '\\'), self::LEGACY_V1_SERIALIZERS, true)) {
+                $issues[] = self::issue(
+                    'codec',
+                    'warning',
+                    'codec_legacy_v1_drain',
+                    sprintf(
+                        'The configured workflows.serializer [%s] is a supported legacy v1 serializer retained for migration. '
+                        . 'Durable Workflow 2.0 ignores this setting and uses "avro" for all new v2 payloads. '
+                        . 'It may remain only while v1 runs are draining; set workflows.serializer to "avro" '
+                        . 'or remove the published setting after the drain completes.',
+                        $configured,
+                    ),
+                );
+            } else {
+                try {
+                    $configuredCanonical = CodecRegistry::canonicalize($configured);
+                } catch (\InvalidArgumentException) {
+                    $universalList = implode('", "', CodecRegistry::universal());
+                    $issues[] = self::issue(
+                        'codec',
+                        'error',
+                        'codec_unknown',
+                        sprintf(
+                            'The configured workflows.serializer [%s] is not a known payload codec. '
+                            . 'Durable Workflow 2.0 supports exactly one payload codec ("%s"). '
+                            . 'Set workflows.serializer to "avro" before serving v2 traffic. '
+                            . 'Legacy PHP serializers are available only to the internal v1 import/drain reader; '
+                            . 'JSON remains the HTTP document transport and is not a workflow payload codec.',
+                            $configured,
+                            $universalList,
+                        ),
+                    );
+                }
+            }
+        }
+
+        $universal = CodecRegistry::universal();
+        $isUniversal = in_array($default, $universal, true);
+        $configuredUniversal = $configuredCanonical !== null && in_array($configuredCanonical, $universal, true);
+
+        return [
+            'configured' => $configured,
+            'configured_canonical' => $configuredCanonical,
+            'canonical' => $default,
+            'universal' => $isUniversal,
+            'configured_universal' => $configuredUniversal,
+            'supported' => self::hasErrors($issues) === false,
+            'issues' => $issues,
+        ];
+    }
+
+    private static function cacheStoreSupportsLocks(string $store): bool
+    {
+        try {
+            return Cache::store($store)->getStore() instanceof LockProvider;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private static function hasErrors(mixed $issues): bool
+    {
+        if (! is_array($issues)) {
+            return true;
+        }
+
+        foreach ($issues as $issue) {
+            if (is_array($issue) && ($issue['severity'] ?? null) === 'error') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Rolls up the worst per-issue severity into a single admission verdict
+     * the rollout-safety contract pins on `OperatorMetrics::snapshot()['backend']['severity']`.
+     * Order: `error` (boot must fail in `fail`/`throw` mode) > `warning`
+     * (boot may continue with a logged gap) > `info` (operator-visible note,
+     * no admission concern) > `ok` (no issues at all).
+     *
+     * @param  array<int, mixed>  $issues
+     */
+    private static function severityRollup(array $issues): string
+    {
+        $rank = 0;
+
+        foreach ($issues as $issue) {
+            if (! is_array($issue)) {
+                continue;
+            }
+
+            $severity = $issue['severity'] ?? null;
+            $rank = max($rank, match ($severity) {
+                'error' => 3,
+                'warning' => 2,
+                'info' => 1,
+                default => 0,
+            });
+        }
+
+        return match ($rank) {
+            3 => 'error',
+            2 => 'warning',
+            1 => 'info',
+            default => 'ok',
+        };
+    }
+
+    /**
+     * @return array{component: string, severity: string, code: string, message: string}
+     */
+    private static function issue(string $component, string $severity, string $code, string $message): array
+    {
+        return [
+            'component' => $component,
+            'severity' => $severity,
+            'code' => $code,
+            'message' => $message,
+        ];
+    }
+
+    private static function normalize(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+}

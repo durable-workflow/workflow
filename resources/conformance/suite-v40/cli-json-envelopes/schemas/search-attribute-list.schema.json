@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/search-attribute-list.schema.json",
+  "title": "dw search-attribute:list --json",
+  "type": "object",
+  "required": ["namespace", "system_attributes", "custom_attributes"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "system_attributes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "custom_attributes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

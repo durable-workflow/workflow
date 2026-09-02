@@ -1,0 +1,316 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use Carbon\CarbonInterface;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+
+final class ActivitySnapshot
+{
+    /**
+     * @return array<string, mixed>
+     */
+    public static function fromExecution(ActivityExecution $execution): array
+    {
+        $parallelMetadata = ParallelChildGroup::payloadForPath(
+            self::arrayValue($execution->parallel_group_path) ?? [],
+        );
+
+        return array_filter([
+            'id' => $execution->id,
+            'idempotency_key' => $execution->id,
+            'sequence' => $execution->sequence,
+            'type' => $execution->activity_type,
+            'class' => $execution->activity_class,
+            'execution_mode' => self::stringValue($execution->activity_options['execution_mode'] ?? null),
+            'local_activity' => ($execution->activity_options['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE,
+            'attempt_id' => self::stringValue($execution->current_attempt_id),
+            'status' => $execution->status?->value,
+            'payload_codec' => self::stringValue($execution->payload_codec),
+            'attempt_count' => self::executionAttemptCount($execution),
+            'retry_policy' => self::arrayValue($execution->retry_policy),
+            'connection' => $execution->connection,
+            'queue' => $execution->queue,
+            'last_heartbeat_at' => self::timestamp($execution->last_heartbeat_at),
+            'created_at' => self::timestamp($execution->created_at),
+            'started_at' => self::timestamp($execution->started_at),
+            'closed_at' => self::timestamp($execution->closed_at),
+            'arguments' => ExternalPayloads::historyValue(
+                self::stringValue($execution->arguments),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
+            'result' => ExternalPayloads::historyValue(
+                self::stringValue($execution->result),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
+            'exception' => ExternalPayloads::historyValue(
+                self::stringValue($execution->exception),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function fromEvent(WorkflowHistoryEvent $event): ?array
+    {
+        /** @var array<string, mixed> $payload */
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $snapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+        $taskSnapshot = is_array($payload['task'] ?? null) ? $payload['task'] : [];
+        $activityId = self::stringValue($snapshot['id'] ?? null)
+            ?? self::stringValue($payload['activity_execution_id'] ?? null);
+
+        if (
+            $activityId === null
+            && $snapshot === []
+            && ! array_key_exists('activity_type', $payload)
+            && ! array_key_exists('activity_class', $payload)
+        ) {
+            return null;
+        }
+
+        $merged = self::merge([
+            'id' => $activityId,
+            'idempotency_key' => self::stringValue($payload['idempotency_key'] ?? null),
+            'sequence' => self::intValue($payload['sequence'] ?? null),
+            'type' => self::stringValue($payload['activity_type'] ?? null),
+            'class' => self::stringValue($payload['activity_class'] ?? null),
+            'execution_mode' => self::stringValue($payload['execution_mode'] ?? null),
+            'local_activity' => ($payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($payload['local_activity'] ?? null) === true,
+            'parallel_group_kind' => self::stringValue($payload['parallel_group_kind'] ?? null),
+            'parallel_group_id' => self::stringValue($payload['parallel_group_id'] ?? null),
+            'parallel_group_base_sequence' => self::intValue($payload['parallel_group_base_sequence'] ?? null),
+            'parallel_group_size' => self::intValue($payload['parallel_group_size'] ?? null),
+            'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
+            'parallel_group_path' => self::parallelGroupPath($payload),
+            'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
+            'result' => self::payloadValue($payload['result'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($payload['progress'] ?? null),
+            'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
+                ? self::timestamp($event->recorded_at)
+                : null,
+            'started_at' => $event->event_type === HistoryEventType::ActivityStarted
+                ? self::timestamp($event->recorded_at)
+                : null,
+            'closed_at' => in_array($event->event_type, [
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
+            ], true)
+                ? self::timestamp($event->recorded_at)
+                : null,
+        ], self::sanitizeSnapshot($snapshot));
+
+        $merged['status'] = self::stringValue($merged['status'] ?? null)
+            ?? self::statusForEvent($event->event_type);
+        $merged['attempt_count'] = self::eventAttemptCount($event->event_type, $merged, $taskSnapshot);
+
+        return $merged;
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    public static function merge(array $state, array $snapshot): array
+    {
+        foreach ($snapshot as $key => $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            $state[$key] = $value;
+        }
+
+        return $state;
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    private static function sanitizeSnapshot(array $snapshot): array
+    {
+        return array_filter([
+            'id' => self::stringValue($snapshot['id'] ?? null),
+            'idempotency_key' => self::stringValue($snapshot['idempotency_key'] ?? null),
+            'sequence' => self::intValue($snapshot['sequence'] ?? null),
+            'type' => self::stringValue($snapshot['type'] ?? null),
+            'class' => self::stringValue($snapshot['class'] ?? null),
+            'execution_mode' => self::stringValue($snapshot['execution_mode'] ?? null),
+            'local_activity' => ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($snapshot['local_activity'] ?? null) === true,
+            'parallel_group_kind' => self::stringValue($snapshot['parallel_group_kind'] ?? null),
+            'parallel_group_id' => self::stringValue($snapshot['parallel_group_id'] ?? null),
+            'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),
+            'parallel_group_size' => self::intValue($snapshot['parallel_group_size'] ?? null),
+            'parallel_group_index' => self::intValue($snapshot['parallel_group_index'] ?? null),
+            'parallel_group_path' => self::parallelGroupPath($snapshot),
+            'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null),
+            'status' => self::stringValue($snapshot['status'] ?? null),
+            'payload_codec' => self::stringValue($snapshot['payload_codec'] ?? null),
+            'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
+            'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
+            'connection' => self::stringValue($snapshot['connection'] ?? null),
+            'queue' => self::stringValue($snapshot['queue'] ?? null),
+            'last_heartbeat_at' => self::stringValue($snapshot['last_heartbeat_at'] ?? null),
+            'created_at' => self::stringValue($snapshot['created_at'] ?? null),
+            'started_at' => self::stringValue($snapshot['started_at'] ?? null),
+            'closed_at' => self::stringValue($snapshot['closed_at'] ?? null),
+            'arguments' => self::payloadValue($snapshot['arguments'] ?? null),
+            'result' => self::payloadValue($snapshot['result'] ?? null),
+            'exception' => self::payloadValue($snapshot['exception'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($snapshot['last_heartbeat_progress'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private static function statusForEvent(HistoryEventType $eventType): ?string
+    {
+        return match ($eventType) {
+            HistoryEventType::ActivityScheduled => 'pending',
+            HistoryEventType::ActivityStarted => 'running',
+            HistoryEventType::ActivityHeartbeatRecorded => 'running',
+            HistoryEventType::ActivityRetryScheduled => 'pending',
+            HistoryEventType::ActivityCompleted => 'completed',
+            HistoryEventType::ActivityFailed => 'failed',
+            HistoryEventType::ActivityTimedOut => 'failed',
+            HistoryEventType::ActivityCancelled => 'cancelled',
+            default => null,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $taskSnapshot
+     */
+    private static function eventAttemptCount(
+        HistoryEventType $eventType,
+        array $snapshot,
+        array $taskSnapshot,
+    ): int {
+        $taskAttemptCount = in_array($eventType, [
+            HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded,
+            HistoryEventType::ActivityRetryScheduled,
+            HistoryEventType::ActivityCompleted,
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut,
+        ], true)
+            ? self::intValue($taskSnapshot['attempt_count'] ?? null)
+            : null;
+        $attemptCount = $taskAttemptCount ?? self::intValue($snapshot['attempt_count'] ?? null);
+        $status = self::stringValue($snapshot['status'] ?? null);
+        $startedAt = self::stringValue($snapshot['started_at'] ?? null);
+
+        if (
+            ($eventType === HistoryEventType::ActivityScheduled || ($status === ActivityStatus::Pending->value && $startedAt === null))
+            && ($attemptCount === null || $attemptCount <= 1)
+        ) {
+            return 0;
+        }
+
+        return $attemptCount !== null && $attemptCount > 0
+            ? $attemptCount
+            : 1;
+    }
+
+    private static function executionAttemptCount(ActivityExecution $execution): int
+    {
+        $attemptCount = is_int($execution->attempt_count) ? $execution->attempt_count : 0;
+
+        if (
+            $execution->status === ActivityStatus::Pending
+            && $execution->started_at === null
+            && ($attemptCount <= 1)
+        ) {
+            return 0;
+        }
+
+        return $attemptCount > 0 ? $attemptCount : 1;
+    }
+
+    private static function executionNamespace(ActivityExecution $execution): ?string
+    {
+        if ($execution->relationLoaded('run') && $execution->run instanceof \Workflow\V2\Models\WorkflowRun) {
+            return is_string($execution->run->namespace) ? $execution->run->namespace : null;
+        }
+
+        return null;
+    }
+
+    private static function payloadValue(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $value;
+        }
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        return null;
+    }
+
+    private static function timestamp(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toJSON();
+        }
+
+        return self::stringValue($value);
+    }
+
+    private static function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        return is_int($value)
+            ? $value
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function arrayValue(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>|null
+     */
+    private static function parallelGroupPath(array $payload): ?array
+    {
+        $path = ParallelChildGroup::metadataPathFromPayload($payload);
+
+        return $path === [] ? null : $path;
+    }
+}

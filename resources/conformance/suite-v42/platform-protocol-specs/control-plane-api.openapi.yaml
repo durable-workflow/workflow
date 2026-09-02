@@ -1,0 +1,905 @@
+openapi: 3.1.0
+info:
+  title: durable-workflow.v2.control-plane-api
+  version: "8"
+  summary: Durable Workflow control-plane HTTP+JSON API
+  description: >
+    Normative OpenAPI specification for the standalone Durable Workflow
+    server control-plane HTTP+JSON API. This document pins the public
+    route set, HTTP methods, protocol headers, request-body envelope
+    policy, response-envelope policy, and worker-session visibility
+    routes. Per-object family schemas are referenced from the platform
+    protocol catalog.
+x-durable-workflow-catalog-entry: control_plane_api
+x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
+x-durable-workflow-catalog-version: 16
+x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-object-families:
+  - name: control_plane_request_contract
+    owner_repo: durable-workflow/server
+  - name: control_plane_response_envelope
+    owner_repo: durable-workflow/server
+  - name: control_plane_operation_contract
+    owner_repo: durable-workflow/server
+servers:
+  - url: /api
+security:
+  - durableAuth: []
+tags:
+  - name: discovery
+  - name: namespaces
+  - name: workflows
+  - name: schedules
+  - name: task-queues
+  - name: deployments
+  - name: workers
+  - name: services
+  - name: system
+paths:
+  /health:
+    get:
+      tags: [discovery]
+      operationId: getHealth
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/JsonEnvelope" }
+        "503": { $ref: "#/components/responses/JsonEnvelope" }
+  /ready:
+    get:
+      tags: [discovery]
+      operationId: getReadiness
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/JsonEnvelope" }
+        "503": { $ref: "#/components/responses/JsonEnvelope" }
+  /cluster/info:
+    get:
+      tags: [discovery]
+      operationId: getClusterInfo
+      parameters:
+        - $ref: "#/components/parameters/NamespaceHeaderOptional"
+      responses:
+        "200":
+          description: Cluster discovery envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "./cluster-info-envelope.schema.json"
+        "401": { $ref: "#/components/responses/ControlPlaneError" }
+        "403": { $ref: "#/components/responses/ControlPlaneError" }
+  /namespaces:
+    get:
+      tags: [namespaces]
+      operationId: listNamespaces
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    post:
+      tags: [namespaces]
+      operationId: createNamespace
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /namespaces/{namespace}:
+    get:
+      tags: [namespaces]
+      operationId: getNamespace
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/NamespacePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+    put:
+      tags: [namespaces]
+      operationId: updateNamespace
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/NamespacePath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /namespaces/{namespace}/external-storage:
+    put:
+      tags: [namespaces]
+      operationId: updateNamespaceExternalStorage
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/NamespacePath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /storage/test:
+    post:
+      tags: [system]
+      operationId: testExternalStorage
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows:
+    get:
+      tags: [workflows]
+      operationId: listWorkflows
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/PageQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    post:
+      tags: [workflows]
+      operationId: startWorkflow
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/import/embedded-v2:
+    post:
+      tags: [workflows]
+      operationId: importEmbeddedV2WorkflowHistory
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}:
+    get:
+      tags: [workflows]
+      operationId: getWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/signal/{signalName}:
+    post:
+      tags: [workflows]
+      operationId: signalWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/SignalNamePath"
+      requestBody: { $ref: "#/components/requestBodies/CommandArguments" }
+      responses:
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/query/{queryName}:
+    post:
+      tags: [workflows]
+      operationId: queryWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/QueryNamePath"
+      requestBody: { $ref: "#/components/requestBodies/CommandArguments" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/update/{updateName}:
+    post:
+      tags: [workflows]
+      operationId: updateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/UpdateNamePath"
+      requestBody: { $ref: "#/components/requestBodies/CommandArguments" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/cancel:
+    post:
+      tags: [workflows]
+      operationId: cancelWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody: { $ref: "#/components/requestBodies/ReasonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/terminate:
+    post:
+      tags: [workflows]
+      operationId: terminateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody: { $ref: "#/components/requestBodies/ReasonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/repair:
+    post:
+      tags: [workflows]
+      operationId: repairWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/archive:
+    post:
+      tags: [workflows]
+      operationId: archiveWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody: { $ref: "#/components/requestBodies/ReasonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs:
+    get:
+      tags: [workflows]
+      operationId: listWorkflowRuns
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/debug:
+    get:
+      tags: [workflows]
+      operationId: debugWorkflow
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}:
+    get:
+      tags: [workflows]
+      operationId: getWorkflowRun
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/debug:
+    get:
+      tags: [workflows]
+      operationId: debugWorkflowRun
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/history:
+    get:
+      tags: [workflows]
+      operationId: getWorkflowRunHistory
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/PageTokenQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/history/export:
+    get:
+      tags: [workflows]
+      operationId: exportWorkflowRunHistory
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          description: History export bundle.
+          content:
+            application/json:
+              schema:
+                $ref: "./history-export-bundle.schema.json"
+  /workflows/{workflowId}/runs/{runId}/{command}/{name}:
+    post:
+      tags: [workflows]
+      operationId: commandWorkflowRunByName
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - name: command
+          in: path
+          required: true
+          schema: { type: string, enum: [signal, query, update] }
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody: { $ref: "#/components/requestBodies/CommandArguments" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/runs/{runId}/{command}:
+    post:
+      tags: [workflows]
+      operationId: commandWorkflowRun
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - name: command
+          in: path
+          required: true
+          schema: { type: string, enum: [cancel, terminate, repair, archive] }
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+  /bridge-adapters/webhook/{adapter}:
+    post:
+      tags: [workflows]
+      operationId: bridgeAdapterWebhook
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - name: adapter
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workers:
+    get:
+      tags: [workers]
+      operationId: listWorkers
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workers/{workerId}:
+    get:
+      tags: [workers]
+      operationId: getWorker
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - name: workerId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    delete:
+      tags: [workers]
+      operationId: deleteWorker
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - name: workerId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "204": { description: Worker deleted. }
+  /worker-sessions:
+    get:
+      tags: [workers]
+      operationId: listWorkerSessions
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200":
+          description: Worker-session visibility list for the selected namespace.
+          headers:
+            X-Durable-Workflow-Control-Plane-Version:
+              schema: { type: string, const: "2" }
+          content:
+            application/json:
+              schema: { $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionVisibility" }
+  /worker-sessions/{sessionId}:
+    get:
+      tags: [workers]
+      operationId: getWorkerSession
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      responses:
+        "200":
+          description: Worker-session detail for the selected namespace.
+          headers:
+            X-Durable-Workflow-Control-Plane-Version:
+              schema: { type: string, const: "2" }
+          content:
+            application/json:
+              schema: { $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionDetail" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+  /task-queues:
+    get:
+      tags: [task-queues]
+      operationId: listTaskQueues
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}:
+    get:
+      tags: [task-queues]
+      operationId: getTaskQueue
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}/build-ids:
+    get:
+      tags: [task-queues]
+      operationId: listTaskQueueBuildIds
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}/build-ids/{intent}:
+    post:
+      tags: [task-queues]
+      operationId: setBuildIdDrainIntent
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+        - name: intent
+          in: path
+          required: true
+          schema: { type: string, enum: [drain, resume] }
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /deployments:
+    get:
+      tags: [deployments]
+      operationId: listDeployments
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /deployments/{name}:
+    get:
+      tags: [deployments]
+      operationId: getDeployment
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/DeploymentNamePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /deployments/{name}/{action}:
+    post:
+      tags: [deployments]
+      operationId: runDeploymentLifecycleAction
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/DeploymentNamePath"
+        - name: action
+          in: path
+          required: true
+          schema: { type: string, enum: [promote, drain, resume, rollback] }
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+  /schedules:
+    get:
+      tags: [schedules]
+      operationId: listSchedules
+      summary: List one deterministic page of visible schedules.
+      x-durable-workflow-namespace-routing:
+        carriers:
+          - { in: header, name: X-Namespace }
+          - { in: query, name: namespace }
+        precedence: [header, query, server_default]
+        continuation_token_scope: resolved_namespace
+      description: >
+        Namespace isolation and deleted-schedule exclusion are unconditional.
+        The resolved namespace comes from X-Namespace when that header is
+        present, otherwise from the namespace query parameter, otherwise from
+        the server's configured default namespace. When both request carriers
+        are present, X-Namespace takes precedence. Continuation tokens are
+        scoped to the resolved namespace and cannot be reused after selecting
+        another namespace.
+        Status, workflow type, and every visibility predicate combine with AND
+        semantics. Results are ordered by created_at descending and schedule_id
+        ascending. Continuation tokens are opaque signed keyset cursors and
+        must be reused unchanged with the same namespace, status, workflow
+        type, and visibility query. Page size may change between pages. A null
+        next_page_token terminates traversal.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/NamespaceHeaderOptional"
+        - $ref: "#/components/parameters/NamespaceQueryOptional"
+        - $ref: "#/components/parameters/ScheduleStatusQuery"
+        - $ref: "#/components/parameters/ScheduleWorkflowTypeQuery"
+        - $ref: "#/components/parameters/ScheduleVisibilityQuery"
+        - $ref: "#/components/parameters/SchedulePageSizeQuery"
+        - $ref: "#/components/parameters/ScheduleNextPageTokenQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ScheduleListEnvelope" }
+        "400": { $ref: "#/components/responses/ScheduleListError" }
+        "403": { $ref: "#/components/responses/ScheduleListError" }
+        "409": { $ref: "#/components/responses/ScheduleListError" }
+        "422": { $ref: "#/components/responses/ScheduleListError" }
+    post:
+      tags: [schedules]
+      operationId: createSchedule
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /schedules/{scheduleId}:
+    get:
+      tags: [schedules]
+      operationId: getSchedule
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/ScheduleIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    put:
+      tags: [schedules]
+      operationId: updateSchedule
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/ScheduleIdPath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    delete:
+      tags: [schedules]
+      operationId: deleteSchedule
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/ScheduleIdPath"
+      responses:
+        "204": { description: Schedule deleted. }
+  /schedules/{scheduleId}/history:
+    get:
+      tags: [schedules]
+      operationId: getScheduleHistory
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/ScheduleIdPath"
+        - $ref: "#/components/parameters/PageQuery"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /schedules/{scheduleId}/{action}:
+    post:
+      tags: [schedules]
+      operationId: scheduleAction
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/ScheduleIdPath"
+        - name: action
+          in: path
+          required: true
+          schema: { type: string, enum: [pause, resume, trigger, backfill] }
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /search-attributes:
+    get:
+      tags: [workflows]
+      operationId: listSearchAttributes
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+    post:
+      tags: [workflows]
+      operationId: createSearchAttribute
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /search-attributes/{name}:
+    delete:
+      tags: [workflows]
+      operationId: deleteSearchAttribute
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "204": { description: Search attribute deleted. }
+  /service-endpoints:
+    get: { tags: [services], operationId: listServiceEndpoints, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    post: { tags: [services], operationId: createServiceEndpoint, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "201": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /service-endpoints/{endpointName}:
+    get: { tags: [services], operationId: getServiceEndpoint, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }, "404": { $ref: "#/components/responses/ControlPlaneError" } } }
+    put: { tags: [services], operationId: updateServiceEndpoint, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    delete: { tags: [services], operationId: deleteServiceEndpoint, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }], responses: { "204": { description: Service endpoint deleted. } } }
+  /service-endpoints/{endpointName}/services:
+    get: { tags: [services], operationId: listServices, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    post: { tags: [services], operationId: createService, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "201": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /service-endpoints/{endpointName}/services/{serviceName}:
+    get: { tags: [services], operationId: getService, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    put: { tags: [services], operationId: updateService, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    delete: { tags: [services], operationId: deleteService, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }], responses: { "204": { description: Service deleted. } } }
+  /service-endpoints/{endpointName}/services/{serviceName}/operations:
+    get: { tags: [services], operationId: listOperations, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    post: { tags: [services], operationId: createOperation, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "201": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}:
+    get: { tags: [services], operationId: getOperation, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    put: { tags: [services], operationId: updateOperation, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    delete: { tags: [services], operationId: deleteOperation, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }], responses: { "204": { description: Operation deleted. } } }
+  /service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/execute:
+    post: { tags: [services], operationId: executeServiceOperation, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "202": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}:
+    get: { tags: [services], operationId: getServiceCall, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }, { $ref: "#/components/parameters/ServiceCallIdPath" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel:
+    post: { tags: [services], operationId: cancelServiceCall, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }, { $ref: "#/components/parameters/EndpointNamePath" }, { $ref: "#/components/parameters/ServiceNamePath" }, { $ref: "#/components/parameters/OperationNamePath" }, { $ref: "#/components/parameters/ServiceCallIdPath" }], requestBody: { $ref: "#/components/requestBodies/ReasonObject" }, responses: { "202": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/health:
+    get: { tags: [system], operationId: getSystemHealth, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/metrics:
+    get: { tags: [system], operationId: getSystemMetrics, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+    post: { tags: [system], operationId: postSystemMetrics, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/operator-metrics:
+    get: { tags: [system], operationId: getOperatorMetrics, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/repair:
+    get: { tags: [system], operationId: getRepairStatus, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { content: { application/json: { schema: { $ref: "./repair-actionability-objects.schema.json" } } }, description: Repair status. } } }
+  /system/repair/pass:
+    post: { tags: [system], operationId: runRepairPass, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/activity-timeouts:
+    get: { tags: [system], operationId: getActivityTimeoutStatus, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/activity-timeouts/pass:
+    post: { tags: [system], operationId: enforceActivityTimeouts, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/retention:
+    get: { tags: [system], operationId: getRetentionStatus, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+  /system/retention/pass:
+    post: { tags: [system], operationId: enforceRetention, parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }], requestBody: { $ref: "#/components/requestBodies/JsonObject" }, responses: { "200": { $ref: "#/components/responses/ControlPlaneEnvelope" } } }
+components:
+  securitySchemes:
+    durableAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Bearer token, webhook signature, or configured Durable auth provider credential.
+  parameters:
+    ControlPlaneVersionHeader:
+      name: X-Durable-Workflow-Control-Plane-Version
+      in: header
+      required: true
+      schema: { type: string, const: "2" }
+    NamespaceHeaderOptional:
+      name: X-Namespace
+      in: header
+      required: false
+      description: >
+        Selects the request namespace. When the namespace query parameter is
+        also present, this header takes precedence.
+      schema: { type: string, minLength: 1 }
+    NamespaceQueryOptional:
+      name: namespace
+      in: query
+      required: false
+      description: >
+        Selects the request namespace when X-Namespace is absent. When neither
+        carrier is present, the server's configured default namespace is used.
+      schema: { type: string, minLength: 1 }
+    NamespacePath: { name: namespace, in: path, required: true, schema: { type: string, minLength: 1 } }
+    WorkflowIdPath: { name: workflowId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    RunIdPath: { name: runId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    ScheduleIdPath: { name: scheduleId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    TaskQueuePath: { name: taskQueue, in: path, required: true, schema: { type: string, minLength: 1 } }
+    DeploymentNamePath: { name: name, in: path, required: true, schema: { type: string, minLength: 1 } }
+    EndpointNamePath: { name: endpointName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    ServiceNamePath: { name: serviceName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    OperationNamePath: { name: operationName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    ServiceCallIdPath: { name: serviceCallId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    SignalNamePath: { name: signalName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    QueryNamePath: { name: queryName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    UpdateNamePath: { name: updateName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    PageQuery: { name: page, in: query, required: false, schema: { type: integer, minimum: 1 } }
+    PageTokenQuery: { name: page_token, in: query, required: false, schema: { type: string } }
+    ScheduleStatusQuery:
+      name: status
+      in: query
+      required: false
+      description: Exact schedule lifecycle status. Deleted schedules are never visible.
+      schema: { type: string, enum: [active, paused] }
+    ScheduleWorkflowTypeQuery:
+      name: workflow_type
+      in: query
+      required: false
+      description: Exact workflow type from the schedule action.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    ScheduleVisibilityQuery:
+      name: query
+      in: query
+      required: false
+      description: >
+        Equality predicates joined by AND. Searchable system fields are
+        ScheduleId, Status, WorkflowType, TaskQueue, and Note. Namespace-
+        registered search attributes are also searchable by their exact name.
+        String and datetime literals are quoted; integer, double, and boolean
+        literals retain their JSON scalar types. Keyword-list equality means
+        membership. OR, NOT, IN, ranges, partial matching, and unknown fields
+        are rejected with typed errors.
+      schema: { type: string, minLength: 1, maxLength: 2048 }
+    SchedulePageSizeQuery:
+      name: page_size
+      in: query
+      required: false
+      description: Maximum schedules in this page. Defaults to 50.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ScheduleNextPageTokenQuery:
+      name: next_page_token
+      in: query
+      required: false
+      description: >
+        Opaque token returned by the preceding page. It is bound to namespace
+        and normalized filters. A malformed token is HTTP 400; namespace
+        mismatch is 403; filter mismatch is 409. A token is stale only when its
+        original filtered anchor is absent or that anchor's created_at cursor
+        value changed. Mutations to other schedules do not make the token stale.
+      schema: { type: string, minLength: 1, maxLength: 8192 }
+  requestBodies:
+    JsonObject:
+      required: false
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/JsonObject" }
+    CommandArguments:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            properties:
+              arguments:
+                type: array
+                items: true
+              idempotency_key:
+                type: [string, "null"]
+              wait:
+                type: [boolean, "null"]
+    ReasonObject:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            properties:
+              reason:
+                type: [string, "null"]
+              idempotency_key:
+                type: [string, "null"]
+  responses:
+    JsonEnvelope:
+      description: JSON response envelope.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/JsonObject" }
+    ControlPlaneEnvelope:
+      description: Successful control-plane response.
+      headers:
+        X-Durable-Workflow-Control-Plane-Version:
+          schema: { type: string, const: "2" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ControlPlaneEnvelope" }
+    ControlPlaneError:
+      description: Machine-readable control-plane error.
+      headers:
+        X-Durable-Workflow-Control-Plane-Version:
+          schema: { type: string, const: "2" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ControlPlaneError" }
+    ScheduleListEnvelope:
+      description: One bounded deterministic schedule page.
+      headers:
+        X-Durable-Workflow-Control-Plane-Version:
+          schema: { type: string, const: "2" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ScheduleListEnvelope" }
+    ScheduleListError:
+      description: Typed schedule filter or cursor refusal with recovery evidence.
+      headers:
+        X-Durable-Workflow-Control-Plane-Version:
+          schema: { type: string, const: "2" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ScheduleListError" }
+  schemas:
+    JsonObject:
+      type: object
+      additionalProperties: true
+    ControlPlaneEnvelope:
+      type: object
+      additionalProperties: true
+      description: >
+        Route-specific successful envelope. Additive fields are allowed.
+        Guaranteed route-specific fields are pinned by the matching
+        operation-level compatibility checks maintained by the owning implementation.
+    ControlPlaneError:
+      type: object
+      additionalProperties: true
+      required: [message]
+      properties:
+        message: { type: string }
+        error: { type: string }
+        reason: { type: [string, "null"] }
+        remediation: { type: [string, "null"] }
+        operation:
+          type: [object, "null"]
+          additionalProperties: true
+    ScheduleListEnvelope:
+      type: object
+      additionalProperties: true
+      required: [schedules, schedule_count, next_page_token]
+      properties:
+        schedules:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            required: [schedule_id, namespace, status, workflow_type, created_at]
+            properties:
+              schedule_id: { type: string, minLength: 1 }
+              namespace: { type: string, minLength: 1 }
+              status: { type: string, enum: [active, paused] }
+              workflow_type: { type: [string, "null"] }
+              spec: { type: [object, "null"], additionalProperties: true }
+              action: { type: [object, "null"], additionalProperties: true }
+              search_attributes: { type: [object, "null"], additionalProperties: true }
+              created_at: { type: string, format: date-time }
+              updated_at: { type: string, format: date-time }
+        schedule_count: { type: integer, minimum: 0, maximum: 200 }
+        next_page_token: { type: [string, "null"] }
+    ScheduleListError:
+      type: object
+      additionalProperties: true
+      required: [message, reason, field, errors, validation_errors, last_safe_cursor]
+      properties:
+        message: { type: string, minLength: 1 }
+        reason:
+          type: string
+          enum:
+            - validation_failed
+            - unsupported_schedule_list_filter
+            - invalid_schedule_visibility_query
+            - unsupported_schedule_visibility_predicate
+            - unsupported_schedule_visibility_field
+            - malformed_schedule_page_token
+            - schedule_page_token_namespace_mismatch
+            - schedule_page_token_filter_mismatch
+            - stale_schedule_page_token
+        field: { type: string, minLength: 1 }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        validation_errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        last_safe_cursor:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [created_at, schedule_id]
+              properties:
+                created_at: { type: string, format: date-time }
+                schedule_id: { type: string, minLength: 1 }

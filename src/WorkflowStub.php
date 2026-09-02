@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow;
 
-use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Traits\Macroable;
 use LimitIterator;
@@ -12,6 +11,7 @@ use ReflectionClass;
 use SplFileObject;
 use Workflow\Events\WorkflowFailed;
 use Workflow\Events\WorkflowStarted;
+use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowCompletedStatus;
@@ -44,6 +44,8 @@ final class WorkflowStub
     private static array $signalMethodCache = [];
 
     private static array $queryMethodCache = [];
+
+    private static array $updateMethodCache = [];
 
     private static array $defaultPropertiesCache = [];
 
@@ -82,22 +84,45 @@ final class WorkflowStub
         if (self::isQueryMethod($this->storedWorkflow->class, $method)) {
             $activeWorkflow = $this->storedWorkflow->active();
 
-            return (new $activeWorkflow->class(
-                $activeWorkflow,
-                ...Serializer::unserialize($activeWorkflow->arguments),
-            ))
+            return (new $activeWorkflow->class($activeWorkflow, ...$activeWorkflow->workflowArguments()))
                 ->query($method);
+        }
+
+        if (self::isUpdateMethod($this->storedWorkflow->class, $method)) {
+            $activeWorkflow = $this->storedWorkflow->active();
+
+            $workflow = new $activeWorkflow->class($activeWorkflow, ...$activeWorkflow->workflowArguments());
+            $result = $workflow->query($method);
+
+            if ($workflow->outboxWasConsumed) {
+                $activeWorkflow->signals()
+                    ->create([
+                        'method' => $method,
+                        'arguments' => Serializer::serialize($arguments),
+                    ]);
+
+                $activeWorkflow->toWorkflow();
+
+                if (static::faked()) {
+                    $this->resume();
+                    return $result;
+                }
+
+                Signal::dispatch($activeWorkflow, self::connection(), self::queue());
+            }
+
+            return $result;
         }
     }
 
     public static function connection()
     {
-        return Arr::get(self::getDefaultProperties(self::$context->storedWorkflow->class), 'connection');
+        return self::$context->storedWorkflow->effectiveConnection();
     }
 
     public static function queue()
     {
-        return Arr::get(self::getDefaultProperties(self::$context->storedWorkflow->class), 'queue');
+        return self::$context->storedWorkflow->effectiveQueue();
     }
 
     public static function getDefaultProperties(string $class): array
@@ -132,6 +157,10 @@ final class WorkflowStub
 
     public static function getContext(): \stdClass
     {
+        if (self::$context === null) {
+            self::$context = new \stdClass();
+        }
+
         return self::$context;
     }
 
@@ -143,6 +172,49 @@ final class WorkflowStub
     public static function now()
     {
         return self::getContext()->now;
+    }
+
+    public static function isProbing(): bool
+    {
+        return (bool) (self::getContext()->probing ?? false);
+    }
+
+    public static function probeIndex(): ?int
+    {
+        return self::getContext()->probeIndex ?? null;
+    }
+
+    public static function probeClass(): ?string
+    {
+        return self::getContext()->probeClass ?? null;
+    }
+
+    public static function markProbeMatched(): void
+    {
+        if (! self::isProbing()) {
+            return;
+        }
+
+        self::$context->probeMatched = true;
+    }
+
+    public static function markProbePendingBeforeMatch(): void
+    {
+        if (! self::isProbing() || self::probeMatched()) {
+            return;
+        }
+
+        self::$context->probePendingBeforeMatch = true;
+    }
+
+    public static function probeMatched(): bool
+    {
+        return (bool) (self::getContext()->probeMatched ?? false);
+    }
+
+    public static function probePendingBeforeMatch(): bool
+    {
+        return (bool) (self::getContext()->probePendingBeforeMatch ?? false);
     }
 
     public function id()
@@ -214,7 +286,11 @@ final class WorkflowStub
 
     public function start(...$arguments): void
     {
-        $this->storedWorkflow->arguments = Serializer::serialize($arguments);
+        $fallbackOptions = $this->storedWorkflow->workflowOptions();
+
+        $metadata = WorkflowMetadata::fromStartArguments($arguments, $fallbackOptions);
+
+        $this->storedWorkflow->arguments = Serializer::serialize($metadata->toArray());
 
         $this->dispatch();
     }
@@ -258,26 +334,58 @@ final class WorkflowStub
             ->format('Y-m-d\TH:i:s.u\Z'));
 
         $this->storedWorkflow->parents()
-            ->each(static function ($parentWorkflow) use ($exception) {
-                try {
-                    $parentWorkflow->toWorkflow()
-                        ->fail($exception);
-                } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
+            ->each(function ($parentWorkflow) use ($exception) {
+                if (
+                    $parentWorkflow->pivot->parent_index === StoredWorkflow::CONTINUE_PARENT_INDEX
+                    || $parentWorkflow->pivot->parent_index === StoredWorkflow::ACTIVE_WORKFLOW_INDEX
+                ) {
+                    try {
+                        $parentWorkflow->toWorkflow()
+                            ->fail($exception);
+                    } catch (TransitionNotFound) {
+                        return;
+                    }
                     return;
                 }
+
+                $file = new SplFileObject($exception->getFile());
+                $iterator = new LimitIterator($file, max(0, $exception->getLine() - 4), 7);
+
+                $throwable = [
+                    'class' => get_class($exception),
+                    'message' => $exception->getMessage(),
+                    'code' => $exception->getCode(),
+                    'line' => $exception->getLine(),
+                    'file' => $exception->getFile(),
+                    'trace' => collect($exception->getTrace())
+                        ->filter(static fn ($trace) => Serializer::serializable($trace))
+                        ->toArray(),
+                    'snippet' => array_slice(iterator_to_array($iterator), 0, 7),
+                ];
+
+                $parentWf = $parentWorkflow->toWorkflow();
+
+                Exception::dispatch(
+                    $parentWorkflow->pivot->parent_index,
+                    $parentWorkflow->pivot->parent_now,
+                    $parentWorkflow,
+                    $throwable,
+                    $parentWf->connection(),
+                    $parentWf->queue(),
+                    $this->storedWorkflow->class
+                );
             });
     }
 
     public function next($index, $now, $class, $result, bool $shouldSignal = true): void
     {
         try {
-            $this->storedWorkflow->logs()
-                ->create([
-                    'index' => $index,
-                    'now' => $now,
-                    'class' => $class,
-                    'result' => Serializer::serialize($result),
-                ]);
+            $this->storedWorkflow->createLog([
+                'index' => $index,
+                'now' => $now,
+                'class' => $class,
+                'result' => Serializer::serialize($result),
+            ]);
         } catch (\Illuminate\Database\UniqueConstraintViolationException $exception) {
             // already logged
         }
@@ -285,6 +393,23 @@ final class WorkflowStub
         if ($shouldSignal) {
             $this->dispatch();
         }
+    }
+
+    public static function isUpdateMethod(string $class, string $method): bool
+    {
+        if (! isset(self::$updateMethodCache[$class])) {
+            self::$updateMethodCache[$class] = [];
+            foreach ((new ReflectionClass($class))->getMethods() as $reflectionMethod) {
+                foreach ($reflectionMethod->getAttributes() as $attribute) {
+                    if ($attribute->getName() === UpdateMethod::class) {
+                        self::$updateMethodCache[$class][$reflectionMethod->getName()] = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return self::$updateMethodCache[$class][$method] ?? false;
     }
 
     private static function isSignalMethod(string $class, string $method): bool
@@ -327,19 +452,27 @@ final class WorkflowStub
             WorkflowStarted::dispatch(
                 $this->storedWorkflow->id,
                 $this->storedWorkflow->class,
-                json_encode(Serializer::unserialize($this->storedWorkflow->arguments)),
+                json_encode($this->storedWorkflow->workflowArguments()),
                 now()
                     ->format('Y-m-d\TH:i:s.u\Z')
             );
         }
 
-        $this->storedWorkflow->status->transitionTo(WorkflowPendingStatus::class);
+        try {
+            $this->storedWorkflow->status->transitionTo(WorkflowPendingStatus::class);
+        } catch (TransitionNotFound $exception) {
+            $this->storedWorkflow->refresh();
+
+            if ($this->status() !== WorkflowPendingStatus::class) {
+                throw $exception;
+            }
+        }
 
         $dispatch = static::faked() ? 'dispatchSync' : 'dispatch';
 
         $this->storedWorkflow->class::$dispatch(
             $this->storedWorkflow,
-            ...Serializer::unserialize($this->storedWorkflow->arguments)
+            ...$this->storedWorkflow->workflowArguments()
         );
     }
 }

@@ -1,0 +1,36 @@
+<?php
+
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Workflow;
+
+#[Type({{ type_key }})]
+class {{ class }} extends Workflow
+{
+    public function handle(): mixed
+    {
+        // Example (helper-style is the primary authoring API):
+        //
+        //     use function Workflow\V2\activity;
+        //     use function Workflow\V2\now;
+        //     use function Workflow\V2\timer;
+        //     use function Workflow\V2\upsertMemo;
+        //
+        //     $startedAt = now();
+        //     $result = activity(MyActivity::class, $input);
+        //     timer('5 seconds');
+        //     upsertMemo(['stage' => 'done']);
+        //
+        //     return $result;
+        //
+        // Determinism: prefer Workflow\V2\now() over Laravel's now() inside a
+        // workflow body. Workflow\V2\now() advances with history events during
+        // replay, so the same workflow run always observes the same timeline.
+        // The static facade (Workflow::activity(), Workflow::now(), ...) is an
+        // equivalent alternative for teams that prefer Temporal-style calls.
+        return null;
+    }
+}

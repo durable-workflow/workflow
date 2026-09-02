@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/activity-timeout-status.schema.json",
+  "title": "dw system:activity-timeout-status --json",
+  "type": "object",
+  "required": ["expired_count", "expired_execution_ids", "scan_limit", "scan_pressure"],
+  "properties": {
+    "expired_count": { "type": "integer" },
+    "expired_execution_ids": { "type": "array", "items": { "type": "string" } },
+    "scan_limit": { "type": "integer" },
+    "scan_pressure": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

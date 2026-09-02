@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.cli-json-envelopes",
+  "title": "Durable Workflow CLI JSON envelopes",
+  "description": "Normative JSON Schema index for the dw CLI machine-readable output contract. The output-schema manifest, command-to-schema mapping, JSON/JSONL mode markers, and schema ids are contractual. Human-readable table output is diagnostic documentation and is outside this schema.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "cli_json_envelopes",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "cli_output_schema_manifest",
+      "owner_repo": "durable-workflow/cli"
+    },
+    {
+      "name": "cli_command_output_schema",
+      "owner_repo": "durable-workflow/cli"
+    }
+  ],
+  "required": ["schema", "version", "json_schema_draft", "commands"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "durable-workflow.cli.output-schema-manifest"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "json_schema_draft": {
+      "type": "string",
+      "const": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "stability": {
+      "type": "string",
+      "enum": ["patch-stable-additive"]
+    },
+    "commands": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/command_schema_entry"
+      }
+    }
+  },
+  "$defs": {
+    "command_schema_entry": {
+      "type": "object",
+      "required": ["output", "schema", "schema_id"],
+      "additionalProperties": true,
+      "properties": {
+        "output": {
+          "type": "string",
+          "enum": ["--json", "--jsonl"]
+        },
+        "schema": {
+          "type": "string",
+          "pattern": "^schemas/output/[A-Za-z0-9_.-]+\\.schema\\.json$"
+        },
+        "schema_id": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://durable-workflow\\.com/schemas/cli/output/[A-Za-z0-9_.-]+\\.schema\\.json$"
+        },
+        "stream_items_from": {
+          "type": ["string", "null"],
+          "description": "Optional object key used by JSONL commands to identify which array is streamed one object per line."
+        }
+      }
+    },
+    "command_output_envelope": {
+      "type": "object",
+      "description": "Per-command JSON output schemas are published by the CLI repository. This definition names the shared envelope rule: command output is always an object in JSON mode, and unknown additive fields must be ignored by older consumers.",
+      "additionalProperties": true
+    }
+  }
+}

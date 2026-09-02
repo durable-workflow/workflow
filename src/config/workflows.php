@@ -2,6 +2,21 @@
 
 declare(strict_types=1);
 
+use Workflow\Support\Env;
+
+/*
+|--------------------------------------------------------------------------
+| DW_* environment variable resolution
+|--------------------------------------------------------------------------
+|
+| Operator-facing env vars read by this package follow the DW_* contract
+| first, falling back to the legacy WORKFLOW_* / WORKFLOW_V2_* names so
+| existing deployments keep working during the deprecation window. The
+| DW_* names are documented in the server image's
+| `config/dw-contract.php`. Prefer the DW_* name when wiring new
+| environments.
+*/
+
 return [
     'workflows_folder' => 'Workflows',
 
@@ -17,27 +32,441 @@ return [
 
     'workflow_relationships_table' => 'workflow_relationships',
 
-    'serializer' => Workflow\Serializers\Y::class,
+    'v2' => [
+        // Optional embedded-v2 routing defaults. During a v1 drain, set
+        // DW_V2_QUEUE to a queue that no v1 workflow uses so new starts can
+        // move to v2 without changing the host application's default queue.
+        'connection' => env('DW_V2_CONNECTION'),
+        'queue' => env('DW_V2_QUEUE'),
+
+        // Optional. When null, workflow instances are not scoped to a namespace and
+        // are visible to every consumer. Set to a string (e.g. "production") to
+        // isolate multi-namespace deployments.
+        'namespace' => Env::dw('DW_V2_NAMESPACE', 'WORKFLOW_V2_NAMESPACE', null),
+
+        'instance_model' => Workflow\V2\Models\WorkflowInstance::class,
+        'run_model' => Workflow\V2\Models\WorkflowRun::class,
+        'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,
+        'task_model' => Workflow\V2\Models\WorkflowTask::class,
+        'child_projection_repair_model' => Workflow\V2\Models\WorkflowChildProjectionRepair::class,
+        'command_model' => Workflow\V2\Models\WorkflowCommand::class,
+        'link_model' => Workflow\V2\Models\WorkflowLink::class,
+        'activity_execution_model' => Workflow\V2\Models\ActivityExecution::class,
+        'activity_attempt_model' => Workflow\V2\Models\ActivityAttempt::class,
+        'timer_model' => Workflow\V2\Models\WorkflowTimer::class,
+        'failure_model' => Workflow\V2\Models\WorkflowFailure::class,
+        'run_summary_model' => Workflow\V2\Models\WorkflowRunSummary::class,
+        'run_wait_model' => Workflow\V2\Models\WorkflowRunWait::class,
+        'run_timeline_entry_model' => Workflow\V2\Models\WorkflowTimelineEntry::class,
+        'run_timer_entry_model' => Workflow\V2\Models\WorkflowRunTimerEntry::class,
+        'run_lineage_entry_model' => Workflow\V2\Models\WorkflowRunLineageEntry::class,
+        'schedule_model' => Workflow\V2\Models\WorkflowSchedule::class,
+        'schedule_history_event_model' => Workflow\V2\Models\WorkflowScheduleHistoryEvent::class,
+        'service_endpoint_model' => Workflow\V2\Models\WorkflowServiceEndpoint::class,
+        'service_model' => Workflow\V2\Models\WorkflowService::class,
+        'service_operation_model' => Workflow\V2\Models\WorkflowServiceOperation::class,
+        'service_call_model' => Workflow\V2\Models\WorkflowServiceCall::class,
+        'types' => [
+            'workflows' => [
+                // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,
+            ],
+            'activities' => [
+                // 'payments.capture' => App\Activities\CapturePaymentActivity::class,
+            ],
+            'exceptions' => [
+                // 'billing.invoice-declined' => App\Exceptions\InvoiceDeclined::class,
+            ],
+            'exception_class_aliases' => [
+                // App\Exceptions\LegacyInvoiceDeclined::class => App\Exceptions\InvoiceDeclined::class,
+            ],
+        ],
+        // Worker-compatibility markers let you pin workflow runs to a specific
+        // worker build and block incompatible workers from claiming tasks. All
+        // three keys default to null ("no marker required"), which is the right
+        // value for single-fleet deployments.
+        //
+        // Set DW_V2_CURRENT_COMPATIBILITY to the marker this worker advertises
+        // (e.g. "build-2026-04-17"). Set DW_V2_SUPPORTED_COMPATIBILITIES to a
+        // comma-separated list or "*" to accept any marker. Set
+        // DW_V2_COMPATIBILITY_NAMESPACE when multiple apps share one workflow
+        // database but maintain independent compatibility fleets.
+        'compatibility' => [
+            'current' => Env::dw('DW_V2_CURRENT_COMPATIBILITY', 'WORKFLOW_V2_CURRENT_COMPATIBILITY', null),
+            'supported' => Env::dw('DW_V2_SUPPORTED_COMPATIBILITIES', 'WORKFLOW_V2_SUPPORTED_COMPATIBILITIES', null),
+            'namespace' => Env::dw('DW_V2_COMPATIBILITY_NAMESPACE', 'WORKFLOW_V2_COMPATIBILITY_NAMESPACE', null),
+            'heartbeat_ttl_seconds' => (int) Env::dw(
+                'DW_V2_COMPATIBILITY_HEARTBEAT_TTL',
+                'WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL',
+                30
+            ),
+            // When true (the default), in-flight runs resolve their workflow
+            // class from the `workflow_definition_fingerprint` recorded in
+            // their WorkflowStarted history event instead of the live
+            // `workflow_runs.workflow_class` column. This keeps a run pinned
+            // to the definition snapshot it started under even after a deploy
+            // swaps the class pointer for the same workflow_type.
+            //
+            // Set to false only if your deploy intentionally hot-swaps
+            // workflow classes mid-run and wants the replacement class to
+            // execute against the existing history from the next task
+            // forward.
+            'pin_to_recorded_fingerprint' => (bool) Env::dw(
+                'DW_V2_PIN_TO_RECORDED_FINGERPRINT',
+                'WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT',
+                true
+            ),
+            // When true, the worker-compatibility fleet bypasses the
+            // workflow_worker_compatibility_heartbeats table and reads/writes
+            // exclusively through the legacy cache fallback. The fleet
+            // already auto-detects a missing table and falls back to cache,
+            // so the default (false) is correct for almost every deployment.
+            // Set this to true when you need to force the cache-only path
+            // without dropping the table — operators who want to temporarily
+            // sideline the heartbeat table during a problematic schema
+            // transition, and tests that exercise the cache-fallback branch
+            // without mutating shared schema state.
+            'disable_heartbeat_table' => (bool) Env::dw(
+                'DW_V2_COMPATIBILITY_DISABLE_HEARTBEAT_TABLE',
+                'WORKFLOW_V2_COMPATIBILITY_DISABLE_HEARTBEAT_TABLE',
+                false
+            ),
+        ],
+        'history_budget' => [
+            // Hard thresholds: when reached, continue-as-new is recommended
+            // (continue_as_new_recommended=true on the run summary).
+            'continue_as_new_event_threshold' => (int) Env::dw(
+                'DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
+                'WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
+                10000
+            ),
+            'continue_as_new_size_bytes_threshold' => (int) Env::dw(
+                'DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
+                'WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
+                5242880
+            ),
+            // Hard threshold for parallel fan-out. Reaching it on any single
+            // parallel group (the largest `parallel_group_size` recorded in
+            // the run's history) flips continue_as_new_recommended on. Set to
+            // 0 to disable the dimension entirely.
+            'continue_as_new_fan_out_threshold' => (int) Env::dw(
+                'DW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD',
+                'WORKFLOW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD',
+                200
+            ),
+            // Soft (warning) thresholds: when reached, the run is reported
+            // as `pressure=approaching` so operators can spot growth before
+            // continue-as-new is mandatory. Each clamps to the hard
+            // threshold of the same dimension; set to 0 to disable that
+            // dimension's warning.
+            'event_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_EVENT_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_EVENT_WARNING_THRESHOLD',
+                8000
+            ),
+            'size_bytes_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD',
+                4194304
+            ),
+            'fan_out_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD',
+                160
+            ),
+        ],
+        // History export signing is opt-in. When signing_key is null, exports
+        // are emitted unsigned. Provide a key (and optional key id for rotation)
+        // only if you need the export to be authenticated at the receiver.
+        'history_export' => [
+            'redactor' => null,
+            'signing_key' => Env::dw(
+                'DW_V2_HISTORY_EXPORT_SIGNING_KEY',
+                'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY',
+                null
+            ),
+            'signing_key_id' => Env::dw(
+                'DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID',
+                'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID',
+                null
+            ),
+        ],
+        'update_wait' => [
+            'completion_timeout_seconds' => (int) Env::dw(
+                'DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS',
+                'WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS',
+                10
+            ),
+            'poll_interval_milliseconds' => (int) Env::dw(
+                'DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS',
+                'WORKFLOW_V2_UPDATE_WAIT_POLL_INTERVAL_MS',
+                50
+            ),
+        ],
+        'guardrails' => [
+            'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
+        ],
+        'structural_limits' => [
+            'pending_activity_count' => (int) Env::dw(
+                'DW_V2_LIMIT_PENDING_ACTIVITIES',
+                'WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES',
+                2000
+            ),
+            'pending_child_count' => (int) Env::dw(
+                'DW_V2_LIMIT_PENDING_CHILDREN',
+                'WORKFLOW_V2_LIMIT_PENDING_CHILDREN',
+                1000
+            ),
+            'pending_timer_count' => (int) Env::dw(
+                'DW_V2_LIMIT_PENDING_TIMERS',
+                'WORKFLOW_V2_LIMIT_PENDING_TIMERS',
+                2000
+            ),
+            'pending_signal_count' => (int) Env::dw(
+                'DW_V2_LIMIT_PENDING_SIGNALS',
+                'WORKFLOW_V2_LIMIT_PENDING_SIGNALS',
+                5000
+            ),
+            'pending_update_count' => (int) Env::dw(
+                'DW_V2_LIMIT_PENDING_UPDATES',
+                'WORKFLOW_V2_LIMIT_PENDING_UPDATES',
+                500
+            ),
+            'command_batch_size' => (int) Env::dw(
+                'DW_V2_LIMIT_COMMAND_BATCH_SIZE',
+                'WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE',
+                1000
+            ),
+            'payload_size_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_PAYLOAD_SIZE_BYTES',
+                'WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES',
+                2097152
+            ),
+            'memo_size_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_MEMO_SIZE_BYTES',
+                'WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES',
+                262144
+            ),
+            'search_attribute_size_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES',
+                'WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES',
+                40960
+            ),
+            'history_transaction_size' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
+                5000
+            ),
+            'warning_threshold_percent' => (int) Env::dw(
+                'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
+                'WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
+                80
+            ),
+        ],
+        'task_dispatch_mode' => Env::dw('DW_V2_TASK_DISPATCH_MODE', 'WORKFLOW_V2_TASK_DISPATCH_MODE', 'queue'),
+
+        // How long a workflow or timer task remains owned after it is claimed.
+        // Claims and heartbeats resolve this value at runtime, so embedded hosts
+        // may override the published config before workers begin claiming work.
+        // Standalone hosts map their worker-protocol timeout to this key.
+        'workflow_task_lease_seconds' => (int) env(
+            'DW_V2_WORKFLOW_TASK_LEASE_SECONDS',
+            Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
+        ),
+
+        // Matching role configuration. The matching role is defined by
+        // docs/architecture/task-matching.md. By default every Laravel queue
+        // worker also runs the repair / broad-poll pass on every Looping
+        // event, which is how the in-worker library shape of the matching
+        // role runs today. Setting queue_wake_enabled to false disables the
+        // on-poll wake so this node never runs the broad repair sweep,
+        // leaving the sweep to a dedicated process invoking
+        // `php artisan workflow:v2:repair-pass`. This is how an operator
+        // opts a fleet into the "dedicated matching role shape" without
+        // otherwise changing task execution.
+        'matching_role' => [
+            'queue_wake_enabled' => (bool) Env::dw(
+                'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
+                'WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE',
+                true
+            ),
+        ],
+
+        // Sticky execution is a replay performance feature. A worker may keep
+        // a process-local cache for a run it just executed, and matching may
+        // prefer that worker for follow-up workflow tasks until the affinity
+        // TTL expires. Cold replay remains the correctness fallback.
+        'sticky_execution' => [
+            'enabled' => (bool) Env::dw(
+                'DW_V2_STICKY_EXECUTION_ENABLED',
+                'WORKFLOW_V2_STICKY_EXECUTION_ENABLED',
+                true
+            ),
+            'ttl_seconds' => (int) Env::dw(
+                'DW_V2_STICKY_EXECUTION_TTL_SECONDS',
+                'WORKFLOW_V2_STICKY_EXECUTION_TTL_SECONDS',
+                Workflow\V2\Support\StickyExecution::DEFAULT_TTL_SECONDS
+            ),
+        ],
+
+        'task_repair' => [
+            'redispatch_after_seconds' => (int) Env::dw(
+                'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
+                'WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
+                3
+            ),
+            'loop_throttle_seconds' => (int) Env::dw(
+                'DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',
+                'WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',
+                5
+            ),
+            'scan_limit' => (int) Env::dw('DW_V2_TASK_REPAIR_SCAN_LIMIT', 'WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT', 25),
+            'failure_backoff_max_seconds' => (int) Env::dw(
+                'DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS',
+                'WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS',
+                60
+            ),
+        ],
+
+        'long_poll' => [
+            // Whether this deployment has multiple server nodes.
+            // When true, validates that cache backend supports cross-node coordination.
+            'multi_node' => (bool) Env::dw('DW_V2_MULTI_NODE', 'WORKFLOW_V2_MULTI_NODE', false),
+
+            // Whether to validate cache backend on boot.
+            // Set to false to disable boot-time validation (not recommended for production).
+            'validate_cache_backend' => (bool) Env::dw(
+                'DW_V2_VALIDATE_CACHE_BACKEND',
+                'WORKFLOW_V2_VALIDATE_CACHE_BACKEND',
+                true
+            ),
+
+            // How to surface validation failures. The cache layer is the
+            // acceleration substrate, not the correctness substrate, so the
+            // admission is warning-only by contract: 'silent' suppresses the
+            // diagnostic; any other value ('warn', 'fail') logs a warning.
+            // The legacy 'fail' value is accepted for backwards compatibility
+            // and is now equivalent to 'warn' — boot is never blocked.
+            'validation_mode' => Env::dw('DW_V2_CACHE_VALIDATION_MODE', 'WORKFLOW_V2_CACHE_VALIDATION_MODE', 'warn'),
+        ],
+
+        // Worker-compatibility fleet admission posture. The
+        // `worker_compatibility` health check always surfaces when the
+        // required compatibility marker has no supporting live worker, but
+        // the severity it reports — and therefore whether the readiness
+        // contract returns 503 — is governed by this mode.
+        //
+        // - `warn` (default): the check reports `warning` so operators see
+        //   the gap without the readiness probe blocking traffic. This is
+        //   the rollout-discipline posture today.
+        // - `fail`: the check reports `error` so the readiness contract
+        //   returns 503 until at least one active worker advertises the
+        //   required compatibility marker. This is the fail-closed posture
+        //   that step 6 of the rollout-safety migration path tightens to.
+        'fleet' => [
+            'validation_mode' => Env::dw(
+                'DW_V2_FLEET_VALIDATION_MODE',
+                'WORKFLOW_V2_FLEET_VALIDATION_MODE',
+                'warn'
+            ),
+        ],
+
+        // Cross-namespace service-call boundary policy. The default
+        // implementation reads its rule set directly from this config
+        // block; binding a custom ServiceBoundaryPolicy implementation
+        // in a host service provider replaces it wholesale and the
+        // rules below become advisory.
+        //
+        // See Workflow\V2\Support\DefaultServiceBoundaryPolicy for the
+        // accepted rule schema.
+        'service_boundary' => [
+            'rules' => [
+                'default_action' => 'allow',
+                'authorization' => [
+                    'required_roles' => [],
+                ],
+                'namespaces' => [
+                    'allow_callers' => null,
+                    'deny_callers' => [],
+                    'cross_namespace_default' => 'allow',
+                ],
+                'rate_limit' => [
+                    'requests_per_minute' => null,
+                    'retry_after_seconds' => 1,
+                    'sync_only' => false,
+                ],
+                'concurrency' => [
+                    'max_in_flight' => null,
+                    'retry_after_seconds' => 1,
+                    'sync_only' => true,
+                ],
+                'circuit_break' => [
+                    'open_targets' => [],
+                    'retry_after_seconds' => 30,
+                ],
+            ],
+        ],
+    ],
+
+    // Payload codec diagnostic input. Final v2 always uses "avro" as the
+    // default codec for new typed binary payloads with cross-language type
+    // fidelity (int stays int, float stays float).
+    //
+    // DW_SERIALIZER is still read so `workflow:v2:doctor` can flag stale
+    // v1/custom settings during migration without rebuilding the image or
+    // mounting a config override file, but it cannot change the new-run v2
+    // default away from Avro.
+    //
+    // Legacy PHP-only codecs ("workflow-serializer-y",
+    // "workflow-serializer-base64") remain available only to the untagged v1
+    // import/drain reader. They are not v2 codec choices.
+    // Setting this to a removed custom serializer will be flagged by
+    // `workflow:v2:doctor`.
+    'serializer' => Env::dw('DW_SERIALIZER', 'WORKFLOW_SERIALIZER', 'avro'),
+
+    'storage' => [
+        // Database connection used for ALL workflow persistence (Eloquent models + migrations).
+        // null => the application's default connection (preserves existing behavior).
+        'connection' => Env::dw('DW_STORAGE_CONNECTION', 'WORKFLOW_STORAGE_CONNECTION', null),
+
+        // SQLite serializes writers. The documented local quickstart runs the
+        // Artisan command and a queue worker in separate PHP processes against
+        // the same SQLite file, so a short busy timeout keeps brief queue-poll
+        // write windows from failing workflow start writes immediately.
+        // Set to 0 to leave the host application's SQLite timeout untouched.
+        'sqlite_busy_timeout_ms' => max(0, (int) Env::dw(
+            'DW_STORAGE_SQLITE_BUSY_TIMEOUT_MS',
+            'WORKFLOW_STORAGE_SQLITE_BUSY_TIMEOUT_MS',
+            5000
+        )),
+
+        // Retry durable start transactions when the database reports a
+        // transient concurrency conflict after the busy timeout has elapsed.
+        'transaction_attempts' => max(1, (int) Env::dw(
+            'DW_STORAGE_TRANSACTION_ATTEMPTS',
+            'WORKFLOW_STORAGE_TRANSACTION_ATTEMPTS',
+            5
+        )),
+    ],
 
     'prune_age' => '1 month',
 
-    'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
+    'webhooks_route' => Env::dw('DW_WEBHOOKS_ROUTE', 'WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
 
     'webhook_auth' => [
-        'method' => env('WORKFLOW_WEBHOOKS_AUTH_METHOD', 'none'),
+        'method' => Env::dw('DW_WEBHOOKS_AUTH_METHOD', 'WORKFLOW_WEBHOOKS_AUTH_METHOD', 'none'),
 
         'signature' => [
-            'header' => env('WORKFLOW_WEBHOOKS_SIGNATURE_HEADER', 'X-Signature'),
-            'secret' => env('WORKFLOW_WEBHOOKS_SECRET'),
+            'header' => Env::dw('DW_WEBHOOKS_SIGNATURE_HEADER', 'WORKFLOW_WEBHOOKS_SIGNATURE_HEADER', 'X-Signature'),
+            'secret' => Env::dw('DW_WEBHOOKS_SECRET', 'WORKFLOW_WEBHOOKS_SECRET', null),
         ],
 
         'token' => [
-            'header' => env('WORKFLOW_WEBHOOKS_TOKEN_HEADER', 'Authorization'),
-            'token' => env('WORKFLOW_WEBHOOKS_TOKEN'),
+            'header' => Env::dw('DW_WEBHOOKS_TOKEN_HEADER', 'WORKFLOW_WEBHOOKS_TOKEN_HEADER', 'Authorization'),
+            'token' => Env::dw('DW_WEBHOOKS_TOKEN', 'WORKFLOW_WEBHOOKS_TOKEN', null),
         ],
 
         'custom' => [
-            'class' => env('WORKFLOW_WEBHOOKS_CUSTOM_AUTH_CLASS', null),
+            'class' => Env::dw('DW_WEBHOOKS_CUSTOM_AUTH_CLASS', 'WORKFLOW_WEBHOOKS_CUSTOM_AUTH_CLASS', null),
         ],
     ],
 ];

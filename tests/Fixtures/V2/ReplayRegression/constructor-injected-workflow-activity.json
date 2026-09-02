@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "constructor-injected-workflow-activity",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestConstructorInjectionWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-20T08:00:00+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 7,
+        "activity_type": "Tests\\Fixtures\\V2\\TestConstructorInjectionActivity",
+        "result": "wwHioz3/VYAiNw4IFmFwcGxpY2F0aW9uCipFbWJlZGRlZCBVcGdyYWRlIEhvc3QIbmFtZQoMVGF5bG9yFndvcmtmbG93X2lkCnByZWdyZXNzaW9uLWNvcnB1cy1jb25zdHJ1Y3Rvci1pbmplY3RlZC13b3JrZmxvdy1hY3Rpdml0eQxydW5faWQKeHJlZ3Jlc3Npb24tY29ycHVzLXJ1bi1jb25zdHJ1Y3Rvci1pbmplY3RlZC13b3JrZmxvdy1hY3Rpdml0eQA=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-08-20T08:00:01+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "workflow_application": "Embedded Upgrade Host",
+      "activity": {
+        "application": "Embedded Upgrade Host",
+        "name": "Taylor",
+        "workflow_id": "regression-corpus-constructor-injected-workflow-activity",
+        "run_id": "regression-corpus-run-constructor-injected-workflow-activity"
+      },
+      "workflow_id": "regression-corpus-constructor-injected-workflow-activity",
+      "run_id": "regression-corpus-run-constructor-injected-workflow-activity"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

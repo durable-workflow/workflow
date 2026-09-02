@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/repair-status.schema.json",
+  "title": "dw system:repair-status --json",
+  "type": "object",
+  "required": ["policy", "candidates"],
+  "properties": {
+    "policy": {
+      "type": "object",
+      "properties": {
+        "redispatch_after_seconds": { "type": ["integer", "null"] },
+        "loop_throttle_seconds": { "type": ["integer", "null"] },
+        "scan_limit": { "type": ["integer", "null"] },
+        "scan_strategy": { "type": ["string", "null"] },
+        "failure_backoff_max_seconds": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "candidates": {
+      "type": "object",
+      "properties": {
+        "total_candidates": { "type": ["integer", "null"] },
+        "existing_task_candidates": { "type": ["integer", "null"] },
+        "missing_task_candidates": { "type": ["integer", "null"] },
+        "scan_pressure": { "type": ["boolean", "string", "null"] },
+        "oldest_task_candidate_created_at": { "type": ["string", "null"] },
+        "oldest_missing_run_started_at": { "type": ["string", "null"] },
+        "scopes": {
+          "type": ["array", "null"],
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

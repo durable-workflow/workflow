@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Illuminate\Routing\Route as RoutingRoute;
+use Illuminate\Support\Facades\Route;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Signal;
 use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\Webhooks;
 use Workflow\WorkflowStub;
 
@@ -26,6 +29,29 @@ final class WebhookWorkflowTest extends TestCase
         Webhooks::routes('Tests\\Fixtures', __DIR__ . '/../Fixtures');
     }
 
+    public function testWebhookRoutesCanBeSerializedForRouteCaching(): void
+    {
+        $routes = Route::getRoutes();
+        $routeNames = array_map(
+            static fn (RoutingRoute $route): ?string => $route->getName(),
+            $routes->getRoutes()
+        );
+
+        $this->assertContains('workflows.start.test-workflow', $routeNames);
+        $this->assertContains('workflows.signal.test-workflow.cancel', $routeNames);
+
+        foreach ($routes as $route) {
+            if (! str_starts_with((string) $route->getName(), 'workflows.')) {
+                continue;
+            }
+
+            /** @var RoutingRoute $route */
+            $route->prepareForSerialization();
+
+            $this->assertIsString(serialize($route));
+        }
+    }
+
     public function testStart(): void
     {
         $response = $this->postJson('/webhooks/start/test-webhook-workflow');
@@ -39,13 +65,21 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow = WorkflowStub::load(1);
 
-        sleep(1);
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->status() === WorkflowWaitingStatus::class,
+            'the webhook workflow to await cancellation',
+        );
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the webhook workflow cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -71,9 +105,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow = WorkflowStub::load(1);
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -140,9 +178,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the signed webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -195,9 +237,13 @@ final class WebhookWorkflowTest extends TestCase
 
         $workflow->cancel();
 
-        while (! $workflow->isCanceled());
+        $this->waitForWorkflow(
+            $workflow,
+            static fn (WorkflowStub $workflow): bool => $workflow->isCanceled(),
+            'the token-authenticated webhook cancel signal to be observed',
+        );
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());

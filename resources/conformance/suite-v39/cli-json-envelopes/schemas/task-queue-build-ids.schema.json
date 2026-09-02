@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/task-queue-build-ids.schema.json",
+  "title": "dw task-queue:build-ids --json",
+  "type": "object",
+  "required": ["namespace", "task_queue", "stale_after_seconds", "build_ids"],
+  "properties": {
+    "namespace": { "type": "string" },
+    "task_queue": { "type": "string" },
+    "stale_after_seconds": { "type": "integer", "minimum": 0 },
+    "build_ids": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "build_id",
+          "rollout_status",
+          "active_worker_count",
+          "draining_worker_count",
+          "stale_worker_count",
+          "total_worker_count",
+          "runtimes",
+          "sdk_versions",
+          "last_heartbeat_at",
+          "first_seen_at"
+        ],
+        "properties": {
+          "build_id": { "type": ["string", "null"] },
+          "rollout_status": {
+            "type": "string",
+            "enum": ["active", "active_with_draining", "draining", "stale_only", "no_workers"]
+          },
+          "drain_intent": {
+            "type": "string",
+            "enum": ["active", "draining"]
+          },
+          "drained_at": { "type": ["string", "null"] },
+          "promoted_at": { "type": ["string", "null"] },
+          "rolled_back_at": { "type": ["string", "null"] },
+          "new_start_selected": { "type": "boolean" },
+          "active_worker_count": { "type": "integer", "minimum": 0 },
+          "draining_worker_count": { "type": "integer", "minimum": 0 },
+          "stale_worker_count": { "type": "integer", "minimum": 0 },
+          "total_worker_count": { "type": "integer", "minimum": 0 },
+          "runtimes": { "type": "array", "items": { "type": "string" } },
+          "sdk_versions": { "type": "array", "items": { "type": "string" } },
+          "workflow_definition_fingerprint_count": { "type": "integer", "minimum": 0 },
+          "workflow_definition_fingerprint_conflicts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["workflow_type", "fingerprint_count"],
+              "properties": {
+                "workflow_type": { "type": "string" },
+                "fingerprint_count": { "type": "integer", "minimum": 2 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "last_heartbeat_at": { "type": ["string", "null"] },
+          "first_seen_at": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/workflow-debug.schema.json",
+  "title": "dw debug workflow --json",
+  "type": "object",
+  "required": ["workflow_id", "run_id", "diagnostic_status", "execution"],
+  "properties": {
+    "generated_at": { "type": ["string", "null"] },
+    "workflow_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "namespace": { "type": ["string", "null"] },
+    "diagnostic_status": { "type": "string" },
+    "execution": { "type": "object", "additionalProperties": true },
+    "pending_workflow_tasks": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "pending_activities": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "task_queue": { "type": ["object", "null"], "additionalProperties": true },
+    "recent_failures": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "compatibility": { "type": ["object", "null"], "additionalProperties": true },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "code", "message"],
+        "properties": {
+          "severity": { "type": "string" },
+          "code": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "control_plane": { "type": ["object", "null"], "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

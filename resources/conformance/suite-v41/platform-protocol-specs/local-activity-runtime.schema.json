@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.local-activity-runtime",
+  "title": "Durable Workflow local activity runtime contract",
+  "description": "Normative JSON Schema for local activity capability discovery, LocalActivityOptions snapshots, same-process execution markers, workflow-task lease heartbeats, cold-replay retry semantics, and operator visibility markers.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "local_activity_runtime",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "local_activity_runtime_contract",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "local_activity_options",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "local_activity_history_markers",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "local_activity_visibility",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "local_activities": {
+      "$ref": "#/$defs/localActivityRuntimeContract"
+    },
+    "local_activity": {
+      "$ref": "#/$defs/localActivityOptionsSnapshot"
+    },
+    "activity_options": {
+      "$ref": "#/$defs/activityOptionsMarker"
+    },
+    "history_marker": {
+      "$ref": "#/$defs/localActivityHistoryMarker"
+    },
+    "workflow_task": {
+      "$ref": "#/$defs/localActivityWorkflowTaskPayload"
+    },
+    "visibility": {
+      "$ref": "#/$defs/localActivityVisibility"
+    }
+  },
+  "$defs": {
+    "localActivityRuntimeContract": {
+      "type": "object",
+      "required": [
+        "schema",
+        "version",
+        "api",
+        "execution",
+        "heartbeating",
+        "cancellation",
+        "shutdown",
+        "routing",
+        "retry",
+        "timeouts",
+        "visibility"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.local-activity.contract" },
+        "version": { "type": "integer", "minimum": 1 },
+        "api": {
+          "type": "object",
+          "required": ["functions", "workflow_facade", "options"],
+          "additionalProperties": true,
+          "properties": {
+            "functions": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["Workflow\\V2\\localActivity"] },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "workflow_facade": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "Workflow\\V2\\Workflow::localActivity",
+                  "Workflow\\V2\\Workflow::executeLocalActivity"
+                ]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            },
+            "options": {
+              "type": "string",
+              "const": "Workflow\\V2\\Support\\LocalActivityOptions"
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "mode",
+            "same_process",
+            "ordinary_activity_task_created",
+            "history_events",
+            "history_marker"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "mode": { "type": "string", "const": "local" },
+            "same_process": { "type": "boolean", "const": true },
+            "ordinary_activity_task_created": { "type": "boolean", "const": false },
+            "history_events": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/localActivityHistoryEventName" },
+              "minItems": 8,
+              "uniqueItems": true
+            },
+            "history_marker": {
+              "$ref": "#/$defs/localActivityHistoryMarker"
+            }
+          }
+        },
+        "heartbeating": {
+          "type": "object",
+          "required": ["lease", "automatic_points", "long_running_requirement"],
+          "additionalProperties": true,
+          "properties": {
+            "lease": { "type": "string", "const": "workflow_task" },
+            "automatic_points": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["before_attempt_start", "after_activity_heartbeat"]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            },
+            "long_running_requirement": {
+              "type": "string",
+              "const": "activity_code_calls_heartbeat_before_the_workflow_task_lease_can_expire"
+            }
+          }
+        },
+        "cancellation": {
+          "type": "object",
+          "required": ["preemption", "observed_at", "terminal_event"],
+          "additionalProperties": true,
+          "properties": {
+            "preemption": { "type": "string", "const": "cooperative" },
+            "observed_at": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["heartbeat", "timeout_enforcement", "attempt_completion"]
+              },
+              "minItems": 3,
+              "uniqueItems": true
+            },
+            "terminal_event": { "type": "string", "const": "ActivityCancelled" }
+          }
+        },
+        "shutdown": {
+          "type": "object",
+          "required": ["graceful", "crash", "cold_replay"],
+          "additionalProperties": true,
+          "properties": {
+            "graceful": {
+              "type": "string",
+              "const": "worker_stops_claiming_new_workflow_tasks_and_allows_in_process_attempt_to_finish_or_heartbeat"
+            },
+            "crash": {
+              "type": "string",
+              "const": "workflow_task_lease_expires_and_task_repair_reclaims_the_workflow_task"
+            },
+            "cold_replay": {
+              "type": "string",
+              "const": "committed_terminal_event_is_replayed_or_started_attempt_without_terminal_event_schedules_local_retry"
+            }
+          }
+        },
+        "routing": {
+          "type": "object",
+          "required": ["admission", "queue_bypassed", "rejected_options"],
+          "additionalProperties": true,
+          "properties": {
+            "admission": {
+              "type": "string",
+              "const": "activity_class_must_resolve_in_the_workflow_worker_process"
+            },
+            "queue_bypassed": { "type": "boolean", "const": true },
+            "rejected_options": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["connection", "queue", "worker_session", "schedule_to_start_timeout"]
+              },
+              "minItems": 4,
+              "uniqueItems": true
+            }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "required": ["new_attempt_when", "backoff", "cold_replay_reason"],
+          "additionalProperties": true,
+          "properties": {
+            "new_attempt_when": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "a local attempt starts",
+                  "a retry workflow task replays after backoff",
+                  "cold replay finds a previously started local attempt without a terminal event"
+                ]
+              },
+              "minItems": 3,
+              "uniqueItems": true
+            },
+            "backoff": { "type": "string", "const": "durable_workflow_task_available_at" },
+            "cold_replay_reason": { "type": "string", "const": "cold_replay" }
+          }
+        },
+        "timeouts": {
+          "type": "object",
+          "required": [
+            "start_to_close_timeout",
+            "schedule_to_close_timeout",
+            "heartbeat_timeout",
+            "enforcement"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "start_to_close_timeout": { "type": "string", "const": "one_local_attempt" },
+            "schedule_to_close_timeout": {
+              "type": "string",
+              "const": "entire_local_execution_including_retries"
+            },
+            "heartbeat_timeout": {
+              "type": "string",
+              "const": "gap_between_recorded_local_activity_heartbeats"
+            },
+            "enforcement": {
+              "type": "string",
+              "const": "cooperative_at_heartbeat_attempt_start_and_attempt_completion_boundaries"
+            }
+          }
+        },
+        "visibility": {
+          "$ref": "#/$defs/localActivityVisibility"
+        }
+      }
+    },
+    "localActivityOptionsSnapshot": {
+      "type": "object",
+      "required": ["execution_mode", "queue_bypassed", "routing"],
+      "additionalProperties": true,
+      "properties": {
+        "execution_mode": { "type": "string", "const": "local" },
+        "queue_bypassed": { "type": "boolean", "const": true },
+        "routing": { "type": "string", "const": "same_process_workflow_task" },
+        "max_attempts": { "type": ["integer", "null"], "minimum": 1 },
+        "backoff": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0 }
+            },
+            { "type": "null" }
+          ]
+        },
+        "start_to_close_timeout": { "type": ["integer", "null"], "minimum": 1 },
+        "schedule_to_close_timeout": { "type": ["integer", "null"], "minimum": 1 },
+        "heartbeat_timeout": { "type": ["integer", "null"], "minimum": 1 },
+        "non_retryable_error_types": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["connection"] },
+          { "required": ["queue"] },
+          { "required": ["worker_session"] },
+          { "required": ["schedule_to_start_timeout"] }
+        ]
+      }
+    },
+    "activityOptionsMarker": {
+      "type": "object",
+      "required": ["execution_mode"],
+      "additionalProperties": true,
+      "properties": {
+        "execution_mode": { "type": "string", "const": "local" }
+      }
+    },
+    "localActivityHistoryMarker": {
+      "type": "object",
+      "required": ["execution_mode", "local_activity"],
+      "additionalProperties": true,
+      "properties": {
+        "execution_mode": { "type": "string", "const": "local" },
+        "local_activity": { "type": "boolean", "const": true }
+      }
+    },
+    "localActivityWorkflowTaskPayload": {
+      "type": "object",
+      "required": [
+        "workflow_wait_kind",
+        "open_wait_id",
+        "resume_source_kind",
+        "resume_source_id",
+        "activity_execution_id",
+        "activity_type",
+        "workflow_sequence",
+        "execution_mode"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "workflow_wait_kind": { "type": "string", "const": "local_activity" },
+        "open_wait_id": { "type": "string", "pattern": "^local-activity:" },
+        "resume_source_kind": { "type": "string", "const": "local_activity" },
+        "resume_source_id": { "type": ["integer", "string"], "minLength": 1 },
+        "activity_execution_id": { "type": ["integer", "string"], "minLength": 1 },
+        "activity_type": { "type": "string", "minLength": 1 },
+        "workflow_sequence": { "type": "integer", "minimum": 0 },
+        "execution_mode": { "type": "string", "const": "local" }
+      }
+    },
+    "localActivityVisibility": {
+      "type": "object",
+      "required": [
+        "activity_execution_marker",
+        "history_marker",
+        "metrics_marker",
+        "history_export"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "activity_execution_marker": {
+          "type": "string",
+          "const": "activity_options.execution_mode"
+        },
+        "history_marker": { "type": "string", "const": "payload.execution_mode" },
+        "metrics_marker": { "type": "string", "const": "activities.local_*" },
+        "history_export": {
+          "type": "string",
+          "const": "same_activity_event_payloads_with_execution_mode_local"
+        }
+      }
+    },
+    "localActivityHistoryEventName": {
+      "type": "string",
+      "enum": [
+        "ActivityScheduled",
+        "ActivityStarted",
+        "ActivityHeartbeatRecorded",
+        "ActivityRetryScheduled",
+        "ActivityCompleted",
+        "ActivityFailed",
+        "ActivityTimedOut",
+        "ActivityCancelled"
+      ]
+    }
+  }
+}

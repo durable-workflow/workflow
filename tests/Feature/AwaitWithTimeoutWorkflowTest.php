@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Tests\Fixtures\TestAwaitWithTimeoutReplayWorkflow;
 use Tests\Fixtures\TestAwaitWithTimeoutWorkflow;
 use Tests\TestCase;
 use Workflow\States\WorkflowCompletedStatus;
@@ -15,13 +16,13 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
     {
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class);
 
-        $now = now();
+        $startedAt = hrtime(true);
 
         $workflow->start(shouldTimeout: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
-        $this->assertLessThan(5, now()->diffInSeconds($now));
+        $this->assertLessThan(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow', $workflow->output());
     }
@@ -30,14 +31,33 @@ final class AwaitWithTimeoutWorkflowTest extends TestCase
     {
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class);
 
-        $now = now();
+        $startedAt = hrtime(true);
 
         $workflow->start(shouldTimeout: true);
 
-        while ($workflow->running());
+        // The awaited predicate deliberately times out after five seconds.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 15.0);
 
-        $this->assertGreaterThanOrEqual(5, now()->diffInSeconds($now));
+        $this->assertGreaterThanOrEqual(5, self::elapsedSeconds($startedAt));
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_timed_out', $workflow->output());
+    }
+
+    public function testTimedoutResultStaysFalseAfterReplay(): void
+    {
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutReplayWorkflow::class);
+
+        $workflow->start();
+
+        // Include the intentional one-second timeout and the replayed activity.
+        $this->waitForWorkflow($workflow, timeoutSeconds: 10.0);
+
+        $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
+        $this->assertFalse($workflow->output());
+    }
+
+    private static function elapsedSeconds(int $startedAt): float
+    {
+        return (hrtime(true) - $startedAt) / 1_000_000_000;
     }
 }

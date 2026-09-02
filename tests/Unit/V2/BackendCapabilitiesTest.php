@@ -1,0 +1,480 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Illuminate\Cache\Repository;
+use Illuminate\Support\Carbon;
+use Tests\Support\NonLockingCacheStore;
+use Tests\TestCase;
+use Workflow\Serializers\Base64;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Y;
+use Workflow\V2\Support\BackendCapabilities;
+
+final class BackendCapabilitiesTest extends TestCase
+{
+    public function testSnapshotFlagsSyncQueueAsUnsupported(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('2026-04-09T12:00:00.000000Z', $snapshot['generated_at']);
+        $this->assertFalse($snapshot['supported']);
+        $this->assertSame('sync', $snapshot['queue']['connection']);
+        $this->assertSame('sync', $snapshot['queue']['driver']);
+        $this->assertFalse($snapshot['queue']['supported']);
+        $this->assertContains('queue_sync_unsupported', array_column($snapshot['issues'], 'code'));
+        $this->assertFalse(BackendCapabilities::isSupported($snapshot));
+    }
+
+    public function testSnapshotCapturesConfiguredBackendIdentities(): void
+    {
+        $originalDatabaseDefault = config('database.default');
+
+        try {
+            config()->set('database.default', 'pgsql');
+            config()
+                ->set('database.connections.pgsql.driver', 'pgsql');
+            config()
+                ->set('queue.default', 'redis');
+            config()
+                ->set('queue.connections.redis.driver', 'redis');
+            config()
+                ->set('cache.default', 'array');
+            config()
+                ->set('cache.stores.array.driver', 'array');
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $this->assertSame('pgsql', $snapshot['database']['connection']);
+            $this->assertSame('pgsql', $snapshot['database']['driver']);
+            $this->assertTrue($snapshot['database']['supported']);
+            $this->assertTrue($snapshot['database']['capabilities']['row_locks']);
+            $this->assertSame('redis', $snapshot['queue']['connection']);
+            $this->assertSame('redis', $snapshot['queue']['driver']);
+            $this->assertTrue($snapshot['queue']['supported']);
+            $this->assertSame('array', $snapshot['cache']['store']);
+            $this->assertSame('array', $snapshot['cache']['driver']);
+            $this->assertTrue($snapshot['cache']['supported']);
+            $this->assertTrue($snapshot['cache']['capabilities']['atomic_locks']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public function testSnapshotIncludesFrozenReadinessContractMatrix(): void
+    {
+        $snapshot = BackendCapabilities::snapshot();
+        $contract = $snapshot['readiness_contract'];
+
+        $this->assertSame(1, $contract['version']);
+        $this->assertSame('v2_final_contract', $contract['release_state']);
+        $this->assertSame(
+            'Workflow\V2\Support\BackendCapabilities::snapshot',
+            $contract['surfaces']['dispatch']['authority']
+        );
+        $this->assertSame(
+            'Workflow\V2\Support\TaskBackendCapabilities::recordClaimFailureIfUnsupported',
+            $contract['surfaces']['claim']['authority']
+        );
+        $this->assertContains('mysql', $contract['backend_capabilities']['database']['supported_drivers']);
+        $this->assertContains('pgsql', $contract['backend_capabilities']['database']['supported_drivers']);
+        $this->assertSame(
+            'error',
+            $contract['backend_capabilities']['queue']['queue_mode']['sync_or_missing_queue_severity']
+        );
+        $this->assertSame(
+            'info',
+            $contract['backend_capabilities']['queue']['poll_mode']['sync_or_missing_queue_severity']
+        );
+        $this->assertSame('warning', $contract['backend_capabilities']['cache']['dispatch_blocking_severity']);
+        $this->assertSame('acceleration_only', $contract['backend_capabilities']['cache']['role']);
+        $this->assertSame('avro', $contract['backend_capabilities']['codec']['default_for_new_v2_runs']);
+        $this->assertSame(
+            'evaluated_by_backend_capabilities_snapshot',
+            $contract['effective_states']['dispatch']['state']
+        );
+        $this->assertStringContainsString(
+            'cache diagnostics stay warning-only',
+            $contract['effective_states']['dispatch']['blocking_rule']
+        );
+    }
+
+    public function testSnapshotCanInspectAnExplicitTaskQueueConnection(): void
+    {
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot(queueConnection: 'sync');
+
+        $this->assertFalse($snapshot['supported']);
+        $this->assertSame('sync', $snapshot['queue']['connection']);
+        $this->assertSame('sync', $snapshot['queue']['driver']);
+        $this->assertFalse($snapshot['queue']['capabilities']['async_delivery']);
+        $this->assertContains('queue_sync_unsupported', array_column($snapshot['issues'], 'code'));
+    }
+
+    public function testSnapshotDoesNotAdvertiseDatabaseCapabilitiesForUnsupportedDriver(): void
+    {
+        config()->set('database.connections.mongodb.driver', 'mongodb');
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'mongodb');
+
+        $this->assertFalse($snapshot['supported']);
+        $this->assertSame('mongodb', $snapshot['database']['connection']);
+        $this->assertSame('mongodb', $snapshot['database']['driver']);
+        $this->assertFalse($snapshot['database']['supported']);
+        $this->assertContains('database_driver_unsupported', array_column($snapshot['issues'], 'code'));
+        $this->assertSame([
+            'transactions' => false,
+            'after_commit_callbacks' => false,
+            'durable_ordering' => false,
+            'row_locks' => false,
+        ], $snapshot['database']['capabilities']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Structural limits in backend contract
+    // ---------------------------------------------------------------
+
+    public function testSnapshotIncludesStructuralLimitsContract(): void
+    {
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertArrayHasKey('structural_limits', $snapshot);
+        $this->assertArrayHasKey('configured', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('backend_adjustments', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('effective', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('issues', $snapshot['structural_limits']);
+
+        $this->assertArrayHasKey('pending_activity_count', $snapshot['structural_limits']['configured']);
+        $this->assertArrayHasKey('warning_threshold_percent', $snapshot['structural_limits']['configured']);
+    }
+
+    public function testSqsQueuePublishesMaxDelayConstraint(): void
+    {
+        config()->set('queue.default', 'sqs');
+        config()
+            ->set('queue.connections.sqs.driver', 'sqs');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame(
+            900,
+            $snapshot['structural_limits']['backend_adjustments']['max_single_timer_delay_seconds'] ?? null
+        );
+        $this->assertSame(900, $snapshot['structural_limits']['effective']['max_single_timer_delay_seconds'] ?? null);
+        $this->assertContains(
+            'queue_max_delay_constraint',
+            array_column($snapshot['structural_limits']['issues'], 'code')
+        );
+    }
+
+    public function testSqliteDatabasePublishesConcurrencyNote(): void
+    {
+        config()
+            ->set('database.connections.sqlite.driver', 'sqlite');
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'sqlite');
+
+        $this->assertSame(
+            'limited',
+            $snapshot['structural_limits']['backend_adjustments']['concurrent_write_safety'] ?? null
+        );
+        $this->assertContains(
+            'sqlite_concurrency_note',
+            array_column($snapshot['structural_limits']['issues'], 'code')
+        );
+    }
+
+    public function testMysqlDatabaseDoesNotPublishConcurrencyNote(): void
+    {
+        config()
+            ->set('database.connections.mysql.driver', 'mysql');
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'mysql');
+
+        $this->assertArrayNotHasKey('concurrent_write_safety', $snapshot['structural_limits']['backend_adjustments']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Poll-mode queue relaxations (#286)
+    // ---------------------------------------------------------------
+
+    public function testPollModeAllowsSyncQueueDriver(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertTrue($snapshot['queue']['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+        $this->assertFalse($snapshot['queue']['capabilities']['requires_worker']);
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_sync_unsupported');
+
+        $this->assertNotNull($queueIssue, 'The queue_sync_unsupported note should still be recorded informationally.');
+        $this->assertSame('info', $queueIssue['severity']);
+    }
+
+    public function testPollModeAllowsMissingQueueConnection(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('queue.default', null);
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertTrue($snapshot['queue']['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_connection_missing');
+
+        $this->assertNotNull($queueIssue);
+        $this->assertSame('info', $queueIssue['severity']);
+    }
+
+    public function testQueueModeStillRejectsSyncQueueDriver(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'queue');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertFalse($snapshot['queue']['supported']);
+        $this->assertFalse(BackendCapabilities::isSupported($snapshot));
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_sync_unsupported');
+
+        $this->assertNotNull($queueIssue);
+        $this->assertSame('error', $queueIssue['severity']);
+    }
+
+    public function testJsonCodecConfigFailsClosedAndAvroRemainsDefault(): void
+    {
+        config()->set('workflows.serializer', 'json');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('avro', $snapshot['codec']['canonical']);
+        $this->assertNull($snapshot['codec']['configured_canonical']);
+        $this->assertTrue($snapshot['codec']['universal']);
+        $this->assertFalse($snapshot['codec']['configured_universal']);
+        $this->assertFalse($snapshot['codec']['supported']);
+        $this->assertNotNull(collect($snapshot['issues'])->firstWhere('code', 'codec_unknown'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacyV1SerializerProvider')]
+    public function testLegacyV1SerializerIsNonBlockingMigrationDiagnostic(string $serializer): void
+    {
+        $originalDatabaseDefault = config('database.default');
+
+        try {
+            $this->configureSupportedBackend();
+            config()
+                ->set('workflows.serializer', $serializer);
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $this->assertSame('avro', $snapshot['codec']['canonical']);
+            $this->assertNull($snapshot['codec']['configured_canonical']);
+            $this->assertTrue($snapshot['codec']['universal']);
+            $this->assertFalse($snapshot['codec']['configured_universal']);
+
+            $codecIssue = collect($snapshot['issues'])
+                ->firstWhere('code', 'codec_legacy_v1_drain');
+
+            $this->assertNotNull($codecIssue);
+            $this->assertSame('warning', $codecIssue['severity']);
+            $this->assertSame('codec', $codecIssue['component']);
+            $this->assertStringContainsString('ignores this setting', $codecIssue['message']);
+            $this->assertStringContainsString('uses "avro" for all new v2 payloads', $codecIssue['message']);
+            $this->assertStringContainsString('may remain only while v1 runs are draining', $codecIssue['message']);
+            $this->assertTrue($snapshot['codec']['supported']);
+            $this->assertTrue($snapshot['supported']);
+            $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+            $this->assertSame('warning', $snapshot['severity']);
+            $this->assertCount(1, $snapshot['issues']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public static function legacyV1SerializerProvider(): array
+    {
+        return [
+            'Y class from the published v1 config' => [Y::class],
+            'Base64 class' => [Base64::class],
+            'Y legacy id' => ['workflow-serializer-y'],
+            'Base64 legacy id' => ['workflow-serializer-base64'],
+        ];
+    }
+
+    public function testUnknownCodecStringProducesErrorSeverity(): void
+    {
+        config()->set('workflows.serializer', 'not-a-real-codec');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('avro', $snapshot['codec']['canonical']);
+        $this->assertNull($snapshot['codec']['configured_canonical']);
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_unknown');
+
+        $this->assertNotNull($codecIssue);
+        $this->assertSame('error', $codecIssue['severity']);
+        $this->assertFalse(BackendCapabilities::isSupported($snapshot));
+    }
+
+    public function testUnknownCodecDiagnosticIncludesMigrationGuidance(): void
+    {
+        config()->set('workflows.serializer', 'App\\Custom\\V1Serializer');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_unknown');
+
+        $this->assertNotNull($codecIssue);
+
+        // The diagnostic names the unsupported value and the sole v2 codec.
+        $this->assertStringContainsString('App\\Custom\\V1Serializer', $codecIssue['message']);
+        $this->assertStringContainsString('exactly one payload codec', $codecIssue['message']);
+
+        // It must name the universal codec options an operator can migrate to.
+        foreach (CodecRegistry::universal() as $codec) {
+            $this->assertStringContainsString($codec, $codecIssue['message']);
+        }
+
+        $this->assertStringContainsString('Set workflows.serializer to "avro"', $codecIssue['message']);
+    }
+
+    public function testSnapshotIncludesSeverityRollupOfOkWhenAdmissionIsClean(): void
+    {
+        $originalDatabaseDefault = config('database.default');
+
+        try {
+            config()->set('database.default', 'pgsql');
+            config()
+                ->set('database.connections.pgsql.driver', 'pgsql');
+            config()
+                ->set('queue.default', 'redis');
+            config()
+                ->set('queue.connections.redis.driver', 'redis');
+            config()
+                ->set('cache.default', 'array');
+            config()
+                ->set('cache.stores.array.driver', 'array');
+            config()
+                ->set('workflows.serializer', 'avro');
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $this->assertSame([], $snapshot['issues']);
+            $this->assertSame('ok', $snapshot['severity']);
+            $this->assertTrue($snapshot['supported']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public function testSnapshotSeverityRollupReportsErrorWhenAnyIssueIsErrorSeverity(): void
+    {
+        config()->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $errorIssue = collect($snapshot['issues'])->firstWhere('severity', 'error');
+        $this->assertNotNull($errorIssue);
+
+        $this->assertSame('error', $snapshot['severity']);
+        $this->assertFalse($snapshot['supported']);
+    }
+
+    public function testCustomNoLockCacheStoreIsWarningOnlyAndDoesNotFailSupport(): void
+    {
+        config()
+            ->set('database.connections.pgsql.driver', 'pgsql');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.serializer', 'avro');
+        $this->configureNonLockingCacheStore();
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'pgsql');
+
+        $this->assertTrue($snapshot['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+        $this->assertSame('pgsql', $snapshot['database']['connection']);
+        $this->assertTrue($snapshot['cache']['supported']);
+        $this->assertSame('warning', $snapshot['severity']);
+
+        $cacheIssue = collect($snapshot['issues'])->firstWhere('code', 'cache_locks_unsupported');
+        $this->assertNotNull($cacheIssue);
+        $this->assertSame('warning', $cacheIssue['severity']);
+        $this->assertStringContainsString('Wake acceleration remains optional', $cacheIssue['message']);
+    }
+
+    private function configureNonLockingCacheStore(): void
+    {
+        $driver = 'test-non-locking';
+        $store = 'test-non-locking';
+
+        $this->app['cache']->extend($driver, function (): Repository {
+            $manager = $this;
+            unset($manager);
+
+            return new Repository(new NonLockingCacheStore());
+        });
+
+        config()
+            ->set("cache.stores.{$store}.driver", $driver);
+        config()
+            ->set('cache.default', $store);
+    }
+
+    private function configureSupportedBackend(): void
+    {
+        config()->set('database.default', 'pgsql');
+        config()
+            ->set('database.connections.pgsql.driver', 'pgsql');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+    }
+}

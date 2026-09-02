@@ -8,6 +8,7 @@ use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use Workflow\ContinuedWorkflow;
 use Workflow\Models\StoredWorkflow;
+use Workflow\WorkflowOptions;
 
 trait Continues
 {
@@ -61,6 +62,14 @@ trait Continues
                         'parent_index' => StoredWorkflow::ACTIVE_WORKFLOW_INDEX,
                         'parent_now' => $context->now,
                     ]);
+            }
+
+            if (! collect($arguments)->contains(static fn ($argument): bool => $argument instanceof WorkflowOptions)) {
+                $options = $context->storedWorkflow->workflowOptions();
+
+                if ($options->connection !== null || $options->queue !== null) {
+                    $arguments[] = $options;
+                }
             }
 
             $newWorkflow->start(...$arguments);

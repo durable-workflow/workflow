@@ -24,7 +24,7 @@ final class Base64WorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
@@ -51,7 +51,7 @@ final class Base64WorkflowTest extends TestCase
 
         $workflow->start();
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());

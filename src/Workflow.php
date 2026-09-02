@@ -13,12 +13,12 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Routing\RouteDependencyResolverTrait;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\App;
 use React\Promise\PromiseInterface;
 use Throwable;
 use Workflow\Events\WorkflowCompleted;
+use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
@@ -26,6 +26,7 @@ use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowContinuedStatus;
 use Workflow\States\WorkflowRunningStatus;
 use Workflow\States\WorkflowWaitingStatus;
+use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\Traits\Sagas;
 use Workflow\Traits\SerializesModels;
 
@@ -34,7 +35,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
-    use RouteDependencyResolverTrait;
+    use ResolvesMethodDependencies;
     use Sagas;
     use SerializesModels;
 
@@ -43,6 +44,8 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     public int $tries = 0;
 
     public int $maxExceptions = 0;
+
+    public $timeout = 0;
 
     public $arguments;
 
@@ -54,19 +57,39 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
     public bool $replaying = false;
 
+    public Inbox $inbox;
+
+    public Outbox $outbox;
+
+    public array $updateMethodSignals = [];
+
+    public bool $outboxWasConsumed = false;
+
     private Container $container;
 
     public function __construct(
         public StoredWorkflow $storedWorkflow,
         ...$arguments
     ) {
+        $this->inbox = new Inbox();
+
+        $this->outbox = new Outbox();
+
         $this->arguments = $arguments;
 
-        if (property_exists($this, 'connection')) {
+        $connection = $this->storedWorkflow->effectiveConnection();
+
+        if ($connection !== null) {
+            $this->onConnection($connection);
+        } elseif (property_exists($this, 'connection')) {
             $this->onConnection($this->connection);
         }
 
-        if (property_exists($this, 'queue')) {
+        $queue = $this->storedWorkflow->effectiveQueue();
+
+        if ($queue !== null) {
+            $this->onQueue($queue);
+        } elseif (property_exists($this, 'queue')) {
             $this->onQueue($this->queue);
         }
 
@@ -82,7 +105,16 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     {
         $this->replaying = true;
         $this->handle();
-        return $this->{$method}();
+
+        foreach ($this->updateMethodSignals as $signal) {
+            $this->{$signal->method}(...Serializer::unserialize($signal->arguments));
+        }
+
+        $sentBefore = $this->outbox->sent;
+        $result = $this->{$method}();
+        $this->outboxWasConsumed = $this->outbox->sent > $sentBefore;
+
+        return $result;
     }
 
     public function child(): ?ChildWorkflowHandle
@@ -127,7 +159,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         try {
             $this->storedWorkflow->toWorkflow()
                 ->fail($throwable);
-        } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
+        } catch (TransitionNotFound) {
             return;
         }
     }
@@ -144,11 +176,15 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             if (! $this->replaying) {
                 $this->storedWorkflow->status->transitionTo(WorkflowRunningStatus::class);
             }
-        } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
-            if ($this->storedWorkflow->toWorkflow()->running()) {
-                $this->release();
+        } catch (TransitionNotFound) {
+            $this->storedWorkflow->refresh();
+
+            if ($this->storedWorkflow->status::class !== WorkflowRunningStatus::class) {
+                if ($this->storedWorkflow->toWorkflow()->running()) {
+                    $this->release();
+                }
+                return;
             }
-            return;
         }
 
         $parentWorkflow = $this->storedWorkflow->parents()
@@ -156,24 +192,18 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             ->wherePivot('parent_index', '!=', StoredWorkflow::ACTIVE_WORKFLOW_INDEX)
             ->first();
 
-        $logs = $this->storedWorkflow->logs()
-            ->whereIn('index', [$this->index, $this->index + 1])
-            ->get();
+        $this->storedWorkflow->loadMissing(['logs', 'signals']);
 
-        $log = $logs->where('index', $this->index)
-            ->first();
-
-        $nextLog = $logs->where('index', $this->index + 1)
-            ->first();
-
-        $initialSignalBound = $nextLog ? $nextLog->created_at : null;
+        $log = $this->storedWorkflow->findLogByIndex($this->index);
 
         $this->storedWorkflow
             ->signals()
-            ->when($nextLog, static function ($query, $nextLog): void {
-                $query->where('created_at', '<=', $nextLog->created_at->format('Y-m-d H:i:s.u'));
-            })
+            ->orderBy('created_at')
             ->each(function ($signal): void {
+                if (WorkflowStub::isUpdateMethod($this->storedWorkflow->class, $signal->method)) {
+                    $this->updateMethodSignals[] = $signal;
+                    return;
+                }
                 $this->{$signal->method}(...Serializer::unserialize($signal->arguments));
             });
 
@@ -183,7 +213,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $this->now = $log ? $log->now : Carbon::now();
         }
 
-        WorkflowStub::setContext([
+        $this->setContext([
             'storedWorkflow' => $this->storedWorkflow,
             'index' => $this->index,
             'now' => $this->now,
@@ -199,45 +229,11 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         while ($this->coroutine->valid()) {
             $this->index = WorkflowStub::getContext()->index;
 
-            $logs = $this->storedWorkflow->logs()
-                ->whereIn('index', [$this->index, $this->index + 1])
-                ->get();
-
-            $log = $logs->where('index', $this->index)
-                ->first();
-
-            $nextLog = $logs->where('index', $this->index + 1)
-                ->first();
-
-            if ($log) {
-                $this->storedWorkflow
-                    ->signals()
-                    ->where('created_at', '>', $log->created_at->format('Y-m-d H:i:s.u'))
-                    ->when($nextLog, static function ($query, $nextLog): void {
-                        $query->where('created_at', '<=', $nextLog->created_at->format('Y-m-d H:i:s.u'));
-                    })
-                    ->each(function ($signal): void {
-                        $this->{$signal->method}(...Serializer::unserialize($signal->arguments));
-                    });
-            } elseif ($initialSignalBound) {
-                $latestLogBeforeCurrent = $this->storedWorkflow->logs()
-                    ->where('index', '<', $this->index)
-                    ->orderByDesc('index')
-                    ->first();
-
-                if ($latestLogBeforeCurrent) {
-                    $this->storedWorkflow
-                        ->signals()
-                        ->where('created_at', '>', $latestLogBeforeCurrent->created_at->format('Y-m-d H:i:s.u'))
-                        ->each(function ($signal): void {
-                            $this->{$signal->method}(...Serializer::unserialize($signal->arguments));
-                        });
-                }
-            }
+            $log = $this->storedWorkflow->findLogByIndex($this->index);
 
             $this->now = $log ? $log->now : Carbon::now();
 
-            WorkflowStub::setContext([
+            $this->setContext([
                 'storedWorkflow' => $this->storedWorkflow,
                 'index' => $this->index,
                 'now' => $this->now,
@@ -299,9 +295,11 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             );
 
             if ($parentWorkflow) {
-                $properties = WorkflowStub::getDefaultProperties($parentWorkflow->class);
-                $connection = $properties['connection'] ?? config('queue.default');
-                $queue = $properties['queue'] ?? config('queue.connections.' . $connection . '.queue', 'default');
+                $connection = $parentWorkflow->effectiveConnection() ?? config('queue.default');
+                $queue = $parentWorkflow->effectiveQueue() ?? config(
+                    'queue.connections.' . $connection . '.queue',
+                    'default'
+                );
 
                 ChildWorkflow::dispatch(
                     $parentWorkflow->pivot->parent_index,
@@ -314,5 +312,20 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 );
             }
         }
+    }
+
+    private function setContext(array $context): void
+    {
+        $existingContext = WorkflowStub::getContext();
+
+        if (property_exists($existingContext, 'probing') && $existingContext->probing) {
+            $context['probing'] = true;
+            $context['probeIndex'] = $existingContext->probeIndex ?? null;
+            $context['probeClass'] = $existingContext->probeClass ?? null;
+            $context['probeMatched'] = $existingContext->probeMatched ?? false;
+            $context['probePendingBeforeMatch'] = $existingContext->probePendingBeforeMatch ?? false;
+        }
+
+        WorkflowStub::setContext($context);
     }
 }

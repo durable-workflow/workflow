@@ -11,6 +11,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 
@@ -38,8 +39,11 @@ final class ChildWorkflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQu
         $connection = null,
         $queue = null
     ) {
-        $connection = $connection ?? config('queue.default');
-        $queue = $queue ?? config('queue.connections.' . $connection . '.queue', 'default');
+        $connection = $connection ?? $this->storedWorkflow->effectiveConnection() ?? config('queue.default');
+        $queue = $queue ?? $this->storedWorkflow->effectiveQueue() ?? config(
+            'queue.connections.' . $connection . '.queue',
+            'default'
+        );
         $this->onConnection($connection);
         $this->onQueue(get_queue_name());
     }
@@ -54,12 +58,12 @@ final class ChildWorkflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQu
         $workflow = $this->parentWorkflow->toWorkflow();
 
         try {
-            if ($this->parentWorkflow->logs()->whereIndex($this->index)->exists()) {
+            if ($this->parentWorkflow->hasLogByIndex($this->index)) {
                 $workflow->resume();
             } else {
                 $workflow->next($this->index, $this->now, $this->storedWorkflow->class, $this->return);
             }
-        } catch (\Spatie\ModelStates\Exceptions\TransitionNotFound) {
+        } catch (TransitionNotFound) {
             if ($workflow->running()) {
                 $this->release();
             }
@@ -69,7 +73,7 @@ final class ChildWorkflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQu
     public function middleware()
     {
         return [
-            new WithoutOverlappingMiddleware($this->parentWorkflow->id, WithoutOverlappingMiddleware::ACTIVITY),
+            new WithoutOverlappingMiddleware($this->parentWorkflow->id, WithoutOverlappingMiddleware::ACTIVITY, 0, 15),
         ];
     }
 }

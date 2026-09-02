@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.repair-actionability-objects",
+  "title": "Durable Workflow repair and actionability objects",
+  "description": "Normative JSON Schema for task-repair policy snapshots, repair candidate snapshots, actionability hints, queue visibility rows, machine-readable root-cause/remediation objects, safe-mutation envelopes, and structured failure/action affordance objects emitted by workflow, server, Waterline, and agent-tooling surfaces.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "repair_actionability_objects",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "task_repair_policy",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "task_repair_candidates",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "operator_queue_visibility",
+      "owner_repo": "durable-workflow/workflow"
+    },
+    {
+      "name": "actionability",
+      "owner_repo": "durable-workflow/waterline"
+    },
+    {
+      "name": "agent_root_cause",
+      "owner_repo": "durable-workflow/durable-workflow.github.io"
+    },
+    {
+      "name": "agent_remediation",
+      "owner_repo": "durable-workflow/durable-workflow.github.io"
+    },
+    {
+      "name": "safe_mutation",
+      "owner_repo": "durable-workflow/durable-workflow.github.io"
+    }
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "policy": {
+      "$ref": "#/$defs/taskRepairPolicy"
+    },
+    "candidates": {
+      "$ref": "#/$defs/taskRepairCandidates"
+    },
+    "actionability": {
+      "$ref": "#/$defs/actionability"
+    },
+    "queue_visibility": {
+      "$ref": "#/$defs/queueVisibility"
+    },
+    "failure": {
+      "$ref": "#/$defs/structuredFailure"
+    },
+    "root_cause": {
+      "$ref": "#/$defs/rootCause"
+    },
+    "remediation": {
+      "$ref": "#/$defs/remediation"
+    },
+    "mutation": {
+      "$ref": "#/$defs/safeMutation"
+    }
+  },
+  "$defs": {
+    "taskRepairPolicy": {
+      "type": "object",
+      "required": [
+        "redispatch_after_seconds",
+        "loop_throttle_seconds",
+        "scan_limit",
+        "scan_strategy",
+        "failure_backoff_max_seconds",
+        "failure_backoff_strategy"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "redispatch_after_seconds": { "type": "integer", "minimum": 1 },
+        "loop_throttle_seconds": { "type": "integer", "minimum": 1 },
+        "scan_limit": { "type": "integer", "minimum": 1 },
+        "scan_strategy": { "type": "string", "const": "scope_fair_round_robin" },
+        "failure_backoff_max_seconds": { "type": "integer", "minimum": 1 },
+        "failure_backoff_strategy": { "type": "string", "const": "exponential_by_repair_count" }
+      }
+    },
+    "taskRepairCandidates": {
+      "type": "object",
+      "required": [
+        "existing_task_candidates",
+        "missing_task_candidates",
+        "total_candidates",
+        "scan_limit",
+        "scan_strategy",
+        "scopes"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "existing_task_candidates": { "type": "integer", "minimum": 0 },
+        "missing_task_candidates": { "type": "integer", "minimum": 0 },
+        "total_candidates": { "type": "integer", "minimum": 0 },
+        "scan_limit": { "type": "integer", "minimum": 1 },
+        "scan_strategy": { "type": "string" },
+        "selected_total_candidates": { "type": "integer", "minimum": 0 },
+        "scan_pressure": { "type": "boolean" },
+        "oldest_task_candidate_created_at": { "type": ["string", "null"], "format": "date-time" },
+        "oldest_missing_run_started_at": { "type": ["string", "null"], "format": "date-time" },
+        "scopes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/taskRepairScope" }
+        }
+      }
+    },
+    "taskRepairScope": {
+      "type": "object",
+      "required": ["scope_key", "existing_task_candidates", "missing_task_candidates", "total_candidates"],
+      "additionalProperties": true,
+      "properties": {
+        "scope_key": { "type": "string" },
+        "connection": { "type": ["string", "null"] },
+        "queue": { "type": ["string", "null"] },
+        "compatibility": { "type": ["string", "null"] },
+        "existing_task_candidates": { "type": "integer", "minimum": 0 },
+        "missing_task_candidates": { "type": "integer", "minimum": 0 },
+        "total_candidates": { "type": "integer", "minimum": 0 },
+        "scan_limited_by_global_policy": { "type": "boolean" }
+      }
+    },
+    "actionability": {
+      "type": "object",
+      "required": ["schema", "version"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 },
+        "repair_state": {
+          "type": "string",
+          "enum": ["repairable", "blocked", "not_needed", "unknown"]
+        },
+        "state": {
+          "type": "string",
+          "enum": ["actionable", "diagnostic_only"]
+        },
+        "repairable": { "type": "boolean" },
+        "repair_source": { "type": "boolean" },
+        "diagnostic_only": { "type": "boolean" },
+        "blocked_reason": { "type": ["string", "null"] },
+        "actions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["allowed", "derived_from"],
+            "additionalProperties": true,
+            "properties": {
+              "allowed": { "type": "boolean" },
+              "reason": { "type": ["string", "null"] },
+              "derived_from": { "type": "string" }
+            }
+          }
+        },
+        "badges": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "queueVisibility": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "namespace": { "type": ["string", "null"] },
+        "queues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "task_queue": { "type": "string" },
+              "stats": { "type": "object", "additionalProperties": true },
+              "current_leases": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+              "repair": { "$ref": "#/$defs/taskRepairCandidates" }
+            }
+          }
+        }
+      }
+    },
+    "structuredFailure": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "failure_id": { "type": ["string", "null"] },
+        "failure_category": { "type": ["string", "null"] },
+        "non_retryable": { "type": ["boolean", "null"] },
+        "exception_type": { "type": ["string", "null"] },
+        "exception_class": { "type": ["string", "null"] },
+        "message": { "type": ["string", "null"] },
+        "code": { "type": ["string", "integer", "null"] }
+      }
+    },
+    "rootCause": {
+      "type": ["object", "null"],
+      "required": ["schema", "version", "category", "reason", "source"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.agent-root-cause" },
+        "version": { "type": "integer", "minimum": 1 },
+        "category": {
+          "type": "string",
+          "description": "Machine-readable classification such as activity_failure, workflow_failure, task_repair_attention, waiting_for_signal, history_growth_attention, in_progress, or none."
+        },
+        "reason": { "type": "string" },
+        "source": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "type": "string" },
+            "id": { "type": ["string", "null"] }
+          }
+        },
+        "retryable": { "type": ["boolean", "null"] },
+        "severity": { "type": "string", "enum": ["info", "warning", "error"] },
+        "actionable": { "type": "boolean" },
+        "failure_category": { "type": ["string", "null"] },
+        "exception_class": { "type": ["string", "null"] },
+        "handled": { "type": ["boolean", "null"] }
+      }
+    },
+    "remediation": {
+      "type": ["object", "null"],
+      "required": ["schema", "version", "classification", "summary", "automatic_repair"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.agent-remediation" },
+        "version": { "type": "integer", "minimum": 1 },
+        "classification": { "type": "string" },
+        "summary": { "type": "string" },
+        "automatic_repair": {
+          "type": "object",
+          "required": ["tool", "allowed"],
+          "additionalProperties": true,
+          "properties": {
+            "tool": { "type": "string" },
+            "allowed": { "type": "boolean" },
+            "reason": { "type": ["string", "null"] }
+          }
+        },
+        "next_actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nextAction"
+          }
+        }
+      }
+    },
+    "nextAction": {
+      "type": "object",
+      "required": ["code", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "tool": { "type": ["string", "null"] },
+        "mutation": { "type": "boolean" },
+        "allowed": { "type": ["boolean", "null"] },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "safeMutation": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["schema", "version", "tool", "operation", "safe", "applied"],
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.safe-mutation" },
+        "version": { "type": "integer", "minimum": 1 },
+        "tool": { "type": "string" },
+        "operation": { "type": "string" },
+        "safe": { "type": "boolean" },
+        "applied": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

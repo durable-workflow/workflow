@@ -1,0 +1,796 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 3,
+  "category": "schedules_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 38,
+  "description": "Public scenario manifest for Temporal-parity schedule conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "topology",
+    "cadence_observations",
+    "operator_controls",
+    "missed_fire_policy",
+    "restart_survival",
+    "cross_language_matrix",
+    "adversarial_outcomes",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "schedule_policy": {
+    "missed_fire_policy": "fire_once_on_resume_then_skip_remaining_missed",
+    "pause_policy": "paused schedules do not fire; resume computes the next fire from resume time without automatic catch-up",
+    "restart_policy": "active schedule rows survive server restart and fire at the first due tick after restart"
+  },
+  "required_matrix": {
+    "runtimes": [
+      "sdk-php",
+      "sdk-python"
+    ],
+    "client_paths": [
+      "cli",
+      "sdk-python",
+      "sdk-php"
+    ],
+    "schedule_types": [
+      "cron_expression",
+      "fixed_rate_interval"
+    ],
+    "cross_language_cells": [
+      {
+        "schedule_creator": "sdk-python",
+        "workflow_runtime": "sdk-php",
+        "scenario": "python_created_php_workflow"
+      },
+      {
+        "schedule_creator": "sdk-php",
+        "workflow_runtime": "sdk-python",
+        "scenario": "php_created_python_workflow"
+      }
+    ]
+  },
+  "scenario_requirements": {
+    "cron_cadence": {
+      "cron_expression": "* * * * *",
+      "minimum_observed_fires": 4,
+      "required_fields": [
+        "actual_fire_timestamps",
+        "nominal_fire_timestamps",
+        "drift_ms"
+      ]
+    },
+    "fixed_rate_cadence": {
+      "interval": "PT30S",
+      "minimum_observed_fires": 8,
+      "required_fields": [
+        "actual_fire_timestamps",
+        "nominal_fire_timestamps",
+        "drift_ms"
+      ]
+    },
+    "invalid_cron_refusal": {
+      "required_behavior": "server_refuses_before_persisting_schedule",
+      "required_fields": [
+        "refused",
+        "typed_error",
+        "persisted"
+      ]
+    },
+    "missed_fire_policy": {
+      "expected_policy": "fire_once_on_resume_then_skip_remaining_missed",
+      "required_fields": [
+        "documented_policy",
+        "observed_policy",
+        "catchup_fire_count",
+        "post_resume_normal_fire_observed"
+      ]
+    }
+  },
+  "host_runner_contract": {
+    "status": "required_for_passing_schedules_conformance",
+    "result_schema": "durable-workflow.v2.schedules-runtime.result",
+    "must_probe_runtime_published_surfaces": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "smoke_summary_only_outcome": "non_passing",
+    "unexecuted_required_scenario_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness",
+    "coverage_gap_findings": {
+      "published_artifact_install_only": {
+        "id": "schedules-published-artifact-install-evidence",
+        "owner": "conformance_harness",
+        "scope": "published-artifact-install",
+        "current_evidence": "The schedules result must name concrete published versions for every actor and prove none came from a local product checkout.",
+        "expected_behavior": "Server image, CLI, Python SDK, PHP SDK, and Waterline are installed from published channels and recorded with concrete versions.",
+        "acceptance": [
+          "record server, cli, sdk-python, sdk-php, and waterline artifact versions",
+          "record artifact sources from published channels only",
+          "prove local product source checkouts were not used as artifacts under test"
+        ]
+      },
+      "cron_cadence": {
+        "id": "schedules-cron-cadence-coverage",
+        "owner": "conformance_harness",
+        "scope": "cron-cadence-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not observe automatic cron fires over nominal minute boundaries.",
+        "expected_behavior": "A cron schedule created from published artifacts fires on the documented cadence with timestamp and drift evidence.",
+        "acceptance": [
+          "create a * * * * * schedule from published artifacts",
+          "observe at least four fires with nominal and actual timestamps",
+          "record drift milliseconds for every observed fire"
+        ]
+      },
+      "fixed_rate_cadence": {
+        "id": "schedules-fixed-rate-cadence-coverage",
+        "owner": "conformance_harness",
+        "scope": "fixed-rate-cadence-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not observe a fixed-rate interval schedule firing repeatedly.",
+        "expected_behavior": "A fixed-rate schedule created from published artifacts fires on its documented interval without duplicate or skipped intervals.",
+        "acceptance": [
+          "create a PT30S interval schedule from published artifacts",
+          "observe at least eight interval fires",
+          "record nominal timestamps, actual timestamps, and drift milliseconds"
+        ]
+      },
+      "list_describe_visibility": {
+        "id": "schedules-public-visibility-coverage",
+        "owner": "conformance_harness",
+        "scope": "operator-controls-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not prove multi-client list and describe visibility for cron and interval schedules.",
+        "expected_behavior": "CLI, Python SDK, and PHP-facing client paths report the same schedule identity, cadence, last_fire_at, next_fire_at, and pause state.",
+        "acceptance": [
+          "list and describe cron and interval schedules through CLI JSON output",
+          "list and describe the same schedules through the Python SDK",
+          "list or describe the same schedules through the PHP-facing workflow SDK surface"
+        ]
+      },
+      "pause_resume_no_fire_window": {
+        "id": "schedules-pause-no-fire-coverage",
+        "owner": "conformance_harness",
+        "scope": "operator-controls-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It exercises pause and resume calls but does not prove no workflow fires during a paused window.",
+        "expected_behavior": "A paused schedule records zero fires during the pause window and resumes from resume time without automatic catch-up.",
+        "acceptance": [
+          "pause an active schedule through a public surface",
+          "keep scheduler evaluation running for at least 120 seconds",
+          "record fires_during_pause_count as zero and observe the next normal fire after resume"
+        ]
+      },
+      "delete_stops_future_fires": {
+        "id": "schedules-delete-no-future-fire-coverage",
+        "owner": "conformance_harness",
+        "scope": "operator-controls-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It deletes a schedule but does not prove no later automatic fire is attributed to the deleted schedule.",
+        "expected_behavior": "A deleted schedule disappears from public list and describe surfaces and produces no later scheduled workflow fire.",
+        "acceptance": [
+          "delete an active schedule through a public surface",
+          "verify the deleted schedule is absent from list and describe outputs",
+          "observe at least one later nominal fire window with no workflow attributed to the deleted schedule"
+        ]
+      },
+      "missed_fire_policy": {
+        "id": "schedules-missed-fire-policy-coverage",
+        "owner": "conformance_harness",
+        "scope": "missed-fire-restart-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not stop scheduler evaluation through missed fire times.",
+        "expected_behavior": "After scheduler downtime through nominal fire times, the observed catch-up behavior matches fire_once_on_resume_then_skip_remaining_missed.",
+        "acceptance": [
+          "create an active one-minute schedule",
+          "stop scheduler evaluation through one or more nominal fire times",
+          "record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed"
+        ]
+      },
+      "restart_survival": {
+        "id": "schedules-restart-survival-coverage",
+        "owner": "conformance_harness",
+        "scope": "missed-fire-restart-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not restart the server while an active schedule is persisted.",
+        "expected_behavior": "An active schedule remains listed after server restart and fires within the documented restart deadline.",
+        "acceptance": [
+          "create and persist an active schedule",
+          "restart the server process while keeping durable storage",
+          "verify the schedule is listed and fires after restart within restart_fire_deadline_seconds"
+        ]
+      },
+      "cli_schedule_surface": {
+        "id": "schedules-cli-surface-coverage",
+        "owner": "cli",
+        "scope": "cli-schedule-surface-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not execute schedule lifecycle operations through the official CLI.",
+        "expected_behavior": "The CLI schedule surface creates or observes schedules and exposes list, describe, pause, resume, trigger, and delete as machine-readable JSON.",
+        "acceptance": [
+          "run dw schedule:create or observe a schedule through the official CLI",
+          "run dw schedule:list and dw schedule:describe with JSON output",
+          "run dw schedule:pause, resume, trigger, and delete or record unsupported commands with findings"
+        ]
+      },
+      "python_sdk_schedule_surface": {
+        "id": "schedules-python-sdk-surface-evidence",
+        "owner": "sdk-python",
+        "scope": "sdk-python-schedule-surface-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. A full result still has to attach that smoke as scenario evidence for this cell.",
+        "expected_behavior": "The Python SDK schedule surface reports create, list, describe, pause, resume, trigger, and delete evidence in the schedules result.",
+        "acceptance": [
+          "attach Python SDK lifecycle smoke outputs to python_sdk_schedule_surface",
+          "record SDK-visible schedule state and typed error behavior",
+          "prove the smoke used the published Python SDK artifact version"
+        ]
+      },
+      "php_schedule_surface": {
+        "id": "schedules-php-surface-coverage",
+        "owner": "sdk-php",
+        "scope": "sdk-php-schedule-surface-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not exercise a PHP-facing schedule client path.",
+        "expected_behavior": "The PHP-facing workflow SDK surface can create or observe schedules and report list or describe state consistently with server and CLI state.",
+        "acceptance": [
+          "execute the PHP-facing schedule client path from the published PHP SDK package",
+          "record create_or_observe and list_or_describe outputs",
+          "record pause, resume, trigger, or delete behavior when the surface claims those controls"
+        ]
+      },
+      "python_created_php_workflow": {
+        "id": "schedules-python-created-php-workflow-coverage",
+        "owner": "conformance_harness",
+        "scope": "cross-language-schedule-workflow-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not run a PHP worker for a schedule created by Python.",
+        "expected_behavior": "A schedule created by the Python SDK dispatches a scheduled fire to a worker from the published PHP SDK package.",
+        "acceptance": [
+          "create a schedule with sdk-python targeting a PHP workflow type",
+          "run the PHP worker from the published PHP SDK package",
+          "record CLI schedule visibility and PHP workflow completion"
+        ]
+      },
+      "php_created_python_workflow": {
+        "id": "schedules-php-created-python-workflow-coverage",
+        "owner": "conformance_harness",
+        "scope": "cross-language-schedule-workflow-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not create a schedule through PHP targeting a Python worker.",
+        "expected_behavior": "A schedule created through the PHP-facing SDK dispatches a scheduled fire to a Python workflow worker from the published Python SDK.",
+        "acceptance": [
+          "create a schedule through the PHP-facing SDK targeting a Python workflow type",
+          "run the Python worker from the published Python SDK",
+          "record CLI schedule visibility and Python workflow completion"
+        ]
+      },
+      "invalid_cron_refusal": {
+        "id": "schedules-invalid-cron-evidence",
+        "owner": "server",
+        "scope": "adversarial-schedule-input-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. A full result still has to attach refused, typed_error, and persisted=false fields for this cell.",
+        "expected_behavior": "Invalid cron input is rejected before schedule persistence and the result records the typed error and non-persistence.",
+        "acceptance": [
+          "attempt invalid cron creation through a public client path",
+          "record refused=true and typed_error=true",
+          "record persisted=false from a public list or describe check"
+        ]
+      },
+      "nonexistent_workflow_type_outcome": {
+        "id": "schedules-nonexistent-workflow-outcome-coverage",
+        "owner": "server",
+        "scope": "adversarial-schedule-input-shard",
+        "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not exercise a schedule targeting an unregistered workflow type.",
+        "expected_behavior": "A schedule targeting a non-existent workflow type produces a documented operator-visible create-time, fire-time, or pending-worker outcome.",
+        "acceptance": [
+          "create or attempt to create a schedule targeting an unregistered workflow type",
+          "observe create-time validation or first scheduled fire behavior",
+          "record one allowed behavior and the operator-visible failure or pending-worker signal"
+        ]
+      }
+    },
+    "required_execution_scopes": [
+      "published-artifact-install",
+      "cron-cadence-shard",
+      "fixed-rate-cadence-shard",
+      "operator-controls-shard",
+      "missed-fire-restart-shard",
+      "cli-schedule-surface-shard",
+      "sdk-python-schedule-surface-shard",
+      "sdk-php-schedule-surface-shard",
+      "cross-language-schedule-workflow-shard",
+      "adversarial-schedule-input-shard"
+    ],
+    "runtime_shards": {
+      "cli": {
+        "scope": "cli-schedule-surface-shard",
+        "must_cover_controls": [
+          "list",
+          "describe",
+          "pause",
+          "resume",
+          "trigger",
+          "delete"
+        ],
+        "fallback_status_when_surface_missing": "unsupported",
+        "fallback_finding_type": "unsupported_public_surface"
+      },
+      "sdk-python": {
+        "scope": "sdk-python-schedule-surface-shard",
+        "must_cover_controls": [
+          "create",
+          "list",
+          "describe",
+          "pause",
+          "resume",
+          "trigger",
+          "delete"
+        ],
+        "fallback_status_when_surface_missing": "unsupported",
+        "fallback_finding_type": "unsupported_public_surface"
+      },
+      "sdk-php": {
+        "scope": "sdk-php-schedule-surface-shard",
+        "must_cover_controls": [
+          "create_or_observe",
+          "list_or_describe",
+          "pause",
+          "resume",
+          "trigger",
+          "delete"
+        ],
+        "fallback_status_when_surface_missing": "unsupported",
+        "fallback_finding_type": "unsupported_public_surface"
+      },
+      "sdk-php-worker": {
+        "scope": "cross-language-schedule-workflow-shard",
+        "must_register_workflows": [
+          "SchedulesConformancePhpWorkflow"
+        ],
+        "fallback_status_when_surface_missing": "unsupported",
+        "fallback_finding_type": "unsupported_public_surface"
+      },
+      "sdk-python-worker": {
+        "scope": "cross-language-schedule-workflow-shard",
+        "must_register_workflows": [
+          "SchedulesConformancePythonWorkflow"
+        ],
+        "fallback_status_when_surface_missing": "unsupported",
+        "fallback_finding_type": "unsupported_public_surface"
+      }
+    },
+    "merge_policy": {
+      "input_scopes": [
+        "published-artifact-install",
+        "cron-cadence-shard",
+        "fixed-rate-cadence-shard",
+        "operator-controls-shard",
+        "missed-fire-restart-shard",
+        "cli-schedule-surface-shard",
+        "sdk-python-schedule-surface-shard",
+        "sdk-php-schedule-surface-shard",
+        "cross-language-schedule-workflow-shard",
+        "adversarial-schedule-input-shard"
+      ],
+      "output_schema": "durable-workflow.v2.schedules-runtime.result",
+      "requires_required_runtimes": [
+        "sdk-php",
+        "sdk-python"
+      ],
+      "requires_required_clients": [
+        "cli",
+        "sdk-python",
+        "sdk-php"
+      ],
+      "requires_required_scenarios": "schedules_runtime_contract.required_scenarios",
+      "requires_sections": [
+        "published_artifact_install",
+        "runtime_matrix",
+        "cadence_observations",
+        "operator_controls",
+        "missed_fire_policy",
+        "restart_survival",
+        "cross_language_matrix",
+        "adversarial_outcomes"
+      ]
+    },
+    "routing_policy": {
+      "missing_required_scenario": {
+        "scenario_status": "not_covered",
+        "finding_type": "conformance_runner_coverage_gap",
+        "owner": "conformance_harness"
+      },
+      "missing_public_surface": {
+        "scenario_status": "unsupported",
+        "finding_type": "unsupported_public_surface",
+        "owner": "surface_owner"
+      },
+      "scenario_product_failure": {
+        "scenario_status": "fail",
+        "finding_source": "schedules_runtime_contract.finding_policy"
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "sdk_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP SDK, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the actor or target under test"
+      ]
+    },
+    {
+      "id": "cron_cadence",
+      "title": "Cron cadence",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "create a schedule with cron expression * * * * * on the shared schedules conformance task queue",
+        "observe at least four nominal minute boundaries and record nominal and actual fire timestamps",
+        "capture drift in milliseconds for every observed fire"
+      ],
+      "pass_criteria": [
+        "at least four cron fires are observed from published artifacts",
+        "every observed fire is tied to the expected nominal occurrence time",
+        "drift samples are recorded for every nominal and actual timestamp pair"
+      ]
+    },
+    {
+      "id": "fixed_rate_cadence",
+      "title": "Fixed-rate cadence",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "create a schedule with a PT30S fixed-rate interval on the shared schedules conformance task queue",
+        "observe at least eight expected interval boundaries and record nominal and actual fire timestamps",
+        "capture drift in milliseconds for every observed fire"
+      ],
+      "pass_criteria": [
+        "at least eight fixed-rate fires are observed from published artifacts",
+        "no duplicate or skipped interval is reported as passing evidence",
+        "drift samples are recorded for every nominal and actual timestamp pair"
+      ]
+    },
+    {
+      "id": "list_describe_visibility",
+      "title": "List and describe visibility",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "python_sdk_client",
+        "php_sdk_client"
+      ],
+      "operations": [
+        "create active cron and fixed-rate schedules",
+        "list and describe those schedules through CLI, Python SDK, and PHP-facing client paths",
+        "capture cron or interval definition, last_fire_at, next_fire_at, and paused state"
+      ],
+      "pass_criteria": [
+        "all claimed public clients can observe the same schedule identities",
+        "operator-visible fields include cron or interval, last_fire_at, next_fire_at, and paused",
+        "client outputs agree on schedule state without reading server internals"
+      ]
+    },
+    {
+      "id": "pause_resume_no_fire_window",
+      "title": "Pause and resume no-fire window",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "pause an active schedule through a public control path",
+        "keep the schedule paused for at least 120 seconds while scheduler ticks continue",
+        "resume the schedule and observe the next normal fire"
+      ],
+      "pass_criteria": [
+        "fires_during_pause_count is exactly zero",
+        "resume changes the schedule back to active state",
+        "the next fire is computed from resume time instead of replaying the pause window"
+      ]
+    },
+    {
+      "id": "delete_stops_future_fires",
+      "title": "Delete stops future fires",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "delete an active schedule through a public control path",
+        "list and describe schedules after deletion",
+        "continue scheduler ticks long enough to cover at least one later nominal fire time"
+      ],
+      "pass_criteria": [
+        "the deleted schedule is absent from list and describe outputs",
+        "no later workflow fire is attributed to the deleted schedule",
+        "delete evidence names the public surface used"
+      ]
+    },
+    {
+      "id": "missed_fire_policy",
+      "title": "Missed-fire policy",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker"
+      ],
+      "operations": [
+        "store an active schedule and stop scheduler evaluation through one or more nominal fire times",
+        "restart evaluation and observe catch-up behavior",
+        "record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed"
+      ],
+      "pass_criteria": [
+        "observed_policy equals fire_once_on_resume_then_skip_remaining_missed",
+        "catchup_fire_count is exactly one for the overdue occurrence",
+        "a later normal fire is observed after catch-up without replaying every missed occurrence"
+      ]
+    },
+    {
+      "id": "restart_survival",
+      "title": "Restart survival",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "create an active schedule and confirm it is persisted",
+        "restart the server process while keeping durable storage",
+        "list the schedule after restart and observe a post-restart fire within the documented deadline"
+      ],
+      "pass_criteria": [
+        "the schedule is listed after restart with its durable definition intact",
+        "the schedule fires after restart within the restart_fire_deadline_seconds window",
+        "restart evidence distinguishes server restart from worker-only restart"
+      ]
+    },
+    {
+      "id": "cli_schedule_surface",
+      "title": "CLI schedule surface",
+      "claim_targets": [
+        "cli_json_client",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "cli_client"
+      ],
+      "operations": [
+        "create or observe schedules through the official CLI",
+        "list and describe schedules through CLI JSON output",
+        "pause, resume, trigger, and delete a schedule through CLI commands or record unsupported commands with findings"
+      ],
+      "pass_criteria": [
+        "CLI evidence covers create_or_observe, list_observed, and control_observed",
+        "machine-readable output exposes stable schedule identity and state fields",
+        "any unsupported CLI command is non-passing and links a focused finding"
+      ]
+    },
+    {
+      "id": "python_sdk_schedule_surface",
+      "title": "Python SDK schedule surface",
+      "claim_targets": [
+        "official_sdk",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_client"
+      ],
+      "operations": [
+        "create or observe schedules through the Python SDK",
+        "list and describe schedules through Python SDK APIs",
+        "pause, resume, trigger, and delete a schedule through Python SDK APIs"
+      ],
+      "pass_criteria": [
+        "Python SDK evidence covers create_or_observe, list_observed, and control_observed",
+        "SDK-visible state agrees with server and CLI schedule state",
+        "typed errors are recorded for unsupported or invalid operations"
+      ]
+    },
+    {
+      "id": "php_schedule_surface",
+      "title": "PHP schedule surface",
+      "claim_targets": [
+        "official_sdk",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "php_sdk_client"
+      ],
+      "operations": [
+        "create or observe schedules through the PHP-facing workflow SDK surface",
+        "list or describe schedules through the PHP-facing client path",
+        "pause, resume, trigger, or delete a schedule through PHP-facing APIs when claimed"
+      ],
+      "pass_criteria": [
+        "PHP SDK evidence covers create_or_observe, list_observed, and control_observed for claimed operations",
+        "PHP-facing schedule state agrees with server and CLI schedule state",
+        "any unsupported PHP-facing operation is non-passing and links a focused finding"
+      ]
+    },
+    {
+      "id": "python_created_php_workflow",
+      "title": "Python-created schedule starts PHP workflow",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_client",
+        "php_worker",
+        "cli_client"
+      ],
+      "operations": [
+        "create a schedule from the Python SDK targeting a PHP workflow type on the shared task queue",
+        "run the PHP worker from the published PHP SDK package",
+        "observe schedule visibility through CLI and workflow completion through public APIs"
+      ],
+      "pass_criteria": [
+        "schedule_creator is sdk-python and workflow_runtime is sdk-php",
+        "the PHP workflow completes from a scheduled fire",
+        "CLI visibility confirms the schedule without requiring Python-only state"
+      ]
+    },
+    {
+      "id": "php_created_python_workflow",
+      "title": "PHP-created schedule starts Python workflow",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_sdk_client",
+        "python_worker",
+        "cli_client"
+      ],
+      "operations": [
+        "create a schedule from the PHP-facing SDK surface targeting a Python workflow type on the shared task queue",
+        "run the Python worker from the published Python SDK package",
+        "observe schedule visibility through CLI and workflow completion through public APIs"
+      ],
+      "pass_criteria": [
+        "schedule_creator is sdk-php and workflow_runtime is sdk-python",
+        "the Python workflow completes from a scheduled fire",
+        "CLI visibility confirms the schedule without requiring PHP-only state"
+      ]
+    },
+    {
+      "id": "invalid_cron_refusal",
+      "title": "Invalid cron refusal",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "operator_client"
+      ],
+      "operations": [
+        "attempt to create a schedule with an invalid cron expression through a public client path",
+        "capture the typed error returned by the server or client",
+        "verify that no schedule row or list result persists the invalid definition"
+      ],
+      "pass_criteria": [
+        "refused is true",
+        "typed_error is true",
+        "persisted is explicitly false"
+      ]
+    },
+    {
+      "id": "nonexistent_workflow_type_outcome",
+      "title": "Nonexistent workflow type outcome",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "operator_client",
+        "worker"
+      ],
+      "operations": [
+        "create or attempt to create a schedule targeting a workflow type that no worker registers",
+        "observe create-time validation or the first scheduled fire outcome",
+        "capture the operator-visible error or pending-worker state"
+      ],
+      "pass_criteria": [
+        "behavior is one of refused_at_create, fails_at_fire_time, or accepted_pending_worker",
+        "silent acceptance with no operator-visible outcome is not reported as passing",
+        "the result links a focused finding if the behavior is unsupported or ambiguous"
+      ]
+    }
+  ]
+}

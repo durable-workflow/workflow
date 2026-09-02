@@ -1,0 +1,119 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "adjacent-condition-wait-occurrence-identity",
+  "protocol_version": "1.17",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "adjacent-condition-waits"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-25T19:40:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "condition:1",
+        "condition_wait_occurrence_id": "rust:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "sha256:da5882b71a89c7b137109a89766e65a66798381093969a68646ac393705a5243"
+      },
+      "recorded_at": "2026-08-25T19:40:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "UpdateApplied",
+      "payload": {
+        "sequence": 1,
+        "update_name": "approve",
+        "arguments": "wwHioz3/VYAiNwwCAgEA"
+      },
+      "recorded_at": "2026-08-25T19:40:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "condition:1",
+        "condition_wait_occurrence_id": "rust:condition-wait:0",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "sha256:da5882b71a89c7b137109a89766e65a66798381093969a68646ac393705a5243"
+      },
+      "recorded_at": "2026-08-25T19:40:03+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 2,
+        "condition_wait_id": "condition:2",
+        "condition_wait_occurrence_id": "rust:condition-wait:1",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "sha256:da5882b71a89c7b137109a89766e65a66798381093969a68646ac393705a5243"
+      },
+      "recorded_at": "2026-08-25T19:40:04+00:00"
+    },
+    {
+      "sequence": 6,
+      "event_type": "UpdateApplied",
+      "payload": {
+        "sequence": 2,
+        "update_name": "approve",
+        "arguments": "wwHioz3/VYAiNwwCAgEA"
+      },
+      "recorded_at": "2026-08-25T19:40:05+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 2,
+        "condition_wait_id": "condition:2",
+        "condition_wait_occurrence_id": "rust:condition-wait:1",
+        "condition_key": "approval.ready",
+        "condition_definition_fingerprint": "sha256:da5882b71a89c7b137109a89766e65a66798381093969a68646ac393705a5243"
+      },
+      "recorded_at": "2026-08-25T19:40:06+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "stage": "completed",
+      "name": null,
+      "greeting": null,
+      "approved": false,
+      "version": -1,
+      "version_result": null,
+      "reservation_id": null,
+      "events": [
+        "approved",
+        "condition-satisfied:1",
+        "approved",
+        "condition-satisfied:2"
+      ]
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  },
+  "expected_condition_wait_occurrence_ids": [
+    "rust:condition-wait:0",
+    "rust:condition-wait:1"
+  ]
+}

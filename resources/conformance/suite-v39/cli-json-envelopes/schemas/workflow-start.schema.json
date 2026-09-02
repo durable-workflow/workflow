@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v2/schemas/workflow-start.schema.json",
+  "title": "dw workflow:start --json",
+  "description": "Without --wait this is the start response; with --wait this is the terminal workflow describe response.",
+  "type": "object",
+  "required": ["namespace", "workflow_id"],
+  "anyOf": [
+    { "required": ["workflow_id", "run_id", "outcome"] },
+    { "required": ["workflow_id", "status"] }
+  ],
+  "properties": {
+    "namespace": { "type": "string" },
+    "workflow_id": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "business_key": { "type": ["string", "null"] },
+    "payload_codec": { "type": ["string", "null"] },
+    "outcome": { "type": ["string", "null"] },
+    "status": { "type": ["string", "null"] },
+    "status_bucket": { "type": ["string", "null"] },
+    "is_terminal": { "type": ["boolean", "null"] },
+    "output": true
+  },
+  "additionalProperties": true
+}

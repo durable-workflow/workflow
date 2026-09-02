@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/bridge-adapter-outcome.schema.json",
+  "title": "Bridge adapter outcome",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "version", "adapter", "action", "accepted", "outcome", "idempotency_key"],
+  "properties": {
+    "schema": {
+      "const": "durable-workflow.v2.bridge-adapter-outcome.contract"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": ["start_workflow", "signal_workflow", "update_workflow", "handoff_external_task"]
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["accepted", "duplicate", "rejected"]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "control_plane_outcome": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "workflow_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "command_status": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    }
+  }
+}

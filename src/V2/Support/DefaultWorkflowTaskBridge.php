@@ -1,0 +1,6297 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
+use LogicException;
+use RuntimeException;
+use Throwable;
+use Workflow\Serializers\CodecDecodeException;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\ChildCallStatus;
+use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowMemo;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
+
+final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
+{
+    public const POLL_BATCH_CAP = 100;
+
+    public const AVAILABILITY_CEILING_SECONDS = 1;
+
+    /**
+     * Relations the history-projection role consumes for a workflow-bridge
+     * projection. Hydrated by {@see self::projectRun()} before the role is
+     * invoked so the role implementation always sees an up-to-date graph,
+     * regardless of which call path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = ['instance', 'tasks', 'activityExecutions', 'failures'];
+
+    /**
+     * Projection relations for call sites that also need to see active timer
+     * rows on the run (e.g. the post-execute terminal-status projection that
+     * cancels still-armed timers).
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_TIMERS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+    ];
+
+    /**
+     * Projection relations for call sites that also need the full history
+     * stream (terminal-write paths and command-application paths that close
+     * out a workflow turn).
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_HISTORY = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+    ];
+
+    /**
+     * Projection relations for the parent-resume rebuild path, which also
+     * needs the parent's child-link graph hydrated so the projection sees
+     * the same shape the parent will read on its next workflow task.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_CHILDREN = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+        'childLinks.childRun.instance.currentRun',
+        'childLinks.childRun.failures',
+        'childLinks.childRun.historyEvents',
+    ];
+
+    private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
+
+    private const NON_TERMINAL_TYPES = [
+        'cancel_selection_operation',
+        'schedule_activity',
+        'start_timer',
+        'start_child_workflow',
+        'start_service_operation',
+        'complete_update',
+        'fail_update',
+        'record_side_effect',
+        'record_local_activity',
+        'record_version_marker',
+        'upsert_memo',
+        'upsert_search_attributes',
+        'open_condition_wait',
+        'open_signal_wait',
+    ];
+
+    public function __construct(
+        private readonly WorkflowExecutor $executor,
+    ) {
+    }
+
+    public function poll(
+        ?string $connection,
+        ?string $queue,
+        int $limit = 1,
+        ?string $compatibility = null,
+        ?string $namespace = null,
+        array $workflowTypes = []
+    ): array {
+        $requestedWorkflowTypes = self::nonEmptyStrings($workflowTypes);
+
+        if ($workflowTypes !== [] && $requestedWorkflowTypes === []) {
+            return [];
+        }
+
+        // The availability ceiling is a deliberate cross-backend tolerance so tasks
+        // created in the same request tick are reliably surfaced on backends with
+        // sub-second timestamp drift (notably SQLite). It is part of the matching
+        // contract; tightening it would silently de-list freshly-available tasks.
+        $availabilityCutoff = now()
+            ->addSeconds(self::AVAILABILITY_CEILING_SECONDS);
+
+        // Resolve the configured task and run model class names so callers
+        // that swap a model implementation still hit the right tables when
+        // we drop down to qualified column names. Using $task->getTable()
+        // would break for non-default model classes that override $table.
+        /** @var class-string<WorkflowTask> $taskModel */
+        $taskModel = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
+        /** @var class-string<WorkflowRun> $runModel */
+        $runModel = ConfiguredV2Models::resolve('run_model', WorkflowRun::class);
+
+        $taskTable = (new $taskModel())->getTable();
+        $runTable = (new $runModel())->getTable();
+
+        // Polyglot routing fix: when the caller filters by workflow_type, we
+        // join workflow_tasks to workflow_runs and constrain the join's
+        // run-side directly. The earlier shape — a `WHERE workflow_run_id IN
+        // (SELECT id FROM workflow_runs WHERE workflow_type IN (?, ...))`
+        // correlated subquery — is functionally equivalent in standard SQL
+        // but, on shared-queue MySQL workloads where one queue carries
+        // workflow tasks for several language-neutral workflow types, the
+        // subquery form returned no rows even when an exact-string-match
+        // run was Ready. The join form keeps the same projection and
+        // matching semantics (exact string equality on the run's stored
+        // workflow_type column, no class resolution, no canonicalization)
+        // and surfaces the matching task on every backend the package
+        // supports. We always return `$taskTable.*` so downstream Eloquent
+        // hydration sees the WorkflowTask shape it expects.
+        $query = $taskModel::query()
+            ->select($taskTable . '.*')
+            ->where($taskTable . '.task_type', TaskType::Workflow->value)
+            ->where($taskTable . '.status', TaskStatus::Ready->value)
+            ->where(static function ($q) use ($availabilityCutoff, $taskTable) {
+                $q->whereNull($taskTable . '.available_at')
+                    ->orWhere($taskTable . '.available_at', '<=', $availabilityCutoff);
+            })
+            // Dispatch order is (priority asc, available_at asc, id) so urgent
+            // tasks lead and FIFO order is preserved within a tier. Fairness
+            // across workload classes (fairness_key) is a separate reorder pass
+            // applied to the candidate batch by the caller.
+            ->orderBy($taskTable . '.priority')
+            ->orderBy($taskTable . '.available_at')
+            ->orderBy($taskTable . '.id')
+            ->limit(max(1, min($limit, self::POLL_BATCH_CAP)));
+
+        if ($connection !== null) {
+            $query->where($taskTable . '.connection', $connection);
+        }
+
+        if ($queue !== null) {
+            $query->where($taskTable . '.queue', $queue);
+        }
+
+        if ($compatibility !== null) {
+            $query->where($taskTable . '.compatibility', $compatibility);
+        }
+
+        if ($namespace !== null) {
+            $query->where($taskTable . '.namespace', $namespace);
+        }
+
+        if ($requestedWorkflowTypes !== []) {
+            $query->join($runTable, $runTable . '.id', '=', $taskTable . '.workflow_run_id')
+                ->whereIn($runTable . '.workflow_type', $requestedWorkflowTypes);
+        }
+
+        $tasks = $query->get();
+
+        return $tasks->map(static function (WorkflowTask $task) {
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->find($task->workflow_run_id);
+
+            return [
+                'task_id' => $task->id,
+                'workflow_run_id' => $task->workflow_run_id,
+                'workflow_instance_id' => $run?->workflow_instance_id ?? '',
+                'namespace' => self::nonEmptyString($task->namespace)
+                    ?? self::nonEmptyString($run?->namespace),
+                'workflow_type' => self::nonEmptyString($run?->workflow_type),
+                'workflow_class' => self::nonEmptyString($run?->workflow_class),
+                'connection' => self::nonEmptyString($task->connection),
+                'queue' => self::nonEmptyString($task->queue),
+                'compatibility' => self::nonEmptyString($task->compatibility),
+                'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+                'sticky_until' => $task->sticky_until?->toJSON(),
+                'available_at' => $task->available_at?->toJSON(),
+                'priority' => is_int($task->priority) ? $task->priority : TaskPriority::DEFAULT,
+                'fairness_key' => self::nonEmptyString($task->fairness_key),
+                'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
+            ];
+        })->values()
+            ->all();
+    }
+
+    public function claimStatus(string $taskId, ?string $leaseOwner = null): array
+    {
+        return DB::transaction(static function () use ($taskId, $leaseOwner): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($task === null) {
+                return self::claimRejected($taskId, 'task_not_found', 'The workflow task does not exist.');
+            }
+
+            if ($task->task_type !== TaskType::Workflow) {
+                return self::claimRejected($taskId, 'task_not_workflow', 'The task is not a workflow task.');
+            }
+
+            if ($task->status !== TaskStatus::Ready) {
+                return self::claimRejected(
+                    $taskId,
+                    'task_not_claimable',
+                    "The task status is {$task->status->value} and cannot be claimed.",
+                );
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
+
+            if ($run === null) {
+                return self::claimRejected($taskId, 'run_not_found', 'The workflow run does not exist.');
+            }
+
+            if ($run->status->isTerminal()) {
+                return self::claimRejected($taskId, 'run_closed', "The workflow run is {$run->status->value}.");
+            }
+
+            TaskCompatibility::sync($task, $run);
+
+            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return self::claimRejected(
+                    $taskId,
+                    'backend_unavailable',
+                    'The backend does not support the required capabilities.',
+                );
+            }
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                $mismatch = TaskCompatibility::mismatchReason($task, $run);
+
+                return self::claimRejected(
+                    $taskId,
+                    'compatibility_blocked',
+                    $mismatch ?? 'The task compatibility marker does not match this worker.',
+                );
+            }
+
+            $resolvedLeaseOwner = $leaseOwner ?? $taskId;
+            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+            $stickyReplayMode = StickyExecution::claimReplayMode($task, $resolvedLeaseOwner);
+
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'leased_at' => now(),
+                'lease_owner' => $resolvedLeaseOwner,
+                'lease_expires_at' => $leaseExpiresAt,
+                'attempt_count' => $task->attempt_count + 1,
+                'sticky_replay_mode' => $stickyReplayMode,
+                'sticky_claimed_at' => now(),
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
+            ])->save();
+
+            self::projectWorkflowTaskClaim($run, $task);
+
+            return [
+                'claimed' => true,
+                'task_id' => $task->id,
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'namespace' => self::nonEmptyString($run->namespace),
+                'workflow_type' => self::nonEmptyString($run->workflow_type),
+                'workflow_class' => self::nonEmptyString($run->workflow_class),
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'connection' => self::nonEmptyString($task->connection),
+                'queue' => self::nonEmptyString($task->queue),
+                'compatibility' => self::nonEmptyString($task->compatibility),
+                'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+                'sticky_until' => $task->sticky_until?->toJSON(),
+                'sticky_replay_mode' => $stickyReplayMode,
+                'lease_owner' => $resolvedLeaseOwner,
+                'lease_expires_at' => $leaseExpiresAt->toJSON(),
+                'reason' => null,
+                'reason_detail' => null,
+            ];
+        });
+    }
+
+    public function claim(string $taskId, ?string $leaseOwner = null): ?array
+    {
+        $result = $this->claimStatus($taskId, $leaseOwner);
+
+        if ($result['claimed'] !== true) {
+            return null;
+        }
+
+        return [
+            'task_id' => $result['task_id'],
+            'workflow_run_id' => $result['workflow_run_id'],
+            'workflow_instance_id' => $result['workflow_instance_id'],
+            'namespace' => $result['namespace'],
+            'workflow_type' => $result['workflow_type'],
+            'workflow_class' => $result['workflow_class'],
+            'payload_codec' => $result['payload_codec'],
+            'connection' => $result['connection'],
+            'queue' => $result['queue'],
+            'compatibility' => $result['compatibility'],
+            'sticky_worker_id' => $result['sticky_worker_id'] ?? null,
+            'sticky_until' => $result['sticky_until'] ?? null,
+            'sticky_replay_mode' => $result['sticky_replay_mode'] ?? StickyExecution::MODE_COLD_REPLAY,
+            'lease_owner' => $result['lease_owner'],
+            'lease_expires_at' => $result['lease_expires_at'],
+        ];
+    }
+
+    public function historyPayload(string $taskId): ?array
+    {
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->find($taskId);
+
+        if ($task === null || $task->task_type !== TaskType::Workflow) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        if ($run === null) {
+            return null;
+        }
+
+        $historyEvents = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->get();
+        $run->setRelation('historyEvents', $historyEvents);
+        $historyBudget = HistoryBudget::forRun($run);
+        $historyBudgetPayload = WorkerHistoryPayloadContract::fromBudget($historyBudget);
+
+        return [
+            'task_id' => $task->id,
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'namespace' => self::nonEmptyString($run->namespace),
+            'workflow_type' => self::nonEmptyString($run->workflow_type),
+            'workflow_class' => self::nonEmptyString($run->workflow_class),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => self::nonEmptyString($run->arguments),
+            'arguments_envelope' => ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($run->arguments),
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'run_status' => $run->status->value,
+            'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+            'sticky_until' => $task->sticky_until?->toJSON(),
+            'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
+            'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            ...$historyBudgetPayload,
+            'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type->value,
+                'namespace' => self::nonEmptyString($run->namespace),
+                'payload' => self::workerHistoryEventPayload($event, $run),
+                'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
+                'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
+                'recorded_at' => $event->recorded_at?->toJSON(),
+            ])->values()
+                ->all(),
+        ];
+    }
+
+    public function historyPayloadPaginated(
+        string $taskId,
+        int $afterSequence = 0,
+        int $pageSize = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+    ): ?array {
+        $pageSize = max(1, min($pageSize, WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE));
+
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->find($taskId);
+
+        if ($task === null || $task->task_type !== TaskType::Workflow) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        if ($run === null) {
+            return null;
+        }
+
+        $historyEvents = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', '>', $afterSequence)
+            ->orderBy('sequence')
+            ->limit($pageSize + 1)
+            ->get();
+
+        $hasMore = $historyEvents->count() > $pageSize;
+
+        if ($hasMore) {
+            $historyEvents = $historyEvents->take($pageSize);
+        }
+
+        $historyBudget = HistoryBudget::forRunBounded($run);
+        $historyBudgetPayload = WorkerHistoryPayloadContract::fromBudget($historyBudget);
+
+        $lastEventSequence = $historyEvents->isNotEmpty()
+            ? (int) $historyEvents->last()
+->sequence
+            : null;
+
+        return [
+            'task_id' => $task->id,
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'namespace' => self::nonEmptyString($run->namespace),
+            'workflow_type' => self::nonEmptyString($run->workflow_type),
+            'workflow_class' => self::nonEmptyString($run->workflow_class),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => self::nonEmptyString($run->arguments),
+            'arguments_envelope' => ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($run->arguments),
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'run_status' => $run->status->value,
+            'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+            'sticky_until' => $task->sticky_until?->toJSON(),
+            'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
+            ...$historyBudgetPayload,
+            'after_sequence' => $afterSequence,
+            'page_size' => $pageSize,
+            'has_more' => $hasMore,
+            'next_after_sequence' => $hasMore ? $lastEventSequence : null,
+            'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type->value,
+                'namespace' => self::nonEmptyString($run->namespace),
+                'payload' => self::workerHistoryEventPayload($event, $run),
+                'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
+                'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
+                'recorded_at' => $event->recorded_at?->toJSON(),
+            ])->values()
+                ->all(),
+        ];
+    }
+
+    public function execute(string $taskId): array
+    {
+        if (! $this->claimIfReady($taskId)) {
+            return [
+                'executed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'next_task_id' => null,
+                'reason' => 'claim_failed',
+            ];
+        }
+
+        $nextTask = null;
+
+        try {
+            $nextTask = DB::transaction(function () use ($taskId): ?WorkflowTask {
+                /** @var WorkflowTask $task */
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                    ->lockForUpdate()
+                    ->findOrFail($taskId);
+
+                /** @var WorkflowRun $run */
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->findOrFail($task->workflow_run_id);
+
+                if ($run->status->isTerminal()) {
+                    $task->forceFill([
+                        'status' => $task->status === TaskStatus::Cancelled
+                            ? TaskStatus::Cancelled
+                            : ($run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed),
+                        'lease_expires_at' => null,
+                    ])->save();
+
+                    self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_TIMERS);
+
+                    return null;
+                }
+
+                return $this->executor->run($run, $task);
+            });
+        } catch (Throwable $throwable) {
+            DB::transaction(static function () use ($taskId, $throwable): void {
+                /** @var WorkflowTask|null $task */
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                    ->lockForUpdate()
+                    ->find($taskId);
+
+                if ($task === null) {
+                    return;
+                }
+
+                $task->forceFill([
+                    'status' => TaskStatus::Failed,
+                    'last_error' => $throwable->getMessage(),
+                    'lease_expires_at' => null,
+                ])->save();
+
+                /** @var WorkflowRun $run */
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->findOrFail($task->workflow_run_id);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            });
+
+            return [
+                'executed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'next_task_id' => null,
+                'reason' => 'execution_failed',
+            ];
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = null;
+
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        if ($task !== null) {
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
+        }
+
+        return [
+            'executed' => true,
+            'task_id' => $taskId,
+            'workflow_run_id' => $run?->id,
+            'run_status' => $run?->status?->value,
+            'next_task_id' => $nextTask?->id,
+            'reason' => null,
+        ];
+    }
+
+    public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
+    {
+        return DB::transaction(static function () use ($taskId, $failure): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($task === null) {
+                return [
+                    'recorded' => false,
+                    'task_id' => $taskId,
+                    'reason' => 'task_not_found',
+                    'next_task_id' => null,
+                ];
+            }
+
+            if ($task->task_type !== TaskType::Workflow) {
+                return [
+                    'recorded' => false,
+                    'task_id' => $taskId,
+                    'reason' => 'task_not_workflow',
+                    'next_task_id' => null,
+                ];
+            }
+
+            if (! in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)) {
+                return [
+                    'recorded' => false,
+                    'task_id' => $taskId,
+                    'reason' => 'task_not_active',
+                    'next_task_id' => null,
+                ];
+            }
+
+            $errorMessage = self::failureMessage($failure);
+
+            $task->forceFill([
+                'status' => TaskStatus::Failed,
+                'last_error' => $errorMessage,
+                'lease_expires_at' => null,
+            ])->save();
+
+            /** @var WorkflowRun $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->findOrFail($task->workflow_run_id);
+
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return [
+                'recorded' => true,
+                'task_id' => $taskId,
+                'reason' => null,
+                'next_task_id' => null,
+            ];
+        });
+    }
+
+    public function heartbeat(string $taskId): array
+    {
+        return DB::transaction(static function () use ($taskId): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($task === null) {
+                return [
+                    'renewed' => false,
+                    'task_id' => $taskId,
+                    'lease_expires_at' => null,
+                    'run_status' => null,
+                    'run_closed_reason' => null,
+                    'run_closed_at' => null,
+                    'task_status' => null,
+                    'reason' => 'task_not_found',
+                ];
+            }
+
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased) {
+                return [
+                    'renewed' => false,
+                    'task_id' => $taskId,
+                    'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+                    'run_status' => null,
+                    'run_closed_reason' => null,
+                    'run_closed_at' => null,
+                    'task_status' => $task->status->value,
+                    'reason' => $task->status !== TaskStatus::Leased ? 'task_not_leased' : 'task_not_workflow',
+                ];
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
+
+            if ($run !== null && $run->status->isTerminal()) {
+                return [
+                    'renewed' => false,
+                    'task_id' => $taskId,
+                    'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+                    'run_status' => $run->status->value,
+                    'run_closed_reason' => $run->closed_reason,
+                    'run_closed_at' => $run->closed_at?->toJSON(),
+                    'task_status' => $task->status->value,
+                    'reason' => 'run_closed',
+                ];
+            }
+
+            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+
+            $task->forceFill([
+                'lease_expires_at' => $leaseExpiresAt,
+            ])->save();
+
+            return [
+                'renewed' => true,
+                'task_id' => $taskId,
+                'lease_expires_at' => $leaseExpiresAt->toJSON(),
+                'run_status' => $run?->status?->value,
+                'run_closed_reason' => $run?->closed_reason,
+                'run_closed_at' => $run?->closed_at?->toJSON(),
+                'task_status' => $task->status->value,
+                'reason' => null,
+            ];
+        });
+    }
+
+    public function status(string $taskId): array
+    {
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->find($taskId);
+
+        if ($task === null) {
+            return [
+                'task_id' => $taskId,
+                'task_status' => null,
+                'run_status' => null,
+                'run_closed_reason' => null,
+                'run_closed_at' => null,
+                'workflow_run_id' => null,
+                'workflow_instance_id' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'lease_expired' => false,
+                'attempt_count' => null,
+                'reason' => 'task_not_found',
+            ];
+        }
+
+        if ($task->task_type !== TaskType::Workflow) {
+            return [
+                'task_id' => $taskId,
+                'task_status' => $task->status?->value,
+                'run_status' => null,
+                'run_closed_reason' => null,
+                'run_closed_at' => null,
+                'workflow_run_id' => $task->workflow_run_id,
+                'workflow_instance_id' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'lease_expired' => false,
+                'attempt_count' => null,
+                'reason' => 'task_not_workflow',
+            ];
+        }
+
+        $leaseOwner = is_string($task->lease_owner) && trim($task->lease_owner) !== ''
+            ? trim($task->lease_owner)
+            : null;
+        $leaseExpiresAt = $task->lease_expires_at;
+        $leaseExpired = $leaseExpiresAt !== null && $leaseExpiresAt->lte(now());
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        $attemptCount = is_int($task->attempt_count) && $task->attempt_count > 0
+            ? (int) $task->attempt_count
+            : null;
+
+        return [
+            'task_id' => $taskId,
+            'task_status' => $task->status?->value,
+            'run_status' => $run?->status?->value,
+            'run_closed_reason' => $run?->closed_reason,
+            'run_closed_at' => $run?->closed_at?->toJSON(),
+            'workflow_run_id' => $task->workflow_run_id,
+            'workflow_instance_id' => $run?->workflow_instance_id,
+            'lease_owner' => $leaseOwner,
+            'lease_expires_at' => $leaseExpiresAt?->toJSON(),
+            'lease_expired' => $leaseExpired,
+            'attempt_count' => $attemptCount,
+            'reason' => null,
+        ];
+    }
+
+    public function complete(string $taskId, array $commands): array
+    {
+        $parsed = self::parseCommands($commands);
+
+        if ($parsed === null && $commands !== []) {
+            return [
+                'completed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'created_task_ids' => [],
+                'reason' => 'invalid_commands',
+            ];
+        }
+
+        return DB::transaction(function () use ($taskId, $parsed): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($parsed === null && ($task === null || ! self::isSignalResumeTask($task))) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task?->workflow_run_id,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => 'invalid_commands',
+                ];
+            }
+
+            if ($task === null || $task->task_type !== TaskType::Workflow) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => null,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
+                ];
+            }
+
+            $parsed ??= [
+                'non_terminal' => [],
+                'terminal' => null,
+            ];
+
+            if ($task->status !== TaskStatus::Leased) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task->workflow_run_id,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => 'task_not_leased',
+                ];
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
+
+            if ($run === null) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task->workflow_run_id,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => 'run_not_found',
+                ];
+            }
+
+            if ($run->status->isTerminal()) {
+                $task->forceFill([
+                    'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'run_already_closed',
+                ];
+            }
+
+            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'run_timed_out',
+                ];
+            }
+
+            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+            $createdTaskIds = [];
+            $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+
+            if ($invalidUpdateCommands !== null) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => $invalidUpdateCommands,
+                ];
+            }
+
+            if (! $this->selectionCancellationCommandsAreValid($run, $parsed['non_terminal'])) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'invalid_commands',
+                ];
+            }
+
+            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence)) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'invalid_commands',
+                ];
+            }
+
+            $this->recordAppliedSignalForSignalResume($run, $task);
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task);
+
+            foreach ($parsed['non_terminal'] as $command) {
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+            }
+
+            $terminal = $parsed['terminal'];
+
+            if ($terminal !== null) {
+                if ($terminal['type'] === 'continue_as_new') {
+                    $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);
+                } elseif ($terminal['type'] === 'complete_workflow') {
+                    $this->applyWorkflowCompletion($run, $task, $terminal);
+                } else {
+                    $this->applyWorkflowFailure($run, $task, $terminal);
+                }
+            } else {
+                $this->markRunWaiting($run, $task, $parsed['non_terminal'], $createdTaskIds);
+            }
+
+            return [
+                'completed' => true,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'run_status' => $run->status->value,
+                'created_task_ids' => $createdTaskIds,
+                'reason' => null,
+            ];
+        });
+    }
+
+    /**
+     * @param array{type: string, result?: string|null, payload_codec?: string|null} $command
+     */
+    private function applyWorkflowCompletion(WorkflowRun $run, WorkflowTask $task, array $command): void
+    {
+        $outputCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $result = isset($command['result']) && is_string($command['result'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['result'],
+                $outputCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
+        $resultCodec = $result === null ? null : $outputCodec;
+
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'completed',
+            'output' => $result,
+            'output_payload_codec' => $resultCodec,
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, array_filter([
+            'output' => $result === null
+                ? null
+                : ExternalPayloads::historyValue(
+                    $result,
+                    $outputCodec,
+                    is_string($run->namespace) ? $run->namespace : null,
+                ),
+            'payload_codec' => $resultCodec,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        LifecycleEventDispatcher::workflowCompleted($run);
+
+        ParentClosePolicyEnforcer::enforce($run);
+
+        $this->dispatchParentResumeTasksForRun($run);
+
+        if (self::isChildWorkflowRun($run)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_completion');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     exception?: array<string, mixed>,
+     *     non_retryable?: bool
+     * } $command
+     */
+    private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
+    {
+        $structuredException = self::normalizeExceptionPayload($command['exception'] ?? null) ?? [];
+        $message = self::normalizeOptionalString($command['message'] ?? null)
+            ?? self::normalizeOptionalString($structuredException['message'] ?? null)
+            ?? 'External workflow task failed';
+        $exceptionClass = self::normalizeOptionalString($structuredException['class'] ?? null)
+            ?? self::normalizeOptionalString($command['exception_class'] ?? null)
+            ?? RuntimeException::class;
+        $exceptionType = self::normalizeOptionalString($structuredException['type'] ?? null)
+            ?? self::normalizeOptionalString($command['exception_type'] ?? null);
+        $exceptionMessage = self::normalizeOptionalString($structuredException['message'] ?? null)
+            ?? $message;
+
+        $failureCategory = FailureFactory::classifyFromStrings('terminal', 'workflow_run', $exceptionClass, $message);
+        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
+            $exceptionClass
+        ));
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'propagation_kind' => 'terminal',
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'handled' => false,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        $run->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
+            'failure_id' => $failure->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'exception_type' => $exceptionType,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'exception' => array_replace([
+                'class' => $exceptionClass,
+                'type' => $exceptionType,
+                'message' => $exceptionMessage,
+                'code' => 0,
+                'file' => '',
+                'line' => 0,
+                'trace' => [],
+                'properties' => [],
+            ], $structuredException),
+        ], $task);
+
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
+        LifecycleEventDispatcher::failureRecorded(
+            $run,
+            (string) $failure->id,
+            'workflow_run',
+            (string) $run->id,
+            $exceptionClass,
+            $message,
+        );
+
+        ParentClosePolicyEnforcer::enforce($run);
+
+        $this->dispatchParentResumeTasksForRun($run);
+
+        if (self::isChildWorkflowRun($run)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_failure');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $nonTerminalCommands
+     * @param list<string> $createdTaskIds
+     */
+    private function markRunWaiting(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $nonTerminalCommands,
+        array &$createdTaskIds,
+    ): void {
+        $run->forceFill([
+            'status' => RunStatus::Waiting,
+            'last_progress_at' => now(),
+        ])->save();
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        $nextMessageTask = PendingMessageTask::createForRun(
+            $run,
+            self::workflowSignalIdForTask($task),
+            includeReceivedProjectedSignalWait: false,
+        );
+
+        if ($nextMessageTask instanceof WorkflowTask) {
+            $createdTaskIds[] = $nextMessageTask->id;
+        }
+
+        if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_parent_wait');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function commandsIncludeChildWorkflowStart(array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $nonTerminalCommands
+     */
+    private function waitingRunCanAdvanceFromSignal(WorkflowRun $run, array $nonTerminalCommands): bool
+    {
+        $latestOpenedWait = null;
+
+        foreach ($nonTerminalCommands as $command) {
+            $type = $command['type'] ?? null;
+
+            if (in_array($type, ['open_condition_wait', 'open_signal_wait'], true)) {
+                $latestOpenedWait = 'signal';
+            } elseif (in_array($type, ['schedule_activity', 'start_timer', 'start_child_workflow'], true)) {
+                $latestOpenedWait = 'non_signal';
+            }
+        }
+
+        if ($latestOpenedWait !== null) {
+            return $latestOpenedWait === 'signal';
+        }
+
+        return self::hasOpenSignalAdvanceableWait($run);
+    }
+
+    private static function hasOpenSignalAdvanceableWait(WorkflowRun $run): bool
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open' && ($wait['source_status'] ?? null) !== 'timeout_fired') {
+                return true;
+            }
+        }
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function workflowSignalIdForTask(WorkflowTask $task): ?string
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $signalId = $payload['workflow_signal_id'] ?? $payload['resume_source_id'] ?? null;
+
+        return is_string($signalId) && $signalId !== ''
+            ? $signalId
+            : null;
+    }
+
+    private static function isSignalResumeTask(WorkflowTask $task): bool
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+
+        return ($payload['resume_source_kind'] ?? null) === 'workflow_signal'
+            && self::workflowSignalIdForTask($task) !== null
+            && self::nonEmptyString($payload['signal_name'] ?? null) !== null;
+    }
+
+    private function recordAppliedSignalForSignalResume(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+
+        if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
+            return;
+        }
+
+        $signalId = self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null)
+            ?? self::nonEmptyString($taskPayload['resume_source_id'] ?? null);
+        $signalWaitId = self::nonEmptyString($taskPayload['signal_wait_id'] ?? null);
+        $signalName = self::nonEmptyString($taskPayload['signal_name'] ?? null);
+
+        if ($signalId === null || $signalName === null) {
+            return;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal || $signal->signal_name !== $signalName) {
+            return;
+        }
+
+        if ($signal->status === SignalStatus::Applied) {
+            return;
+        }
+
+        /** @var WorkflowHistoryEvent|null $opened */
+        $opened = $signalWaitId === null
+            ? null
+            : ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+                ->get()
+                ->first(static function (WorkflowHistoryEvent $event) use ($signalWaitId, $signalName): bool {
+                    return ($event->payload['signal_wait_id'] ?? null) === $signalWaitId
+                        && ($event->payload['signal_name'] ?? null) === $signalName;
+                });
+
+        $openedPayload = $opened instanceof WorkflowHistoryEvent && is_array($opened->payload)
+            ? $opened->payload
+            : [];
+        $sequence = is_int($openedPayload['sequence'] ?? null)
+            ? (int) $openedPayload['sequence']
+            : null;
+
+        if ($sequence === null && ! self::canApplyUnprojectedExternalSignal($run, $signal)) {
+            return;
+        }
+
+        $alreadyApplied = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->get()
+            ->contains(static function (WorkflowHistoryEvent $event) use ($signalId): bool {
+                return ($event->payload['signal_id'] ?? null) === $signalId;
+            });
+
+        if ($alreadyApplied) {
+            return;
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->whereKey($signal->workflow_command_id)
+            ->first();
+
+        $appliedAt = now();
+
+        if ($command instanceof WorkflowCommand) {
+            $command->forceFill([
+                'applied_at' => $appliedAt,
+            ])->save();
+        }
+
+        $signal->forceFill([
+            'signal_wait_id' => $signalWaitId,
+            'status' => SignalStatus::Applied->value,
+            'workflow_sequence' => $sequence,
+            'applied_at' => $appliedAt,
+            'closed_at' => $appliedAt,
+        ])->save();
+
+        if ($command instanceof WorkflowCommand && $command->message_sequence !== null) {
+            MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+        }
+
+        $value = self::signalValueFromRecord($signal, $run);
+
+        if ($sequence !== null && $signalWaitId !== null) {
+            $this->cancelOpenSignalTimer($run, $task, $sequence, $signalWaitId);
+        }
+
+        $parallelPath = ParallelChildGroup::metadataPathFromPayload($openedPayload);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelPath);
+        $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
+            'workflow_command_id' => $signal->workflow_command_id,
+            'signal_id' => $signal->id,
+            'signal_name' => $signalName,
+            'signal_wait_id' => $signalWaitId,
+            'sequence' => $sequence,
+            'value' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $value),
+            ...$parallelMetadata,
+        ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
+        ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'signal', $appliedEvent);
+    }
+
+    private static function canApplyUnprojectedExternalSignal(WorkflowRun $run, WorkflowSignal $signal): bool
+    {
+        if (WorkflowExecutionGate::blockedReason($run)
+            !== WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE
+        ) {
+            return false;
+        }
+
+        $contract = RunCommandContract::forRun($run);
+        $declaredSignals = $contract['signals'] ?? [];
+
+        return ($contract['source'] ?? null) === RunCommandContract::SOURCE_DURABLE_HISTORY
+            && is_array($declaredSignals)
+            && in_array($signal->signal_name, $declaredSignals, true);
+    }
+
+    /**
+     * Signals can be accepted while a workflow task is already leased. In that
+     * case the signal path cannot create a second workflow task. Completing
+     * the leased task only enqueues the pending signal when the workflow is
+     * now parked at a wait that signal history can advance.
+     *
+     * @param list<string> $createdTaskIds
+     */
+    private function createPendingSignalResumeTask(
+        WorkflowRun $run,
+        array &$createdTaskIds,
+        ?string $alreadyAttemptedSignalId = null,
+    ): void {
+        if (self::hasOpenWorkflowTask($run->id)) {
+            return;
+        }
+
+        /** @var \Illuminate\Support\Collection<int, WorkflowSignal> $signals */
+        $signals = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Received->value)
+            ->whereNull('closed_at')
+            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('command_sequence')
+            ->orderBy('received_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        $freshRun = $run->fresh(['historyEvents']) ?? $run;
+        $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
+        $openSignalWaitsById = self::openSignalWaitsById($freshRun);
+
+        $eligibleSignals = $signals
+            ->filter(
+                static fn (WorkflowSignal $candidate): bool => self::signalCanAdvanceOpenWait(
+                    $candidate,
+                    $hasAdvanceableConditionWait,
+                    $openSignalWaitsById,
+                )
+            )
+            ->values();
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = null;
+        $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
+
+        foreach ($eligibleSignals as $candidate) {
+            if ($afterAttemptedSignal) {
+                $signal = $candidate;
+                break;
+            }
+
+            if ($candidate->id === $alreadyAttemptedSignalId) {
+                $afterAttemptedSignal = true;
+            }
+        }
+
+        if (! $afterAttemptedSignal) {
+            $signal = $eligibleSignals->first();
+        }
+
+        if (! $signal instanceof WorkflowSignal) {
+            return;
+        }
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        $createdTaskIds[] = $signalTask->id;
+    }
+
+    /**
+     * @param array<string, string> $openSignalWaitsById
+     */
+    private static function signalCanAdvanceOpenWait(
+        WorkflowSignal $signal,
+        bool $hasAdvanceableConditionWait,
+        array $openSignalWaitsById,
+    ): bool {
+        if ($hasAdvanceableConditionWait) {
+            return true;
+        }
+
+        $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
+
+        return $signalWaitId !== null
+            && ($openSignalWaitsById[$signalWaitId] ?? null) === $signal->signal_name;
+    }
+
+    private static function hasAdvanceableConditionWait(WorkflowRun $run): bool
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open' && ($wait['source_status'] ?? null) !== 'timeout_fired') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function openSignalWaitsById(WorkflowRun $run): array
+    {
+        $waits = [];
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $signalWaitId = self::nonEmptyString($wait['signal_wait_id'] ?? null);
+            $signalName = self::nonEmptyString($wait['signal_name'] ?? null);
+
+            if ($signalWaitId !== null && $signalName !== null) {
+                $waits[$signalWaitId] = $signalName;
+            }
+        }
+
+        return $waits;
+    }
+
+    private static function hasOpenWorkflowTask(string $runId): bool
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->exists();
+    }
+
+    /**
+     * Apply a single non-terminal command and return the next sequence number.
+     *
+     * @param array{type: string, ...} $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyNonTerminalCommand(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        return match ($command['type']) {
+            'cancel_selection_operation' => $this->applyCancelSelectionOperation($run, $task, $command, $sequence),
+            'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
+            'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
+            'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
+            'start_service_operation' => $this->applyStartServiceOperation(
+                $run,
+                $task,
+                $command,
+                $sequence,
+                $createdTaskIds,
+            ),
+            'complete_update' => $this->applyCompleteUpdate($run, $task, $command, $sequence),
+            'fail_update' => $this->applyFailUpdate($run, $task, $command, $sequence),
+            'record_side_effect' => $this->applyRecordSideEffect($run, $task, $command, $sequence),
+            'record_local_activity' => $this->applyRecordLocalActivity($run, $task, $command, $sequence),
+            'record_version_marker' => $this->applyRecordVersionMarker($run, $task, $command, $sequence),
+            'upsert_memo' => $this->applyUpsertMemo($run, $task, $command, $sequence),
+            'upsert_search_attributes' => $this->applyUpsertSearchAttributes($run, $task, $command, $sequence),
+            'open_condition_wait' => $this->applyOpenConditionWait($run, $task, $command, $sequence, $createdTaskIds),
+            'open_signal_wait' => $this->applyOpenSignalWait($run, $task, $command, $sequence, $createdTaskIds),
+            default => $sequence,
+        };
+    }
+
+    /**
+     * Explicitly cancel one non-winning selection member without consuming a
+     * new workflow operation sequence. The durable cancellation marker makes
+     * retries idempotent and keeps replay independent of transport retries.
+     *
+     * @param array<string, mixed> $command
+     */
+    private function applyCancelSelectionOperation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $groupId = $command['selection_group_id'];
+        $memberBase = $command['member_base_sequence'];
+
+        $existing = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SelectionOperationCancelled->value)
+            ->get()
+            ->first(static fn (WorkflowHistoryEvent $event): bool =>
+                ($event->payload['selection_group_id'] ?? null) === $groupId
+                && ($event->payload['member_base_sequence'] ?? null) === $memberBase);
+        if ($existing instanceof WorkflowHistoryEvent) {
+            return $sequence;
+        }
+
+        $winner = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SelectionResolved->value)
+            ->get()
+            ->first(static fn (WorkflowHistoryEvent $event): bool =>
+                ($event->payload['selection_group_id'] ?? null) === $groupId);
+        if (! $winner instanceof WorkflowHistoryEvent
+            || ($winner->payload['member_base_sequence'] ?? null) === $memberBase) {
+            return $sequence;
+        }
+
+        $member = $this->selectionCancellationMember($run, $command);
+        if ($member === null) {
+            return $sequence;
+        }
+
+        if (ParallelChildGroup::selectionMemberIsTerminal(
+            $run,
+            $memberBase,
+            $command['member_size'],
+            $member['kind'],
+        )) {
+            return $sequence;
+        }
+
+        $cancelled = false;
+        for ($offset = 0; $offset < $command['member_size']; ++$offset) {
+            $cancelled = $this->cancelSelectionLeaf($run, $task, $memberBase + $offset) || $cancelled;
+        }
+        if (! $cancelled) {
+            return $sequence;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SelectionOperationCancelled, [
+            'selection_group_id' => $groupId,
+            'member_key' => $command['member_key'],
+            'member_index' => $command['member_index'],
+            'member_base_sequence' => $memberBase,
+            'member_size' => $command['member_size'],
+            'operation_kind' => $member['kind'],
+            'operation_identity' => $member['identity'],
+            'cancelled_at' => now()
+                ->toJSON(),
+        ], $task);
+
+        return $sequence;
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private function selectionCancellationCommandsAreValid(WorkflowRun $run, array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) !== 'cancel_selection_operation') {
+                continue;
+            }
+
+            $member = $this->selectionCancellationMember($run, $command);
+            if ($member === null
+                || $command['operation_kind'] !== $member['kind']
+                || $command['operation_identity'] !== $member['identity']) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Derive cancellation authority from the durable member-opening history.
+     * Worker-provided kind and identity are assertions, never authority.
+     *
+     * @param array<string, mixed> $command
+     * @return array{kind: string, identity: string}|null
+     */
+    private function selectionCancellationMember(WorkflowRun $run, array $command): ?array
+    {
+        /** @var array<int, array{kind: string, identity: string, priority: int}> $openings */
+        $openings = [];
+        $nested = false;
+        $memberBase = $command['member_base_sequence'];
+        $memberSize = $command['member_size'];
+
+        $events = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->get();
+
+        foreach ($events as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            $path = $event->payload['parallel_group_path'] ?? null;
+            if (! is_array($path)) {
+                continue;
+            }
+
+            $selectionDepth = null;
+            foreach ($path as $depth => $entry) {
+                if (is_array($entry) && self::selectionEntryMatchesCommand($entry, $command)) {
+                    $selectionDepth = $depth;
+                    break;
+                }
+            }
+            if (! is_int($selectionDepth)) {
+                continue;
+            }
+
+            $eventSequence = $event->payload['sequence'] ?? null;
+            if (! is_int($eventSequence)
+                || $eventSequence < $memberBase
+                || $eventSequence >= $memberBase + $memberSize) {
+                continue;
+            }
+
+            $opening = self::selectionOpeningIdentity($event);
+            if ($opening === null) {
+                continue;
+            }
+
+            if (! isset($openings[$eventSequence])
+                || $opening['priority'] > $openings[$eventSequence]['priority']) {
+                $openings[$eventSequence] = $opening;
+            }
+            $nested = $nested || count($path) > $selectionDepth + 1;
+        }
+
+        if (count($openings) !== $memberSize) {
+            return null;
+        }
+
+        if ($nested || $memberSize > 1) {
+            return [
+                'kind' => 'group',
+                'identity' => sprintf('group:%d:%d', $memberBase, $memberSize),
+            ];
+        }
+
+        $opening = $openings[$memberBase] ?? null;
+
+        return $opening === null ? null : [
+            'kind' => $opening['kind'],
+            'identity' => $opening['identity'],
+        ];
+    }
+
+    /** @param array<string, mixed> $entry
+     *  @param array<string, mixed> $command
+     */
+    private static function selectionEntryMatchesCommand(array $entry, array $command): bool
+    {
+        return ($entry['parallel_group_mode'] ?? 'all') === 'select'
+            && ($entry['parallel_group_id'] ?? null) === $command['selection_group_id']
+            && ($entry['selection_member_key'] ?? null) === $command['member_key']
+            && ($entry['selection_member_index'] ?? null) === $command['member_index']
+            && ($entry['selection_member_base_sequence'] ?? null) === $command['member_base_sequence']
+            && ($entry['selection_member_size'] ?? null) === $command['member_size'];
+    }
+
+    /**
+     * @return array{kind: string, identity: string, priority: int}|null
+     */
+    private static function selectionOpeningIdentity(WorkflowHistoryEvent $event): ?array
+    {
+        $descriptor = match ($event->event_type) {
+            HistoryEventType::ActivityScheduled => ['activity', 'activity_execution_id', 10],
+            HistoryEventType::ChildWorkflowScheduled => ['child', 'child_workflow_run_id', 10],
+            HistoryEventType::TimerScheduled => ['timer', 'timer_id', 1],
+            HistoryEventType::SignalWaitOpened => ['signal', 'signal_wait_id', 20],
+            HistoryEventType::ConditionWaitOpened => ['condition', 'condition_wait_id', 20],
+            default => null,
+        };
+        if ($descriptor === null) {
+            return null;
+        }
+
+        [$kind, $field, $priority] = $descriptor;
+        $identity = self::nonEmptyString($event->payload[$field] ?? null);
+
+        return $identity === null ? null : [
+            'kind' => $kind,
+            'identity' => $identity,
+            'priority' => $priority,
+        ];
+    }
+
+    private function cancelSelectionLeaf(WorkflowRun $run, WorkflowTask $task, int $sequence): bool
+    {
+        /** @var ActivityExecution|null $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $sequence)
+            ->first();
+        if ($execution instanceof ActivityExecution && in_array($execution->status, [
+            ActivityStatus::Pending,
+            ActivityStatus::Running,
+        ], true)) {
+            /** @var WorkflowTask|null $activityTask */
+            $activityTask = WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Activity->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->get()
+                ->first(static fn (WorkflowTask $candidate): bool =>
+                    ($candidate->payload['activity_execution_id'] ?? null) === $execution->id);
+            ActivityCancellation::record($run, $execution, $activityTask);
+
+            return true;
+        }
+
+        /** @var WorkflowTimer|null $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $sequence)
+            ->where('status', TimerStatus::Pending->value)
+            ->first();
+        if ($timer instanceof WorkflowTimer) {
+            $timer->forceFill([
+                'status' => TimerStatus::Cancelled,
+            ])->save();
+            TimerCancellation::record($run, $timer, $task);
+            WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Timer->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->get()
+                ->filter(static fn (WorkflowTask $candidate): bool =>
+                    ($candidate->payload['timer_id'] ?? null) === $timer->id)
+                ->each(static fn (WorkflowTask $candidate) => $candidate->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                ])->save());
+
+            return true;
+        }
+
+        $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
+        if ($childRun instanceof WorkflowRun && in_array($childRun->status, [
+            RunStatus::Pending,
+            RunStatus::Running,
+            RunStatus::Waiting,
+        ], true)) {
+            $result = app(WorkflowControlPlane::class)->cancel($childRun->workflow_instance_id, [
+                'reason' => 'Cancelled by durable selection handle.',
+            ]);
+
+            return ($result['accepted'] ?? false) === true;
+        }
+
+        $run->unsetRelation('historyEvents');
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['sequence'] ?? null) === $sequence && ($wait['status'] ?? null) === 'open') {
+                return true;
+            }
+        }
+
+        $run->unsetRelation('historyEvents');
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['sequence'] ?? null) === $sequence && ($wait['status'] ?? null) === 'open') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private function validateUpdateCommands(WorkflowRun $run, WorkflowTask $task, array $commands): ?string
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $taskUpdateId = self::nonEmptyString($taskPayload['workflow_update_id'] ?? null);
+        $taskCommandId = self::nonEmptyString($taskPayload['workflow_command_id'] ?? null);
+        $seen = [];
+
+        foreach ($commands as $command) {
+            if (! in_array($command['type'] ?? null, ['complete_update', 'fail_update'], true)) {
+                continue;
+            }
+
+            $updateId = self::nonEmptyString($command['update_id'] ?? null);
+
+            if ($updateId === null || isset($seen[$updateId])) {
+                return 'invalid_commands';
+            }
+
+            if ($taskUpdateId !== null && $taskUpdateId !== $updateId) {
+                return 'invalid_commands';
+            }
+
+            /** @var WorkflowUpdate|null $update */
+            $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+                ->lockForUpdate()
+                ->whereKey($updateId)
+                ->where('workflow_run_id', $run->id)
+                ->first();
+
+            if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
+                return 'invalid_commands';
+            }
+
+            if (UpdateCommandGate::blockingSignal(
+                $run,
+                $update->command_sequence,
+                $taskCommandId,
+            ) instanceof WorkflowCommand) {
+                return 'invalid_commands';
+            }
+
+            $seen[$updateId] = true;
+        }
+
+        return null;
+    }
+
+    /**
+     * External SDKs resolve condition waits by replaying signal history, then
+     * either re-opening the wait or advancing to the next command. When a signal
+     * resume advances, make that resolution explicit in history for replay and
+     * Waterline instead of leaving only SignalReceived as an implicit cue.
+     */
+    private function recordSatisfiedConditionWaitForSignalResume(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+
+        if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
+            return;
+        }
+
+        $wait = $this->latestOpenConditionWait($run);
+
+        if ($wait === null) {
+            return;
+        }
+
+        $this->markConditionWaitSignalConsumed($run, $task, $wait);
+
+        /** @var WorkflowHistoryEvent|null $opened */
+        $opened = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->get()
+            ->first(static fn (WorkflowHistoryEvent $event): bool =>
+                ($event->payload['condition_wait_id'] ?? null) === $wait['condition_wait_id']);
+        $parallelPath = ParallelChildGroup::metadataPathFromPayload(
+            $opened instanceof WorkflowHistoryEvent && is_array($opened->payload) ? $opened->payload : [],
+        );
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelPath);
+        $satisfiedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitSatisfied, array_filter([
+            'condition_wait_id' => $wait['condition_wait_id'],
+            'condition_wait_occurrence_id' => $wait['condition_wait_occurrence_id'],
+            'condition_key' => $wait['condition_key'],
+            'condition_definition_fingerprint' => $wait['condition_definition_fingerprint'],
+            'sequence' => $wait['sequence'],
+            'timer_id' => $wait['timer_id'],
+            'timeout_seconds' => $wait['timeout_seconds'],
+            'workflow_signal_id' => self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null),
+            'signal_name' => self::nonEmptyString($taskPayload['signal_name'] ?? null),
+            'signal_wait_id' => self::nonEmptyString($taskPayload['signal_wait_id'] ?? null),
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+        ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $satisfiedEvent);
+
+        $this->cancelOpenConditionTimer($run, $task, $wait);
+    }
+
+    /**
+     * @param array{sequence: int|null} $wait
+     */
+    private function markConditionWaitSignalConsumed(WorkflowRun $run, WorkflowTask $task, array $wait): void
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $signalId = self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null)
+            ?? self::nonEmptyString($taskPayload['resume_source_id'] ?? null);
+        $signalName = self::nonEmptyString($taskPayload['signal_name'] ?? null);
+        $sequence = is_int($wait['sequence'] ?? null)
+            ? (int) $wait['sequence']
+            : null;
+
+        if ($signalId === null || $signalName === null || $sequence === null) {
+            return;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal || $signal->signal_name !== $signalName) {
+            return;
+        }
+
+        if ($signal->status === SignalStatus::Applied) {
+            return;
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->whereKey($signal->workflow_command_id)
+            ->first();
+
+        $appliedAt = now();
+
+        if ($command instanceof WorkflowCommand) {
+            $command->forceFill([
+                'applied_at' => $appliedAt,
+            ])->save();
+        }
+
+        $signal->forceFill([
+            'status' => SignalStatus::Applied->value,
+            'workflow_sequence' => $sequence,
+            'applied_at' => $appliedAt,
+            'closed_at' => $appliedAt,
+        ])->save();
+
+        if ($command instanceof WorkflowCommand && $command->message_sequence !== null) {
+            MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+        }
+    }
+
+    /**
+     * @return array{
+     *     condition_wait_id: string,
+     *     condition_wait_occurrence_id: string|null,
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null,
+     *     sequence: int|null,
+     *     status: string,
+     *     source_status: string,
+     *     timeout_seconds: int|null,
+     *     timer_id: string|null
+     * }|null
+     */
+    private function latestOpenConditionWait(WorkflowRun $run): ?array
+    {
+        $open = array_values(array_filter(
+            ConditionWaits::forRun($run),
+            static fn (array $wait): bool => ($wait['status'] ?? null) === 'open'
+                && ($wait['source_status'] ?? null) !== 'timeout_fired'
+                && self::nonEmptyString($wait['condition_wait_id'] ?? null) !== null,
+        ));
+
+        if ($open === []) {
+            return null;
+        }
+
+        usort(
+            $open,
+            static fn (array $left, array $right): int => ((int) ($left['sequence'] ?? 0))
+                <=> ((int) ($right['sequence'] ?? 0)),
+        );
+
+        /** @var array{
+         *     condition_wait_id: string,
+         *     condition_wait_occurrence_id: string|null,
+         *     condition_key: string|null,
+         *     condition_definition_fingerprint: string|null,
+         *     sequence: int|null,
+         *     status: string,
+         *     source_status: string,
+         *     timeout_seconds: int|null,
+         *     timer_id: string|null
+         * } $wait
+         */
+        $wait = end($open);
+
+        return $wait;
+    }
+
+    /**
+     * @param array{timer_id: string|null} $wait
+     */
+    private function cancelOpenConditionTimer(WorkflowRun $run, WorkflowTask $task, array $wait): void
+    {
+        $timerId = self::nonEmptyString($wait['timer_id'] ?? null);
+
+        if ($timerId === null) {
+            return;
+        }
+
+        /** @var WorkflowTimer|null $timer */
+        $timer = ConfiguredV2Models::query('timer_model', WorkflowTimer::class)
+            ->whereKey($timerId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $timer instanceof WorkflowTimer || $timer->status !== TimerStatus::Pending) {
+            return;
+        }
+
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled,
+        ])->save();
+
+        TimerCancellation::record($run, $timer, $task);
+
+        ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->where('payload->timer_id', $timer->id)
+            ->get()
+            ->each(static function (WorkflowTask $timerTask): void {
+                $timerTask->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                    'last_error' => null,
+                ])->save();
+            });
+    }
+
+    private function cancelOpenSignalTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $signalWaitId,
+    ): void {
+        /** @var WorkflowTimer|null $timer */
+        $timer = ConfiguredV2Models::query('timer_model', WorkflowTimer::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $sequence)
+            ->where('status', TimerStatus::Pending->value)
+            ->first();
+
+        if (! $timer instanceof WorkflowTimer) {
+            return;
+        }
+
+        $hasSignalTimeoutHistory = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->get()
+            ->contains(static function (WorkflowHistoryEvent $event) use ($signalWaitId, $timer): bool {
+                return ($event->payload['timer_id'] ?? null) === $timer->id
+                    && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                    && ($event->payload['signal_wait_id'] ?? null) === $signalWaitId;
+            });
+
+        if (! $hasSignalTimeoutHistory) {
+            return;
+        }
+
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled,
+        ])->save();
+
+        TimerCancellation::record($run, $timer, $task);
+
+        ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->where('payload->timer_id', $timer->id)
+            ->get()
+            ->each(static function (WorkflowTask $timerTask): void {
+                $timerTask->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                    'last_error' => null,
+                ])->save();
+            });
+    }
+
+    private static function signalValueFromRecord(WorkflowSignal $signal, WorkflowRun $run): mixed
+    {
+        $codec = self::nonEmptyString($signal->payload_codec)
+            ?? $run->payload_codec
+            ?? CodecRegistry::defaultCodec();
+        $serialized = ExternalPayloads::payloadBlob(
+            $signal->arguments,
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return true;
+        }
+
+        $arguments = Serializer::unserializeWithCodec($codec, $serialized);
+
+        if (! is_array($arguments)) {
+            return $arguments;
+        }
+
+        $arguments = array_values($arguments);
+
+        if ($arguments === []) {
+            return true;
+        }
+
+        return count($arguments) === 1 ? $arguments[0] : $arguments;
+    }
+
+    /**
+     * @param array{type: string, update_id: string, result?: string|null, payload_codec?: string|null} $command
+     */
+    private function applyCompleteUpdate(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        /** @var WorkflowUpdate $update */
+        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->lockForUpdate()
+            ->whereKey($command['update_id'])
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        /** @var WorkflowCommand|null $workflowCommand */
+        $workflowCommand = $update->workflow_command_id === null
+            ? null
+            : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->whereKey($update->workflow_command_id)
+                ->first();
+
+        $fallbackCodec = self::payloadCodecForUpdate($update, $run);
+        $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $result = isset($command['result']) && is_string($command['result'])
+            ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
+            : null;
+        $now = now();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'arguments' => $update->arguments,
+            'sequence' => $sequence,
+        ], $task, $workflowCommand);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'sequence' => $sequence,
+            'result' => self::historyPayloadValue($result, $payloadCodec, $namespace, $fallbackCodec),
+        ], $task, $workflowCommand);
+
+        $update->forceFill([
+            'workflow_sequence' => $sequence,
+            'status' => UpdateStatus::Completed->value,
+            'outcome' => CommandOutcome::UpdateCompleted->value,
+            'result' => $result,
+            'applied_at' => $now,
+            'closed_at' => $now,
+        ])->save();
+
+        if ($workflowCommand instanceof WorkflowCommand) {
+            $workflowCommand->forceFill([
+                'outcome' => CommandOutcome::UpdateCompleted->value,
+                'applied_at' => $now,
+            ])->save();
+
+            if ($workflowCommand->message_sequence !== null) {
+                MessageStreamCursor::advanceCursor($run, (int) $workflowCommand->message_sequence, $task);
+            }
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     update_id: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     non_retryable?: bool
+     * } $command
+     */
+    private function applyFailUpdate(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence): int
+    {
+        /** @var WorkflowUpdate $update */
+        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->lockForUpdate()
+            ->whereKey($command['update_id'])
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        /** @var WorkflowCommand|null $workflowCommand */
+        $workflowCommand = $update->workflow_command_id === null
+            ? null
+            : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->whereKey($update->workflow_command_id)
+                ->first();
+
+        $message = self::normalizeRequiredString($command['message'] ?? null) ?? 'External update failed';
+        $exceptionClass = self::normalizeOptionalString($command['exception_class'] ?? null) ?? RuntimeException::class;
+        $exceptionType = self::normalizeOptionalString($command['exception_type'] ?? null);
+        $failureCategory = FailureFactory::classifyFromStrings('update', 'workflow_command', $exceptionClass, $message);
+        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
+            $exceptionClass
+        ));
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => $workflowCommand instanceof WorkflowCommand ? 'workflow_command' : 'workflow_update',
+            'source_id' => $workflowCommand?->id ?? $update->id,
+            'propagation_kind' => 'update',
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'handled' => false,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        $exceptionPayload = [
+            'class' => $exceptionClass,
+            'type' => $exceptionType,
+            'message' => $message,
+            'code' => 0,
+            'file' => '',
+            'line' => 0,
+            'trace' => [],
+            'properties' => [],
+        ];
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'sequence' => $sequence,
+            'failure_id' => $failure->id,
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'exception_type' => $exceptionType,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'code' => 0,
+            'exception' => $exceptionPayload,
+        ], $task, $workflowCommand);
+
+        $now = now();
+
+        $update->forceFill([
+            'workflow_sequence' => $sequence,
+            'status' => UpdateStatus::Failed->value,
+            'outcome' => CommandOutcome::UpdateFailed->value,
+            'failure_id' => $failure->id,
+            'failure_message' => $message,
+            'applied_at' => $now,
+            'closed_at' => $now,
+        ])->save();
+
+        if ($workflowCommand instanceof WorkflowCommand) {
+            $workflowCommand->forceFill([
+                'outcome' => CommandOutcome::UpdateFailed->value,
+                'applied_at' => $now,
+            ])->save();
+
+            if ($workflowCommand->message_sequence !== null) {
+                MessageStreamCursor::advanceCursor($run, (int) $workflowCommand->message_sequence, $task);
+            }
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function activityOptionsFromCommand(array $command): ?ActivityOptions
+    {
+        $retryPolicy = is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : [];
+        $hasOptions = $retryPolicy !== []
+            || array_key_exists('start_to_close_timeout', $command)
+            || array_key_exists('schedule_to_start_timeout', $command)
+            || array_key_exists('schedule_to_close_timeout', $command)
+            || array_key_exists('heartbeat_timeout', $command)
+            || array_key_exists('worker_session', $command);
+
+        if (! $hasOptions) {
+            return null;
+        }
+
+        return new ActivityOptions(
+            connection: self::nonEmptyString($command['connection'] ?? null),
+            queue: self::nonEmptyString($command['queue'] ?? null),
+            maxAttempts: is_int($retryPolicy['max_attempts'] ?? null) ? (int) $retryPolicy['max_attempts'] : null,
+            backoff: is_array($retryPolicy['backoff_seconds'] ?? null) ? $retryPolicy['backoff_seconds'] : null,
+            startToCloseTimeout: is_int($command['start_to_close_timeout'] ?? null)
+                ? (int) $command['start_to_close_timeout']
+                : null,
+            scheduleToStartTimeout: is_int($command['schedule_to_start_timeout'] ?? null)
+                ? (int) $command['schedule_to_start_timeout']
+                : null,
+            scheduleToCloseTimeout: is_int($command['schedule_to_close_timeout'] ?? null)
+                ? (int) $command['schedule_to_close_timeout']
+                : null,
+            heartbeatTimeout: is_int($command['heartbeat_timeout'] ?? null)
+                ? (int) $command['heartbeat_timeout']
+                : null,
+            nonRetryableErrorTypes: is_array($retryPolicy['non_retryable_error_types'] ?? null)
+                ? $retryPolicy['non_retryable_error_types']
+                : [],
+            workerSession: self::workerSessionOptionsFromCommand($command['worker_session'] ?? null),
+        );
+    }
+
+    private static function workerSessionOptionsFromCommand(mixed $value): ?WorkerSessionOptions
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $sessionId = self::nonEmptyString($value['session_id'] ?? null);
+
+        if ($sessionId === null) {
+            return null;
+        }
+
+        return new WorkerSessionOptions(
+            sessionId: $sessionId,
+            connection: self::nonEmptyString($value['connection'] ?? null),
+            queue: self::nonEmptyString($value['queue'] ?? null),
+            requirements: is_array($value['requirements'] ?? null) ? array_values($value['requirements']) : [],
+            leaseSeconds: is_int($value['lease_seconds'] ?? null) ? (int) $value['lease_seconds'] : null,
+            ttlSeconds: is_int($value['ttl_seconds'] ?? null) ? (int) $value['ttl_seconds'] : null,
+            maxConcurrentActivities: is_int($value['max_concurrent_activities'] ?? null)
+                ? (int) $value['max_concurrent_activities']
+                : null,
+            createIfMissing: is_bool($value['create_if_missing'] ?? null) ? (bool) $value['create_if_missing'] : true,
+            allowReacquireAfterFailure: is_bool($value['allow_reacquire_after_failure'] ?? null)
+                ? (bool) $value['allow_reacquire_after_failure']
+                : true,
+        );
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     activity_type: string,
+     *     arguments?: string|null,
+     *     payload_codec?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     start_to_close_timeout?: int,
+     *     schedule_to_start_timeout?: int,
+     *     schedule_to_close_timeout?: int,
+     *     heartbeat_timeout?: int,
+     *     worker_session?: array<string, mixed>
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyScheduleActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $activityType = $command['activity_type'];
+        $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $arguments = isset($command['arguments']) && is_string($command['arguments'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['arguments'],
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
+        $connection = $command['connection'] ?? $run->connection;
+        $queue = $command['queue'] ?? $run->queue;
+        $options = self::activityOptionsFromCommand($command);
+        $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
+            ? now()
+                ->addSeconds($options->scheduleToStartTimeout)
+            : null;
+        $scheduleToCloseDeadlineAt = $options?->scheduleToCloseTimeout !== null
+            ? now()
+                ->addSeconds($options->scheduleToCloseTimeout)
+            : null;
+        $retryPolicy = ActivityRetryPolicy::snapshotExternal(
+            is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
+            $options,
+        );
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => $activityType,
+            'activity_type' => $activityType,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'payload_codec' => $payloadCodec,
+            'arguments' => $arguments,
+            'connection' => $connection,
+            'queue' => $queue,
+            'retry_policy' => $retryPolicy,
+            'activity_options' => $options?->toSnapshot(),
+            'schedule_deadline_at' => $scheduleDeadlineAt,
+            'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $activityType,
+            'activity_type' => $activityType,
+            'sequence' => $sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+            ...self::parallelMetadataForCommand($command),
+        ], $task);
+
+        /** @var WorkflowTask $activityTask */
+        $activityTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $run->compatibility,
+            ...TaskSchedulingFields::forActivity($run, $execution),
+        ]);
+
+        $createdTaskIds[] = $activityTask->id;
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, delay_seconds: int} $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyStartTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds
+    ): int {
+        $delaySeconds = max(0, (int) ($command['delay_seconds'] ?? 0));
+        $fireAt = now()
+            ->addSeconds($delaySeconds);
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => $delaySeconds,
+            'fire_at' => $fireAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $delaySeconds,
+            'fire_at' => $fireAt->toJSON(),
+            ...self::parallelMetadataForCommand($command),
+        ], $task);
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $fireAt,
+            'payload' => [
+                'timer_id' => $timer->id,
+                ...self::parallelMetadataForCommand($command),
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        $createdTaskIds[] = $timerTask->id;
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, endpoint_name: string, service_name: string, operation_name: string, request_payload?: string|null, payload_codec?: string|null, namespace?: string, caller_namespace?: string, service_call_id?: string, idempotency_key?: string, mode_override?: string, wait_for?: string, wait_timeout_seconds?: int, target_workflow_instance_id?: string, target_workflow_run_id?: string, connection?: string, queue?: string, business_key?: string, labels?: array<string, mixed>, memo?: array<string, mixed>, search_attributes?: array<string, mixed>, duplicate_start_policy?: string, metadata?: array<string, mixed>, request_payload_reference?: string, principal_subject?: string, principal_method?: string, principal_roles?: list<string>, principal_tenant?: string, principal_claims?: array<string, mixed>} $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyStartServiceOperation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $requestPayload = isset($command['request_payload']) && is_string($command['request_payload'])
+            ? ExternalPayloads::externalizeForNamespace($command['request_payload'], $payloadCodec, $namespace)
+            : null;
+        $surface = $this->serviceControlPlane()
+            ->execute(
+                $command['endpoint_name'],
+                $command['service_name'],
+                $command['operation_name'],
+                $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec),
+            );
+
+        $eventType = self::serviceOperationEventTypeForSurface($surface);
+        $event = WorkflowHistoryEvent::record($run, $eventType, $this->serviceOperationEventPayload(
+            $run,
+            $sequence,
+            $command,
+            $surface,
+            $requestPayload,
+            $payloadCodec,
+        ), $task);
+
+        if (self::serviceOperationEventIsWorkflowVisible($eventType, $command, $surface)) {
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [
+                    'resume_source_kind' => 'service_call',
+                    'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null),
+                    'workflow_event_type' => $event->event_type->value,
+                    'workflow_history_event_id' => $event->id,
+                    'workflow_sequence' => $sequence,
+                ],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $resumeTask->id;
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array<string, mixed>
+     */
+    private function serviceOperationControlPlaneOptions(
+        WorkflowRun $run,
+        array $command,
+        int $sequence,
+        string $payloadCodec,
+    ): array {
+        $metadata = is_array($command['metadata'] ?? null) ? $command['metadata'] : [];
+        $metadata = [
+            'caller_sdk_language' => 'workflow-php',
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'workflow_sequence' => $sequence,
+        ] + $metadata;
+
+        return array_filter([
+            'namespace' => self::nonEmptyString($command['namespace'] ?? null) ?? $run->namespace,
+            'arguments' => $this->serviceOperationRequestArguments($command, $payloadCodec),
+            'payload_blob' => self::nonEmptyString($command['request_payload'] ?? null),
+            'payload_codec' => $payloadCodec,
+            'service_call_id' => self::nonEmptyString($command['service_call_id'] ?? null),
+            'idempotency_key' => self::nonEmptyString($command['idempotency_key'] ?? null)
+                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'mode_override' => self::nonEmptyString($command['mode_override'] ?? null),
+            'wait_for' => self::nonEmptyString($command['wait_for'] ?? null),
+            'wait_timeout_seconds' => is_int($command['wait_timeout_seconds'] ?? null)
+                ? $command['wait_timeout_seconds']
+                : null,
+            'caller_namespace' => self::nonEmptyString($command['caller_namespace'] ?? null) ?? $run->namespace,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'target_workflow_instance_id' => self::nonEmptyString($command['target_workflow_instance_id'] ?? null),
+            'target_workflow_run_id' => self::nonEmptyString($command['target_workflow_run_id'] ?? null),
+            'connection' => self::nonEmptyString($command['connection'] ?? null),
+            'queue' => self::nonEmptyString($command['queue'] ?? null),
+            'business_key' => self::nonEmptyString($command['business_key'] ?? null),
+            'labels' => is_array($command['labels'] ?? null) ? $command['labels'] : null,
+            'memo' => is_array($command['memo'] ?? null) ? $command['memo'] : null,
+            'search_attributes' => is_array($command['search_attributes'] ?? null)
+                ? $command['search_attributes']
+                : null,
+            'duplicate_start_policy' => self::nonEmptyString($command['duplicate_start_policy'] ?? null),
+            'metadata' => $metadata,
+            'request_payload_reference' => self::nonEmptyString($command['request_payload_reference'] ?? null),
+            'principal_subject' => self::nonEmptyString($command['principal_subject'] ?? null),
+            'principal_method' => self::nonEmptyString($command['principal_method'] ?? null),
+            'principal_roles' => is_array($command['principal_roles'] ?? null) ? $command['principal_roles'] : null,
+            'principal_tenant' => self::nonEmptyString($command['principal_tenant'] ?? null),
+            'principal_claims' => is_array($command['principal_claims'] ?? null) ? $command['principal_claims'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private function serviceOperationRequestArguments(array $command, string $payloadCodec): mixed
+    {
+        $payload = self::nonEmptyString($command['request_payload'] ?? null);
+
+        if ($payload === null) {
+            return null;
+        }
+
+        return Serializer::unserializeWithCodec($payloadCodec, $payload);
+    }
+
+    private function defaultServiceOperationIdempotencyKey(WorkflowRun $run, int $sequence): string
+    {
+        return implode(':', [
+            'workflow-service-operation',
+            $run->workflow_instance_id,
+            $run->id,
+            (string) $sequence,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
+    {
+        $status = self::nonEmptyString($surface['status'] ?? null);
+
+        return match ($status) {
+            'completed' => HistoryEventType::ServiceCallCompleted,
+            'failed' => HistoryEventType::ServiceCallFailed,
+            'cancelled' => HistoryEventType::ServiceCallCancelled,
+            default => ($surface['accepted'] ?? null) === false
+                ? HistoryEventType::ServiceCallFailed
+                : HistoryEventType::ServiceCallStarted,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, mixed> $surface
+     */
+    private static function serviceOperationEventIsWorkflowVisible(
+        HistoryEventType $eventType,
+        array $command,
+        array $surface,
+    ): bool {
+        if ($eventType !== HistoryEventType::ServiceCallStarted) {
+            return true;
+        }
+
+        return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($command['mode_override'] ?? null) === 'async'
+            || self::nonEmptyString($surface['wait_for'] ?? null) === 'accepted'
+            || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private function serviceOperationEventPayload(
+        WorkflowRun $run,
+        int $sequence,
+        array $command,
+        array $surface,
+        ?string $requestPayload,
+        string $payloadCodec,
+    ): array {
+        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $payload = [
+            'sequence' => $sequence,
+            'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)
+                ?? self::nonEmptyString($surface['id'] ?? null),
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'caller_workflow_instance_id' => $run->workflow_instance_id,
+            'caller_workflow_run_id' => $run->id,
+            'caller_sdk_language' => 'workflow-php',
+            'endpoint_name' => $command['endpoint_name'],
+            'service_name' => $command['service_name'],
+            'operation_name' => $command['operation_name'],
+            'service_sdk_language' => self::metadataString($surface, 'service_sdk_language')
+                ?? self::metadataString($command['metadata'] ?? null, 'service_sdk_language'),
+            'request_payload' => ExternalPayloads::historyValue(
+                $requestPayload,
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'response_payload' => $responsePayload,
+            'payload_codec' => $payloadCodec,
+            'operation_mode' => self::nonEmptyString($surface['operation_mode'] ?? null)
+                ?? self::nonEmptyString($command['mode_override'] ?? null),
+            'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
+                ?? self::nonEmptyString($command['wait_for'] ?? null),
+            'status' => self::nonEmptyString($surface['status'] ?? null),
+            'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
+            'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),
+            'resolved_target_reference' => self::nonEmptyString($surface['resolved_target_reference'] ?? null),
+            'linked_workflow_instance_id' => self::nonEmptyString($surface['linked_workflow_instance_id'] ?? null),
+            'linked_workflow_run_id' => self::nonEmptyString($surface['linked_workflow_run_id'] ?? null),
+            'linked_workflow_update_id' => self::nonEmptyString($surface['linked_workflow_update_id'] ?? null),
+            'service_call' => $surface,
+            'response_or_failure_surface' => $surface,
+        ];
+
+        if (($surface['accepted'] ?? null) === false || ($payload['status'] ?? null) === 'failed') {
+            $failure = self::serviceOperationFailurePayload($surface);
+            $payload += [
+                'exception_type' => $failure['type'] ?? null,
+                'exception_class' => $failure['class'] ?? RuntimeException::class,
+                'message' => $failure['message'] ?? 'Service operation failed.',
+                'code' => $failure['code'] ?? 0,
+                'exception' => $failure,
+            ];
+        }
+
+        if (($payload['status'] ?? null) === 'cancelled') {
+            $payload += [
+                'exception_type' => 'service_call_cancelled',
+                'exception_class' => RuntimeException::class,
+                'message' => self::nonEmptyString(
+                    $surface['failure_message'] ?? null
+                ) ?? 'Service operation cancelled.',
+                'code' => 0,
+                'exception' => [
+                    'class' => RuntimeException::class,
+                    'type' => 'service_call_cancelled',
+                    'message' => self::nonEmptyString($surface['failure_message'] ?? null)
+                        ?? 'Service operation cancelled.',
+                    'code' => 0,
+                ],
+            ];
+        }
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $surface
+     * @return array<string, mixed>
+     */
+    private static function serviceOperationFailurePayload(array $surface): array
+    {
+        $type = self::metadataString($surface, 'caller_observed_error_type')
+            ?? self::metadataString($surface, 'service_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'caller_observed_error_type')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'service_error_type')
+            ?? self::nonEmptyString($surface['failure_type'] ?? null)
+            ?? self::nonEmptyString($surface['error_type'] ?? null)
+            ?? self::nonEmptyString($surface['outcome_reason'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'service_operation_failed';
+        $message = self::metadataString($surface, 'typed_error_message')
+            ?? self::metadataString($surface['outcome_metadata'] ?? null, 'typed_error_message')
+            ?? self::nonEmptyString($surface['outcome_message'] ?? null)
+            ?? self::nonEmptyString($surface['failure_message'] ?? null)
+            ?? self::nonEmptyString($surface['message'] ?? null)
+            ?? self::nonEmptyString($surface['reason'] ?? null)
+            ?? 'Service operation failed.';
+
+        return [
+            'class' => RuntimeException::class,
+            'type' => $type,
+            'message' => $message,
+            'code' => 0,
+        ];
+    }
+
+    private function serviceControlPlane(): ServiceControlPlane
+    {
+        /** @var ServiceControlPlane $controlPlane */
+        $controlPlane = app(ServiceControlPlane::class);
+
+        return $controlPlane;
+    }
+
+    private static function metadataString(mixed $container, string $key): ?string
+    {
+        if (! is_array($container)) {
+            return null;
+        }
+
+        $value = $container[$key] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     condition_key?: string|null,
+     *     condition_definition_fingerprint?: string|null,
+     *     condition_wait_occurrence_id?: string|null,
+     *     timeout_seconds?: int|null
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyOpenConditionWait(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $conditionKey = self::nonEmptyString($command['condition_key'] ?? null);
+        $conditionDefinitionFingerprint = self::nonEmptyString(
+            $command['condition_definition_fingerprint'] ?? null,
+        );
+        $conditionWaitOccurrenceId = self::nonEmptyString($command['condition_wait_occurrence_id'] ?? null);
+        $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
+            ? (int) $command['timeout_seconds']
+            : null;
+        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
+
+        $waitId = (string) Str::ulid();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, array_filter([
+            'condition_wait_id' => $waitId,
+            'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            'sequence' => $sequence,
+            'timeout_seconds' => $timeoutSeconds,
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        if ($timeoutSeconds === 0) {
+            $firedEvent = $this->fireImmediateConditionTimeout(
+                $run,
+                $task,
+                $sequence,
+                $waitId,
+                $conditionWaitOccurrenceId,
+                $conditionKey,
+                $conditionDefinitionFingerprint,
+                $parallelMetadata,
+            );
+            ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $firedEvent);
+
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forTimerResolution($firedEvent),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+            $createdTaskIds[] = $resumeTask->id;
+        }
+
+        if ($timeoutSeconds !== null && $timeoutSeconds > 0) {
+            $fireAt = now()
+                ->addSeconds($timeoutSeconds);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => $timeoutSeconds,
+                'fire_at' => $fireAt,
+            ]);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, array_filter([
+                'timer_id' => $timer->id,
+                'sequence' => $sequence,
+                'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
+                'timer_kind' => 'condition_timeout',
+                'condition_wait_id' => $waitId,
+                'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
+                'condition_key' => $conditionKey,
+                'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                ...$parallelMetadata,
+            ], static fn (mixed $value): bool => $value !== null), $task);
+
+            /** @var WorkflowTask $timerTask */
+            $timerTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Timer->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => $fireAt,
+                'payload' => array_filter([
+                    'timer_id' => $timer->id,
+                    'condition_wait_id' => $waitId,
+                    'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
+                    'condition_key' => $conditionKey,
+                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                    ...$parallelMetadata,
+                ], static fn (mixed $value): bool => $value !== null),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $timerTask->id;
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     signal_name: string,
+     *     timeout_seconds?: int|null
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyOpenSignalWait(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $signalName = $command['signal_name'];
+        $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
+            ? (int) $command['timeout_seconds']
+            : null;
+        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
+        $pendingSignalWaitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName);
+        $waitId = $pendingSignalWaitId ?? (string) Str::ulid();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, array_filter([
+            'signal_name' => $signalName,
+            'signal_wait_id' => $waitId,
+            'sequence' => $sequence,
+            'timeout_seconds' => $timeoutSeconds,
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        if ($timeoutSeconds === 0 && $pendingSignalWaitId === null) {
+            $firedEvent = $this->fireImmediateSignalTimeout(
+                $run,
+                $task,
+                $sequence,
+                $waitId,
+                $signalName,
+                $parallelMetadata,
+            );
+            ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'signal', $firedEvent);
+
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forTimerResolution($firedEvent),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $resumeTask->id;
+        } elseif ($timeoutSeconds !== null && $timeoutSeconds > 0 && $pendingSignalWaitId === null) {
+            $fireAt = now()
+                ->addSeconds($timeoutSeconds);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => $timeoutSeconds,
+                'fire_at' => $fireAt,
+            ]);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+                'timer_id' => $timer->id,
+                'sequence' => $sequence,
+                'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
+                'timer_kind' => 'signal_timeout',
+                'signal_wait_id' => $waitId,
+                'signal_name' => $signalName,
+                ...$parallelMetadata,
+            ], $task);
+
+            /** @var WorkflowTask $timerTask */
+            $timerTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Timer->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => $fireAt,
+                'payload' => [
+                    'timer_id' => $timer->id,
+                    'signal_wait_id' => $waitId,
+                    'signal_name' => $signalName,
+                    ...$parallelMetadata,
+                ],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $timerTask->id;
+        }
+
+        return $sequence + 1;
+    }
+
+    private function fireImmediateSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $waitId,
+        string $signalName,
+        array $parallelMetadata = [],
+    ): WorkflowHistoryEvent {
+        $recordedAt = now();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => 0,
+            'fire_at' => $recordedAt,
+            'fired_at' => $recordedAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $timer->fire_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalName,
+            ...$parallelMetadata,
+        ], $task);
+
+        return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fired_at' => $timer->fired_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalName,
+            ...$parallelMetadata,
+        ], $task);
+    }
+
+    /**
+     * @param array<string, mixed> $parallelMetadata
+     */
+    private function fireImmediateConditionTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $waitId,
+        ?string $occurrenceId,
+        ?string $conditionKey,
+        ?string $definitionFingerprint,
+        array $parallelMetadata = [],
+    ): WorkflowHistoryEvent {
+        $recordedAt = now();
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => 0,
+            'fire_at' => $recordedAt,
+            'fired_at' => $recordedAt,
+        ]);
+        $payload = array_filter([
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => 0,
+            'timer_kind' => 'condition_timeout',
+            'condition_wait_id' => $waitId,
+            'condition_wait_occurrence_id' => $occurrenceId,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $definitionFingerprint,
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            ...$payload,
+            'fire_at' => $recordedAt->toJSON(),
+        ], $task);
+
+        return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            ...$payload,
+            'fired_at' => $recordedAt->toJSON(),
+        ], $task);
+    }
+
+    private function pendingSignalWaitIdForOpenSignalWait(WorkflowRun $run, string $signalName): ?string
+    {
+        $openedWaitIds = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->get()
+            ->filter(static function (WorkflowHistoryEvent $event) use ($signalName): bool {
+                return ($event->payload['signal_name'] ?? null) === $signalName
+                    && self::nonEmptyString($event->payload['signal_wait_id'] ?? null) !== null;
+            })
+            ->mapWithKeys(static fn (WorkflowHistoryEvent $event): array => [
+                (string) $event->payload['signal_wait_id'] => true,
+            ])
+            ->all();
+
+        /** @var \Illuminate\Support\Collection<int, WorkflowSignal> $signals */
+        $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('signal_name', $signalName)
+            ->where('status', SignalStatus::Received->value)
+            ->whereNull('closed_at')
+            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('command_sequence')
+            ->orderBy('received_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        foreach ($signals as $signal) {
+            $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
+
+            if ($signalWaitId !== null && ! isset($openedWaitIds[$signalWaitId])) {
+                return $signalWaitId;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     workflow_type: string,
+     *     arguments?: string|null,
+     *     payload_codec?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     parent_close_policy?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     execution_timeout_seconds?: int,
+     *     run_timeout_seconds?: int
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyStartChildWorkflow(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $workflowType = $command['workflow_type'];
+        $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $arguments = isset($command['arguments']) && is_string($command['arguments'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['arguments'],
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
+        $connection = $command['connection'] ?? $run->connection;
+        $queue = $command['queue'] ?? $run->queue;
+        $now = now();
+        $executionTimeoutSeconds = is_int($command['execution_timeout_seconds'] ?? null)
+            ? (int) $command['execution_timeout_seconds']
+            : null;
+        $runTimeoutSeconds = is_int($command['run_timeout_seconds'] ?? null)
+            ? (int) $command['run_timeout_seconds']
+            : null;
+        $executionDeadlineAt = $executionTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds($executionTimeoutSeconds)
+            : null;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds($runTimeoutSeconds)
+            : null;
+        $retryPolicy = ChildWorkflowRetryPolicy::snapshotExternal(
+            is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
+        );
+        $timeoutPolicy = ChildWorkflowRetryPolicy::timeoutSnapshot($executionTimeoutSeconds, $runTimeoutSeconds);
+
+        /** @var WorkflowInstance $childInstance */
+        $childInstance = WorkflowInstance::query()->create([
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
+            'reserved_at' => $now,
+            'started_at' => $now,
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
+            'payload_codec' => $payloadCodec,
+            'arguments' => $arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+            'connection' => $connection,
+            'queue' => $queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $this->inheritTypedVisibilityMetadata($run, $childRun);
+
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        $childCallId = (string) Str::ulid();
+
+        $parentClosePolicy = $command['parent_close_policy'] ?? ParentClosePolicy::Abandon->value;
+
+        ChildRunHistory::recordChildCallStarted([
+            'parent_workflow_run_id' => $run->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'sequence' => $sequence,
+            'child_workflow_type' => $workflowType,
+            'child_workflow_class' => $workflowType,
+            'parent_close_policy' => $parentClosePolicy,
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $childRun->compatibility,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'cancellation_propagation' => false,
+            'status' => ChildCallStatus::Started,
+            'scheduled_at' => $now,
+            'started_at' => $now,
+            'arguments' => $arguments === null ? null : [
+                'payload' => $arguments,
+            ],
+            'metadata' => [
+                'child_call_id' => $childCallId,
+                'attempt_count' => 1,
+            ],
+            'resolved_child_instance_id' => $childInstance->id,
+            'resolved_child_run_id' => $childRun->id,
+        ]);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'id' => $childCallId,
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'parallel_group_path' => $command['parallel_group_path'] ?? null,
+            'parent_close_policy' => $parentClosePolicy,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $workflowType,
+            'child_workflow_type' => $workflowType,
+            'parent_close_policy' => $parentClosePolicy,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            ...self::parallelMetadataForCommand($command),
+        ], $task);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $workflowType,
+            'child_workflow_type' => $workflowType,
+            'child_run_number' => 1,
+            'parent_close_policy' => $parentClosePolicy,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+            ...self::parallelMetadataForCommand($command),
+        ], $task);
+
+        WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $childRun->workflow_instance_id,
+            'workflow_run_id' => $childRun->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ]);
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $childRun->id,
+            'namespace' => $childRun->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $childRun->compatibility,
+        ]);
+
+        $createdTaskIds[] = $childTask->id;
+
+        self::projectRunBestEffort($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_start');
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, result: string, payload_codec?: string|null} $command
+     */
+    private function applyRecordSideEffect(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $fallbackCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $result = ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+            'sequence' => $sequence,
+            'result' => self::historyPayloadValue($result, $payloadCodec, $namespace, $fallbackCodec),
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * Persist a local activity that was executed by the workflow worker.
+     *
+     * The worker reports every in-process attempt in the same workflow-task
+     * completion that carries the terminal outcome. The database transaction
+     * therefore records one atomic, replayable activity history sequence; a
+     * retried or redelivered workflow task sees the terminal event and never
+     * repeats the already-recorded side effect.
+     *
+     * @param array<string, mixed> $command
+     */
+    private function applyRecordLocalActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $fallbackCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $arguments = isset($command['arguments']) && is_string($command['arguments'])
+            ? ExternalPayloads::externalizeForNamespace($command['arguments'], $payloadCodec, $namespace)
+            : null;
+        $result = isset($command['result']) && is_string($command['result'])
+            ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
+            : null;
+        $outcome = (string) ($command['outcome'] ?? 'failed');
+        $status = match ($outcome) {
+            'completed' => ActivityStatus::Completed,
+            'cancelled' => ActivityStatus::Cancelled,
+            'timed_out' => ActivityStatus::Failed,
+            default => ActivityStatus::Failed,
+        };
+        $attempts = is_array($command['attempts'] ?? null)
+            ? array_values($command['attempts'])
+            : [];
+        $now = now();
+        // Attempt reports carry elapsed durations rather than wall-clock
+        // timestamps. Walk backward from completion so each attempt ends
+        // before the following attempt's declared retry backoff.
+        $attemptClosedAt = $now->copy();
+        $latestHeartbeatAt = null;
+        for ($index = count($attempts) - 1; $index >= 0; $index--) {
+            $attempt = $attempts[$index];
+            $heartbeats = is_array($attempt['heartbeats'] ?? null) ? $attempt['heartbeats'] : [];
+            $lastHeartbeat = $heartbeats[array_key_last($heartbeats)] ?? null;
+            $lastElapsedMs = is_array($lastHeartbeat) ? $lastHeartbeat['elapsed_ms'] : 0;
+            $durationMs = is_int($attempt['duration_ms'] ?? null) ? $attempt['duration_ms'] : 0;
+            $startedAt = $attemptClosedAt->copy()
+                ->subMilliseconds(max($lastElapsedMs, $durationMs));
+            $lastHeartbeatAt = $heartbeats === []
+                ? null
+                : $startedAt->copy()
+                    ->addMilliseconds($lastElapsedMs);
+
+            $attempts[$index] = $attempt + [
+                'internal_attempt_id' => (string) Str::ulid(),
+                'started_at' => $startedAt,
+                'last_heartbeat_at' => $lastHeartbeatAt,
+                'closed_at' => $attemptClosedAt,
+            ];
+            if ($lastHeartbeatAt !== null && (
+                $latestHeartbeatAt === null || $lastHeartbeatAt->greaterThan($latestHeartbeatAt)
+            )) {
+                $latestHeartbeatAt = $lastHeartbeatAt;
+            }
+
+            if ($index > 0) {
+                $backoffSeconds = is_int($attempts[$index - 1]['backoff_seconds'] ?? null)
+                    ? $attempts[$index - 1]['backoff_seconds']
+                    : 0;
+                $attemptClosedAt = $startedAt->copy()
+                    ->subSeconds($backoffSeconds);
+            }
+        }
+        $lastAttempt = $attempts[array_key_last($attempts)];
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => $command['activity_type'],
+            'activity_type' => $command['activity_type'],
+            'status' => $status->value,
+            'attempt_count' => count($attempts),
+            'current_attempt_id' => $lastAttempt['internal_attempt_id'],
+            'payload_codec' => $payloadCodec,
+            'arguments' => $arguments,
+            'result' => $result,
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'retry_policy' => is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
+            'activity_options' => array_filter([
+                'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
+                'queue_bypassed' => true,
+                'routing' => 'same_process_workflow_task',
+                'start_to_close_timeout' => $command['start_to_close_timeout'] ?? null,
+                'schedule_to_close_timeout' => $command['schedule_to_close_timeout'] ?? null,
+                'heartbeat_timeout' => $command['heartbeat_timeout'] ?? null,
+            ], static fn (mixed $value): bool => $value !== null),
+            'exception' => $outcome === 'completed' ? null : ($command['message'] ?? 'Local activity failed.'),
+            'started_at' => $attempts[0]['started_at'] ?? $now,
+            'last_heartbeat_at' => $latestHeartbeatAt,
+            'closed_at' => $now,
+        ]);
+
+        $terminalActivitySnapshot = ActivitySnapshot::fromExecution($execution);
+        $scheduledActivitySnapshot = $terminalActivitySnapshot;
+        $scheduledActivitySnapshot['status'] = ActivityStatus::Pending->value;
+        $scheduledActivitySnapshot['attempt_count'] = 0;
+        unset(
+            $scheduledActivitySnapshot['attempt_id'],
+            $scheduledActivitySnapshot['started_at'],
+            $scheduledActivitySnapshot['last_heartbeat_at'],
+            $scheduledActivitySnapshot['closed_at'],
+            $scheduledActivitySnapshot['result'],
+            $scheduledActivitySnapshot['exception'],
+        );
+        $basePayload = LocalActivityRuntime::eventPayload([
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $sequence,
+            'workflow_task_id' => $task->id,
+            'activity' => $scheduledActivitySnapshot,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, $basePayload, $task);
+
+        $latestEmittedHeartbeatAt = null;
+        foreach ($attempts as $index => $attempt) {
+            $attemptNumber = $attempt['attempt_number'];
+            $attemptId = $attempt['internal_attempt_id'];
+            $workerAttemptId = $attempt['attempt_id'] ?? null;
+            $heartbeats = $attempt['heartbeats'] ?? [];
+            $startedAt = $attempt['started_at'];
+            $attemptStatus = match ($attempt['outcome']) {
+                'completed' => ActivityAttemptStatus::Completed,
+                'cancelled' => ActivityAttemptStatus::Cancelled,
+                default => ActivityAttemptStatus::Failed,
+            };
+
+            $attemptRecord = ActivityAttempt::query()->create([
+                'id' => $attemptId,
+                'workflow_run_id' => $run->id,
+                'activity_execution_id' => $execution->id,
+                'workflow_task_id' => $task->id,
+                'worker_attempt_id' => $workerAttemptId,
+                'attempt_number' => $attemptNumber,
+                'status' => $attemptStatus->value,
+                'lease_owner' => $task->lease_owner,
+                'started_at' => $startedAt,
+                'last_heartbeat_at' => $attempt['last_heartbeat_at'],
+                'lease_expires_at' => null,
+                'closed_at' => $attempt['closed_at'],
+            ]);
+
+            $terminalAttemptSnapshot = array_filter([
+                'id' => $attemptRecord->id,
+                'worker_attempt_id' => $attemptRecord->worker_attempt_id,
+                'attempt_number' => $attemptRecord->attempt_number,
+                'status' => $attemptRecord->status->value,
+                'task_id' => $attemptRecord->workflow_task_id,
+                'lease_owner' => $attemptRecord->lease_owner,
+                'started_at' => $attemptRecord->started_at?->toJSON(),
+                'last_heartbeat_at' => $attemptRecord->last_heartbeat_at?->toJSON(),
+                'closed_at' => $attemptRecord->closed_at?->toJSON(),
+            ], static fn (mixed $value): bool => $value !== null);
+            $runningAttemptSnapshot = $terminalAttemptSnapshot;
+            $runningAttemptSnapshot['status'] = ActivityAttemptStatus::Running->value;
+            unset($runningAttemptSnapshot['last_heartbeat_at'], $runningAttemptSnapshot['closed_at']);
+
+            $runningActivitySnapshot = $terminalActivitySnapshot;
+            $runningActivitySnapshot['attempt_id'] = $attemptId;
+            $runningActivitySnapshot['attempt_count'] = $attemptNumber;
+            $runningActivitySnapshot['status'] = ActivityStatus::Running->value;
+            unset(
+                $runningActivitySnapshot['closed_at'],
+                $runningActivitySnapshot['result'],
+                $runningActivitySnapshot['exception'],
+            );
+            if ($latestEmittedHeartbeatAt === null) {
+                unset($runningActivitySnapshot['last_heartbeat_at']);
+            } else {
+                $runningActivitySnapshot['last_heartbeat_at'] = $latestEmittedHeartbeatAt->toJSON();
+            }
+
+            $attemptPayload = $basePayload;
+            $attemptPayload['activity'] = $runningActivitySnapshot;
+            $attemptPayload += [
+                'activity_attempt_id' => $attemptId,
+                'worker_attempt_id' => $workerAttemptId,
+                'attempt_number' => $attemptNumber,
+                'activity_attempt' => $runningAttemptSnapshot,
+            ];
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, $attemptPayload, $task);
+
+            foreach ($heartbeats as $heartbeat) {
+                $elapsedMs = $heartbeat['elapsed_ms'];
+                $heartbeatAt = $startedAt->copy()
+                    ->addMilliseconds($elapsedMs);
+                $heartbeatPayload = $attemptPayload + [
+                    'heartbeat_at' => $heartbeatAt->toJSON(),
+                    'lease_expires_at' => null,
+                ];
+                if ($latestEmittedHeartbeatAt === null || $heartbeatAt->greaterThan($latestEmittedHeartbeatAt)) {
+                    $latestEmittedHeartbeatAt = $heartbeatAt;
+                }
+                $heartbeatActivitySnapshot = $runningActivitySnapshot;
+                $heartbeatActivitySnapshot['last_heartbeat_at'] = $latestEmittedHeartbeatAt->toJSON();
+                $heartbeatPayload['activity'] = $heartbeatActivitySnapshot;
+                $heartbeatPayload['activity_attempt'] = $runningAttemptSnapshot + [
+                    'last_heartbeat_at' => $heartbeatAt->toJSON(),
+                ];
+                if (is_array($heartbeat['details'] ?? null)) {
+                    $heartbeatPayload['progress'] = $heartbeat['details'];
+                }
+
+                WorkflowHistoryEvent::record(
+                    $run,
+                    HistoryEventType::ActivityHeartbeatRecorded,
+                    $heartbeatPayload,
+                    $task,
+                );
+            }
+
+            if ($index < count($attempts) - 1) {
+                $retryActivitySnapshot = $runningActivitySnapshot;
+                $retryActivitySnapshot['status'] = ActivityStatus::Pending->value;
+                if ($latestEmittedHeartbeatAt === null) {
+                    unset($retryActivitySnapshot['last_heartbeat_at']);
+                } else {
+                    $retryActivitySnapshot['last_heartbeat_at'] = $latestEmittedHeartbeatAt->toJSON();
+                }
+                $retryPayload = $basePayload;
+                $retryPayload['activity'] = $retryActivitySnapshot;
+                $retryPayload += [
+                    'activity_attempt_id' => $attemptId,
+                    'worker_attempt_id' => $workerAttemptId,
+                    'activity_attempt' => $terminalAttemptSnapshot,
+                    'retry_after_attempt_id' => $attemptId,
+                    'retry_after_attempt' => $attemptNumber,
+                    'message' => is_string(
+                        $attempt['message'] ?? null
+                    ) ? $attempt['message'] : 'Local activity attempt failed.',
+                    'exception_type' => is_string(
+                        $attempt['exception_type'] ?? null
+                    ) ? $attempt['exception_type'] : null,
+                    'retry_reason' => is_string(
+                        $attempt['retry_reason'] ?? null
+                    ) ? $attempt['retry_reason'] : 'failure',
+                    'retry_backoff_seconds' => is_int(
+                        $attempt['backoff_seconds'] ?? null
+                    ) ? $attempt['backoff_seconds'] : 0,
+                ];
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, $retryPayload, $task);
+            }
+        }
+
+        $terminalPayload = $basePayload;
+        $terminalPayload['activity'] = $terminalActivitySnapshot;
+        $terminalPayload += [
+            'activity_attempt_id' => $lastAttempt['internal_attempt_id'],
+            'worker_attempt_id' => $lastAttempt['attempt_id'] ?? null,
+            'attempt_number' => $lastAttempt['attempt_number'],
+            'activity_attempt' => array_filter([
+                'id' => $lastAttempt['internal_attempt_id'],
+                'worker_attempt_id' => $lastAttempt['attempt_id'] ?? null,
+                'attempt_number' => $lastAttempt['attempt_number'],
+                'status' => match ($lastAttempt['outcome']) {
+                    'completed' => ActivityAttemptStatus::Completed->value,
+                    'cancelled' => ActivityAttemptStatus::Cancelled->value,
+                    default => ActivityAttemptStatus::Failed->value,
+                },
+                'task_id' => $task->id,
+                'lease_owner' => $task->lease_owner,
+                'started_at' => $lastAttempt['started_at']->toJSON(),
+                'last_heartbeat_at' => $lastAttempt['last_heartbeat_at']?->toJSON(),
+                'closed_at' => $lastAttempt['closed_at']->toJSON(),
+            ], static fn (mixed $value): bool => $value !== null),
+        ];
+
+        $failure = null;
+        if (in_array($outcome, ['failed', 'timed_out'], true)) {
+            $failureCategory = $outcome === 'timed_out'
+                ? FailureCategory::Timeout
+                : FailureCategory::Activity;
+            $exceptionClass = is_string($command['exception_type'] ?? null)
+                ? $command['exception_type']
+                : ($outcome === 'timed_out'
+                    ? 'Workflow\\V2\\Exceptions\\ActivityTimeoutException'
+                    : RuntimeException::class);
+
+            $failure = WorkflowFailure::query()->create([
+                'workflow_run_id' => $run->id,
+                'source_kind' => 'activity_execution',
+                'source_id' => $execution->id,
+                'propagation_kind' => $outcome === 'timed_out' ? 'timeout' : 'activity',
+                'failure_category' => $failureCategory->value,
+                'non_retryable' => (bool) ($command['non_retryable'] ?? false),
+                'handled' => false,
+                'exception_class' => $exceptionClass,
+                'message' => $command['message'],
+                'file' => '',
+                'line' => 0,
+                'trace_preview' => '',
+            ]);
+        }
+
+        $terminalEvent = match ($outcome) {
+            'completed' => HistoryEventType::ActivityCompleted,
+            'cancelled' => HistoryEventType::ActivityCancelled,
+            'timed_out' => HistoryEventType::ActivityTimedOut,
+            default => HistoryEventType::ActivityFailed,
+        };
+        $terminalPayload += match ($outcome) {
+            'completed' => [
+                'result' => self::historyPayloadValue($result, $payloadCodec, $namespace, $fallbackCodec),
+                'payload_codec' => $payloadCodec,
+            ],
+            'cancelled' => [
+                'cancelled_at' => $now->toJSON(),
+            ],
+            'timed_out' => [
+                'failure_id' => $failure?->id,
+                'failure_category' => 'timeout',
+                'timeout_kind' => is_string($command['timeout_kind'] ?? null)
+                    ? $command['timeout_kind']
+                    : 'start_to_close',
+                'message' => $command['message'] ?? 'Local activity timed out.',
+                'exception_class' => $command['exception_type'] ?? null,
+            ],
+            default => [
+                'failure_id' => $failure?->id,
+                'failure_category' => 'application',
+                'message' => $command['message'] ?? 'Local activity failed.',
+                'exception_type' => $command['exception_type'] ?? null,
+                'non_retryable' => (bool) ($command['non_retryable'] ?? false),
+            ],
+        };
+        WorkflowHistoryEvent::record($run, $terminalEvent, $terminalPayload, $task);
+
+        if ($failure instanceof WorkflowFailure) {
+            LifecycleEventDispatcher::activityFailed(
+                $run,
+                (string) $execution->id,
+                (string) $execution->activity_type,
+                (string) $execution->activity_class,
+                (int) $execution->sequence,
+                (int) $lastAttempt['attempt_number'],
+                $failure->exception_class,
+                $failure->message,
+            );
+            LifecycleEventDispatcher::failureRecorded(
+                $run,
+                (string) $failure->id,
+                'activity_execution',
+                (string) $execution->id,
+                $failure->exception_class,
+                $failure->message,
+            );
+        }
+
+        return $sequence + 1;
+    }
+
+    private static function payloadCodecForUpdate(WorkflowUpdate $update, WorkflowRun $run): string
+    {
+        if (is_string($update->payload_codec) && $update->payload_codec !== '') {
+            return $update->payload_codec;
+        }
+
+        if (is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return $run->payload_codec;
+        }
+
+        return CodecRegistry::defaultCodec();
+    }
+
+    /**
+     * @param array{payload_codec?: mixed} $command
+     */
+    private static function payloadCodecForCommand(array $command): ?string
+    {
+        return is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : null;
+    }
+
+    private static function historyPayloadValue(
+        ?string $payload,
+        string $payloadCodec,
+        ?string $namespace,
+        string $fallbackCodec,
+    ): mixed {
+        if ($payload === null) {
+            return null;
+        }
+
+        if ($payloadCodec !== $fallbackCodec) {
+            return ExternalPayloads::wireEnvelope($payload, $payloadCodec, $namespace);
+        }
+
+        return ExternalPayloads::historyValue($payload, $payloadCodec, $namespace);
+    }
+
+    /**
+     * @param array{type: string, change_id: string, version: int, min_supported: int, max_supported: int} $command
+     */
+    private function applyRecordVersionMarker(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        WorkflowHistoryEvent::record($run, HistoryEventType::VersionMarkerRecorded, [
+            'sequence' => $sequence,
+            'change_id' => $command['change_id'],
+            'version' => $command['version'],
+            'min_supported' => $command['min_supported'],
+            'max_supported' => $command['max_supported'],
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     attributes: array<string, scalar|list<string>|null>,
+     *     attribute_types?: array<string, string>
+     * } $command
+     */
+    private function applyUpsertSearchAttributes(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $call = new UpsertSearchAttributesCall($command['attributes']);
+        $existing = $run->typedSearchAttributes();
+        $merged = $existing;
+        $attributeTypes = self::normalizeSearchAttributeTypes($command['attribute_types'] ?? null);
+
+        if ($attributeTypes === null) {
+            throw new InvalidArgumentException('Search attribute type declarations are malformed.');
+        }
+
+        $canonicalTypes = SearchAttributeUpsertService::canonicalTypes($call, $attributeTypes);
+
+        foreach ($call->attributes as $key => $value) {
+            if ($value === null) {
+                unset($merged[$key]);
+
+                continue;
+            }
+
+            $merged[$key] = $value;
+        }
+
+        ksort($merged);
+        app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence, attributeTypes: $attributeTypes);
+        $run->unsetRelation('searchAttributes');
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
+            'sequence' => $sequence,
+            'attributes' => $call->attributes,
+            'attribute_types' => $canonicalTypes,
+            'merged' => $merged,
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, entries: array{codec: string, blob: string}} $command
+     */
+    private function applyUpsertMemo(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence): int
+    {
+        $call = new UpsertMemosCall(MemoPayload::decodeEntries($command['entries']));
+        $merged = $run->typedMemos();
+
+        foreach ($call->memos as $key => $value) {
+            if ($value === null) {
+                unset($merged[$key]);
+
+                continue;
+            }
+
+            $merged[$key] = $value;
+        }
+
+        ksort($merged);
+
+        if (count($merged) > WorkflowMemo::MAX_MEMOS_PER_RUN) {
+            throw new InvalidArgumentException(sprintf(
+                'Memo count exceeds maximum of %d entries.',
+                WorkflowMemo::MAX_MEMOS_PER_RUN,
+            ));
+        }
+
+        foreach ($merged as $key => $value) {
+            $bytes = MemoPayload::encodedSize($value);
+            if ($bytes > WorkflowMemo::MAX_VALUE_SIZE_BYTES) {
+                throw new InvalidArgumentException(sprintf(
+                    'Memo value for key "%s" exceeds maximum size of %d bytes.',
+                    $key,
+                    WorkflowMemo::MAX_VALUE_SIZE_BYTES,
+                ));
+            }
+        }
+
+        $serializedMemo = MemoPayload::encodedMapBytes($merged);
+        StructuralLimits::guardMemoSize($serializedMemo);
+
+        app(MemoUpsertService::class)->upsert($run, $call, $sequence);
+        $run->unsetRelation('memos');
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::MemoUpserted, [
+            'sequence' => $sequence,
+            'entries' => $command['entries'],
+            'merged' => MemoPayload::mapEnvelope($merged),
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null, queue?: string|null} $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyContinueAsNew(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        array $command,
+        array &$createdTaskIds = [],
+    ): void {
+        $now = now();
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $hasReplacementArguments = isset($command['arguments'])
+            && is_string($command['arguments'])
+            && $command['arguments'] !== '';
+        $commandPayloadCodec = $hasReplacementArguments
+            ? self::canonicalPayloadCodec($command['payload_codec'] ?? null)
+            : null;
+        $argumentsPayloadCodec = $commandPayloadCodec ?? ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $arguments = $hasReplacementArguments ? $command['arguments'] : $run->arguments;
+        $arguments = is_string($arguments)
+            ? ExternalPayloads::externalizeForNamespace($arguments, $argumentsPayloadCodec, $namespace)
+            : null;
+        $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
+        $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
+        $runTimeoutSeconds = is_int($run->run_timeout_seconds) ? $run->run_timeout_seconds : null;
+        $executionDeadlineAt = $run->execution_deadline_at;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds($runTimeoutSeconds)
+            : null;
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()
+            ->lockForUpdate()
+            ->findOrFail($run->workflow_instance_id);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'run_number' => $run->run_number + 1,
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
+            'business_key' => $run->business_key,
+            'visibility_labels' => $run->visibility_labels,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility,
+            'payload_codec' => $commandPayloadCodec ?? $run->payload_codec,
+            'arguments' => $arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+            'connection' => $run->connection,
+            'queue' => $queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $this->inheritTypedVisibilityMetadata($run, $continuedRun);
+
+        $instance->forceFill([
+            'current_run_id' => $continuedRun->id,
+            'run_count' => $continuedRun->run_number,
+            'workflow_class' => $workflowType,
+        ])->save();
+
+        MessageStreamCursor::transferCursor($run, $continuedRun);
+
+        $childCallId = ChildRunHistory::childCallIdForRun($run);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'continue_as_new',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'child_workflow_run_id' => $continuedRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        $parentChildLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        $parentRunsToProject = [];
+
+        foreach ($parentChildLinks as $parentChildLink) {
+            /** @var WorkflowLink $continuedChildLink */
+            $continuedChildLink = WorkflowLink::query()->create([
+                'link_type' => 'child_workflow',
+                'sequence' => $parentChildLink->sequence,
+                'parent_workflow_instance_id' => $parentChildLink->parent_workflow_instance_id,
+                'parent_workflow_run_id' => $parentChildLink->parent_workflow_run_id,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'is_primary_parent' => $parentChildLink->is_primary_parent,
+                'parallel_group_path' => $parentChildLink->parallel_group_path,
+                'parent_close_policy' => $parentChildLink->parent_close_policy,
+            ]);
+
+            if (
+                ! is_string($parentChildLink->parent_workflow_run_id)
+                || $parentChildLink->parent_workflow_run_id === ''
+                || ! is_int($parentChildLink->sequence)
+            ) {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($parentChildLink->parent_workflow_run_id);
+
+            if ($parentRun === null || $parentRun->status->isTerminal()) {
+                continue;
+            }
+
+            $parentRunsToProject[$parentRun->id] = true;
+            $parentRun->loadMissing('historyEvents');
+
+            ChildRunHistory::markChildCallContinued(
+                $parentRun,
+                $parentChildLink->sequence,
+                $continuedRun,
+                $run,
+                $childCallId,
+            );
+
+            $alreadyRecorded = $parentRun->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+                    && ($event->payload['sequence'] ?? null) === $parentChildLink->sequence
+                    && ($event->payload['child_workflow_run_id'] ?? null) === $continuedRun->id
+            );
+
+            if ($alreadyRecorded) {
+                continue;
+            }
+
+            $parallelMetadata = ParallelChildGroup::payloadForPath(
+                ChildRunHistory::parallelGroupPathForSequence($parentRun, $parentChildLink->sequence)
+            );
+
+            WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+                'sequence' => $parentChildLink->sequence,
+                'workflow_link_id' => $continuedChildLink->id,
+                'child_call_id' => $childCallId,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'child_workflow_class' => $continuedRun->workflow_class,
+                'child_workflow_type' => $continuedRun->workflow_type,
+                'child_run_number' => $continuedRun->run_number,
+                'parent_close_policy' => $continuedChildLink->parent_close_policy,
+            ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+        }
+
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'continued',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
+            'sequence' => $sequence,
+            'continued_to_run_id' => $continuedRun->id,
+            'continued_to_run_number' => $continuedRun->run_number,
+            'workflow_link_id' => $link->id,
+            'closed_reason' => 'continued',
+        ], $task);
+
+        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+
+        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+
+        WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'workflow_run_id' => $continuedRun->id,
+            'continued_from_run_id' => $run->id,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
+            'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
+            'parent_sequence' => $parentReference['parent_sequence'] ?? null,
+        ]);
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $continuedRun->id,
+            'namespace' => $continuedRun->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $continuedRun->connection,
+            'queue' => $continuedRun->queue,
+            'compatibility' => $continuedRun->compatibility,
+        ]);
+
+        $createdTaskIds[] = $continuedTask->id;
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        LifecycleEventDispatcher::workflowStarted($continuedRun);
+
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+
+        foreach (array_keys($parentRunsToProject) as $parentRunId) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->find($parentRunId);
+
+            if ($parentRun instanceof WorkflowRun) {
+                self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
+            }
+        }
+
+        self::projectRun($continuedRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+    }
+
+    private function startChildRetryIfAvailable(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $failedChildRun,
+    ): ?WorkflowTask {
+        if (ChildRunHistory::resolvedStatus(null, $failedChildRun) !== RunStatus::Failed) {
+            return null;
+        }
+
+        $parentRun->loadMissing(
+            ['historyEvents', 'childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']
+        );
+
+        $parentLink = ChildRunHistory::latestLinkForSequence($parentRun, $sequence);
+
+        if ($parentLink?->child_workflow_run_id !== $failedChildRun->id) {
+            return null;
+        }
+
+        $scheduledEvent = ChildRunHistory::scheduledEventForSequence($parentRun, $sequence);
+        $retryPolicy = is_array($scheduledEvent?->payload['retry_policy'] ?? null)
+            ? $scheduledEvent->payload['retry_policy']
+            : null;
+
+        if ($retryPolicy === null) {
+            /** @var WorkflowChildCall|null $childCall */
+            $childCall = WorkflowChildCall::query()
+                ->where('parent_workflow_run_id', $parentRun->id)
+                ->where('sequence', $sequence)
+                ->first();
+
+            $retryPolicy = is_array($childCall?->retry_policy) ? $childCall->retry_policy : null;
+        }
+
+        if ($retryPolicy === null) {
+            return null;
+        }
+
+        $attemptCount = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->where('link_type', 'child_workflow')
+            ->count();
+
+        if ($attemptCount >= ChildWorkflowRetryPolicy::maxAttempts($retryPolicy)) {
+            return null;
+        }
+
+        if (ChildWorkflowRetryPolicy::isNonRetryableFailure($retryPolicy, $failedChildRun)) {
+            return null;
+        }
+
+        $timeoutPolicy = is_array($scheduledEvent?->payload['timeout_policy'] ?? null)
+            ? $scheduledEvent->payload['timeout_policy']
+            : null;
+        $executionTimeoutSeconds = is_int($timeoutPolicy['execution_timeout_seconds'] ?? null)
+            ? (int) $timeoutPolicy['execution_timeout_seconds']
+            : null;
+        $runTimeoutSeconds = is_int($timeoutPolicy['run_timeout_seconds'] ?? null)
+            ? (int) $timeoutPolicy['run_timeout_seconds']
+            : null;
+
+        $now = now();
+        $backoffSeconds = ChildWorkflowRetryPolicy::backoffSeconds($retryPolicy, $attemptCount);
+        $availableAt = $now->copy()
+            ->addSeconds($backoffSeconds);
+
+        /** @var WorkflowInstance|null $childInstance */
+        $childInstance = WorkflowInstance::query()
+            ->lockForUpdate()
+            ->find($failedChildRun->workflow_instance_id);
+
+        if (! $childInstance instanceof WorkflowInstance) {
+            return null;
+        }
+
+        $nextRunNumber = ((int) WorkflowRun::query()
+            ->where('workflow_instance_id', $failedChildRun->workflow_instance_id)
+            ->max('run_number')) + 1;
+
+        $executionDeadlineAt = $failedChildRun->execution_deadline_at;
+        if ($executionDeadlineAt === null && $executionTimeoutSeconds !== null) {
+            $executionDeadlineAt = $now->copy()
+                ->addSeconds($executionTimeoutSeconds);
+        }
+
+        $runDeadlineAt = $runTimeoutSeconds !== null ? $now->copy()
+            ->addSeconds($runTimeoutSeconds) : null;
+
+        /** @var WorkflowRun $retryRun */
+        $retryRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $failedChildRun->workflow_instance_id,
+            'run_number' => $nextRunNumber,
+            'workflow_class' => $failedChildRun->workflow_class,
+            'workflow_type' => $failedChildRun->workflow_type,
+            'namespace' => $failedChildRun->namespace,
+            'business_key' => $failedChildRun->business_key,
+            'visibility_labels' => $failedChildRun->visibility_labels,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $failedChildRun->compatibility ?? WorkerCompatibility::current(),
+            'payload_codec' => $failedChildRun->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => $failedChildRun->arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+            'connection' => $failedChildRun->connection,
+            'queue' => $failedChildRun->queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $this->inheritTypedVisibilityMetadata($failedChildRun, $retryRun);
+
+        $childInstance->forceFill([
+            'current_run_id' => $retryRun->id,
+            'run_count' => max((int) $childInstance->run_count, $nextRunNumber),
+        ])->save();
+
+        $childCallId = ChildRunHistory::childCallIdForSequence($parentRun, $sequence) ?? (string) Str::ulid();
+        $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $parentClosePolicy = $parentLink?->parent_close_policy ?? ParentClosePolicy::Abandon->value;
+
+        /** @var WorkflowLink $retryLink */
+        $retryLink = WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+            'child_workflow_run_id' => $retryRun->id,
+            'is_primary_parent' => true,
+            'parallel_group_path' => $parallelMetadataPath === [] ? null : $parallelMetadataPath,
+            'parent_close_policy' => $parentClosePolicy,
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+            'sequence' => $sequence,
+            'workflow_link_id' => $retryLink->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+            'child_workflow_run_id' => $retryRun->id,
+            'child_workflow_class' => $retryRun->workflow_class,
+            'child_workflow_type' => $retryRun->workflow_type,
+            'child_run_number' => $retryRun->run_number,
+            'parent_close_policy' => $parentClosePolicy,
+            'retry_attempt' => $attemptCount + 1,
+            'retry_of_child_workflow_run_id' => $failedChildRun->id,
+            'retry_backoff_seconds' => $backoffSeconds,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+
+        WorkflowHistoryEvent::record($retryRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $retryRun->workflow_class,
+            'workflow_type' => $retryRun->workflow_type,
+            'workflow_instance_id' => $retryRun->workflow_instance_id,
+            'workflow_run_id' => $retryRun->id,
+            'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $retryLink->id,
+            'child_call_id' => $childCallId,
+            'retry_attempt' => $attemptCount + 1,
+            'retry_of_child_workflow_run_id' => $failedChildRun->id,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ]);
+
+        /** @var WorkflowTask $retryTask */
+        $retryTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $retryRun->id,
+            'namespace' => $retryRun->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $availableAt,
+            'payload' => [],
+            'connection' => $retryRun->connection,
+            'queue' => $retryRun->queue,
+            'compatibility' => $retryRun->compatibility,
+        ]);
+
+        ChildRunHistory::markChildCallRetryStarted(
+            $parentRun,
+            $sequence,
+            $retryRun,
+            $childCallId,
+            $attemptCount,
+            $backoffSeconds,
+            $failedChildRun,
+        );
+
+        TaskDispatcher::dispatch($retryTask);
+
+        self::projectRunBestEffort(
+            $retryRun,
+            self::PROJECTION_RUN_RELATIONS_WITH_HISTORY,
+            'child_workflow_retry_start'
+        );
+
+        return $retryTask;
+    }
+
+    /**
+     * Dispatch parent resume tasks when a child run closes through the bridge.
+     */
+    private function dispatchParentResumeTasksForRun(WorkflowRun $childRun): void
+    {
+        $childRun->unsetRelation('historyEvents');
+        $childRun->unsetRelation('failures');
+        $childRun->load(['historyEvents', 'failures']);
+
+        $parentLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $childRun->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($parentLinks as $parentLink) {
+            if (! is_string($parentLink->parent_workflow_run_id) || $parentLink->parent_workflow_run_id === '') {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($parentLink->parent_workflow_run_id);
+
+            if ($parentRun === null || $parentRun->status->isTerminal()) {
+                continue;
+            }
+
+            $sequence = is_int($parentLink->sequence) ? $parentLink->sequence : null;
+            $parentTaskPayload = [];
+            $resolutionEvent = null;
+            $parallelMetadataPath = [];
+
+            if ($sequence !== null) {
+                $parentRun->loadMissing([
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                    'childLinks.childRun.historyEvents',
+                ]);
+
+                if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) !== null) {
+                    continue;
+                }
+
+                try {
+                    WorkflowStepHistory::assertCompatible(
+                        $parentRun,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $parentRun,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                } catch (HistoryEventShapeMismatchException) {
+                    self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
+
+                    continue;
+                }
+
+                $resolutionEvent = $this->recordChildResolution($parentRun, null, $sequence, $childRun);
+                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
+                $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
+                $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
+
+                if (
+                    $parallelMetadataPath !== []
+                    && $childStatus instanceof RunStatus
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure(
+                        $parentRun,
+                        $parallelMetadataPath,
+                        $childStatus,
+                        lockHistoryForUpdate: true,
+                    )
+                ) {
+                    self::projectRunBestEffort(
+                        $parentRun,
+                        self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN,
+                        'child_workflow_parallel_wait',
+                    );
+
+                    continue;
+                }
+            }
+
+            $existingTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->where('workflow_run_id', $parentRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->first();
+
+            if ($existingTask !== null) {
+                $parentTask = $existingTask;
+            } else {
+                /** @var WorkflowTask $parentTask */
+                $parentTask = WorkflowTask::query()->create([
+                    'workflow_run_id' => $parentRun->id,
+                    'namespace' => $parentRun->namespace,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => now(),
+                    'payload' => $parentTaskPayload,
+                    'connection' => $parentRun->connection,
+                    'queue' => $parentRun->queue,
+                    'compatibility' => $parentRun->compatibility,
+                ]);
+            }
+
+            if ($resolutionEvent instanceof WorkflowHistoryEvent) {
+                $parentRun->unsetRelation('historyEvents');
+                $parentRun->unsetRelation('childLinks');
+                $parentRun->unsetRelation('tasks');
+                $parentRun->unsetRelation('failures');
+
+                foreach (
+                    $this->childResolutionEventsForParallelBarrier(
+                        $parentRun,
+                        $resolutionEvent,
+                        $parallelMetadataPath,
+                    ) as $event
+                ) {
+                    self::projectChildResolutionBestEffort($parentRun, $parentTask, $event);
+                }
+            }
+        }
+    }
+
+    /**
+     * Associate every child outcome released by one parallel barrier with the
+     * workflow task that will replay the joined result. Earlier successful
+     * children were deliberately recorded without a resume task while their
+     * siblings were open.
+     *
+     * @param list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }> $parallelMetadataPath
+     * @return list<WorkflowHistoryEvent>
+     */
+    private function childResolutionEventsForParallelBarrier(
+        WorkflowRun $parentRun,
+        WorkflowHistoryEvent $currentEvent,
+        array $parallelMetadataPath,
+    ): array {
+        $outermostGroup = $parallelMetadataPath[array_key_first($parallelMetadataPath)] ?? null;
+
+        if (! is_array($outermostGroup)) {
+            return [$currentEvent];
+        }
+
+        $groupSequences = ParallelChildGroup::sequences($outermostGroup);
+
+        return ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $parentRun->id)
+            ->whereIn('event_type', array_map(
+                static fn (HistoryEventType $eventType): string => $eventType->value,
+                ChildRunHistory::resolutionEventTypes(),
+            ))
+            ->orderBy('sequence')
+            ->get()
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->payload['sequence'] ?? null,
+                $groupSequences,
+                true,
+            ))
+            ->values()
+            ->all();
+    }
+
+    private function recordChildResolution(
+        WorkflowRun $run,
+        ?WorkflowTask $task,
+        int $sequence,
+        WorkflowRun $childRun,
+    ): WorkflowHistoryEvent {
+        $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
+        $eventType = match (ChildRunHistory::resolvedStatus(null, $childRun)) {
+            RunStatus::Completed => HistoryEventType::ChildRunCompleted,
+            RunStatus::Cancelled => HistoryEventType::ChildRunCancelled,
+            RunStatus::Terminated => HistoryEventType::ChildRunTerminated,
+            default => HistoryEventType::ChildRunFailed,
+        };
+
+        ChildRunHistory::markChildCallResolved($run, $sequence, $childRun);
+
+        $alreadyRecorded = $run->historyEvents->contains(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['child_workflow_run_id'] ?? null) === $childRun->id
+        );
+
+        if ($alreadyRecorded) {
+            /** @var WorkflowHistoryEvent $event */
+            $event = $run->historyEvents->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
+                    && ($event->payload['sequence'] ?? null) === $sequence
+                    && ($event->payload['child_workflow_run_id'] ?? null) === $childRun->id
+            );
+
+            return $event;
+        }
+
+        $childTerminalEvent = $childRun->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )
+            ->sortByDesc('sequence')
+            ->first();
+        $failure = $childRun->failures->first();
+        $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+            ? $childTerminalEvent->payload['output'] ?? $childRun->output
+            : null;
+        $childOutputCodec = $childOutput !== null
+            ? self::nonEmptyString($childTerminalEvent?->payload['payload_codec'] ?? null)
+                ?? $childRun->outputPayloadCodec()
+            : null;
+
+        return WorkflowHistoryEvent::record($run, $eventType, array_filter([
+            'sequence' => $sequence,
+            'workflow_link_id' => $link?->id,
+            'child_call_id' => ChildRunHistory::childCallIdForSequence($run, $sequence),
+            'child_workflow_instance_id' => $childRun->workflow_instance_id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+            'child_status' => $childRun->status->value,
+            'closed_reason' => $childRun->closed_reason,
+            'closed_at' => $childRun->closed_at?->toJSON(),
+            'output' => $childOutput,
+            'result' => $childOutput,
+            'payload_codec' => $childOutputCodec,
+            'failure_id' => $failure?->id,
+            'failure_category' => match ($eventType) {
+                HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,
+                HistoryEventType::ChildRunCancelled => $failure?->failure_category ?? FailureCategory::Cancelled->value,
+                HistoryEventType::ChildRunTerminated => $failure?->failure_category ?? FailureCategory::Terminated->value,
+                default => null,
+            },
+            'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception'] ?? null
+                : null,
+            'exception_type' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_type'] ?? null
+                : null,
+            'exception_class' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_class'] ?? $failure?->exception_class
+                : $failure?->exception_class,
+            'message' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['message'] ?? $failure?->message
+                : $failure?->message,
+            'code' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['code'] ?? null
+                : null,
+            ...($parallelMetadata ?? []),
+        ], static fn ($value): bool => $value !== null), $task);
+    }
+
+    /**
+     * Parse the command list into non-terminal and terminal commands.
+     *
+     * Returns null when the command list is invalid: empty, contains multiple
+     * terminal commands, or contains only unrecognized command types.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array{non_terminal: list<array{type: string, ...}>, terminal: array{type: string, ...}|null}|null
+     */
+    private static function parseCommands(array $commands): ?array
+    {
+        $nonTerminal = [];
+        $terminal = null;
+
+        foreach ($commands as $command) {
+            if (! is_array($command)) {
+                return null;
+            }
+
+            $command = self::normalizeCommand($command);
+
+            if ($command === null) {
+                return null;
+            }
+
+            if (in_array($command['type'], self::TERMINAL_TYPES, true)) {
+                if ($terminal !== null) {
+                    return null; // Multiple terminal commands — reject.
+                }
+                $terminal = $command;
+            } elseif (in_array($command['type'], self::NON_TERMINAL_TYPES, true)) {
+                $nonTerminal[] = $command;
+            }
+        }
+
+        if ($terminal === null && $nonTerminal === []) {
+            return null; // No recognized commands at all.
+        }
+
+        return [
+            'non_terminal' => $nonTerminal,
+            'terminal' => $terminal,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, ...}|null
+     */
+    private static function normalizeCommand(array $command): ?array
+    {
+        $type = is_string($command['type'] ?? null) ? $command['type'] : null;
+
+        if ($type === null) {
+            return null;
+        }
+
+        return match ($type) {
+            'cancel_selection_operation' => self::normalizeCancelSelectionOperationCommand($command),
+            'complete_workflow' => self::normalizeCompleteWorkflowCommand($command),
+            'fail_workflow' => self::normalizeFailWorkflowCommand($command),
+            'schedule_activity' => self::normalizeScheduleActivityCommand($command),
+            'start_timer' => self::normalizeStartTimerCommand($command),
+            'start_child_workflow' => self::normalizeStartChildWorkflowCommand($command),
+            'start_service_operation' => self::normalizeStartServiceOperationCommand($command),
+            'continue_as_new' => self::normalizeContinueAsNewCommand($command),
+            'complete_update' => self::normalizeCompleteUpdateCommand($command),
+            'fail_update' => self::normalizeFailUpdateCommand($command),
+            'record_side_effect' => self::normalizeRecordSideEffectCommand($command),
+            'record_local_activity' => self::normalizeRecordLocalActivityCommand($command),
+            'record_version_marker' => self::normalizeRecordVersionMarkerCommand($command),
+            'upsert_memo' => self::normalizeUpsertMemoCommand($command),
+            'upsert_search_attributes' => self::normalizeUpsertSearchAttributesCommand($command),
+            'open_condition_wait' => self::normalizeOpenConditionWaitCommand($command),
+            'open_signal_wait' => self::normalizeOpenSignalWaitCommand($command),
+            default => null,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function normalizeCancelSelectionOperationCommand(array $command): ?array
+    {
+        $groupId = self::normalizeOptionalString($command['selection_group_id'] ?? null);
+        $memberKey = $command['member_key'] ?? null;
+        $memberIndex = $command['member_index'] ?? null;
+        $memberBase = $command['member_base_sequence'] ?? null;
+        $memberSize = $command['member_size'] ?? null;
+        $operationKind = self::normalizeOptionalString($command['operation_kind'] ?? null);
+        $operationIdentity = self::normalizeOptionalString($command['operation_identity'] ?? null);
+        if ($groupId === null || ! preg_match('/^select-calls:[1-9][0-9]*:[1-9][0-9]*$/', $groupId)
+            || ! self::validSelectionKey($memberKey)
+            || ! is_int($memberIndex) || $memberIndex < 0
+            || ! is_int($memberBase) || $memberBase < 1
+            || ! is_int($memberSize) || $memberSize < 1
+            || $operationKind === null || ! in_array(
+                $operationKind,
+                ['activity', 'child', 'timer', 'signal', 'condition', 'group'],
+                true,
+            )
+            || $operationIdentity === null) {
+            return null;
+        }
+
+        return [
+            'type' => 'cancel_selection_operation',
+            'selection_group_id' => $groupId,
+            'member_key' => $memberKey,
+            'member_index' => $memberIndex,
+            'member_base_sequence' => $memberBase,
+            'member_size' => $memberSize,
+            'operation_kind' => $operationKind,
+            'operation_identity' => $operationIdentity,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     condition_key?: string,
+     *     condition_definition_fingerprint?: string,
+     *     condition_wait_occurrence_id?: string,
+     *     timeout_seconds?: int
+     * }|null
+     */
+    private static function normalizeOpenConditionWaitCommand(array $command): ?array
+    {
+        if (self::hasInvalidWaitTimeoutSeconds($command)) {
+            return null;
+        }
+
+        $parallelMetadata = self::normalizeParallelCommandMetadata($command, 'condition');
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'open_condition_wait',
+            'condition_key' => self::normalizeOptionalString($command['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::normalizeOptionalString(
+                $command['condition_definition_fingerprint'] ?? null,
+            ),
+            'condition_wait_occurrence_id' => self::normalizeOptionalString(
+                $command['condition_wait_occurrence_id'] ?? null,
+            ),
+            'timeout_seconds' => self::normalizeWaitTimeoutSeconds($command),
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     signal_name: string,
+     *     timeout_seconds?: int
+     * }|null
+     */
+    private static function normalizeOpenSignalWaitCommand(array $command): ?array
+    {
+        $signalName = self::normalizeOptionalString($command['signal_name'] ?? null);
+
+        if ($signalName === null) {
+            return null;
+        }
+
+        if (self::hasInvalidWaitTimeoutSeconds($command)) {
+            return null;
+        }
+
+        $parallelMetadata = self::normalizeParallelCommandMetadata($command, 'signal');
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'open_signal_wait',
+            'signal_name' => $signalName,
+            'timeout_seconds' => self::normalizeWaitTimeoutSeconds($command),
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function hasInvalidWaitTimeoutSeconds(array $command): bool
+    {
+        if (! array_key_exists('timeout_seconds', $command) || $command['timeout_seconds'] === null) {
+            return false;
+        }
+
+        return ! is_int($command['timeout_seconds']) || $command['timeout_seconds'] < 0;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function normalizeWaitTimeoutSeconds(array $command): ?int
+    {
+        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+
+        return is_int($timeoutSeconds) ? $timeoutSeconds : null;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, result?: mixed, payload_codec?: string}|null
+     */
+    private static function normalizeCompleteWorkflowCommand(array $command): ?array
+    {
+        $result = self::normalizeCommandPayloadString($command, 'result');
+
+        if ($result === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'complete_workflow',
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     exception?: array<string, mixed>,
+     *     non_retryable?: bool
+     * }|null
+     */
+    private static function normalizeFailWorkflowCommand(array $command): ?array
+    {
+        $message = self::normalizeRequiredString($command['message'] ?? null);
+
+        if ($message === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'fail_workflow',
+            'message' => $message,
+            'exception_class' => self::normalizeOptionalString($command['exception_class'] ?? null),
+            'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
+            'exception' => self::normalizeExceptionPayload($command['exception'] ?? null),
+            'non_retryable' => is_bool($command['non_retryable'] ?? null) ? $command['non_retryable'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     activity_type: string,
+     *     arguments?: string|null,
+     *     payload_codec?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     start_to_close_timeout?: int,
+     *     schedule_to_start_timeout?: int,
+     *     schedule_to_close_timeout?: int,
+     *     heartbeat_timeout?: int,
+     *     worker_session?: array<string, mixed>
+     * }|null
+     */
+    private static function normalizeScheduleActivityCommand(array $command): ?array
+    {
+        $activityType = self::normalizeRequiredString($command['activity_type'] ?? null);
+        $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
+        $startToCloseTimeout = self::normalizePositiveInt($command['start_to_close_timeout'] ?? null);
+        $scheduleToStartTimeout = self::normalizePositiveInt($command['schedule_to_start_timeout'] ?? null);
+        $scheduleToCloseTimeout = self::normalizePositiveInt($command['schedule_to_close_timeout'] ?? null);
+        $heartbeatTimeout = self::normalizePositiveInt($command['heartbeat_timeout'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
+
+        if ($activityType === null) {
+            return null;
+        }
+
+        if ($arguments === null) {
+            return null;
+        }
+
+        if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        foreach (
+            [
+                'start_to_close_timeout' => $startToCloseTimeout,
+                'schedule_to_start_timeout' => $scheduleToStartTimeout,
+                'schedule_to_close_timeout' => $scheduleToCloseTimeout,
+                'heartbeat_timeout' => $heartbeatTimeout,
+            ] as $field => $value
+        ) {
+            if (($command[$field] ?? null) !== null && $value === null) {
+                return null;
+            }
+        }
+
+        $parallelMetadata = self::normalizeParallelCommandMetadata($command, 'activity');
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'schedule_activity',
+            'activity_type' => $activityType,
+            'arguments' => $arguments['payload'],
+            'payload_codec' => $arguments['payload_codec'],
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'retry_policy' => $retryPolicy,
+            'start_to_close_timeout' => $startToCloseTimeout,
+            'schedule_to_start_timeout' => $scheduleToStartTimeout,
+            'schedule_to_close_timeout' => $scheduleToCloseTimeout,
+            'heartbeat_timeout' => $heartbeatTimeout,
+            'worker_session' => self::normalizeWorkerSessionCommand($command['worker_session'] ?? null),
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeWorkerSessionCommand(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $sessionId = self::normalizeRequiredString($value['session_id'] ?? null);
+
+        if ($sessionId === null) {
+            return null;
+        }
+
+        return array_filter([
+            'session_id' => $sessionId,
+            'connection' => self::normalizeOptionalString($value['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($value['queue'] ?? null),
+            'requirements' => self::normalizeStringList($value['requirements'] ?? null),
+            'lease_seconds' => self::normalizePositiveInt($value['lease_seconds'] ?? null),
+            'ttl_seconds' => self::normalizePositiveInt($value['ttl_seconds'] ?? null),
+            'max_concurrent_activities' => self::normalizePositiveInt($value['max_concurrent_activities'] ?? null),
+            'create_if_missing' => is_bool($value['create_if_missing'] ?? null)
+                ? (bool) $value['create_if_missing']
+                : null,
+            'allow_reacquire_after_failure' => is_bool($value['allow_reacquire_after_failure'] ?? null)
+                ? (bool) $value['allow_reacquire_after_failure']
+                : null,
+        ], static fn (mixed $item): bool => $item !== null);
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    private static function normalizeStringList(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $strings = [];
+
+        foreach (array_values($value) as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $strings[] = trim($item);
+            }
+        }
+
+        return $strings === [] ? null : array_values(array_unique($strings));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeExceptionPayload(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, delay_seconds: int}|null
+     */
+    private static function normalizeStartTimerCommand(array $command): ?array
+    {
+        if (! is_int($command['delay_seconds'] ?? null) || (int) $command['delay_seconds'] < 0) {
+            return null;
+        }
+
+        $parallelMetadata = self::normalizeParallelCommandMetadata($command, 'timer');
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        return [
+            'type' => 'start_timer',
+            'delay_seconds' => (int) $command['delay_seconds'],
+            ...$parallelMetadata,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     workflow_type: string,
+     *     arguments?: string|null,
+     *     payload_codec?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     parent_close_policy?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     execution_timeout_seconds?: int,
+     *     run_timeout_seconds?: int
+     * }|null
+     */
+    private static function normalizeStartChildWorkflowCommand(array $command): ?array
+    {
+        $workflowType = self::normalizeRequiredString($command['workflow_type'] ?? null);
+        $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
+        $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
+        $runTimeoutSeconds = self::normalizePositiveInt($command['run_timeout_seconds'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
+
+        if ($workflowType === null) {
+            return null;
+        }
+
+        if ($arguments === null) {
+            return null;
+        }
+
+        if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        foreach (
+            [
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+            ] as $field => $value
+        ) {
+            if (($command[$field] ?? null) !== null && $value === null) {
+                return null;
+            }
+        }
+
+        $parallelMetadata = self::normalizeParallelCommandMetadata($command, 'child');
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'start_child_workflow',
+            'workflow_type' => $workflowType,
+            'arguments' => $arguments['payload'],
+            'payload_codec' => $arguments['payload_codec'],
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
+            'retry_policy' => $retryPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            ...$parallelMetadata,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeParallelCommandMetadata(array $command, string $leafKind): ?array
+    {
+        $fields = [
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_mode',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'selection_member_key',
+            'selection_member_index',
+            'selection_member_base_sequence',
+            'selection_member_size',
+            'selection_member_kind',
+        ];
+        $present = array_key_exists('parallel_group_path', $command);
+        foreach ($fields as $field) {
+            $present = $present || array_key_exists($field, $command);
+        }
+        if (! $present) {
+            return [];
+        }
+
+        $path = $command['parallel_group_path'] ?? null;
+        $top = self::normalizeParallelCommandEntry($command, $leafKind);
+        if ($top === null || ! is_array($path) || ! array_is_list($path) || $path === []) {
+            return null;
+        }
+
+        $normalizedPath = [];
+        foreach ($path as $entry) {
+            $normalized = is_array($entry)
+                ? self::normalizeParallelCommandEntry($entry, $leafKind)
+                : null;
+            if ($normalized === null) {
+                return null;
+            }
+            $normalizedPath[] = $normalized;
+        }
+
+        if ($normalizedPath[array_key_last($normalizedPath)] !== $top) {
+            return null;
+        }
+
+        return [
+            ...$top,
+            'parallel_group_path' => $normalizedPath,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeParallelCommandEntry(array $value, string $leafKind): ?array
+    {
+        $id = $value['parallel_group_id'] ?? null;
+        $kind = $value['parallel_group_kind'] ?? null;
+        $base = $value['parallel_group_base_sequence'] ?? null;
+        $size = $value['parallel_group_size'] ?? null;
+        $index = $value['parallel_group_index'] ?? null;
+        $mode = $value['parallel_group_mode'] ?? 'all';
+        $limit = StructuralLimits::commandBatchSizeLimit();
+        if (! is_string($id) || $id === ''
+            || ! is_string($kind) || ! in_array($kind, [$leafKind, 'mixed'], true)
+            || ! is_int($base) || $base < 1
+            || ! is_int($size) || $size < 1 || ($limit > 0 && $size > $limit)
+            || ! is_int($index) || $index < 0 || $index >= $size
+            || ! is_string($mode) || ! in_array($mode, ['all', 'select'], true)) {
+            return null;
+        }
+
+        $prefix = $mode === 'select' ? 'select-calls' : match ($kind) {
+            'activity' => 'parallel-activities',
+            'child' => 'parallel-children',
+            'timer' => 'parallel-timers',
+            default => 'parallel-calls',
+        };
+        if ($id !== sprintf('%s:%d:%d', $prefix, $base, $size)) {
+            return null;
+        }
+
+        $memberKey = $value['selection_member_key'] ?? null;
+        $memberIndex = $value['selection_member_index'] ?? null;
+        $memberBase = $value['selection_member_base_sequence'] ?? null;
+        $memberSize = $value['selection_member_size'] ?? null;
+        $memberKind = $value['selection_member_kind'] ?? null;
+        if ($mode === 'select' && (
+            ! self::validSelectionKey($memberKey)
+            || ! is_int($memberIndex) || $memberIndex < 0
+            || ! is_int($memberBase) || $memberBase < $base || $memberBase >= $base + $size
+            || ! is_int($memberSize) || $memberSize < 1 || $memberBase + $memberSize > $base + $size
+            || ! is_string($memberKind)
+            || ! in_array($memberKind, ['activity', 'child', 'timer', 'signal', 'condition', 'group'], true)
+        )) {
+            return null;
+        }
+
+        return array_filter([
+            'parallel_group_id' => $id,
+            'parallel_group_kind' => $kind,
+            'parallel_group_mode' => $mode === 'select' ? $mode : null,
+            'parallel_group_base_sequence' => $base,
+            'parallel_group_size' => $size,
+            'parallel_group_index' => $index,
+            'selection_member_key' => $mode === 'select' ? $memberKey : null,
+            'selection_member_index' => $mode === 'select' ? $memberIndex : null,
+            'selection_member_base_sequence' => $mode === 'select' ? $memberBase : null,
+            'selection_member_size' => $mode === 'select' ? $memberSize : null,
+            'selection_member_kind' => $mode === 'select' ? $memberKind : null,
+        ], static fn (mixed $item): bool => $item !== null);
+    }
+
+    private static function validSelectionKey(mixed $value): bool
+    {
+        return (is_string($value) && $value !== '') || (is_int($value) && $value >= 0);
+    }
+
+    /** @param array<string, mixed> $command
+     *  @return array<string, mixed>
+     */
+    private static function parallelMetadataForCommand(array $command): array
+    {
+        $path = $command['parallel_group_path'] ?? null;
+
+        return is_array($path) ? ParallelChildGroup::payloadForPath($path) : [];
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function parallelCommandsMatchSequences(array $commands, int $baseSequence): bool
+    {
+        $commandsBySequence = [];
+        $sequence = $baseSequence;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'cancel_selection_operation') {
+                continue;
+            }
+            $commandsBySequence[$sequence] = $command;
+            $path = $command['parallel_group_path'] ?? null;
+            if (is_array($path)) {
+                foreach ($path as $entry) {
+                    if (! is_array($entry)
+                        || ($entry['parallel_group_base_sequence'] ?? null)
+                            + ($entry['parallel_group_index'] ?? null) !== $sequence) {
+                        return false;
+                    }
+                }
+            }
+            ++$sequence;
+        }
+
+        foreach ($commandsBySequence as $command) {
+            $path = $command['parallel_group_path'] ?? null;
+            if (! is_array($path)) {
+                continue;
+            }
+            foreach ($path as $depth => $entry) {
+                if (! is_array($entry)) {
+                    return false;
+                }
+                $groupBase = $entry['parallel_group_base_sequence'] ?? null;
+                $groupSize = $entry['parallel_group_size'] ?? null;
+                if (! is_int($groupBase) || ! is_int($groupSize)) {
+                    return false;
+                }
+
+                $memberBase = $entry['selection_member_base_sequence'] ?? null;
+                $memberSize = $entry['selection_member_size'] ?? null;
+                if (($entry['parallel_group_mode'] ?? 'all') === 'select') {
+                    if (! is_int($memberBase) || ! is_int($memberSize)) {
+                        return false;
+                    }
+
+                    $commandSequence = $groupBase + (int) ($entry['parallel_group_index'] ?? -1);
+                    if ($commandSequence < $memberBase || $commandSequence >= $memberBase + $memberSize) {
+                        return false;
+                    }
+
+                    for ($memberOffset = 0; $memberOffset < $memberSize; ++$memberOffset) {
+                        $memberPath = $commandsBySequence[$memberBase + $memberOffset]['parallel_group_path'] ?? null;
+                        $selectionMember = is_array($memberPath) ? ($memberPath[$depth] ?? null) : null;
+                        if (! is_array($selectionMember)
+                            || ($selectionMember['selection_member_key'] ?? null)
+                                !== ($entry['selection_member_key'] ?? null)
+                            || ($selectionMember['selection_member_index'] ?? null)
+                                !== ($entry['selection_member_index'] ?? null)
+                            || ($selectionMember['selection_member_base_sequence'] ?? null) !== $memberBase
+                            || ($selectionMember['selection_member_size'] ?? null) !== $memberSize) {
+                            return false;
+                        }
+                    }
+                }
+
+                for ($index = 0; $index < $groupSize; ++$index) {
+                    $memberPath = $commandsBySequence[$groupBase + $index]['parallel_group_path'] ?? null;
+                    $member = is_array($memberPath) ? ($memberPath[$depth] ?? null) : null;
+                    if (! is_array($member)
+                        || ($member['parallel_group_id'] ?? null) !== ($entry['parallel_group_id'] ?? null)
+                        || ($member['parallel_group_kind'] ?? null) !== ($entry['parallel_group_kind'] ?? null)
+                        || ($member['parallel_group_mode'] ?? 'all') !== ($entry['parallel_group_mode'] ?? 'all')
+                        || ($member['parallel_group_base_sequence'] ?? null) !== $groupBase
+                        || ($member['parallel_group_size'] ?? null) !== $groupSize
+                        || ($member['parallel_group_index'] ?? null) !== $index) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     endpoint_name: string,
+     *     service_name: string,
+     *     operation_name: string,
+     *     request_payload?: string|null,
+     *     payload_codec?: string|null,
+     *     namespace?: string,
+     *     caller_namespace?: string,
+     *     service_call_id?: string,
+     *     idempotency_key?: string,
+     *     mode_override?: string,
+     *     wait_for?: string,
+     *     wait_timeout_seconds?: int,
+     *     target_workflow_instance_id?: string,
+     *     target_workflow_run_id?: string,
+     *     connection?: string,
+     *     queue?: string,
+     *     business_key?: string,
+     *     labels?: array<string, mixed>,
+     *     memo?: array<string, mixed>,
+     *     search_attributes?: array<string, mixed>,
+     *     duplicate_start_policy?: string,
+     *     metadata?: array<string, mixed>,
+     *     request_payload_reference?: string,
+     *     principal_subject?: string,
+     *     principal_method?: string,
+     *     principal_roles?: list<string>,
+     *     principal_tenant?: string,
+     *     principal_claims?: array<string, mixed>
+     * }|null
+     */
+    private static function normalizeStartServiceOperationCommand(array $command): ?array
+    {
+        $endpointName = self::normalizeRequiredString($command['endpoint_name'] ?? null);
+        $serviceName = self::normalizeRequiredString($command['service_name'] ?? null);
+        $operationName = self::normalizeRequiredString($command['operation_name'] ?? null);
+        $requestPayload = self::normalizeCommandPayloadString($command, 'request_payload');
+        $modeOverride = self::normalizeServiceOperationMode($command['mode_override'] ?? null);
+        $waitFor = self::normalizeServiceOperationWaitFor($command['wait_for'] ?? null);
+        $waitTimeoutSeconds = self::normalizeNonNegativeInt($command['wait_timeout_seconds'] ?? null);
+
+        if ($endpointName === null || $serviceName === null || $operationName === null || $requestPayload === null) {
+            return null;
+        }
+
+        if (($command['mode_override'] ?? null) !== null && $modeOverride === null) {
+            return null;
+        }
+
+        if (($command['wait_for'] ?? null) !== null && $waitFor === null) {
+            return null;
+        }
+
+        if (($command['wait_timeout_seconds'] ?? null) !== null && $waitTimeoutSeconds === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'start_service_operation',
+            'endpoint_name' => $endpointName,
+            'service_name' => $serviceName,
+            'operation_name' => $operationName,
+            'request_payload' => $requestPayload['payload'],
+            'payload_codec' => $requestPayload['payload_codec'],
+            'namespace' => self::normalizeOptionalString($command['namespace'] ?? null),
+            'caller_namespace' => self::normalizeOptionalString($command['caller_namespace'] ?? null),
+            'service_call_id' => self::normalizeOptionalString($command['service_call_id'] ?? null),
+            'idempotency_key' => self::normalizeOptionalString($command['idempotency_key'] ?? null),
+            'mode_override' => $modeOverride,
+            'wait_for' => $waitFor,
+            'wait_timeout_seconds' => $waitTimeoutSeconds,
+            'target_workflow_instance_id' => self::normalizeOptionalString(
+                $command['target_workflow_instance_id'] ?? null,
+            ),
+            'target_workflow_run_id' => self::normalizeOptionalString($command['target_workflow_run_id'] ?? null),
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'business_key' => self::normalizeOptionalString($command['business_key'] ?? null),
+            'labels' => is_array($command['labels'] ?? null) ? $command['labels'] : null,
+            'memo' => is_array($command['memo'] ?? null) ? $command['memo'] : null,
+            'search_attributes' => is_array($command['search_attributes'] ?? null)
+                ? $command['search_attributes']
+                : null,
+            'duplicate_start_policy' => self::normalizeOptionalString($command['duplicate_start_policy'] ?? null),
+            'metadata' => is_array($command['metadata'] ?? null) ? $command['metadata'] : null,
+            'request_payload_reference' => self::normalizeOptionalString($command['request_payload_reference'] ?? null),
+            'principal_subject' => self::normalizeOptionalString($command['principal_subject'] ?? null),
+            'principal_method' => self::normalizeOptionalString($command['principal_method'] ?? null),
+            'principal_roles' => self::normalizeStringList($command['principal_roles'] ?? null),
+            'principal_tenant' => self::normalizeOptionalString($command['principal_tenant'] ?? null),
+            'principal_claims' => is_array($command['principal_claims'] ?? null) ? $command['principal_claims'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private static function normalizeServiceOperationMode(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['sync', 'async'], true) ? $value : null;
+    }
+
+    private static function normalizeServiceOperationWaitFor(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['accepted', 'completed'], true) ? $value : null;
+    }
+
+    private static function normalizeNonNegativeInt(mixed $value): ?int
+    {
+        return is_int($value) && $value >= 0 ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, arguments?: string|null, payload_codec?: string, workflow_type?: string}|null
+     */
+    private static function normalizeContinueAsNewCommand(array $command): ?array
+    {
+        $workflowType = self::normalizeOptionalString($command['workflow_type'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
+        $queue = self::normalizeOptionalString($command['queue'] ?? null);
+
+        if (($command['workflow_type'] ?? null) !== null && $workflowType === null) {
+            return null;
+        }
+
+        if ($arguments === null) {
+            return null;
+        }
+
+        if (($command['queue'] ?? null) !== null && $queue === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'continue_as_new',
+            'arguments' => $arguments['payload'] === '' ? null : $arguments['payload'],
+            'payload_codec' => $arguments['payload'] === '' ? null : $arguments['payload_codec'],
+            'workflow_type' => $workflowType,
+            'queue' => $queue,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{payload: string|null, payload_codec: string|null}|null
+     */
+    private static function normalizeCommandPayloadString(array $command, string $field): ?array
+    {
+        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
+
+        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+            return null;
+        }
+
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return [
+                'payload' => null,
+                'payload_codec' => null,
+            ];
+        }
+
+        try {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($command[$field], $field);
+        } catch (ValidationException) {
+            return null;
+        }
+
+        $payload = $resolved['payload'];
+
+        if ($payload !== null && ! is_string($payload)) {
+            return null;
+        }
+
+        $envelopeCodec = is_string($resolved['codec'] ?? null) && $resolved['codec'] !== ''
+            ? $resolved['codec']
+            : null;
+
+        if ($payloadCodec !== null && $envelopeCodec !== null && $payloadCodec !== $envelopeCodec) {
+            return null;
+        }
+
+        return [
+            'payload' => $payload,
+            'payload_codec' => $payload !== null ? ($payloadCodec ?? $envelopeCodec) : null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, update_id: string, result?: string|null, payload_codec?: string|null}|null
+     */
+    private static function normalizeCompleteUpdateCommand(array $command): ?array
+    {
+        $updateId = self::normalizeRequiredString($command['update_id'] ?? null);
+        $result = self::normalizeCommandPayloadString($command, 'result');
+
+        if ($updateId === null || $result === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'complete_update',
+            'update_id' => $updateId,
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     update_id: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     non_retryable?: bool
+     * }|null
+     */
+    private static function normalizeFailUpdateCommand(array $command): ?array
+    {
+        $updateId = self::normalizeRequiredString($command['update_id'] ?? null);
+        $message = self::normalizeRequiredString($command['message'] ?? null);
+
+        if ($updateId === null || $message === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'fail_update',
+            'update_id' => $updateId,
+            'message' => $message,
+            'exception_class' => self::normalizeOptionalString($command['exception_class'] ?? null),
+            'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
+            'non_retryable' => is_bool($command['non_retryable'] ?? null) ? $command['non_retryable'] : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, result: string, payload_codec?: string|null}|null
+     */
+    private static function normalizeRecordSideEffectCommand(array $command): ?array
+    {
+        $result = self::normalizeCommandPayloadString($command, 'result');
+
+        if ($result === null || ! is_string($result['payload'] ?? null) || $result['payload'] === '') {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'record_side_effect',
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, ...}|null
+     */
+    private static function normalizeRecordLocalActivityCommand(array $command): ?array
+    {
+        try {
+            return WorkflowCommandNormalizer::normalize([$command])[0] ?? null;
+        } catch (ValidationException) {
+            return null;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, change_id: string, version: int, min_supported: int, max_supported: int}|null
+     */
+    private static function normalizeRecordVersionMarkerCommand(array $command): ?array
+    {
+        $changeId = self::normalizeRequiredString($command['change_id'] ?? null);
+
+        if ($changeId === null) {
+            return null;
+        }
+
+        if (! is_int($command['version'] ?? null)) {
+            return null;
+        }
+
+        if (! is_int($command['min_supported'] ?? null)) {
+            return null;
+        }
+
+        if (! is_int($command['max_supported'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $versionCall = new VersionCall(
+                $changeId,
+                (int) $command['min_supported'],
+                (int) $command['max_supported'],
+            );
+        } catch (LogicException) {
+            return null;
+        }
+
+        $version = (int) $command['version'];
+
+        if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
+            return null;
+        }
+
+        return [
+            'type' => 'record_version_marker',
+            'change_id' => $versionCall->changeId,
+            'version' => $version,
+            'min_supported' => $versionCall->minSupported,
+            'max_supported' => $versionCall->maxSupported,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     attributes: array<string, scalar|list<string>|null>,
+     *     attribute_types?: array<string, string>
+     * }|null
+     */
+    private static function normalizeUpsertSearchAttributesCommand(array $command): ?array
+    {
+        if (! is_array($command['attributes'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $call = new UpsertSearchAttributesCall($command['attributes']);
+        } catch (LogicException) {
+            return null;
+        }
+
+        $attributeTypes = self::normalizeSearchAttributeTypes($command['attribute_types'] ?? null);
+
+        if ($attributeTypes === null) {
+            return null;
+        }
+
+        try {
+            SearchAttributeUpsertService::assertDeclaredTypesCompatible($call, $attributeTypes);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+
+        return [
+            'type' => 'upsert_search_attributes',
+            'attributes' => $call->attributes,
+        ] + array_filter([
+            'attribute_types' => $attributeTypes,
+        ], static fn (mixed $value): bool => $value !== []);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, entries: array{codec: string, blob: string}}|null
+     */
+    private static function normalizeUpsertMemoCommand(array $command): ?array
+    {
+        if (! is_array($command['entries'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($command['entries'], 'entries');
+            if (($resolved['codec'] ?? null) !== MemoPayload::CODEC || ! is_string($resolved['payload'])) {
+                return null;
+            }
+
+            $entries = MemoPayload::canonicalMapEnvelope([
+                'codec' => $resolved['codec'],
+                'blob' => $resolved['payload'],
+            ]);
+            new UpsertMemosCall(MemoPayload::decodeEntries($entries));
+        } catch (CodecDecodeException|InvalidArgumentException|LogicException|ValidationException) {
+            return null;
+        }
+
+        return [
+            'type' => 'upsert_memo',
+            'entries' => $entries,
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function normalizeSearchAttributeTypes(mixed $types): ?array
+    {
+        if ($types === null) {
+            return [];
+        }
+
+        if (! is_array($types)) {
+            return null;
+        }
+
+        $normalized = [];
+
+        foreach ($types as $key => $type) {
+            if (
+                ! is_string($key)
+                || ! is_string($type)
+                || ! in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)
+            ) {
+                return null;
+            }
+
+            $normalized[$key] = $type;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
+    }
+
+    private static function normalizeRequiredString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    private static function normalizeOptionalString(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return self::normalizeRequiredString($value);
+    }
+
+    private static function normalizeOptionalPayloadCodec(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return CodecRegistry::canonicalize(trim($value));
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    private static function canonicalPayloadCodec(mixed $value): ?string
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return CodecRegistry::canonicalize(trim($value));
+    }
+
+    private static function normalizePositiveInt(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_int($value) || $value < 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeActivityRetryPolicy(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $policy = [];
+
+        if (array_key_exists('max_attempts', $value)) {
+            if (! is_int($value['max_attempts']) || $value['max_attempts'] < 1) {
+                return null;
+            }
+
+            $policy['max_attempts'] = $value['max_attempts'];
+        }
+
+        if (array_key_exists('backoff_seconds', $value)) {
+            if (! is_array($value['backoff_seconds'])) {
+                return null;
+            }
+
+            $backoff = [];
+            foreach (array_values($value['backoff_seconds']) as $seconds) {
+                if (! is_int($seconds) || $seconds < 0) {
+                    return null;
+                }
+
+                $backoff[] = $seconds;
+            }
+
+            $policy['backoff_seconds'] = $backoff;
+        }
+
+        if (array_key_exists('non_retryable_error_types', $value)) {
+            if (! is_array($value['non_retryable_error_types'])) {
+                return null;
+            }
+
+            $types = [];
+            foreach (array_values($value['non_retryable_error_types']) as $type) {
+                if (! is_string($type) || trim($type) === '') {
+                    return null;
+                }
+
+                $types[] = trim($type);
+            }
+
+            $policy['non_retryable_error_types'] = array_values(array_unique($types));
+        }
+
+        return $policy === [] ? null : $policy;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function workerHistoryEventPayload(WorkflowHistoryEvent $event, WorkflowRun $run): array
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+
+        if ($event->event_type !== HistoryEventType::SignalReceived) {
+            return $payload;
+        }
+
+        $signalId = self::nonEmptyString($payload['signal_id'] ?? null);
+
+        if ($signalId === null) {
+            return $payload;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal) {
+            return $payload;
+        }
+
+        $codec = self::nonEmptyString($signal->payload_codec)
+            ?? self::nonEmptyString($run->payload_codec)
+            ?? CodecRegistry::defaultCodec();
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+
+        $storedArguments = self::nonEmptyString($signal->arguments);
+
+        if ($storedArguments !== null) {
+            $payload['arguments'] = ExternalPayloads::wireEnvelope($storedArguments, $codec, $namespace);
+        }
+
+        if (! array_key_exists('payload_codec', $payload) || $payload['payload_codec'] === null) {
+            $payload['payload_codec'] = $codec;
+        }
+
+        if (! array_key_exists('signal_name', $payload) || $payload['signal_name'] === null) {
+            $payload['signal_name'] = self::nonEmptyString($signal->signal_name);
+        }
+
+        if (! array_key_exists('signal_wait_id', $payload) || $payload['signal_wait_id'] === null) {
+            $payload['signal_wait_id'] = self::nonEmptyString($signal->signal_wait_id);
+        }
+
+        if (! array_key_exists('workflow_sequence', $payload) || $payload['workflow_sequence'] === null) {
+            $payload['workflow_sequence'] = is_int($signal->workflow_sequence)
+                ? $signal->workflow_sequence
+                : null;
+        }
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * Claim a task if it is still in Ready status.
+     * Used internally by execute() to avoid double-claiming.
+     */
+    private function claimIfReady(string $taskId): bool
+    {
+        return DB::transaction(static function () use ($taskId): bool {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($task === null || $task->task_type !== TaskType::Workflow) {
+                return false;
+            }
+
+            // Already leased by a prior claim() call — allow execute() to proceed.
+            if ($task->status === TaskStatus::Leased) {
+                return true;
+            }
+
+            if ($task->status !== TaskStatus::Ready) {
+                return false;
+            }
+
+            /** @var WorkflowRun $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->findOrFail($task->workflow_run_id);
+
+            TaskCompatibility::sync($task, $run);
+
+            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return false;
+            }
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+                return false;
+            }
+
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'leased_at' => now(),
+                'lease_owner' => $taskId,
+                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
+                'attempt_count' => $task->attempt_count + 1,
+                'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $taskId),
+                'sticky_claimed_at' => now(),
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
+            ])->save();
+
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return true;
+        });
+    }
+
+    /**
+     * @return array{
+     *     claimed: bool,
+     *     task_id: string,
+     *     workflow_run_id: string|null,
+     *     workflow_instance_id: string|null,
+     *     namespace: string|null,
+     *     workflow_type: string|null,
+     *     workflow_class: string|null,
+     *     payload_codec: string|null,
+     *     connection: string|null,
+     *     queue: string|null,
+     *     compatibility: string|null,
+     *     lease_owner: string|null,
+     *     lease_expires_at: string|null,
+     *     reason: string|null,
+     *     reason_detail: string|null,
+     * }
+     */
+    private static function claimRejected(string $taskId, string $reason, string $reasonDetail): array
+    {
+        return [
+            'claimed' => false,
+            'task_id' => $taskId,
+            'workflow_run_id' => null,
+            'workflow_instance_id' => null,
+            'namespace' => null,
+            'workflow_type' => null,
+            'workflow_class' => null,
+            'payload_codec' => null,
+            'connection' => null,
+            'queue' => null,
+            'compatibility' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'reason' => $reason,
+            'reason_detail' => $reasonDetail,
+        ];
+    }
+
+    /**
+     * @param Throwable|array<string, mixed>|string $failure
+     */
+    private static function failureMessage(Throwable|array|string $failure): string
+    {
+        if ($failure instanceof Throwable) {
+            return $failure->getMessage();
+        }
+
+        if (is_string($failure)) {
+            return $failure;
+        }
+
+        return is_string($failure['message'] ?? null)
+            ? $failure['message']
+            : 'External workflow task failed';
+    }
+
+    private static function nonEmptyString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function nonEmptyStrings(array $values): array
+    {
+        return array_values(array_filter(array_map(
+            static fn (mixed $value): ?string => self::nonEmptyString($value),
+            $values,
+        )));
+    }
+
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by the
+     * standard workflow bridge projections through the role contract. Scoped
+     * bounded claim and child-resolution projections use their adjacent
+     * helpers, and no call site reaches into `RunSummaryProjector` directly.
+     * Relation-hydration shapes live in the `PROJECTION_RUN_RELATIONS*`
+     * constants rather than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRun(WorkflowRun $run, array $with = []): void
+    {
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
+
+        self::historyProjectionRole()->projectRun($run);
+    }
+
+    /**
+     * Dispatch successful claims through the configured projection role while
+     * scoping the bounded-claim hint and every indexed pending child repair
+     * consumed by the default projector. Repairs owned by an earlier terminal
+     * task are also eligible so a resolution recorded during that task's lease
+     * cannot be stranded after it completes. The role still receives
+     * projectRun(), including when an application binds a custom implementation
+     * that delegates to the default role. Repairs are acknowledged only after
+     * it returns successfully.
+     */
+    private static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $pendingRepairs = ChildProjectionRepairStore::pendingFor($run, $task);
+        $role = self::historyProjectionRole();
+
+        WorkflowTaskClaimProjectionContext::run(
+            $run,
+            $task,
+            static fn () => $role->projectRun($run),
+            $pendingRepairs['events'],
+        );
+
+        ChildProjectionRepairStore::acknowledge($pendingRepairs['repairs']);
+    }
+
+    /**
+     * Persist and project each newly recorded child resolution through the
+     * configured role before another resolution can be coalesced onto the same
+     * open task. A failed projection or acknowledgement leaves the bounded
+     * repair identity available to the task's next successful claim.
+     */
+    private static function projectChildResolutionBestEffort(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $repair = ChildProjectionRepairStore::remember($run, $task, $event);
+
+        try {
+            $role = self::historyProjectionRole();
+
+            ChildResolutionProjectionContext::run($run, $task, $event, static fn () => $role->projectRun($run));
+
+            ChildProjectionRepairStore::acknowledge([$repair]);
+        } catch (Throwable $exception) {
+            Log::warning('Workflow child-resolution projection repair remains pending.', [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_history_event_id' => $event->id,
+                'workflow_task_id' => $task->id,
+                'exception_class' => get_class($exception),
+                'exception_message' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Child-workflow state transitions must remain durable even when the
+     * operator-facing projection is stale; rebuild can repair projections
+     * from history, but it cannot recover a rolled-back child completion.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRunBestEffort(
+        WorkflowRun $run,
+        array $with = [],
+        string $operation = 'projection'
+    ): void {
+        try {
+            self::projectRun($run, $with);
+        } catch (Throwable $exception) {
+            Log::warning('Workflow run projection failed after child-workflow state changed.', [
+                'operation' => $operation,
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'exception_class' => get_class($exception),
+                'exception_message' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    private static function isChildWorkflowRun(WorkflowRun $run): bool
+    {
+        return WorkflowLink::query()
+            ->where('link_type', 'child_workflow')
+            ->where('child_workflow_run_id', $run->id)
+            ->exists();
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
+    }
+
+    private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
+    {
+        app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+        app(SearchAttributeUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+
+        $targetRun->unsetRelation('memos');
+        $targetRun->unsetRelation('searchAttributes');
+    }
+}

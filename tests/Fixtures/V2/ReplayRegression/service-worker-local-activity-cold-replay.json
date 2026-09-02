@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-worker-local-activity-cold-replay",
+  "protocol_version": "1.18",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestLocalActivityWorkflow",
+    "arguments": [
+      "Ada"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-08-26T20:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-08-26T20:00:01+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "greeting": "Hello, Ada!",
+      "workflow_id": "regression-corpus-service-worker-local-activity-cold-replay",
+      "run_id": "regression-corpus-run-service-worker-local-activity-cold-replay"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

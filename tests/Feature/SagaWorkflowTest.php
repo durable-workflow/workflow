@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use Tests\Fixtures\TestActivity;
+use Tests\Fixtures\TestSagaParallelActivityWorkflow;
 use Tests\Fixtures\TestSagaWorkflow;
 use Tests\Fixtures\TestUndoActivity;
 use Tests\TestCase;
@@ -21,7 +22,7 @@ final class SagaWorkflowTest extends TestCase
 
         $workflow->start(shouldThrow: false);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('saga_workflow', $workflow->output());
@@ -38,7 +39,7 @@ final class SagaWorkflowTest extends TestCase
 
         $workflow->start(shouldThrow: true);
 
-        while ($workflow->running());
+        $this->waitForWorkflow($workflow);
 
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
         $this->assertNull($workflow->output());
@@ -47,5 +48,17 @@ final class SagaWorkflowTest extends TestCase
             ->sort()
             ->values()
             ->toArray());
+    }
+
+    public function testParallelActivityExceptionsTriggersCompensation(): void
+    {
+        $workflow = WorkflowStub::make(TestSagaParallelActivityWorkflow::class);
+
+        $workflow->start();
+
+        $this->waitForWorkflow($workflow);
+
+        $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
+        $this->assertSame('compensated', $workflow->output());
     }
 }

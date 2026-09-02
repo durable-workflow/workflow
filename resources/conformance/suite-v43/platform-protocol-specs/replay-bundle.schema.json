@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.replay-bundle",
+  "title": "Durable Workflow deterministic replay bundle",
+  "description": "Normative JSON Schema for deterministic replay bundles consumed by SDK replay tooling, debugging UIs, and the replay-verification contract. A replay bundle packages source identity, workflow definition fingerprinting, ordered history, replay inputs, expected command outcomes, and replay verification metadata.",
+  "type": "object",
+  "x-durable-workflow-catalog-entry": "replay_bundle",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 16,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "replay_bundle",
+      "owner_repo": "durable-workflow/workflow"
+    }
+  ],
+  "required": ["schema", "version", "source", "workflow", "history", "replay"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "durable-workflow.v2.replay-bundle"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "type": "object",
+      "required": ["runtime", "package"],
+      "additionalProperties": true,
+      "properties": {
+        "runtime": { "type": "string" },
+        "package": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "worker_protocol_version": { "type": ["string", "null"] },
+        "control_plane_version": { "type": ["string", "null"] }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["workflow_type"],
+      "additionalProperties": true,
+      "properties": {
+        "workflow_class": { "type": ["string", "null"] },
+        "workflow_type": { "type": "string" },
+        "workflow_definition_fingerprint": { "type": ["string", "null"] },
+        "declared_entry_method": { "type": ["string", "null"] },
+        "declared_queries": { "type": "array", "items": { "type": "string" } },
+        "declared_signals": { "type": "array", "items": { "type": "string" } },
+        "declared_updates": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "$ref": "./history-event-payloads.schema.json"
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "expected_state": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "expected_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string" },
+          "sequence": { "type": ["integer", "null"], "minimum": 1 },
+          "payload": true
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["verify", "debug", "project"]
+        },
+        "strict_history": { "type": "boolean" },
+        "payload_codec": { "type": ["string", "null"] },
+        "verification": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "schema": { "type": ["string", "null"] },
+            "version": { "type": ["integer", "null"] },
+            "level": { "type": ["string", "null"] },
+            "result": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

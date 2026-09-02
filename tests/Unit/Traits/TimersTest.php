@@ -6,7 +6,6 @@ namespace Tests\Unit\Traits;
 
 use Carbon\CarbonInterval;
 use Exception;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Bus;
 use Mockery;
@@ -15,8 +14,8 @@ use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
-use Workflow\Signal;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\Timer;
 use Workflow\WorkflowStub;
 
 final class TimersTest extends TestCase
@@ -109,7 +108,7 @@ final class TimersTest extends TestCase
         $this->assertDatabaseHas('workflow_logs', [
             'stored_workflow_id' => $workflow->id(),
             'index' => 0,
-            'class' => Signal::class,
+            'class' => Timer::class,
         ]);
         $this->assertSame(true, Serializer::unserialize($workflow->logs()->firstWhere('index', 0)->result));
     }
@@ -127,7 +126,7 @@ final class TimersTest extends TestCase
             ->create([
                 'index' => 0,
                 'now' => now(),
-                'class' => Signal::class,
+                'class' => Timer::class,
                 'result' => Serializer::serialize(true),
             ]);
 
@@ -136,12 +135,12 @@ final class TimersTest extends TestCase
                 $result = $value;
             });
 
-        $this->assertSame(true, $result);
+        $this->assertSame(false, $result);
         $this->assertSame(1, $workflow->logs()->count());
         $this->assertDatabaseHas('workflow_logs', [
             'stored_workflow_id' => $workflow->id(),
             'index' => 0,
-            'class' => Signal::class,
+            'class' => Timer::class,
         ]);
         $this->assertSame(true, Serializer::unserialize($workflow->logs()->firstWhere('index', 0)->result));
     }
@@ -159,27 +158,18 @@ final class TimersTest extends TestCase
             ->create([
                 'index' => 0,
                 'now' => now(),
-                'class' => Signal::class,
+                'class' => Timer::class,
                 'result' => Serializer::serialize(true),
             ]);
 
-        $mockLogs = Mockery::mock(HasMany::class)
-            ->shouldReceive('whereIndex')
-            ->once()
-            ->andReturnSelf()
-            ->shouldReceive('first')
-            ->once()
-            ->andReturn(null)
-            ->shouldReceive('create')
-            ->andThrow(new UniqueConstraintViolationException('', '', [], new Exception()))
-            ->getMock();
-
         $mockStoredWorkflow = Mockery::spy($storedWorkflow);
-
-        $mockStoredWorkflow->shouldReceive('logs')
-            ->andReturnUsing(static function () use ($mockLogs) {
-                return $mockLogs;
-            });
+        $mockStoredWorkflow->shouldReceive('findLogByIndex')
+            ->once()
+            ->with(0)
+            ->andReturn(null);
+        $mockStoredWorkflow->shouldReceive('createLog')
+            ->once()
+            ->andThrow(new UniqueConstraintViolationException('', '', [], new Exception()));
 
         WorkflowStub::setContext([
             'storedWorkflow' => $mockStoredWorkflow,
@@ -252,6 +242,74 @@ final class TimersTest extends TestCase
         ]);
     }
 
+    public function testTimerReturnsUnresolvedPromiseWhenProbingAndNoTimer(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+        ]);
+
+        WorkflowStub::timer('1 minute')
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+        $this->assertSame(0, $workflow->logs()->count());
+        $this->assertDatabaseMissing('workflow_timers', [
+            'stored_workflow_id' => $workflow->id(),
+            'index' => 0,
+        ]);
+    }
+
+    public function testTimerMarksProbePendingBeforeMatchWhenStoredTimerHasNotElapsed(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->timers()
+            ->create([
+                'index' => 0,
+                'stop_at' => now()
+                    ->addMinute(),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+        ]);
+
+        WorkflowStub::timer('1 minute')
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame(0, $workflow->logs()->count());
+    }
+
     public function testTimerCapsDelayForSqsDriver(): void
     {
         Bus::fake();
@@ -296,8 +354,8 @@ final class TimersTest extends TestCase
 
         $this->assertNull($result);
 
-        Bus::assertDispatched(Signal::class, function ($job) use ($now) {
-            $delaySeconds = $job->delay->diffInSeconds($now);
+        Bus::assertDispatched(Timer::class, function ($job) use ($now) {
+            $delaySeconds = $now->diffInSeconds($job->delay);
             $this->assertLessThanOrEqual(900, $delaySeconds);
             $this->assertGreaterThanOrEqual(899, $delaySeconds);
             return true;

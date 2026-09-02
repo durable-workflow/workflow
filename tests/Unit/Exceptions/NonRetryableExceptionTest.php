@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use Exception;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\Exceptions\NonRetryableException;
 
-final class NonRetryableExceptionTest extends TestCase
+final class NonRetryableExceptionTest extends NonDatabaseTestCase
 {
     public function testException(): void
     {

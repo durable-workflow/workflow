@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/cli-json-envelopes/v3/schemas/query-task-result.schema.json",
+  "title": "dw query-task:complete/fail --json",
+  "type": "object",
+  "required": ["query_task_id", "query_task_attempt"],
+  "properties": {
+    "query_task_id": { "type": "string" },
+    "query_task_attempt": { "type": "integer" },
+    "outcome": { "type": ["string", "null"] },
+    "protocol_version": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}
