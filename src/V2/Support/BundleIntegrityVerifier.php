@@ -400,6 +400,14 @@ final class BundleIntegrityVerifier
 
         foreach ($entries as $index => $entry) {
             if (! is_array($entry)) {
+                self::addFinding(
+                    $findings,
+                    'payload_manifest.entry_invalid',
+                    self::SEVERITY_ERROR,
+                    'Payload manifest entry must be an object.',
+                    "payload_manifest.entries[{$index}]",
+                );
+
                 continue;
             }
 
@@ -628,6 +636,14 @@ final class BundleIntegrityVerifier
 
         foreach ($commands as $index => $command) {
             if (! is_array($command)) {
+                self::addFinding(
+                    $findings,
+                    'commands.entry_invalid',
+                    self::SEVERITY_ERROR,
+                    'Command row must be an object.',
+                    "commands[{$index}]",
+                );
+
                 continue;
             }
 
@@ -789,7 +805,7 @@ final class BundleIntegrityVerifier
 
         try {
             $canonical = self::canonicalJson($unsignedBundle);
-        } catch (LogicException $exception) {
+        } catch (JsonException|LogicException $exception) {
             self::addFinding(
                 $findings,
                 'integrity.canonicalization_failed',
