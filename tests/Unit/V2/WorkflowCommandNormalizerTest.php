@@ -231,6 +231,22 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
+    public function testFailWorkflowRejectsNonObjectExceptionPayload(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'fail_workflow',
+                'message' => 'boom',
+                'exception' => 'not-an-object',
+            ],
+        ]);
+
+        $this->assertSame(
+            ['Workflow task command field [exception] must be an object when provided.'],
+            $errors['commands.0.exception'],
+        );
+    }
+
     public function testScheduleActivityRequiresActivityType(): void
     {
         $this->expectException(ValidationException::class);
@@ -1009,6 +1025,20 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]);
     }
 
+    public function testStartChildWorkflowRequiresWorkflowType(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_child_workflow',
+            ],
+        ]);
+
+        $this->assertSame(
+            ['Start child workflow commands require a non-empty workflow_type.'],
+            $errors['commands.0.workflow_type'],
+        );
+    }
+
     public function testStartChildWorkflowAcceptsKnownPolicy(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
@@ -1185,6 +1215,82 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
+    public function testStartServiceOperationRequiresIdentityFields(): void
+    {
+        $command = [
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'payments',
+            'service_name' => 'PythonPayments',
+            'operation_name' => 'authorize',
+            'request_payload' => 'request',
+        ];
+
+        foreach (['endpoint_name', 'service_name', 'operation_name'] as $field) {
+            $invalid = $command;
+            unset($invalid[$field]);
+
+            $errors = $this->normalizeAndCaptureErrors([$invalid]);
+
+            $this->assertSame(
+                [sprintf('Workflow task command field [%s] must be a non-empty string.', $field)],
+                $errors["commands.0.{$field}"],
+            );
+        }
+    }
+
+    public function testStartServiceOperationRequiresStringRequestPayload(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'payments',
+                'service_name' => 'PythonPayments',
+                'operation_name' => 'authorize',
+                'request_payload' => 42,
+            ],
+        ]);
+
+        $this->assertSame(
+            ['Start service operation commands require a string request_payload or payload envelope.'],
+            $errors['commands.0.request_payload'],
+        );
+    }
+
+    public function testStartServiceOperationRejectsInvalidModeOverride(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'payments',
+                'service_name' => 'PythonPayments',
+                'operation_name' => 'authorize',
+                'request_payload' => 'request',
+                'mode_override' => 'deferred',
+            ],
+        ]);
+
+        $this->assertSame(
+            ['The mode_override must be one of: sync, async.'],
+            $errors['commands.0.mode_override'],
+        );
+    }
+
+    public function testStartServiceOperationRejectsInvalidWaitTarget(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'payments',
+                'service_name' => 'PythonPayments',
+                'operation_name' => 'authorize',
+                'request_payload' => 'request',
+                'wait_for' => 'started',
+            ],
+        ]);
+
+        $this->assertSame(['The wait_for must be one of: accepted, completed.'], $errors['commands.0.wait_for']);
+    }
+
     public function testCompleteUpdateUnwrapsEnvelope(): void
     {
         $blob = Serializer::serializeWithCodec('avro', [
@@ -1296,6 +1402,21 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
                 'message' => '',
             ],
         ]);
+    }
+
+    public function testFailUpdateRequiresUpdateId(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'fail_update',
+                'message' => 'boom',
+            ],
+        ]);
+
+        $this->assertSame(
+            ['Workflow task command field [update_id] must be a non-empty string.'],
+            $errors['commands.0.update_id'],
+        );
     }
 
     public function testRecordSideEffectRequiresStringResult(): void
