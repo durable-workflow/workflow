@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -47,6 +48,24 @@ final class V2ReplayDiffTest extends TestCase
         $this->assertNull($report['divergence']);
         $this->assertNull($report['error']);
         $this->assertIsInt($report['replay']['sequence']);
+
+        $path = tempnam(sys_get_temp_dir(), 'replay-verify-command-');
+        $this->assertIsString($path);
+        file_put_contents($path, json_encode($bundle, JSON_THROW_ON_ERROR));
+        $this->beforeApplicationDestroyed(static function () use ($path): void {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        });
+
+        $exitCode = Artisan::call('workflow:v2:replay-verify', [
+            'bundle' => $path,
+        ]);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode, $output);
+        $this->assertStringContainsString('Replay verification: OK', $output);
+        $this->assertStringContainsString('Replay: status=replayed reason=none', $output);
     }
 
     public function testReplayDiffSurfacesShapeMismatchAsDrift(): void
