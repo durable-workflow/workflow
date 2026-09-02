@@ -8,6 +8,7 @@ use LogicException;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\WorkflowInstanceId;
 
 final class StartOptionsTest extends TestCase
@@ -175,6 +176,26 @@ final class StartOptionsTest extends TestCase
         ]);
     }
 
+    public function testNonScalarLabelValueThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must be a scalar value or null');
+
+        new StartOptions(labels: [
+            'tenant' => ['acme'],
+        ]);
+    }
+
+    public function testEmptyLabelValueThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must be a non-empty string');
+
+        new StartOptions(labels: [
+            'tenant' => '   ',
+        ]);
+    }
+
     // ---------------------------------------------------------------
     //  Memo validation
     // ---------------------------------------------------------------
@@ -227,6 +248,16 @@ final class StartOptionsTest extends TestCase
 
         new StartOptions(memo: [
             '' => 'value',
+        ]);
+    }
+
+    public function testNonJsonMemoValueThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('JSON-like scalars');
+
+        new StartOptions(memo: [
+            'request' => new \stdClass(),
         ]);
     }
 
@@ -305,6 +336,58 @@ final class StartOptionsTest extends TestCase
 
         new StartOptions(searchAttributes: [
             'invalid key' => 'value',
+        ]);
+    }
+
+    public function testUnsupportedSearchAttributeValueThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('scalar value, string list, or null');
+
+        new StartOptions(searchAttributes: [
+            'owner' => new \stdClass(),
+        ]);
+    }
+
+    public function testAssociativeSearchAttributeListThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must be a JSON array');
+
+        new StartOptions(searchAttributes: [
+            'owners' => [
+                'primary' => 'Taylor',
+            ],
+        ]);
+    }
+
+    public function testNonStringSearchAttributeListEntryThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must contain only strings');
+
+        new StartOptions(searchAttributes: [
+            'owners' => ['Taylor', 42],
+        ]);
+    }
+
+    public function testOverlongSearchAttributeListEntryThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('list values must be up to');
+
+        new StartOptions(searchAttributes: [
+            'owners' => [str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1)],
+        ]);
+    }
+
+    public function testOverlongScalarSearchAttributeThrows(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must be up to');
+
+        new StartOptions(searchAttributes: [
+            'owner' => str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1),
         ]);
     }
 
@@ -431,6 +514,59 @@ final class StartOptionsTest extends TestCase
 
         $this->assertSame(100, $original->runTimeoutSeconds);
         $this->assertSame(200, $modified->runTimeoutSeconds);
+    }
+
+    public function testSchedulingBuildersAreImmutableAndPreserveOtherFields(): void
+    {
+        $original = new StartOptions(
+            businessKey: 'order-789',
+            labels: [
+                'tenant' => 'acme',
+            ],
+            memo: [
+                'source' => 'checkout',
+            ],
+            searchAttributes: [
+                'region' => 'west',
+            ],
+            executionTimeoutSeconds: 3600,
+            runTimeoutSeconds: 1800,
+            priority: 7,
+            fairnessKey: 'Tenant-A',
+            fairnessWeight: 2,
+        );
+
+        $prioritized = $original->withPriority(1);
+        $rebalanced = $prioritized->withFairness('Tenant-B', 4);
+
+        $this->assertSame(7, $original->priority);
+        $this->assertSame('tenant-a', $original->fairnessKey);
+        $this->assertSame(2, $original->fairnessWeight);
+        $this->assertSame(1, $prioritized->priority);
+        $this->assertSame('tenant-a', $prioritized->fairnessKey);
+        $this->assertSame(2, $prioritized->fairnessWeight);
+        $this->assertSame(1, $rebalanced->priority);
+        $this->assertSame('tenant-b', $rebalanced->fairnessKey);
+        $this->assertSame(4, $rebalanced->fairnessWeight);
+        $this->assertSame($prioritized->businessKey, $rebalanced->businessKey);
+        $this->assertSame($prioritized->labels, $rebalanced->labels);
+        $this->assertSame($prioritized->memo, $rebalanced->memo);
+        $this->assertSame($prioritized->searchAttributes, $rebalanced->searchAttributes);
+        $this->assertSame($prioritized->executionTimeoutSeconds, $rebalanced->executionTimeoutSeconds);
+        $this->assertSame($prioritized->runTimeoutSeconds, $rebalanced->runTimeoutSeconds);
+        $this->assertNotSame($original, $prioritized);
+        $this->assertNotSame($prioritized, $rebalanced);
+    }
+
+    public function testSchedulingBuildersCanRestoreDefaults(): void
+    {
+        $options = (new StartOptions(priority: 1, fairnessKey: 'tenant-a', fairnessWeight: 3))
+            ->withPriority(null)
+            ->withFairness(null);
+
+        $this->assertSame(TaskPriority::DEFAULT, $options->priority);
+        $this->assertNull($options->fairnessKey);
+        $this->assertSame(1, $options->fairnessWeight);
     }
 
     public function testBuilderChainPreservesAllFields(): void
