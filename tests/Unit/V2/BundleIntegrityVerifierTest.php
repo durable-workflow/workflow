@@ -70,6 +70,89 @@ final class BundleIntegrityVerifierTest extends NonDatabaseTestCase
         $this->assertContains('bundle.schema_unexpected', $rules);
     }
 
+    public function testMissingSchemaMetadataIsReported(): void
+    {
+        $bundle = self::wellFormedBundle();
+        unset($bundle['schema'], $bundle['schema_version'], $bundle['exported_at']);
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $rules = array_column($report['findings'], 'rule');
+        $this->assertContains('bundle.schema_missing', $rules);
+        $this->assertContains('bundle.schema_version_missing', $rules);
+        $this->assertContains('bundle.exported_at_missing', $rules);
+    }
+
+    public function testUnsupportedSchemaVersionIsReported(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['schema_version'] = HistoryExport::SCHEMA_VERSION + 1;
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $finding = $this->finding($report, 'bundle.schema_version_unsupported');
+        $this->assertSame(HistoryExport::SCHEMA_VERSION, $finding['context']['expected']);
+        $this->assertSame(HistoryExport::SCHEMA_VERSION + 1, $finding['context']['actual']);
+    }
+
+    public function testRequiredSectionsMustExist(): void
+    {
+        $requiredSections = [
+            'workflow',
+            'payloads',
+            'history_events',
+            'commands',
+            'signals',
+            'updates',
+            'tasks',
+            'activities',
+            'timers',
+            'failures',
+            'links',
+            'redaction',
+            'codec_schemas',
+            'payload_manifest',
+        ];
+
+        foreach ($requiredSections as $section) {
+            $bundle = self::wellFormedBundle();
+            unset($bundle[$section]);
+            $bundle['integrity'] = self::buildIntegrity($bundle);
+
+            $finding = $this->finding(
+                BundleIntegrityVerifier::verify($bundle),
+                'bundle.section_missing',
+                $section,
+            );
+
+            $this->assertSame($section, $finding['path']);
+        }
+    }
+
+    public function testRequiredSectionsRejectInvalidShapes(): void
+    {
+        foreach ([
+            'payloads' => 'an object',
+            'history_events' => 'a list',
+        ] as $section => $shape) {
+            $bundle = self::wellFormedBundle();
+            $bundle[$section] = 'invalid';
+            $bundle['integrity'] = self::buildIntegrity($bundle);
+
+            $finding = $this->finding(
+                BundleIntegrityVerifier::verify($bundle),
+                'bundle.section_invalid',
+                $section,
+            );
+
+            $this->assertSame("Bundle section [{$section}] must be {$shape}.", $finding['message']);
+        }
+    }
+
     public function testNonMonotonicHistorySequenceIsReported(): void
     {
         $bundle = self::wellFormedBundle();
@@ -119,6 +202,40 @@ final class BundleIntegrityVerifierTest extends NonDatabaseTestCase
 
         $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
         $this->assertContains('workflow.memo_payload_missing', array_column($report['findings'], 'rule'));
+    }
+
+    public function testWorkflowIdentityFieldsAreRequired(): void
+    {
+        $bundle = self::wellFormedBundle();
+        unset(
+            $bundle['workflow']['run_id'],
+            $bundle['workflow']['instance_id'],
+            $bundle['workflow']['workflow_type'],
+        );
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $rules = array_column($report['findings'], 'rule');
+        $this->assertContains('workflow.run_id_missing', $rules);
+        $this->assertContains('workflow.instance_id_missing', $rules);
+        $this->assertContains('workflow.workflow_type_missing', $rules);
+    }
+
+    public function testInvalidPortableMemoAuthorityIsRejected(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['workflow']['memo_payload'] = [
+            'codec' => 'avro',
+        ];
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $finding = $this->finding($report, 'workflow.memo_payload_invalid');
+        $this->assertStringContainsString('expected exactly', $finding['message']);
     }
 
     public function testMemoProjectionMustMatchPortableAuthority(): void
@@ -262,6 +379,34 @@ final class BundleIntegrityVerifierTest extends NonDatabaseTestCase
         $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
         $rules = array_column($report['findings'], 'rule');
         $this->assertContains('bundle.unparseable', $rules);
+    }
+
+    public function testJsonEntryPointRejectsScalarDocuments(): void
+    {
+        $report = BundleIntegrityVerifier::verifyJson('42');
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $finding = $this->finding($report, 'bundle.unparseable');
+        $this->assertSame(
+            'Bundle JSON could not be decoded: Bundle JSON must decode to an object.',
+            $finding['message'],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     *
+     * @return array{rule: string, severity: string, message: string, path: ?string, context: array<string, mixed>}
+     */
+    private function finding(array $report, string $rule, ?string $path = null): array
+    {
+        foreach ($report['findings'] as $finding) {
+            if ($finding['rule'] === $rule && ($path === null || $finding['path'] === $path)) {
+                return $finding;
+            }
+        }
+
+        $this->fail(sprintf('Finding [%s] at path [%s] was not reported.', $rule, $path ?? '*'));
     }
 
     /**
