@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Tests\Unit\Commands;
 
 use Illuminate\Support\Str;
-use Tests\TestCase;
+use Tests\NonDatabaseTestCase;
 use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\MemoPayload;
 
-final class V2ReplayVerifyCommandTest extends TestCase
+final class V2ReplayVerifyCommandTest extends NonDatabaseTestCase
 {
     public function testCommandSucceedsForWellFormedBundleWithSkipReplay(): void
     {
@@ -132,6 +132,66 @@ final class V2ReplayVerifyCommandTest extends TestCase
         ])
             ->expectsOutputToContain('"verdict": "ok"')
             ->assertSuccessful();
+    }
+
+    public function testHumanReportRendersWarningAndUnverifiedSignature(): void
+    {
+        config()->set('workflows.v2.history_export.signing_key', null);
+        $bundle = self::wellFormedBundle();
+        $bundle['integrity']['signature_algorithm'] = 'hmac-sha256';
+        $bundle['integrity']['signature'] = 'unverified-signature';
+        $bundle['integrity']['key_id'] = 'unavailable-key';
+        $bundlePath = $this->writeBundle($bundle);
+
+        $this->artisan('workflow:v2:replay-verify', [
+            'bundle' => $bundlePath,
+            '--skip-replay' => true,
+        ])
+            ->expectsOutputToContain('Replay verification: WARNING')
+            ->expectsOutputToContain('Workflow: run=cli-test-run instance=cli-test-instance events=2')
+            ->expectsOutputToContain('Integrity: status=warning checksum_match=yes signature=n/a')
+            ->expectsOutputToContain('[WARNING] integrity.signature_key_unavailable')
+            ->assertSuccessful();
+    }
+
+    public function testHumanReportRendersChecksumFailure(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['integrity']['checksum'] = str_repeat('0', 64);
+        $bundlePath = $this->writeBundle($bundle);
+
+        $this->artisan('workflow:v2:replay-verify', [
+            'bundle' => $bundlePath,
+            '--skip-replay' => true,
+        ])
+            ->expectsOutputToContain('Replay verification: FAILED')
+            ->expectsOutputToContain('Integrity: status=failed checksum_match=no signature=unsigned')
+            ->expectsOutputToContain('[ERROR] integrity.checksum_mismatch')
+            ->assertFailed();
+    }
+
+    public function testHumanReportRendersReplayFailure(): void
+    {
+        $bundlePath = $this->writeBundle(self::wellFormedBundle());
+
+        $this->artisan('workflow:v2:replay-verify', [
+            'bundle' => $bundlePath,
+        ])
+            ->expectsOutputToContain('Replay verification: FAILED')
+            ->expectsOutputToContain('Replay: status=failed reason=')
+            ->expectsOutputToContain('Error:')
+            ->assertFailed();
+    }
+
+    public function testMissingBundleFailureIsRenderedForHumans(): void
+    {
+        $path = '/nonexistent/path/' . Str::ulid() . '.json';
+
+        $this->artisan('workflow:v2:replay-verify', [
+            'bundle' => $path,
+        ])
+            ->expectsOutputToContain("Bundle file [{$path}] does not exist.")
+            ->assertFailed();
     }
 
     /**
