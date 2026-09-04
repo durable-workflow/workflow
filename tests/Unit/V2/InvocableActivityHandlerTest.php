@@ -9,6 +9,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use TypeError;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\InvocableActivityHandler;
@@ -165,6 +166,76 @@ final class InvocableActivityHandlerTest extends TestCase
         $this->assertSame([
             'codec' => 'json',
         ], $output['failure']['details']);
+    }
+
+    public function testInvokesZeroArgumentHandlerWhenArgumentsPayloadIsNull(): void
+    {
+        $envelope = $this->activityInput();
+        $envelope['payloads']['arguments'] = null;
+
+        $output = (new InvocableActivityHandler([
+            'billing.charge-card' => static fn (): string => 'approved',
+        ], resultCodec: 'avro'))->handle($envelope);
+
+        $this->assertSame('succeeded', $output['outcome']['status']);
+        $this->assertSame(
+            'approved',
+            Serializer::unserializeWithCodec('avro', $output['result']['payload']['blob']),
+        );
+    }
+
+    public function testMapsTypedArgumentMismatchToDecodeFailure(): void
+    {
+        $output = (new InvocableActivityHandler([
+            'billing.charge-card' => static fn (int $amount): int => $amount,
+        ], resultCodec: 'avro'))->handle($this->activityInput(['not-an-integer']));
+
+        $this->assertSame('failed', $output['outcome']['status']);
+        $this->assertFalse($output['outcome']['retryable']);
+        $this->assertSame('decode_failure', $output['failure']['kind']);
+        $this->assertSame(TypeError::class, $output['failure']['type']);
+        $this->assertSame([
+            'codec' => 'avro',
+        ], $output['failure']['details']);
+        $this->assertStringContainsString('must be of type int', $output['failure']['message']);
+    }
+
+    public function testMapsMalformedDeadlineToDecodeFailure(): void
+    {
+        $envelope = $this->activityInput();
+        $envelope['deadlines']['heartbeat'] = 'not-a-valid-deadline';
+
+        $output = (new InvocableActivityHandler([
+            'billing.charge-card' => static fn (): string => 'not invoked',
+        ], resultCodec: 'avro'))->handle($envelope);
+
+        $this->assertSame('failed', $output['outcome']['status']);
+        $this->assertFalse($output['outcome']['retryable']);
+        $this->assertSame('decode_failure', $output['failure']['kind']);
+        $this->assertSame([
+            'deadline' => 'deadlines.heartbeat',
+            'expires_at' => 'not-a-valid-deadline',
+        ], $output['failure']['details']);
+        $this->assertStringContainsString(
+            'Carrier could not parse activity deadline deadlines.heartbeat',
+            $output['failure']['message'],
+        );
+    }
+
+    public function testMapsUnencodableResultToDecodeFailure(): void
+    {
+        $output = (new InvocableActivityHandler([
+            'billing.charge-card' => static fn (): float => INF,
+        ], resultCodec: 'avro'))->handle($this->activityInput());
+
+        $this->assertSame('failed', $output['outcome']['status']);
+        $this->assertFalse($output['outcome']['retryable']);
+        $this->assertSame('decode_failure', $output['failure']['kind']);
+        $this->assertSame([
+            'codec' => 'avro',
+        ], $output['failure']['details']);
+        $this->assertStringContainsString('Avro Value doubles must be finite', $output['failure']['message']);
+        $this->assertArrayNotHasKey('result', $output);
     }
 
     public function testValidatesResultCodec(): void
