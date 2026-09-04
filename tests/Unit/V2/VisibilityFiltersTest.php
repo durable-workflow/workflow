@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Http\Request;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -14,6 +15,46 @@ use Workflow\V2\Support\VisibilityFilters;
 
 final class VisibilityFiltersTest extends TestCase
 {
+    public function testFromRequestNormalizesCanonicalAndAliasQueryParameters(): void
+    {
+        $request = Request::create('/runs', 'GET', [
+            'namespace' => ' production ',
+            'workflow_type_contains' => ' invoice ',
+            'archived' => 1,
+            'label' => [
+                'tenant' => ' acme ',
+            ],
+            'search_attributes' => [
+                'priority' => ' high ',
+            ],
+        ]);
+
+        $filters = VisibilityFilters::fromRequest($request);
+
+        $this->assertSame('production', $filters['namespace']);
+        $this->assertTrue($filters['archived']);
+        $this->assertSame('invoice', $filters['workflow_type_contains']);
+        $this->assertSame([
+            'tenant' => 'acme',
+        ], $filters['labels']);
+        $this->assertSame([
+            'priority' => 'high',
+        ], $filters['search_attributes']);
+    }
+
+    public function testNormalizeHandlesIntegerBooleansAndRejectsMalformedLabels(): void
+    {
+        $this->assertSame([
+            'archived' => true,
+            'is_terminal' => false,
+        ], VisibilityFilters::normalize([
+            'repair_attention' => 2,
+            'archived' => 1,
+            'is_terminal' => 0,
+            'labels' => 'tenant=acme',
+        ]));
+    }
+
     public function testNormalizeKeepsOnlyVersionedVisibilityFields(): void
     {
         $filters = VisibilityFilters::normalize([
@@ -524,6 +565,63 @@ final class VisibilityFiltersTest extends TestCase
             'This saved view uses visibility filter version 1, but this Waterline build supports version 6.',
             $alphaVersion['message'],
         );
+    }
+
+    public function testVersionMetadataNormalizesStringVersionsAndExplainsMalformedContracts(): void
+    {
+        $supported = VisibilityFilters::versionMetadata(' 6 ');
+        $wrongType = VisibilityFilters::versionMetadata(true);
+        $empty = VisibilityFilters::versionMetadata(' ');
+        $nonNumeric = VisibilityFilters::versionMetadata('v6');
+
+        $this->assertSame(6, $supported['version']);
+        $this->assertTrue($supported['supported']);
+
+        foreach ([$wrongType, $empty, $nonNumeric] as $metadata) {
+            $this->assertNull($metadata['version']);
+            $this->assertFalse($metadata['supported']);
+            $this->assertSame(
+                'This saved view does not declare a supported visibility filter version. '
+                    . 'This Waterline build supports version 6.',
+                $metadata['message'],
+            );
+        }
+    }
+
+    public function testApplyFiltersArchivedTerminalRuns(): void
+    {
+        WorkflowRunSummary::create([
+            'id' => '01JVISARCHIVEDTERMINAL001',
+            'workflow_instance_id' => 'archived-terminal-match',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'status' => 'completed',
+            'status_bucket' => 'completed',
+            'archived_at' => now(),
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISACTIVE0RUNNING000001',
+            'workflow_instance_id' => 'active-running-miss',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'status' => 'running',
+            'status_bucket' => 'running',
+            'archived_at' => null,
+        ]);
+
+        $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'archived' => true,
+            'is_terminal' => true,
+        ])->pluck('id')
+            ->all();
+
+        $this->assertSame(['01JVISARCHIVEDTERMINAL001'], $ids);
     }
 
     public function testIsReservedViewIdGuardsSystemPrefix(): void
