@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use LogicException;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Enums\DuplicateStartPolicy;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -377,8 +378,18 @@ final class StartOptionsTest extends TestCase
         $this->expectExceptionMessage('list values must be up to');
 
         new StartOptions(searchAttributes: [
-            'owners' => [str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1)],
+            'owners' => [str_repeat('a', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1)],
         ]);
+    }
+
+    public function testLongScalarSearchAttributeUsesTheDocumentedStringLimit(): void
+    {
+        $description = str_repeat("\u{00E9}", WorkflowSearchAttribute::MAX_STRING_LENGTH);
+        $options = new StartOptions(searchAttributes: [
+            'description' => $description,
+        ]);
+
+        $this->assertSame($description, $options->searchAttributes['description']);
     }
 
     public function testOverlongScalarSearchAttributeThrows(): void
@@ -387,7 +398,7 @@ final class StartOptionsTest extends TestCase
         $this->expectExceptionMessage('must be up to');
 
         new StartOptions(searchAttributes: [
-            'owner' => str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1),
+            'owner' => str_repeat('a', WorkflowSearchAttribute::MAX_STRING_LENGTH + 1),
         ]);
     }
 

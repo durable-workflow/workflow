@@ -53,6 +53,25 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals('A long description string', $attr->getValue());
     }
 
+    public function testItStoresScalarTextBeyondTheKeywordLimit(): void
+    {
+        $run = $this->createRun();
+        $description = str_repeat("\u{00E9}", WorkflowSearchAttribute::MAX_STRING_LENGTH);
+
+        $this->service->upsert($run, new UpsertSearchAttributesCall([
+            'description' => $description,
+        ]), 1);
+
+        $attribute = WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('key', 'description')
+            ->firstOrFail();
+
+        $this->assertSame(WorkflowSearchAttribute::TYPE_STRING, $attribute->type);
+        $this->assertSame($description, $attribute->value_string);
+        $this->assertSame($description, $attribute->getValue());
+    }
+
     public function testItInfersAndStoresKeywordTypeForShortStrings(): void
     {
         $run = $this->createRun();

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
@@ -13,6 +15,25 @@ use Workflow\V2\Support\MemoReplayIdentity;
 
 final class MemoReplayIdentityTest extends TestCase
 {
+    public function testCanonicalEnvelopeNormalizesNestedMapOrder(): void
+    {
+        $canonical = MemoPayload::canonicalEnvelope(MemoPayload::envelope([
+            'second' => [
+                'right' => 2,
+                'left' => 1,
+            ],
+            'first' => true,
+        ]));
+
+        $this->assertSame(MemoPayload::envelope([
+            'first' => true,
+            'second' => [
+                'left' => 1,
+                'right' => 2,
+            ],
+        ]), $canonical);
+    }
+
     public function testEmptyMemoMapRetainsItsAvroMapBranch(): void
     {
         $envelope = MemoPayload::mapEnvelope([]);
@@ -107,5 +128,78 @@ final class MemoReplayIdentityTest extends TestCase
                 'payload' => AvroBinaryValue::fromBytes('same-bytes'),
             ],
         );
+    }
+
+    public function testMapPayloadHelpersPreservePortableBytes(): void
+    {
+        $map = AvroMapValue::fromPairs([['payload', AvroBinaryValue::fromBytes("\x00\xFF")]]);
+        $envelope = MemoPayload::envelope($map);
+
+        $this->assertSame($envelope, MemoPayload::canonicalMapEnvelope($envelope));
+        $this->assertSame("\x00\xFF", MemoPayload::decodeEntries($envelope)['payload']->bytes);
+        $this->assertNotSame('', MemoPayload::encodedBytes($map));
+        $this->assertNotSame('', MemoPayload::encodedMapBytes([
+            'payload' => AvroBinaryValue::fromBytes("\x00\xFF"),
+        ]));
+    }
+
+    public function testMemoEntryPayloadRejectsInvalidKeys(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('invalid_memo_key');
+
+        MemoPayload::decodeEntries(MemoPayload::envelope(AvroMapValue::fromPairs([['123', 'value']])));
+    }
+
+    public function testMemoEntryPayloadMustBeAMap(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must decode to a string-keyed map');
+
+        MemoPayload::decodeEntries(MemoPayload::envelope(['value']));
+    }
+
+    /**
+     * @param array<string, mixed> $envelope
+     */
+    #[DataProvider('invalidEnvelopes')]
+    public function testMalformedMemoEnvelopesAreRejected(array $envelope, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        MemoPayload::encodedEnvelopeSize($envelope);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function invalidEnvelopes(): iterable
+    {
+        yield 'nonstandard shape' => [[
+            'codec' => 'avro',
+            'blob' => 'value',
+            'extra' => true,
+        ], 'expected exactly the standard'];
+        yield 'unsupported codec' => [[
+            'codec' => 'json',
+            'blob' => 'value',
+        ], 'unsupported_payload_codec'];
+        yield 'non-string codec' => [[
+            'codec' => [],
+            'blob' => 'value',
+        ], 'memo payloads require codec "avro"'];
+        yield 'empty blob' => [[
+            'codec' => 'avro',
+            'blob' => '',
+        ], 'must be a non-empty string'];
+        yield 'non-string blob' => [[
+            'codec' => 'avro',
+            'blob' => [],
+        ], 'must be a non-empty string'];
+        yield 'invalid base64 blob' => [[
+            'codec' => 'avro',
+            'blob' => '%%%',
+        ], 'must be strict base64'];
     }
 }
