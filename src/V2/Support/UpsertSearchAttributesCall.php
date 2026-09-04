@@ -66,7 +66,7 @@ final class UpsertSearchAttributesCall implements YieldedCommand
 
                     $trimmed = trim($entry);
 
-                    if (strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
+                    if (mb_strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
                         throw new LogicException(sprintf(
                             'Workflow v2 search attribute [%s] list values must be up to %d characters.',
                             $key,
@@ -85,11 +85,11 @@ final class UpsertSearchAttributesCall implements YieldedCommand
             if (is_string($value)) {
                 $trimmed = trim($value);
 
-                if (strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
+                if (mb_strlen($trimmed) > WorkflowSearchAttribute::MAX_STRING_LENGTH) {
                     throw new LogicException(sprintf(
                         'Workflow v2 search attribute [%s] must be up to %d characters.',
                         $key,
-                        WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
+                        WorkflowSearchAttribute::MAX_STRING_LENGTH,
                     ));
                 }
 

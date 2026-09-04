@@ -6,6 +6,7 @@ namespace Workflow\V2;
 
 use LogicException;
 use Workflow\V2\Enums\DuplicateStartPolicy;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -365,11 +366,11 @@ final class StartOptions
 
                     $trimmed = trim($entry);
 
-                    if ($trimmed !== '' && strlen($trimmed) > WorkflowInstanceId::MAX_LENGTH) {
+                    if ($trimmed !== '' && mb_strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
                         throw new LogicException(sprintf(
                             'Workflow v2 search attribute [%s] list values must be up to %d characters.',
                             $key,
-                            WorkflowInstanceId::MAX_LENGTH,
+                            WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
                         ));
                     }
 
@@ -385,11 +386,11 @@ final class StartOptions
                 $value
             ) : (string) $value);
 
-            if ($stringValue !== '' && strlen($stringValue) > WorkflowInstanceId::MAX_LENGTH) {
+            if ($stringValue !== '' && mb_strlen($stringValue) > WorkflowSearchAttribute::MAX_STRING_LENGTH) {
                 throw new LogicException(sprintf(
                     'Workflow v2 search attribute [%s] must be up to %d characters when cast to string.',
                     $key,
-                    WorkflowInstanceId::MAX_LENGTH,
+                    WorkflowSearchAttribute::MAX_STRING_LENGTH,
                 ));
             }
 
