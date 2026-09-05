@@ -325,6 +325,38 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals(0, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
     }
 
+    public function testItDeletesEveryAttributeForOnlyTheSelectedRun(): void
+    {
+        $selectedRun = $this->createRun();
+        $otherRun = $this->createRun();
+
+        $this->service->upsert($selectedRun, new UpsertSearchAttributesCall([
+            'region' => 'us-east',
+            'priority' => 5,
+        ]), 1);
+        $this->service->upsert($otherRun, new UpsertSearchAttributesCall([
+            'region' => 'eu-west',
+        ]), 1);
+
+        $this->service->deleteAllForRun($selectedRun->id);
+
+        $this->assertSame(0, WorkflowSearchAttribute::where('workflow_run_id', $selectedRun->id)->count());
+        $this->assertSame(1, WorkflowSearchAttribute::where('workflow_run_id', $otherRun->id)->count());
+    }
+
+    public function testItExposesTheOwningRunAndInstanceRelations(): void
+    {
+        $run = $this->createRun();
+        $this->service->upsert($run, new UpsertSearchAttributesCall([
+            'region' => 'us-east',
+        ]), 1);
+
+        $attribute = WorkflowSearchAttribute::where('workflow_run_id', $run->id)->firstOrFail();
+
+        $this->assertTrue($attribute->run->is($run));
+        $this->assertTrue($attribute->instance->is($run->instance));
+    }
+
     public function testItEnforcesMaxAttributesPerRunLimit(): void
     {
         $run = $this->createRun();
@@ -351,6 +383,132 @@ class SearchAttributeTest extends TestCase
             'one_too_many' => 'fail',
         ]);
         $this->service->upsert($run, $call2, 2);
+    }
+
+    public function testModelValidationRejectsPersistedAttributeCountsBeyondTheLimit(): void
+    {
+        $run = $this->createRun();
+        $now = now();
+        $rows = [];
+
+        for ($i = 0; $i <= WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN; $i++) {
+            $rows[] = [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'key' => "attribute_{$i}",
+                'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
+                'upserted_at_sequence' => 1,
+                'inherited_from_parent' => false,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        WorkflowSearchAttribute::query()->insert($rows);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Search attributes count exceeds maximum (101 > 100)');
+
+        WorkflowSearchAttribute::validateCount($run->id);
+    }
+
+    public function testTotalSizeValidationAccountsForEveryStorageType(): void
+    {
+        $run = $this->createRun();
+        $this->service->upsert($run, new UpsertSearchAttributesCall([
+            'description' => 'durable workflow',
+            'priority' => 5,
+            'ratio' => 1.5,
+            'active' => true,
+            'started_at' => '2026-09-04T12:00:00Z',
+            'languages' => ['php', 'python', 'rust'],
+        ]), 1, attributeTypes: [
+            'started_at' => WorkflowSearchAttribute::TYPE_DATETIME,
+        ]);
+        WorkflowSearchAttribute::create([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'empty_value',
+            'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
+            'upserted_at_sequence' => 1,
+            'inherited_from_parent' => false,
+        ]);
+
+        WorkflowSearchAttribute::validateTotalSize($run->id);
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function testModelValidationRejectsPersistedAttributeSetsBeyondTheTotalSizeLimit(): void
+    {
+        $run = $this->createRun();
+        $now = now();
+        $rows = [];
+
+        for ($i = 0; $i < 33; $i++) {
+            $rows[] = [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'key' => "description_{$i}",
+                'type' => WorkflowSearchAttribute::TYPE_STRING,
+                'value_string' => str_repeat('x', WorkflowSearchAttribute::MAX_STRING_LENGTH),
+                'upserted_at_sequence' => 1,
+                'inherited_from_parent' => false,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        WorkflowSearchAttribute::query()->insert($rows);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Total search attributes size exceeds maximum (67584 > 65536 bytes)');
+
+        WorkflowSearchAttribute::validateTotalSize($run->id);
+    }
+
+    public function testUpsertRejectsAnOversizedCombinedAttributeSetAtomically(): void
+    {
+        $run = $this->createRun();
+        $attributes = [];
+
+        for ($i = 0; $i < 33; $i++) {
+            $attributes["description_{$i}"] = str_repeat('x', WorkflowSearchAttribute::MAX_STRING_LENGTH);
+        }
+
+        try {
+            $this->service->upsert($run, new UpsertSearchAttributesCall($attributes), 1);
+            $this->fail('The oversized attribute set should be rejected.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame(
+                'Total search attributes size exceeds maximum (67584 > 65536 bytes)',
+                $exception->getMessage(),
+            );
+        }
+
+        $this->assertSame(0, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testUpsertIgnoresLegacyNullValuesWhenCalculatingTotalSize(): void
+    {
+        $run = $this->createRun();
+        WorkflowSearchAttribute::create([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'empty_value',
+            'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
+            'upserted_at_sequence' => 1,
+            'inherited_from_parent' => false,
+        ]);
+
+        $this->service->upsert($run, new UpsertSearchAttributesCall([
+            'region' => 'us-east',
+        ]), 2);
+
+        $this->assertSame([
+            'empty_value' => null,
+            'region' => 'us-east',
+        ], $this->service->getAttributes($run));
     }
 
     public function testItEnforcesStringLengthLimit(): void

@@ -347,7 +347,10 @@ class WorkflowSearchAttribute extends Model
     private function setIntValue(mixed $value): void
     {
         if (! is_numeric($value)) {
-            throw new InvalidArgumentException("Cannot coerce value to int: {$value}");
+            throw new InvalidArgumentException(sprintf(
+                'Cannot coerce value to int: %s',
+                self::describeValue($value),
+            ));
         }
 
         $this->value_int = (int) $value;
@@ -356,7 +359,10 @@ class WorkflowSearchAttribute extends Model
     private function setFloatValue(mixed $value): void
     {
         if (! is_numeric($value)) {
-            throw new InvalidArgumentException("Cannot coerce value to float: {$value}");
+            throw new InvalidArgumentException(sprintf(
+                'Cannot coerce value to float: %s',
+                self::describeValue($value),
+            ));
         }
 
         $this->value_float = (float) $value;
@@ -391,7 +397,10 @@ class WorkflowSearchAttribute extends Model
             }
         }
 
-        throw new InvalidArgumentException("Cannot coerce value to bool: {$value}");
+        throw new InvalidArgumentException(sprintf(
+            'Cannot coerce value to bool: %s',
+            self::describeValue($value),
+        ));
     }
 
     private function setDatetimeValue(mixed $value): void
@@ -440,5 +449,10 @@ class WorkflowSearchAttribute extends Model
         }
 
         throw new InvalidArgumentException('Cannot coerce value to string: ' . gettype($value));
+    }
+
+    private static function describeValue(mixed $value): string
+    {
+        return is_scalar($value) ? (string) $value : get_debug_type($value);
     }
 }
