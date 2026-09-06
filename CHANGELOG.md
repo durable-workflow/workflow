@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.0.4 - 2026-09-06
+
+- Durable `finally` cleanup survives ordinary workflow-task suspension and
+  discarded replay Fibers. Cleanup activities, timers, and memo writes retain
+  normal success/failure replay behavior without running during local teardown.
+
 ## 2.0.3 - 2026-09-02
 
 - Schedule ticks share bounded due-work and buffered-drain batches across
