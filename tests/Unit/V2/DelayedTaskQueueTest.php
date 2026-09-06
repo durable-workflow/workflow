@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Worker;
@@ -19,6 +20,7 @@ use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\WorkflowStub;
@@ -103,6 +105,15 @@ final class DelayedTaskQueueTest extends TestCase
         $this->assertSame(2, TestFractionalRetryActivity::$calls);
         $this->assertSame(2, ActivityAttempt::query()->count());
         $this->assertSame(0, Queue::connection('delivery-test')->size('delayed-tasks'));
+
+        $duplicate = (new RunActivityTask($task->id))
+            ->onConnection('delivery-test')
+            ->onQueue('delayed-tasks');
+        $this->app->make(Dispatcher::class)->dispatch($duplicate);
+        $this->runNextJob();
+        $this->assertSame(2, TestFractionalRetryActivity::$calls);
+        $this->assertSame(2, ActivityAttempt::query()->count());
+        $this->assertCount(0, $this->failures);
     }
 
     public function testEarlyTimerDeliveriesDoNotExhaustTransportAttempts(): void
@@ -117,7 +128,8 @@ final class DelayedTaskQueueTest extends TestCase
         // Force repeated early broker delivery without changing the durable deadline.
         for ($delivery = 0; $delivery < 8; ++$delivery) {
             DB::table('jobs')->update([
-                'available_at' => now()->getTimestamp(),
+                'available_at' => now()
+                    ->getTimestamp(),
             ]);
             $this->runNextJob();
             $this->assertCount(0, $this->failures);
@@ -143,7 +155,8 @@ final class DelayedTaskQueueTest extends TestCase
         $this->runNextJob();
 
         DB::table('jobs')->update([
-            'available_at' => now()->getTimestamp(),
+            'available_at' => now()
+                ->getTimestamp(),
         ]);
         $this->runNextJob();
         $this->assertSame(1, TestFractionalRetryActivity::$calls);
