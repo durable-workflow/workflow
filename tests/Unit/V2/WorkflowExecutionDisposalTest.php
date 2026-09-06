@@ -160,8 +160,12 @@ final class WorkflowExecutionDisposalTest extends TestCase
         $this->assertInstanceOf(FiberError::class, $failure);
         $execution = WorkflowExecution::startCallback(static fn (): mixed => timer(1));
 
-        $this->expectExceptionObject($failure);
-        $execution->throw($failure);
+        try {
+            $execution->throw($failure);
+            $this->fail('A force-close error from another Fiber must remain observable.');
+        } catch (FiberError $error) {
+            $this->assertSame($failure, $error);
+        }
     }
 
     private static function cleanup(string $kind): void

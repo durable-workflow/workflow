@@ -9,7 +9,11 @@
     "arguments": [false, 60],
     "payload_codec": "avro"
   },
-  "history": [],
+  "command_sequence": [{
+    "completed": false,
+    "result": null,
+    "commands": [{"type": "start_timer", "delay_seconds": 60}]
+  }],
   "expected": {
     "completed": false,
     "result": null,
