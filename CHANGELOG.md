@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.5 - 2026-09-06
+
+- Early queue delivery no longer exhausts activity or timer transport attempts.
+  Fractional-second wakeups round up without changing durable deadlines;
+  early wakeups use fresh jobs while business retry limits remain unchanged.
+  Long SQS timers relay through capped 900-second dispatches.
+
 ## 2.0.4 - 2026-09-06
 
 - Durable `finally` cleanup survives ordinary workflow-task suspension and
