@@ -49,7 +49,12 @@ final class RunActivityTask implements ShouldQueue
         [$claim, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
-            $this->release($releaseIn);
+            // An early wakeup is not a failed execution or a transport retry.
+            $task = WorkflowTask::query()->find($this->taskId);
+
+            if ($task instanceof WorkflowTask) {
+                TaskDispatcher::dispatch($task);
+            }
 
             return;
         }

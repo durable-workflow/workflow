@@ -25,7 +25,6 @@ use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TimerRecovery;
-use Workflow\V2\Support\TimerTransportChunker;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowTaskLease;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -83,10 +82,12 @@ final class RunTimerTask implements ShouldQueue
         [$timerId, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
-            $this->release(TimerTransportChunker::cappedReleaseDelay(
-                $releaseIn,
-                is_string($this->connection ?? null) ? $this->connection : null,
-            ));
+            // Relay capped/early wakeups without spending the queue job's failure budget.
+            $task = WorkflowTask::query()->find($this->taskId);
+
+            if ($task instanceof WorkflowTask) {
+                TaskDispatcher::dispatch($task);
+            }
 
             return;
         }

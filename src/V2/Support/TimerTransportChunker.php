@@ -12,13 +12,12 @@ use Carbon\CarbonInterface;
  * SQS limits initial DelaySeconds to 900. Other drivers may impose similar
  * ceilings. When a timer's fire_at exceeds the queue's max delay, the
  * transport dispatches the task with a capped delay. RunTimerTask detects
- * the early arrival (available_at still in the future) and re-releases
- * with the remaining seconds, repeating until the real fire_at is reached.
+ * the early arrival (available_at still in the future) and dispatches a fresh
+ * job with a capped delay, repeating until the real fire_at is reached.
+ * Each wakeup has its own bounded transport failure budget.
  *
- * ChangeMessageVisibility (used by release()) supports up to 43200 seconds
- * on SQS, so subsequent relay hops can use longer delays than the initial
- * dispatch. For truly long timers (> 12 hours), the relay chain continues
- * with capped release delays.
+ * Release-delay helpers remain available for adapters using
+ * ChangeMessageVisibility, which supports up to 43200 seconds on SQS.
  */
 final class TimerTransportChunker
 {
@@ -90,8 +89,7 @@ final class TimerTransportChunker
     /**
      * Cap a release delay (seconds) to the queue driver's ceiling.
      *
-     * Used by RunTimerTask when it arrives before fire_at and needs
-     * to re-release itself for the remaining duration.
+     * For adapters that re-release a delivery rather than enqueueing a fresh job.
      */
     public static function cappedReleaseDelay(int $seconds, ?string $connection = null): int
     {
