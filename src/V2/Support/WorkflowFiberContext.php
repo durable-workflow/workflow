@@ -6,7 +6,9 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Fiber;
+use FiberError;
 use LogicException;
+use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
 
 final class WorkflowFiberContext
 {
@@ -98,7 +100,24 @@ final class WorkflowFiberContext
             return $call;
         }
 
-        return Fiber::suspend($call);
+        try {
+            return Fiber::suspend($call);
+        } catch (FiberError $error) {
+            // PHP unwinds finally blocks when discarding suspended Fibers. It
+            // exposes no closing-state query; only this native error identifies
+            // a durable call that cannot be emitted during that teardown.
+            $origin = $error->getTrace()[0] ?? [];
+            if (
+                $error->getMessage() !== 'Cannot suspend in a force-closed fiber'
+                || ($origin['class'] ?? null) !== Fiber::class
+                || ($origin['function'] ?? null) !== 'suspend'
+                || ($origin['file'] ?? null) !== __FILE__
+            ) {
+                throw $error;
+            }
+
+            throw new WorkflowFiberDiscardedException(previous: $error);
+        }
     }
 
     public static function whileInactive(callable $callback): mixed

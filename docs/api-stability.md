@@ -272,6 +272,20 @@ preference; both produce identical `Support\*` Call value objects or
 deterministic workflow-time values, and both route metadata upserts through
 the same command path.
 
+Durable calls in `try`/`finally` follow normal workflow control flow: cleanup
+can suspend for activities, timers, and memo writes after success or a handled
+failure, and those commands are reconstructed from history on replay. Disposing
+a suspended local Fiber at a task boundary does not schedule that cleanup or
+complete the workflow. PHP still unwinds local `finally` code during disposal;
+keep external effects in activities, not directly in the workflow body.
+
+This is not an unconditional cleanup guarantee. Embedded run-level `cancel()`
+records cancellation and stops the run; activities can observe cancellation,
+but the workflow is not resumed to run a cleanup block. `terminate()` stops the
+run without a cleanup opportunity. Process death cannot execute PHP cleanup
+either. For business cancellation that must finish compensating work, signal
+the workflow and let it execute the cleanup before completing.
+
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
 
