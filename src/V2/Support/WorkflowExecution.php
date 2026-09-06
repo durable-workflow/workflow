@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Fiber;
 use Throwable;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
+use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
 use Workflow\V2\Workflow;
 
 final class WorkflowExecution
@@ -47,6 +48,9 @@ final class WorkflowExecution
 
             try {
                 return $callback(...$arguments);
+            } catch (WorkflowFiberDiscardedException) {
+                // No executor observes a result from a force-closed Fiber.
+                return null;
             } finally {
                 WorkflowFiberContext::leave();
             }

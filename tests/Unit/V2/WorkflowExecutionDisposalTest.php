@@ -9,11 +9,11 @@ use FiberError;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use WeakReference;
+use function Workflow\V2\activity;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\TimerCall;
-use Workflow\V2\Support\WorkflowExecution;
 
-use function Workflow\V2\activity;
+use Workflow\V2\Support\WorkflowExecution;
 use function Workflow\V2\timer;
 use function Workflow\V2\upsertMemo;
 
@@ -70,7 +70,9 @@ final class WorkflowExecutionDisposalTest extends TestCase
                     activity('cleanup', []);
                 }
             } finally {
-                upsertMemo(['cleaned' => true]);
+                upsertMemo([
+                    'cleaned' => true,
+                ]);
             }
         });
         $reference = WeakReference::create($execution->fiber());
@@ -92,7 +94,9 @@ final class WorkflowExecutionDisposalTest extends TestCase
                 } finally {
                     activity('cleanup', []);
                     timer(2);
-                    upsertMemo(['cleaned' => true]);
+                    upsertMemo([
+                        'cleaned' => true,
+                    ]);
                 }
 
                 return $result;
@@ -137,12 +141,37 @@ final class WorkflowExecutionDisposalTest extends TestCase
         });
     }
 
+    public function testAForceCloseErrorFromAnotherFiberIsNotSwallowed(): void
+    {
+        $other = new Fiber(static function (): void {
+            try {
+                Fiber::suspend();
+            } finally {
+                Fiber::suspend();
+            }
+        });
+        $other->start();
+        $failure = null;
+        try {
+            unset($other);
+        } catch (FiberError $error) {
+            $failure = $error;
+        }
+        $this->assertInstanceOf(FiberError::class, $failure);
+        $execution = WorkflowExecution::startCallback(static fn (): mixed => timer(1));
+
+        $this->expectExceptionObject($failure);
+        $execution->throw($failure);
+    }
+
     private static function cleanup(string $kind): void
     {
         match ($kind) {
             'activity' => activity('cleanup', []),
             'timer' => timer(2),
-            'memo' => upsertMemo(['cleaned' => true]),
+            'memo' => upsertMemo([
+                'cleaned' => true,
+            ]),
         };
     }
 }
