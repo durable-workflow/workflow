@@ -10,9 +10,12 @@ use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Worker;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\V2\TestFractionalRetryActivity;
 use Tests\Fixtures\V2\TestFractionalRetryWorkflow;
@@ -23,6 +26,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class DelayedTaskQueueTest extends TestCase
@@ -74,9 +78,7 @@ final class DelayedTaskQueueTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider queues
-     */
+    #[DataProvider('queues')]
     public function testFractionalRetryCompletesWithoutTransportFailure(string $driver): void
     {
         $this->configureQueue($driver);
@@ -143,6 +145,37 @@ final class DelayedTaskQueueTest extends TestCase
         $this->runNextJob();
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame(1, $task->fresh()->attempt_count);
+        $this->assertCount(0, $this->failures);
+    }
+
+    public function testQueueWorkCommandCompletesTheFractionalRetryWithoutWatchdogRepair(): void
+    {
+        $this->configureQueue('database');
+        Cache::forever(TaskWatchdog::LOOP_THROTTLE_KEY, true);
+        Cache::forever('workflow:watchdog:looping', true);
+        $workflow = WorkflowStub::make(TestFractionalRetryWorkflow::class);
+        $workflow->start();
+
+        foreach (['12:00:00.500000', '12:00:01.000000', '12:00:02.000000'] as $time) {
+            Carbon::setTestNow(Carbon::parse('2026-01-15 ' . $time));
+            $this->assertSame(0, Artisan::call('queue:work', [
+                'connection' => 'delivery-test',
+                '--queue' => 'delayed-tasks',
+                '--stop-when-empty' => true,
+                '--sleep' => 0,
+                '--memory' => 512,
+            ]));
+
+            if ($time !== '12:00:02.000000') {
+                $this->assertSame(1, TestFractionalRetryActivity::$calls);
+                $this->assertFalse($workflow->refresh()->completed());
+            }
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('completed', $workflow->output());
+        $this->assertSame(2, TestFractionalRetryActivity::$calls);
+        $this->assertSame(2, ActivityAttempt::query()->count());
         $this->assertCount(0, $this->failures);
     }
 
