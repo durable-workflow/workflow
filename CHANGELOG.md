@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.0.6 - 2026-09-08
+
+- Nexus service-call history projects started, completed, failed, and cancelled
+  events without failing workflow-task completion. Timeline entries retain the
+  service-call identity and summarize the operation without exposing its payload.
+
 ## 2.0.5 - 2026-09-06
 
 - Early queue delivery no longer exhausts activity or timer transport attempts.
