@@ -799,7 +799,7 @@ final class ParallelChildGroup
             $parentRun->setRelation('historyEvents', $parentRun->historyEvents() ->lockForUpdate() ->get());
         }
 
-        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
+        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun, decodePayloads: false))
             ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
             ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
         $timersBySequence = collect(RunTimerView::timersForRun($parentRun))

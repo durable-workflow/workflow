@@ -27,12 +27,16 @@ final class RunActivityView
     /**
      * Typed history is the default authority. Callers rendering bounded
      * projection-backed views may disable it to avoid loading durable history.
+     * Metadata-only callers can omit payload fields without fetching external objects.
      *
      * @return list<array<string, mixed>>
      */
-    public static function activitiesForRun(WorkflowRun $run, bool $useDurableHistory = true): array
-    {
-        return self::activityStates($run, $useDurableHistory);
+    public static function activitiesForRun(
+        WorkflowRun $run,
+        bool $useDurableHistory = true,
+        bool $decodePayloads = true,
+    ): array {
+        return self::activityStates($run, $useDurableHistory, $decodePayloads);
     }
 
     /**
@@ -108,8 +112,11 @@ final class RunActivityView
     /**
      * @return list<array<string, mixed>>
      */
-    private static function activityStates(WorkflowRun $run, bool $useDurableHistory = true): array
-    {
+    private static function activityStates(
+        WorkflowRun $run,
+        bool $useDurableHistory = true,
+        bool $decodePayloads = true,
+    ): array {
         $relations = ['activityExecutions.attempts'];
 
         if ($useDurableHistory) {
@@ -182,6 +189,7 @@ final class RunActivityView
                 $run,
                 $execution,
                 $attemptsByActivityId[$activityId] ?? [],
+                $decodePayloads,
             );
         }
 
@@ -235,6 +243,7 @@ final class RunActivityView
         WorkflowRun $run,
         ?ActivityExecution $execution = null,
         array $attemptStates = [],
+        bool $decodePayloads = true,
     ): array {
         $attempts = self::presentAttempts($state, $execution, $attemptStates);
         $latestAttempt = $attempts === []
@@ -291,13 +300,15 @@ final class RunActivityView
             'created_at' => $state['created_at'] ?? null,
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
             'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
-            'arguments' => self::publicTypedValue($state['arguments'] ?? null, $payloadCodec, $namespace, []),
-            'result' => self::publicTypedValue(
-                $unsupportedReason === null ? ($state['result'] ?? null) : null,
-                $payloadCodec,
-                $namespace,
-                null,
-            ),
+            ...($decodePayloads ? [
+                'arguments' => self::publicTypedValue($state['arguments'] ?? null, $payloadCodec, $namespace, []),
+                'result' => self::publicTypedValue(
+                    $unsupportedReason === null ? ($state['result'] ?? null) : null,
+                    $payloadCodec,
+                    $namespace,
+                    null,
+                ),
+            ] : []),
             'attempts' => $attempts,
         ];
     }

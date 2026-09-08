@@ -23,7 +23,7 @@ final class RunTaskView
         $run->loadMissing(['tasks', 'activityExecutions', 'timers', 'historyEvents']);
 
         /** @var Collection<string, array<string, mixed>> $activities */
-        $activities = collect(RunActivityView::activitiesForRun($run))
+        $activities = collect(RunActivityView::activitiesForRun($run, decodePayloads: false))
             ->filter(static fn (array $activity): bool => is_string($activity['id'] ?? null))
             ->keyBy(static fn (array $activity): string => $activity['id']);
         /** @var Collection<string, array<string, mixed>> $timers */
