@@ -1699,6 +1699,12 @@ def _require_policy_extension(
                 f"current categories.{category_name}.{selector_type}",
             )
             for base_selector in base_selectors:
+                if selector_type == "guards" and base_selector.get("content_patterns") and any(
+                    selector.get("glob") == base_selector.get("glob")
+                    for selector in current_selectors
+                ):
+                    # Heuristics are reviewable policy, not immutable regression evidence.
+                    continue
                 if base_selector not in current_selectors:
                     raise CorpusError(
                         f"{path}.categories.{category_name}.{selector_type} cannot remove "

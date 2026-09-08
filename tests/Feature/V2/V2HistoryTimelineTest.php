@@ -20,6 +20,7 @@ use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -29,6 +30,7 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -47,6 +49,49 @@ final class V2HistoryTimelineTest extends TestCase
         TestSideEffectWorkflow::resetCounter();
 
         parent::tearDown();
+    }
+
+    public function testTimelineProjectsPersistedServiceCallEventsAfterReload(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-service-call');
+        $workflow->start('Taylor');
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $sequence = (int) $run->historyEvents()
+            ->max('sequence');
+
+        foreach ([
+            HistoryEventType::ServiceCallStarted,
+            HistoryEventType::ServiceCallCompleted,
+            HistoryEventType::ServiceCallFailed,
+            HistoryEventType::ServiceCallCancelled,
+        ] as $type) {
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => ++$sequence,
+                'event_type' => $type,
+                'payload' => [
+                    'service_call_id' => 'call-1',
+                    'operation_name' => 'createinvoice',
+                ],
+                'recorded_at' => now(),
+            ]);
+        }
+
+        RunTimelineProjector::project($run->fresh());
+        $entries = array_values(array_filter(
+            HistoryTimeline::forRun($run->fresh()),
+            static fn (array $entry): bool => $entry['kind'] === 'service_call',
+        ));
+
+        $this->assertSame([
+            'ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled',
+        ], array_column($entries, 'type'));
+        $this->assertSame(array_fill(0, 4, 'call-1'), array_column($entries, 'source_id'));
+        $this->assertSame([
+            'Service operation createinvoice started.', 'Service operation createinvoice completed.',
+            'Service operation createinvoice failed.', 'Service operation createinvoice cancelled.',
+        ], array_column($entries, 'summary'));
     }
 
     public function testTimelineIncludesTypedActivityEntriesForCompletedRun(): void

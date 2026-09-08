@@ -158,6 +158,7 @@ final class HistoryTimeline
             'command_outcome' => $commandMetadata['outcome'] ?? null,
             'command_rejection_reason' => $commandMetadata['rejection_reason'] ?? null,
             'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
+            'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
@@ -237,6 +238,10 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child',
+            HistoryEventType::ServiceCallStarted,
+            HistoryEventType::ServiceCallCompleted,
+            HistoryEventType::ServiceCallFailed,
+            HistoryEventType::ServiceCallCancelled => 'service_call',
             HistoryEventType::ConditionWaitOpened,
             HistoryEventType::ConditionWaitSatisfied,
             HistoryEventType::ConditionWaitTimedOut => 'condition',
@@ -314,6 +319,22 @@ final class HistoryTimeline
                 : sprintf('Child workflow %s failed: %s.', $childLabel, $message),
             HistoryEventType::ChildRunCancelled => sprintf('Child workflow %s cancelled.', $childLabel),
             HistoryEventType::ChildRunTerminated => sprintf('Child workflow %s terminated.', $childLabel),
+            HistoryEventType::ServiceCallStarted => sprintf(
+                'Service operation %s started.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ServiceCallCompleted => sprintf(
+                'Service operation %s completed.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ServiceCallFailed => sprintf(
+                'Service operation %s failed.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ServiceCallCancelled => sprintf(
+                'Service operation %s cancelled.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
             HistoryEventType::ConditionWaitOpened => ($payload['timeout_seconds'] ?? null) === null
                 ? sprintf('Waiting for condition%s.', self::conditionLabel($payload))
                 : sprintf(
@@ -966,6 +987,10 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
+            HistoryEventType::ServiceCallStarted,
+            HistoryEventType::ServiceCallCompleted,
+            HistoryEventType::ServiceCallFailed,
+            HistoryEventType::ServiceCallCancelled => 'workflow_service_call',
             HistoryEventType::ConditionWaitOpened,
             HistoryEventType::ConditionWaitSatisfied,
             HistoryEventType::ConditionWaitTimedOut => 'condition_wait',
@@ -1005,6 +1030,7 @@ final class HistoryTimeline
     ): ?string {
         return match (self::sourceKindFor($event)) {
             'workflow_command' => self::stringValue($command['id'] ?? null),
+            'workflow_service_call' => self::stringValue($event->payload['service_call_id'] ?? null),
             'signal_wait' => self::stringValue($event->payload['signal_wait_id'] ?? null),
             'condition_wait' => self::stringValue($event->payload['condition_wait_id'] ?? null),
             'version_marker' => self::stringValue($event->payload['change_id'] ?? null),
