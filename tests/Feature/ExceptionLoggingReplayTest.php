@@ -50,6 +50,7 @@ final class ExceptionLoggingReplayTest extends TestCase
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('success', $workflow->output());
+        $this->assertSame(2, $workflow->exceptions()->count());
         $this->assertSame([
             Exception::class,
             Signal::class,

@@ -10,7 +10,8 @@ use Workflow\Activity;
 
 final class TestProbeRetryActivity extends Activity
 {
-    public $tries = 1;
+    // Overlap releases consume queue attempts without executing the activity.
+    public $maxExceptions = 1;
 
     public function execute(int $attempt): string
     {
