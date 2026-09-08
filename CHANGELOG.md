@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.7 - 2026-09-08
+
+- Activity metadata projections no longer download or decode external arguments
+  and results merely to inspect lifecycle state. Summary, task, wait, and parallel
+  child checks preserve typed history and attempt metadata without payload-sized
+  memory allocations. Explicit decoded activity views retain their existing behavior.
+
 ## 2.0.6 - 2026-09-08
 
 - Nexus service-call history projects started, completed, failed, and cancelled
