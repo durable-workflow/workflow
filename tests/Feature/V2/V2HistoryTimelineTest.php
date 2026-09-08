@@ -67,7 +67,6 @@ final class V2HistoryTimelineTest extends TestCase
             HistoryEventType::ServiceCallCancelled,
         ] as $type) {
             WorkflowHistoryEvent::query()->create([
-                'workflow_instance_id' => $run->workflow_instance_id,
                 'workflow_run_id' => $run->id,
                 'sequence' => ++$sequence,
                 'event_type' => $type,
