@@ -2088,6 +2088,24 @@ exit(0);
             result.stderr,
         )
 
+    def test_content_heuristics_can_be_corrected_without_removing_core_guards(self) -> None:
+        policy = self.read_policy()
+        for guard in policy["categories"]["replay"]["guards"]:
+            if guard.get("content_patterns"):
+                guard["content_patterns"] = ["replay"]
+        self.write_json("regression-corpus-policy.json", policy)
+        source = self.root / "src/V2/Support/TimelineDisplay.php"
+        source.write_text("<?php\n// History event display label\n", encoding="utf-8")
+        self.git("add", "src/V2/Support/TimelineDisplay.php")
+
+        result = self.validate()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        source.write_text("<?php\n// replay behavior\n", encoding="utf-8")
+        result = self.validate()
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
