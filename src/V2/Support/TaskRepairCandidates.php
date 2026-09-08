@@ -647,6 +647,10 @@ final class TaskRepairCandidates
                 $candidate->where('liveness_state', 'repair_needed')
                     ->orWhere(static function ($waiting): void {
                         $waiting->where('liveness_state', 'waiting_for_child')
+                            ->whereDoesntHave('run.tasks', static function ($task): void {
+                                $task->where('task_type', 'workflow')
+                                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+                            })
                             ->whereHas('run.childLinks', static function ($link): void {
                                 $link->where('link_type', 'child_workflow');
                             })
@@ -666,10 +670,6 @@ final class TaskRepairCandidates
                     });
             })
             ->whereNull('next_task_id')
-            ->whereDoesntHave('run.tasks', static function ($task): void {
-                $task->where('task_type', 'workflow')
-                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
-            })
             ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value]);
 
         if ($runIds !== []) {
