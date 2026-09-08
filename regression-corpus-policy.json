@@ -65,8 +65,12 @@
           "content_patterns": [
             "Replay",
             "replay",
-            "History",
-            "history"
+            "History::append",
+            "WorkflowHistoryEvent::",
+            "historyEvents\\(",
+            "historyEvents->",
+            "history_sequence",
+            "history_payload"
           ]
         }
       ]
