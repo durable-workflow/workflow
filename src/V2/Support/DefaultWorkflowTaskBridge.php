@@ -4672,7 +4672,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             )
             ->sortByDesc('sequence')
             ->first();
-        $failure = $childRun->failures->first();
+        $failure = ChildRunHistory::terminalFailureForRun($childRun);
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
         $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted

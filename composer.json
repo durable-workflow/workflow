@@ -79,7 +79,7 @@
             "dev-main": "2.0.x-dev"
         },
         "durable-workflow": {
-            "product-train": "2.0.7",
+            "product-train": "2.0.8",
             "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
             "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
         },

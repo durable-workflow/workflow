@@ -643,7 +643,32 @@ final class TaskRepairCandidates
         ?string $queue = null,
     ) {
         $query = WorkflowRunSummary::query()
-            ->where('liveness_state', 'repair_needed')
+            ->where(static function ($candidate): void {
+                $candidate->where('liveness_state', 'repair_needed')
+                    ->orWhere(static function ($waiting): void {
+                        $waiting->where('liveness_state', 'waiting_for_child')
+                            ->whereDoesntHave('run.tasks', static function ($task): void {
+                                $task->where('task_type', 'workflow')
+                                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+                            })
+                            ->whereHas('run.childLinks', static function ($link): void {
+                                $link->where('link_type', 'child_workflow');
+                            })
+                            ->whereDoesntHave('run.childLinks', static function ($link): void {
+                                $link->where('link_type', 'child_workflow')
+                                    ->where(static function ($unclosed): void {
+                                        $unclosed->whereDoesntHave('childRun')
+                                            ->orWhereHas('childRun', static function ($child): void {
+                                                $child->whereIn('status', [
+                                                    RunStatus::Pending->value,
+                                                    RunStatus::Running->value,
+                                                    RunStatus::Waiting->value,
+                                                ]);
+                                            });
+                                    });
+                            });
+                    });
+            })
             ->whereNull('next_task_id')
             ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value]);
 

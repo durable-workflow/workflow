@@ -2007,6 +2007,54 @@ final class WorkflowExecutor
         return true;
     }
 
+    /**
+     * The caller holds the parent run lock; child terminal history, not row status, authorizes recovery.
+     */
+    public function recoverClosedChildResolutions(WorkflowRun $parentRun): void
+    {
+        if ($parentRun->status->isTerminal() || $parentRun->tasks()
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->lockForUpdate()
+            ->exists()) {
+            return;
+        }
+
+        $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
+        foreach (ChildRunHistory::knownSequences($parentRun) as $sequence) {
+            if (ChildRunHistory::resolutionEventForSequence($parentRun, $sequence) !== null) {
+                continue;
+            }
+            try {
+                WorkflowStepHistory::assertCompatible($parentRun, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+                WorkflowStepHistory::assertTypedHistoryRecorded(
+                    $parentRun,
+                    $sequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW
+                );
+            } catch (HistoryEventShapeMismatchException) {
+                continue;
+            }
+
+            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
+            if (! $childRun instanceof WorkflowRun || ! $childRun->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )) {
+                continue;
+            }
+            if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) === null) {
+                $this->recordChildResolution($parentRun, null, $sequence, $childRun);
+            }
+            $parentRun->unsetRelation('childLinks');
+            $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
+        }
+    }
+
     private function scheduleActivity(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -2920,7 +2968,7 @@ final class WorkflowExecutor
             )
             ->sortByDesc('sequence')
             ->first();
-        $failure = $childRun->failures->first();
+        $failure = ChildRunHistory::terminalFailureForRun($childRun);
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
         $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
@@ -3718,6 +3766,12 @@ final class WorkflowExecutor
         string $sourceKind,
         string $sourceId,
     ): void {
+        if ($run->status === RunStatus::Completed && $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)->exists()) {
+            // Completion side effects failed, not workflow code. Roll back this task attempt.
+            throw $throwable;
+        }
+
         if ($throwable instanceof UnresolvedWorkflowFailureException) {
             $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
 
@@ -4353,11 +4407,49 @@ final class WorkflowExecutor
                     continue;
                 }
 
+                try {
+                    WorkflowStepHistory::assertCompatible(
+                        $parentRun,
+                        $parentReference['parent_sequence'],
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $parentRun,
+                        $parentReference['parent_sequence'],
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                } catch (HistoryEventShapeMismatchException) {
+                    $this->projectRun(
+                        $parentRun->fresh([
+                            'instance',
+                            'tasks',
+                            'activityExecutions',
+                            'timers',
+                            'failures',
+                            'historyEvents',
+                            'childLinks.childRun.instance.currentRun',
+                            'childLinks.childRun.failures',
+                            'childLinks.childRun.historyEvents',
+                        ])
+                    );
+
+                    continue;
+                }
+
+                // Every closer persists its outcome before checking the shared barrier.
+                // The next parent-lock holder must not depend on a stale child snapshot.
+                $resolutionEvent = $this->recordChildResolution(
+                    $parentRun,
+                    null,
+                    $parentReference['parent_sequence'],
+                    $childRun,
+                );
+                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
                 $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence(
                     $parentRun,
                     $parentReference['parent_sequence'],
                 );
-                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+                $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
 
                 if (
                     $parallelMetadataPath !== []
@@ -4365,7 +4457,8 @@ final class WorkflowExecutor
                     && ! ParallelChildGroup::shouldWakeParentOnChildClosure(
                         $parentRun,
                         $parallelMetadataPath,
-                        $childStatus
+                        $childStatus,
+                        lockHistoryForUpdate: true,
                     )
                 ) {
                     $this->projectRun(
@@ -4409,43 +4502,6 @@ final class WorkflowExecutor
 
                     continue;
                 }
-
-                try {
-                    WorkflowStepHistory::assertCompatible(
-                        $parentRun,
-                        $parentReference['parent_sequence'],
-                        WorkflowStepHistory::CHILD_WORKFLOW,
-                    );
-                    WorkflowStepHistory::assertTypedHistoryRecorded(
-                        $parentRun,
-                        $parentReference['parent_sequence'],
-                        WorkflowStepHistory::CHILD_WORKFLOW,
-                    );
-                } catch (HistoryEventShapeMismatchException) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                    );
-
-                    continue;
-                }
-
-                $resolutionEvent = $this->recordChildResolution(
-                    $parentRun,
-                    null,
-                    $parentReference['parent_sequence'],
-                    $childRun,
-                );
-                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
             }
 
             $hasOpenWorkflowTask = WorkflowTask::query()
