@@ -58,7 +58,7 @@ final class RunSummaryProjector
             : CurrentRunResolver::forInstance($run->instance);
 
         $isTerminal = $run->status->isTerminal();
-        $activities = RunActivityView::activitiesForRun($run);
+        $activities = RunActivityView::activitiesForRun($run, decodePayloads: false);
         $timers = RunTimerView::timersForRun($run);
 
         $openActivity = $isTerminal

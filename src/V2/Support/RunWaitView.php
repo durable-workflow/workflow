@@ -51,7 +51,7 @@ final class RunWaitView
 
         $waits = [];
 
-        foreach (RunActivityView::activitiesForRun($run) as $activity) {
+        foreach (RunActivityView::activitiesForRun($run, decodePayloads: false) as $activity) {
             if (! is_string($activity['id'] ?? null)) {
                 continue;
             }
