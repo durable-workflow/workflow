@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 2.0.8 - 2026-09-08
+
+- Concurrent embedded child completions persist their outcomes before checking
+  the parallel barrier, preventing a lost parent wake-up under MySQL repeatable
+  reads. Existing repair paths recover stranded parents from durable child
+  terminal history without rerunning completed children.
+- A child that handles an activity failure and completes no longer propagates
+  historical failure metadata as its result. Genuine terminal failures retain
+  their own failure identity across embedded and service-mode completion paths.
+- Parent-notification errors roll back the workflow task for repair instead of
+  appending a workflow failure after completion. This does not rewrite existing
+  histories that already contain contradictory terminal events.
+
 ## 2.0.7 - 2026-09-08
 
 - Activity metadata projections no longer download or decode external arguments
