@@ -1598,6 +1598,7 @@ final class WorkflowStub
                     ->get()
             );
 
+            app(\Workflow\V2\Support\WorkflowExecutor::class)->recoverClosedChildResolutions($run);
             $summary = self::projectRun($run);
 
             if (in_array($summary->liveness_state, ['repair_needed', 'workflow_replay_blocked'], true)) {
@@ -4523,7 +4524,8 @@ final class WorkflowStub
                     && ! ParallelChildGroup::shouldWakeParentOnChildClosure(
                         $parentRun,
                         $parallelMetadataPath,
-                        $childStatus
+                        $childStatus,
+                        lockHistoryForUpdate: true,
                     )
                 ) {
                     self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);

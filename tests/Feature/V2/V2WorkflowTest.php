@@ -3469,7 +3469,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->runReadyTaskForRun($firstChildRunId, TaskType::Workflow);
 
-        $this->assertSame(0, WorkflowHistoryEvent::query()
+        $this->assertSame(1, WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $parentRunId)
             ->where('event_type', 'ChildRunCompleted')
             ->count());

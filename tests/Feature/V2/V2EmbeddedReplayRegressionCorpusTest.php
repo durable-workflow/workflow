@@ -29,6 +29,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConditionWaits;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -36,6 +37,7 @@ use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStep;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -68,7 +70,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertLegacyParallelChildRawHistoryGap($fixture);
             }
 
-            if (($fixture['id'] ?? null) === 'parallel-child-group-durable-command-sequence') {
+            if (in_array($fixture['id'] ?? null, [
+                'parallel-child-group-durable-command-sequence',
+                'parallel-child-group-stranded-parent-recovery',
+            ], true)) {
                 $this->assertStandaloneParallelChildBarrierFixture($fixture);
             }
 
@@ -339,6 +344,27 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->where('event_type', HistoryEventType::ChildRunCompleted->value)
             ->count());
 
+        if ($fixture['id'] === 'parallel-child-group-stranded-parent-recovery') {
+            $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+            // Keep closed child histories, but reconstruct the parent's pre-fix lost-wake state.
+            WorkflowTask::query()->where('workflow_run_id', $parentRun->id)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->delete();
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $parentRun->id)
+                ->where('event_type', HistoryEventType::ChildRunCompleted->value)->delete();
+            $parentRun->refresh()
+                ->forceFill([
+                    'last_history_sequence' => $parentRun->historyEvents()
+                        ->max('sequence'),
+                ])->save();
+            $projection = $this->app->make(HistoryProjectionRole::class);
+            $this->assertSame('waiting_for_child', $projection->projectRun($parentRun->fresh())->liveness_state);
+            DB::purge();
+            DB::reconnect();
+            $this->assertSame(1, TaskWatchdog::runPass(runIds: [$parentRun->id])['repaired_missing_tasks']);
+            $this->assertSame(0, TaskWatchdog::runPass(runIds: [$parentRun->id])['repaired_missing_tasks']);
+            $this->assertSame(1, $openParentTaskCount());
+        }
+
         /** @var WorkflowTask $replacementTask */
         $replacementTask = WorkflowTask::query()
             ->where('workflow_run_id', $parentRun->id)
@@ -361,14 +387,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         $this->assertTrue($coldReplay->completed);
         $this->assertSame(['complete_workflow'], array_column($coldReplay->commands, 'type'));
-        $this->assertSame([
-            [
-                'child' => 'first',
-            ],
-            [
-                'child' => 'second',
-            ],
-        ], $coldReplay->result['children'] ?? null);
+        $this->assertSame($fixture['expected']['result']['children'], $coldReplay->result['children'] ?? null);
         $this->assertSame($stub->workflowId(), $coldReplay->result['workflow_id'] ?? null);
         $this->assertSame($parentRun->id, $coldReplay->result['run_id'] ?? null);
 

@@ -25,6 +25,7 @@ use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkflowExecutor;
 
 /**
  * Periodic repair loop that scans for stuck workflow tasks, expired activity
@@ -286,6 +287,7 @@ final class TaskWatchdog
                     ->lockForUpdate()
                     ->findOrFail($runId);
 
+                app(WorkflowExecutor::class)->recoverClosedChildResolutions($run);
                 $summary = self::historyProjectionRole()->projectRun($run);
 
                 if ($summary->liveness_state !== 'repair_needed' || $summary->next_task_id !== null) {
