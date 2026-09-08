@@ -2968,7 +2968,7 @@ final class WorkflowExecutor
             )
             ->sortByDesc('sequence')
             ->first();
-        $failure = $childRun->failures->first();
+        $failure = ChildRunHistory::terminalFailureForRun($childRun);
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
         $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
@@ -3766,6 +3766,12 @@ final class WorkflowExecutor
         string $sourceKind,
         string $sourceId,
     ): void {
+        if ($run->status === RunStatus::Completed && $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)->exists()) {
+            // Completion side effects failed, not workflow code. Roll back this task attempt.
+            throw $throwable;
+        }
+
         if ($throwable instanceof UnresolvedWorkflowFailureException) {
             $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
 

@@ -557,6 +557,20 @@ final class ChildRunHistory
         };
     }
 
+    public static function terminalFailureForRun(WorkflowRun $childRun): ?WorkflowFailure
+    {
+        if (self::resolvedStatus(null, $childRun) === RunStatus::Completed) {
+            return null;
+        }
+
+        $failureId = self::terminalEventForRun($childRun)?->payload['failure_id'] ?? null;
+
+        return $childRun->failures->first(
+            static fn (WorkflowFailure $failure): bool => ! $failure->handled
+                && ($failureId === null || $failure->id === $failureId)
+        );
+    }
+
     public static function outputForResolution(
         WorkflowHistoryEvent $resolutionEvent,
         ?WorkflowRun $childRun = null,
