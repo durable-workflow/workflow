@@ -89,6 +89,7 @@ final class BackendCapabilitiesTest extends TestCase
             $contract['surfaces']['claim']['authority']
         );
         $this->assertContains('mysql', $contract['backend_capabilities']['database']['supported_drivers']);
+        $this->assertContains('mariadb', $contract['backend_capabilities']['database']['supported_drivers']);
         $this->assertContains('pgsql', $contract['backend_capabilities']['database']['supported_drivers']);
         $this->assertSame(
             'error',
@@ -145,6 +146,24 @@ final class BackendCapabilitiesTest extends TestCase
             'after_commit_callbacks' => false,
             'durable_ordering' => false,
             'row_locks' => false,
+        ], $snapshot['database']['capabilities']);
+    }
+
+    public function testSnapshotSupportsTheMariaDbDriver(): void
+    {
+        config()->set('database.connections.mariadb.driver', 'mariadb');
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'mariadb');
+
+        $this->assertSame('mariadb', $snapshot['database']['connection']);
+        $this->assertSame('mariadb', $snapshot['database']['driver']);
+        $this->assertTrue($snapshot['database']['supported']);
+        $this->assertNotContains('database_driver_unsupported', array_column($snapshot['issues'], 'code'));
+        $this->assertSame([
+            'transactions' => true,
+            'after_commit_callbacks' => true,
+            'durable_ordering' => true,
+            'row_locks' => true,
         ], $snapshot['database']['capabilities']);
     }
 

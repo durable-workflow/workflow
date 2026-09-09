@@ -91,7 +91,7 @@ final class ReadinessContract
             ],
             'backend_capabilities' => [
                 'database' => [
-                    'supported_drivers' => ['mysql', 'pgsql', 'sqlite', 'sqlsrv'],
+                    'supported_drivers' => ['mysql', 'mariadb', 'pgsql', 'sqlite', 'sqlsrv'],
                     'required_capabilities' => ['transactions', 'after_commit_callbacks', 'durable_ordering'],
                     'sqlite_note' => 'SQLite is supported with limited concurrent write safety and no row-lock capability.',
                 ],

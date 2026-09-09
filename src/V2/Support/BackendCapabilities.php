@@ -85,7 +85,11 @@ final class BackendCapabilities
             : self::normalize(config(sprintf('database.connections.%s.driver', $connection)));
         $issues = [];
 
-        $driverSupported = is_string($driver) && in_array($driver, ['mysql', 'pgsql', 'sqlite', 'sqlsrv'], true);
+        $driverSupported = is_string($driver) && in_array(
+            $driver,
+            ['mysql', 'mariadb', 'pgsql', 'sqlite', 'sqlsrv'],
+            true
+        );
 
         if ($connection === null || $driver === null) {
             $issues[] = self::issue(
