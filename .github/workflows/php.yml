@@ -888,13 +888,18 @@ jobs:
           resolve_service redis 6379 "$REDIS_PUBLISHED_PORT" REDIS
         } >> "$GITHUB_ENV"
 
-    - name: Run bounded locking and history regressions on MariaDB 10.5
-      run: >-
-        vendor/bin/phpunit --testdox --testsuite feature
-        --filter
-        '/(testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory|testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale|testEmbeddedHeartbeatAndTimeoutEnforcementUseOneConcurrentLockOrder)/'
-        tests/Feature/V2/V2WorkflowTaskBridgeTest.php
-        tests/Feature/V2/V2ActivityTimeoutTest.php
+    - name: Run locking, readiness and replay regressions on MariaDB 10.5
+      run: |
+        vendor/bin/phpunit --testdox --testsuite feature \
+          --filter '/(testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory|testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale|testEmbeddedHeartbeatAndTimeoutEnforcementUseOneConcurrentLockOrder)/' \
+          tests/Feature/V2/V2WorkflowTaskBridgeTest.php \
+          tests/Feature/V2/V2ActivityTimeoutTest.php
+        DB_CONNECTION=mariadb vendor/bin/phpunit --testdox --testsuite feature \
+          --filter '/(testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet|testPublicReplayerCanReplayLiveRun|testPublicReplayerCanReplayHistoryExportBundle|testHistoryPayloadPaginatedUsesConfiguredSummaryCountersWithoutHydratingHistory|testHistoryPayloadPaginatedUsesBoundedAggregatesWhenSummaryIsMissingOrStale|testEmbeddedHeartbeatAndTimeoutEnforcementUseOneConcurrentLockOrder)/' \
+          tests/Feature/V2/V2OperatorMetricsTest.php \
+          tests/Feature/V2/V2WorkflowReplayerTest.php \
+          tests/Feature/V2/V2WorkflowTaskBridgeTest.php \
+          tests/Feature/V2/V2ActivityTimeoutTest.php
       env:
         APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
         DB_CONNECTION: mysql
