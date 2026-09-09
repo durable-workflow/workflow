@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.10 - 2026-09-09
+
+- Recognize Laravel's native `mariadb` database driver in backend readiness and
+  capability reporting. MariaDB no longer appears unsupported when configured
+  with its own driver instead of `mysql`. Both driver paths retain real-database
+  locking and history checks; the native driver also exercises readiness and replay.
+
 ## 2.0.9 - 2026-09-09
 
 - Terminal activity timeouts restore their recorded exception type during
