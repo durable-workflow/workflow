@@ -502,10 +502,12 @@ final class ScheduleManager
         }
 
         // Phase 2: evaluate due schedules.
+        // DateTime query bindings otherwise lose the model's fractional precision.
+        $dueAt = (new WorkflowSchedule())->fromDateTime(now());
         $due = self::fairScheduleBatch(WorkflowSchedule::query()
             ->where('status', ScheduleStatus::Active->value)
             ->whereNotNull('next_fire_at')
-            ->where('next_fire_at', '<=', now()), $limit, 'next_fire_at');
+            ->where('next_fire_at', '<=', $dueAt), $limit, 'next_fire_at');
 
         foreach ($due as $schedule) {
             $occurrenceTime = $schedule->next_fire_at;

@@ -389,6 +389,53 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $triggered->payload['occurrence_time']);
     }
 
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function tickTimestampBoundaries(): array
+    {
+        return [
+            'exact second' => ['00.000000', '00.000000', true],
+            'exact microsecond' => ['00.500000', '00.500000', true],
+            'past within same second' => ['00.500000', '00.750000', true],
+            'future within same second' => ['00.500000', '00.499999', false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('tickTimestampBoundaries')]
+    public function testTickPreservesPersistedTimestampPrecision(string $dueSecond, string $tickSecond, bool $due): void
+    {
+        WorkflowStub::fake();
+        $dueAt = Carbon::parse('2026-01-01 12:00:' . $dueSecond, 'UTC');
+        Carbon::setTestNow(Carbon::parse('2026-01-01 12:00:' . $tickSecond, 'UTC'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'precise-tick',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+            );
+            $schedule->forceFill([
+                'next_fire_at' => $dueAt,
+            ])->save();
+            $schedule = WorkflowSchedule::query()->findOrFail($schedule->id);
+            $this->assertSame($dueAt->format('Y-m-d H:i:s.u'), $schedule->next_fire_at->format('Y-m-d H:i:s.u'));
+
+            $results = ScheduleManager::tick();
+
+            $this->assertCount($due ? 1 : 0, $results);
+            if ($due) {
+                $this->assertSame('triggered', $results[0]['outcome']);
+                $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $results[0]['occurrence_time']);
+                $this->assertNotNull($results[0]['instance_id']);
+                $this->assertSame([], ScheduleManager::tick());
+            }
+            $this->assertSame($due ? 1 : 0, (int) $schedule->refresh()->fires_count);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testTickSharesABoundedBatchAcrossNamespaces(): void
     {
         WorkflowStub::fake();
