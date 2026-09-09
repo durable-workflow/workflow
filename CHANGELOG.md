@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.0.12 - 2026-09-10
+
+- Preserve fractional timestamp precision when selecting due schedules. SQLite
+  schedules now dispatch during their original due second instead of waiting
+  for a later tick; fractional deadlines remain exact on supported databases.
+  Future deadlines are not dispatched early, and repeated ticks preserve the
+  original occurrence identity without starting it twice.
+
 ## 2.0.11 - 2026-09-09
 
 - Preserve activity deadlines after an expired worker lease is repaired.
