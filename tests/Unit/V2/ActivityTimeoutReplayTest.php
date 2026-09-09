@@ -68,7 +68,10 @@ final class ActivityTimeoutReplayTest extends TestCase
                 WorkflowHistoryEvent::where('event_type', HistoryEventType::ActivityCompleted)->count()
             );
             $this->assertSame($recover ? 0 : 1, WorkflowTask::where('status', TaskStatus::Failed)->count());
-            $this->assertSame(0, WorkflowTask::where('last_error', 'like', '%Unable to restore workflow failure%')->count());
+            $this->assertSame(
+                0,
+                WorkflowTask::where('last_error', 'like', '%Unable to restore workflow failure%')->count()
+            );
         } finally {
             Carbon::setTestNow();
         }
