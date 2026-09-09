@@ -16,6 +16,7 @@ use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -714,7 +715,7 @@ final class LocalActivityExecutor
 
         $now = now();
         $failureCategory = FailureCategory::Timeout;
-        $exceptionClass = 'Workflow\\V2\\Exceptions\\ActivityTimeoutException';
+        $exceptionClass = ActivityTimeoutException::class;
 
         $execution->forceFill([
             'status' => ActivityStatus::Failed,

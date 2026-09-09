@@ -32,6 +32,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -3773,7 +3774,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $exceptionClass = is_string($command['exception_type'] ?? null)
                 ? $command['exception_type']
                 : ($outcome === 'timed_out'
-                    ? 'Workflow\\V2\\Exceptions\\ActivityTimeoutException'
+                    ? ActivityTimeoutException::class
                     : RuntimeException::class);
 
             $failure = WorkflowFailure::query()->create([
