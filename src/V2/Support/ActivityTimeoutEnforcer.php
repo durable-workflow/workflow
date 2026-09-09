@@ -180,6 +180,15 @@ final class ActivityTimeoutEnforcer
         }
     }
 
+    /**
+     * @internal Shared with task claiming so a new attempt cannot erase an elapsed deadline.
+     */
+    public static function hasExpiredDeadline(ActivityExecution $execution, CarbonInterface $now): bool
+    {
+        return in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)
+            && self::resolveTimeoutKind($execution, $now) !== null;
+    }
+
     private static function deadlineBoundary(CarbonInterface $deadline): string
     {
         return $deadline->format((new ActivityExecution())->getDateFormat());
@@ -566,7 +575,9 @@ final class ActivityTimeoutEnforcer
             return 'current_attempt_changed';
         }
 
-        if ($attempt->status !== ActivityAttemptStatus::Running) {
+        // Lease repair closes the current attempt before the timeout sweep.
+        // It does not cancel the execution's deadlines or change its identity.
+        if (! in_array($attempt->status, [ActivityAttemptStatus::Running, ActivityAttemptStatus::Expired], true)) {
             return 'current_attempt_not_running';
         }
 

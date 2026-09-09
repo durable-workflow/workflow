@@ -116,6 +116,12 @@ final class ActivityTaskClaimer
             }
 
             $now = now();
+            if (ActivityTimeoutEnforcer::hasExpiredDeadline($execution, $now)) {
+                // The normal timeout sweep owns retry/failure recording. Do not
+                // replace the expired deadline while waiting for that sweep.
+                return self::claimFailure('task_not_claimable');
+            }
+
             $attemptId = (string) Str::ulid();
             $attemptCount = ((int) $task->attempt_count) + 1;
 
