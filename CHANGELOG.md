@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.9 - 2026-09-09
+
+- Terminal activity timeouts restore their recorded exception type during
+  replay, allowing workflow catch and finally blocks to recover and clean up.
+  This also covers local activities and existing persisted timeout histories;
+  applications do not need an exception mapping to resume them.
+
 ## 2.0.8 - 2026-09-08
 
 - Concurrent embedded child completions persist their outcomes before checking
