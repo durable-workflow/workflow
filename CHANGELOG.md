@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.0.11 - 2026-09-09
+
+- Preserve activity deadlines after an expired worker lease is repaired.
+  Pending and repaired activities cannot start another attempt after an elapsed
+  deadline, and the normal timeout sweep can settle the expired current attempt.
+  Schedule-to-close timeouts remain terminal across worker restarts without
+  accepting a late completion or running an extra activity effect.
+
 ## 2.0.10 - 2026-09-09
 
 - Recognize Laravel's native `mariadb` database driver in backend readiness and
