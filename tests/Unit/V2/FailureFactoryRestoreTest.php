@@ -16,6 +16,7 @@ use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\StructuralLimitKind;
+use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
@@ -23,6 +24,23 @@ use Workflow\V2\Support\FailureFactory;
 
 final class FailureFactoryRestoreTest extends NonDatabaseTestCase
 {
+    public function testRestoresRecordedActivityTimeoutWithoutApplicationMapping(): void
+    {
+        $payload = [
+            'exception_class' => 'Workflow\\V2\\Exceptions\\ActivityTimeoutException',
+            'message' => 'Activity schedule-to-close deadline expired.',
+        ];
+        $decoded = Serializer::unserializeWithCodec('avro', Serializer::serializeWithCodec('avro', $payload));
+        $restored = FailureFactory::restoreForReplay([], $decoded['exception_class'], $decoded['message']);
+        $this->assertInstanceOf(ActivityTimeoutException::class, $restored);
+        $this->assertInstanceOf(RuntimeException::class, $restored);
+        $this->assertSame($payload['message'], $restored->getMessage());
+        $this->assertInstanceOf(
+            ActivityTimeoutException::class,
+            FailureFactory::restoreForReplay(FailureFactory::payload($restored))
+        );
+    }
+
     /**
      * Regression for #436. PHP's Throwable interface is implemented independently
      * by Exception and Error (siblings, not parent/child). The restorer used

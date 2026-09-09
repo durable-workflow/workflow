@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "activity-timeout-catch-and-cleanup",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestActivityTimeoutCleanupWorkflow",
+    "arguments": [false, true],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-09-09T00:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityTimedOut",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "exception_class": "Workflow\\V2\\Exceptions\\ActivityTimeoutException",
+        "message": "Activity schedule-to-close deadline expired.",
+        "failure_category": "timeout",
+        "timeout_kind": "schedule_to_close"
+      },
+      "recorded_at": "2026-09-09T00:01:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-09-09T00:01:01+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": "recovered",
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

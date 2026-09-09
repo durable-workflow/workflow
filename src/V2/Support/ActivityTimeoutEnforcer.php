@@ -15,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
@@ -337,7 +338,7 @@ final class ActivityTimeoutEnforcer
     ): array {
         $now = now();
         $message = self::timeoutMessage($execution, $timeoutKind);
-        $exceptionClass = 'Workflow\\V2\\Exceptions\\ActivityTimeoutException';
+        $exceptionClass = ActivityTimeoutException::class;
         $failureCategory = FailureCategory::Timeout;
 
         $execution->forceFill([
