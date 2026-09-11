@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.0.13 - 2026-09-11
+
+- Reduce repeated database lookups during full timeline, wait, and timer
+  projection, and reuse activity and timer metadata within a summary pass.
+  Existing model hooks, configured tables and connections, duplicate-key
+  recovery, and history-based repair remain intact. This reduces repeated
+  projection overhead without changing durable history or execution semantics.
+
 ## 2.0.12 - 2026-09-10
 
 - Preserve fractional timestamp precision when selecting due schedules. SQLite
