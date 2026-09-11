@@ -30,11 +30,33 @@ final class IdempotentProjectionUpsert
      * @param class-string<TModel> $model
      * @param array<string, mixed> $key
      * @param array<string, mixed> $values
+     * @param TModel|null $existing Row loaded by this projection pass, never a cross-task cache.
      * @return TModel
      */
-    public static function upsert(string $model, array $key, array $values): Model
+    public static function upsert(string $model, array $key, array $values, ?Model $existing = null): Model
     {
+        if ($existing !== null) {
+            if (! $existing instanceof $model || ! $existing->exists) {
+                throw new \InvalidArgumentException(
+                    'Prefetched projection must be a persisted instance of the configured model.'
+                );
+            }
+
+            foreach ($key as $column => $value) {
+                if ($existing->getAttribute($column) !== $value) {
+                    throw new \InvalidArgumentException('Prefetched projection must match the upsert key.');
+                }
+            }
+        }
+
         try {
+            if ($existing !== null) {
+                $existing->fill($values)
+                    ->save();
+
+                return $existing;
+            }
+
             /** @var TModel $row */
             $row = $model::query()->updateOrCreate($key, $values);
 

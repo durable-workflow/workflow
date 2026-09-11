@@ -143,6 +143,7 @@ final class RunWaitProjector
         $waitModel = self::waitModel();
         $seen = [];
         $projected = [];
+        $existing = $waitModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
 
         foreach (array_values($waits) as $position => $wait) {
             $waitId = self::waitId($wait, $position);
@@ -186,6 +187,7 @@ final class RunWaitProjector
                     'history_unsupported_reason' => self::stringValue($wait['history_unsupported_reason'] ?? null),
                     'payload' => $payload,
                 ],
+                $existing->get($projectionId),
             );
 
             $projected[] = $row;

@@ -399,9 +399,9 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        RunWaitProjector::project($run);
+        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers));
         RunTimelineProjector::project($run);
-        RunTimerProjector::project($run);
+        RunTimerProjector::project($run, $timers);
         RunLineageProjector::project($run);
 
         return $summary;
