@@ -24,6 +24,7 @@ final class RunTimerProjector
         $entryModel = self::entryModel();
         $seen = [];
         $projected = [];
+        $existing = $entryModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
 
         foreach (array_values($timers) as $position => $timer) {
             $timerId = self::stringValue($timer['id'] ?? null);
@@ -64,6 +65,7 @@ final class RunTimerProjector
                     'history_unsupported_reason' => self::stringValue($timer['history_unsupported_reason'] ?? null),
                     'payload' => self::normalizedPayload($timer),
                 ],
+                $existing->get($projectionId),
             );
 
             $projected[] = $row;

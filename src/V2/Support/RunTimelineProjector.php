@@ -23,6 +23,7 @@ final class RunTimelineProjector
     {
         $entries ??= HistoryTimeline::fromHistory($run);
         $entryModel = self::entryModel();
+        $existing = $entryModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
         $seen = [];
         $projected = [];
 
@@ -35,7 +36,14 @@ final class RunTimelineProjector
 
             $projectionId = self::projectionId($run->id, $historyEventId);
             $seen[] = $projectionId;
-            $projected[] = self::upsertEntry($run, $entryModel, $projectionId, $historyEventId, $entry);
+            $projected[] = self::upsertEntry(
+                $run,
+                $entryModel,
+                $projectionId,
+                $historyEventId,
+                $entry,
+                $existing->get($projectionId)
+            );
         }
 
         self::historyProjectionMaintenanceRole()
@@ -153,6 +161,7 @@ final class RunTimelineProjector
         string $projectionId,
         string $historyEventId,
         array $entry,
+        ?WorkflowTimelineEntry $existing = null,
     ): WorkflowTimelineEntry {
         /** @var WorkflowTimelineEntry $row */
         $row = IdempotentProjectionUpsert::upsert(
@@ -180,6 +189,7 @@ final class RunTimelineProjector
                 'failure_id' => self::stringValue($entry['failure_id'] ?? null),
                 'payload' => self::normalizedPayload($entry),
             ],
+            $existing,
         );
 
         return $row;

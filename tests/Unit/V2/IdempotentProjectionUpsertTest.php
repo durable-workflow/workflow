@@ -15,6 +15,88 @@ use Workflow\V2\Support\IdempotentProjectionUpsert;
 
 final class IdempotentProjectionUpsertTest extends TestCase
 {
+    public function testPrefetchedRowRetainsModelHooksWithoutAnotherSelect(): void
+    {
+        $run = $this->seedRun();
+        $id = hash('sha256', $run->id . '|prefetched');
+        $row = IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => $id,
+            ],
+            $this->timelineAttributes($run, 'prefetched', 'before'),
+        );
+        $calls = 0;
+        WorkflowTimelineEntry::saving(static function (WorkflowTimelineEntry $entry) use ($id, &$calls): void {
+            if ($entry->id === $id) {
+                $calls++;
+            }
+        });
+        $connection = $row->getConnection();
+        $connection->flushQueryLog();
+        $connection->enableQueryLog();
+
+        try {
+            $updated = IdempotentProjectionUpsert::upsert(
+                WorkflowTimelineEntry::class,
+                [
+                    'id' => $id,
+                ],
+                [
+                    'summary' => 'after',
+                ],
+                $row,
+            );
+            $queries = $connection->getQueryLog();
+        } finally {
+            $connection->disableQueryLog();
+            WorkflowTimelineEntry::flushEventListeners();
+        }
+
+        $this->assertSame($row, $updated);
+        $this->assertSame(1, $calls);
+        $this->assertSame('after', $row->fresh()->summary);
+        $this->assertCount(0, array_filter($queries, static fn (array $query): bool =>
+            str_starts_with(strtolower($query['query']), 'select')));
+    }
+
+    public function testRejectsPrefetchedRowWithDifferentIdentity(): void
+    {
+        $run = $this->seedRun();
+        $row = IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => hash('sha256', 'original'),
+            ],
+            $this->timelineAttributes($run, 'prefetched', 'original'),
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => hash('sha256', 'different'),
+            ],
+            [
+                'summary' => 'must not write',
+            ],
+            $row,
+        );
+    }
+
+    public function testRejectsUnpersistedPrefetchedRow(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => hash('sha256', 'unpersisted'),
+            ],
+            [],
+            new WorkflowTimelineEntry(),
+        );
+    }
+
     public function testInsertsRowWhenNoConflictExists(): void
     {
         $run = $this->seedRun();

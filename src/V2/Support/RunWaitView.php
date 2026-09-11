@@ -17,9 +17,11 @@ use Workflow\V2\Models\WorkflowTask;
 final class RunWaitView
 {
     /**
+     * @param list<array<string, mixed>>|null $activities Metadata already derived for this projection pass.
+     * @param list<array<string, mixed>>|null $timers
      * @return list<array<string, mixed>>
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, ?array $activities = null, ?array $timers = null): array
     {
         $run->loadMissing([
             'historyEvents',
@@ -51,7 +53,7 @@ final class RunWaitView
 
         $waits = [];
 
-        foreach (RunActivityView::activitiesForRun($run, decodePayloads: false) as $activity) {
+        foreach ($activities ?? RunActivityView::activitiesForRun($run, decodePayloads: false) as $activity) {
             if (! is_string($activity['id'] ?? null)) {
                 continue;
             }
@@ -62,7 +64,7 @@ final class RunWaitView
         $waits = array_merge($waits, self::conditionWaits($conditionWaits, $taskByTimerId));
         $waits = array_merge($waits, UpdateWaits::forRun($run));
 
-        foreach (RunTimerView::timersForRun($run) as $timer) {
+        foreach ($timers ?? RunTimerView::timersForRun($run) as $timer) {
             if (
                 in_array($timer['id'] ?? null, $conditionTimerIds, true)
                 || ($timer['timer_kind'] ?? null) === 'condition_timeout'
