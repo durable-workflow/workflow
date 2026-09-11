@@ -62,7 +62,8 @@ final class ProjectionReplayTest extends TestCase
         $this->assertSame($rounds * 3, $workflow->output());
         $this->assertSame(
             $rounds * 3,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCompleted)->count()
         );
         $this->assertSame($rounds, $run->historyEvents()->where('event_type', HistoryEventType::TimerFired)->count());
     }
