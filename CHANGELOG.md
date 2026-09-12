@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.0.14 - 2026-09-12
+
+- Isolate deterministic workflow clock values from caller mutation. Deriving a
+  deadline with `Workflow::now()->addHour()` no longer advances workflow time or
+  expires the deadline immediately. Mutating a timestamp supplied to the fiber
+  context cannot change its stored time either. History-based clock advancement,
+  timestamp precision, timezones, and mutable or immutable Carbon types remain
+  unchanged.
+
 ## 2.0.13 - 2026-09-11
 
 - Reduce repeated database lookups during full timeline, wait, and timer
