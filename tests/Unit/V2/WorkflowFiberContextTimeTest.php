@@ -8,10 +8,92 @@ use Carbon\CarbonImmutable;
 use Fiber;
 use Illuminate\Support\Carbon;
 use Tests\NonDatabaseTestCase;
+use function Workflow\V2\now;
 use Workflow\V2\Support\WorkflowFiberContext;
 
 final class WorkflowFiberContextTimeTest extends NonDatabaseTestCase
 {
+    public function testDeadlineArithmeticDoesNotAdvanceTheWorkflowClock(): void
+    {
+        $fiber = new Fiber(function (): void {
+            WorkflowFiberContext::enter();
+
+            try {
+                WorkflowFiberContext::setTime(Carbon::parse('2026-01-01T00:00:00.123456+05:30'));
+                $first = now();
+                $second = now();
+
+                $this->assertNotSame($first, $second);
+                $this->assertSame($first->format('Y-m-d H:i:s.uP'), $second->format('Y-m-d H:i:s.uP'));
+
+                $deadline = $first->addHour();
+
+                $this->assertSame('2026-01-01 00:00:00.123456+05:30', now()->format('Y-m-d H:i:s.uP'));
+                $this->assertSame('2026-01-01 00:00:00.123456+05:30', $second->format('Y-m-d H:i:s.uP'));
+                $this->assertFalse(now()->greaterThanOrEqualTo($deadline));
+            } finally {
+                WorkflowFiberContext::leave();
+            }
+        });
+
+        $fiber->start();
+    }
+
+    public function testSetTimeDoesNotRetainTheCallersMutableObject(): void
+    {
+        $fiber = new Fiber(function (): void {
+            WorkflowFiberContext::enter();
+
+            try {
+                $event = Carbon::parse('2026-01-01T00:00:00.123456Z');
+                WorkflowFiberContext::setTime($event);
+                $event->addHour();
+
+                $this->assertSame('2026-01-01 00:00:00.123456', now()->format('Y-m-d H:i:s.u'));
+            } finally {
+                WorkflowFiberContext::leave();
+            }
+        });
+
+        $fiber->start();
+    }
+
+    public function testExplicitFiberClocksRemainIndependentWhenCallerAndReadValuesChange(): void
+    {
+        $event = Carbon::parse('2026-01-01T00:00:00Z');
+        $first = new Fiber(static function (): void {
+            WorkflowFiberContext::enter();
+
+            try {
+                now()->addDay();
+            } finally {
+                WorkflowFiberContext::leave();
+            }
+        });
+        $second = new Fiber(function (): void {
+            WorkflowFiberContext::enter();
+
+            try {
+                $this->assertSame('2026-01-01T00:00:00+00:00', now()->toIso8601String());
+                Fiber::suspend();
+                $this->assertSame('2026-01-01T01:00:00+00:00', now()->toIso8601String());
+            } finally {
+                WorkflowFiberContext::leave();
+            }
+        });
+
+        WorkflowFiberContext::setTime($event, $first);
+        WorkflowFiberContext::setTime($event, $second);
+        $event->addWeek();
+        $first->start();
+        $second->start();
+
+        $nextEvent = Carbon::parse('2026-01-01T01:00:00Z');
+        WorkflowFiberContext::setTime($nextEvent, $second);
+        $nextEvent->addDay();
+        $second->resume();
+    }
+
     public function testGetTimeFallsBackToWallClockOutsideFiber(): void
     {
         $frozen = Carbon::parse('2026-01-01T12:00:00Z');
@@ -49,7 +131,8 @@ final class WorkflowFiberContextTimeTest extends NonDatabaseTestCase
 
         $fiber->resume();
 
-        $this->assertInstanceOf(\Carbon\CarbonInterface::class, $observed);
+        $this->assertInstanceOf(CarbonImmutable::class, $observed);
+        $this->assertNotSame($event, $observed);
         $this->assertSame(
             $event->getTimestampMs(),
             $observed->getTimestampMs(),

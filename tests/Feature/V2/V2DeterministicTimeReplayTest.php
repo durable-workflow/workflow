@@ -6,12 +6,14 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestDeterministicDeadlineWorkflow;
 use Tests\Fixtures\V2\TestReplayDeterministicTimeWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -116,6 +118,63 @@ final class V2DeterministicTimeReplayTest extends TestCase
         );
     }
 
+    public function testDerivedDeadlineWaitsForDurableTimeAcrossFreshDatabaseReplays(): void
+    {
+        $startedAt = Carbon::parse('2026-02-01T12:00:00Z');
+        Carbon::setTestNow($startedAt);
+
+        try {
+            $workflow = WorkflowStub::make(TestDeterministicDeadlineWorkflow::class, 'deterministic-deadline');
+            $workflow->start();
+            $this->runReadyTaskOfType(TaskType::Workflow);
+
+            $this->assertSame('waiting', $workflow->refresh()->status());
+            $this->assertDatabaseMissing('workflow_history_events', [
+                'workflow_run_id' => $workflow->runId(),
+                'event_type' => HistoryEventType::WorkflowCompleted->value,
+            ]);
+
+            Carbon::setTestNow(Carbon::parse('2099-12-31T23:59:59Z'));
+            $replay = (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($workflow->runId()));
+            $this->assertInstanceOf(TestDeterministicDeadlineWorkflow::class, $replay->workflow);
+            $this->assertSame($startedAt->getTimestampMs(), $replay->workflow->startedAtMs);
+            $this->assertSame($startedAt->copy()->addHour()->getTimestampMs(), $replay->workflow->deadlineMs);
+            $this->assertNull($replay->workflow->completedAtMs);
+            unset($replay);
+
+            Carbon::setTestNow($startedAt->copy()->addMinutes(30));
+            $this->runReadyTaskOfType(TaskType::Timer);
+            $this->runReadyTaskOfType(TaskType::Workflow);
+            $this->assertSame('waiting', $workflow->refresh()->status());
+
+            Carbon::setTestNow($startedAt->copy()->addHour());
+            $this->runReadyTaskOfType(TaskType::Timer);
+            $this->runReadyTaskOfType(TaskType::Workflow);
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'started_at_ms' => $startedAt->getTimestampMs(),
+                'deadline_ms' => $startedAt->copy()
+                    ->addHour()
+                    ->getTimestampMs(),
+                'completed_at_ms' => $startedAt->copy()
+                    ->addHour()
+                    ->getTimestampMs(),
+            ], $workflow->output());
+
+            $this->assertSame(2, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->where('event_type', HistoryEventType::TimerFired->value)
+                ->count());
+
+            Carbon::setTestNow(Carbon::parse('2099-12-31T23:59:59Z'));
+            $replay = (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($workflow->runId()));
+            $this->assertInstanceOf(TestDeterministicDeadlineWorkflow::class, $replay->workflow);
+            $this->assertSame($workflow->output()['completed_at_ms'], $replay->workflow->completedAtMs);
+        } finally {
+            Carbon::setTestNow(null);
+        }
+    }
+
     private function runReadyTaskOfType(TaskType $taskType): void
     {
         /** @var WorkflowTask|null $task */
@@ -132,6 +191,7 @@ final class V2DeterministicTimeReplayTest extends TestCase
         $job = match ($task->task_type) {
             TaskType::Workflow => new RunWorkflowTask($task->id),
             TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
             default => $this->fail("Unsupported task type {$task->task_type->value}."),
         };
 
