@@ -72,7 +72,7 @@ final class WorkflowFiberContext
         $fiber ??= Fiber::getCurrent();
 
         if ($fiber instanceof Fiber) {
-            self::$workflowTime[spl_object_id($fiber)] = $time;
+            self::$workflowTime[spl_object_id($fiber)] = $time->copy();
         }
     }
 
@@ -88,7 +88,7 @@ final class WorkflowFiberContext
         $fiber = Fiber::getCurrent();
 
         if ($fiber instanceof Fiber && isset(self::$workflowTime[spl_object_id($fiber)])) {
-            return self::$workflowTime[spl_object_id($fiber)];
+            return self::$workflowTime[spl_object_id($fiber)]->copy();
         }
 
         return now();
