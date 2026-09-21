@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PDOException;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\WaterlineEngineSource;
@@ -27,6 +29,10 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame(WaterlineEngineSource::ENGINE_V2, WaterlineEngineSource::resolve('AUTO'));
         $this->assertSame('v2_auto', WaterlineEngineSource::status()['status']);
         $this->assertTrue(WaterlineEngineSource::status()['uses_v2']);
+        $this->assertSame(
+            WaterlineEngineSource::status(),
+            WaterlineEngineSource::status(throwOnInspectionFailure: true)
+        );
 
         $contract = WaterlineEngineSource::status()['readiness_contract'];
 
@@ -63,6 +69,7 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame('missing_table', $status['issues'][0]['reason']);
         $this->assertSame(MissingWaterlineEngineSourceWorkflowRunSummary::class, $status['issues'][0]['model']);
         $this->assertSame('missing_workflow_run_summaries', $status['issues'][0]['table']);
+        $this->assertSame($status, WaterlineEngineSource::status(throwOnInspectionFailure: true));
         $this->assertSame(
             'auto_fallback_to_v1',
             $status['readiness_contract']['effective_states']['boot_install']['state']
@@ -114,6 +121,41 @@ final class WaterlineEngineSourceTest extends TestCase
             'configured_workflow_run_summaries',
             WaterlineEngineSource::status()['required_tables'][10]['table']
         );
+    }
+
+    public function testDefaultStatusKeepsSchemaFailureDiagnostics(): void
+    {
+        $manager = DB::getFacadeRoot();
+        $exception = new PDOException('temporary schema connection failure');
+        $exception->errorInfo = ['HY000', 2006, 'temporary schema connection failure'];
+        DB::shouldReceive('connection')->andThrow($exception);
+
+        try {
+            $status = WaterlineEngineSource::status();
+            $this->assertFalse($status['v2_operator_surface_available']);
+            $this->assertSame('schema_inspection_failed', $status['issues'][0]['reason']);
+            $this->assertStringContainsString($exception->getMessage(), $status['issues'][0]['message']);
+        } finally {
+            DB::swap($manager);
+        }
+    }
+
+    public function testStrictStatusPreservesTheOriginalSchemaFailure(): void
+    {
+        $manager = DB::getFacadeRoot();
+        $exception = new PDOException('temporary schema connection failure');
+        $exception->errorInfo = ['HY000', 2006, 'temporary schema connection failure'];
+        DB::shouldReceive('connection')->andThrow($exception);
+
+        try {
+            WaterlineEngineSource::status(throwOnInspectionFailure: true);
+            $this->fail('Strict inspection must preserve the database failure.');
+        } catch (PDOException $caught) {
+            $this->assertSame($exception, $caught);
+            $this->assertSame(['HY000', 2006, 'temporary schema connection failure'], $caught->errorInfo);
+        } finally {
+            DB::swap($manager);
+        }
     }
 }
 

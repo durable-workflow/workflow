@@ -43,6 +43,7 @@ final class WaterlineEngineSource
     }
 
     /**
+     * @param bool $throwOnInspectionFailure Preserve original exceptions for readiness callers.
      * @return array{
      *     configured: string,
      *     resolved: string,
@@ -69,10 +70,10 @@ final class WaterlineEngineSource
      *     }>
      * }
      */
-    public static function status(string|null $configured = null): array
+    public static function status(string|null $configured = null, bool $throwOnInspectionFailure = false): array
     {
         $configured = self::normalize($configured);
-        $inspection = self::inspectV2OperatorSurface();
+        $inspection = self::inspectV2OperatorSurface($throwOnInspectionFailure);
         $resolved = match ($configured) {
             self::ENGINE_V1 => self::ENGINE_V1,
             self::ENGINE_V2 => self::ENGINE_V2,
@@ -213,13 +214,13 @@ final class WaterlineEngineSource
      *     }>
      * }
      */
-    private static function inspectV2OperatorSurface(): array
+    private static function inspectV2OperatorSurface(bool $throwOnInspectionFailure = false): array
     {
         $requiredTables = [];
         $issues = [];
 
         foreach (self::requiredModelClasses() as $definition) {
-            $inspection = self::inspectModel($definition);
+            $inspection = self::inspectModel($definition, $throwOnInspectionFailure);
             $requiredTables[] = [
                 'config_key' => $inspection['config_key'],
                 'model' => $inspection['model'],
@@ -261,7 +262,7 @@ final class WaterlineEngineSource
      *     message: string
      * }
      */
-    private static function inspectModel(array $definition): array
+    private static function inspectModel(array $definition, bool $throwOnInspectionFailure): array
     {
         $modelClass = $definition['model'];
 
@@ -318,6 +319,11 @@ final class WaterlineEngineSource
                     : sprintf('The configured v2 table [%s] is missing for model [%s].', $table, $modelClass),
             ];
         } catch (Throwable $exception) {
+            // Readiness callers need the original failure, not a missing-table diagnosis.
+            if ($throwOnInspectionFailure) {
+                throw $exception;
+            }
+
             return [
                 'config_key' => $definition['config_key'],
                 'model' => $modelClass,
