@@ -636,12 +636,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
 
         $this->recordClaimHistory($run, $task, 12);
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+        $history = $run->historyEvents;
+        $history->push(WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
             'sequence' => 13,
             'activity_type' => 'large-inline-echo',
             'result' => Serializer::serializeWithCodec('avro', str_repeat('x', 376832)),
             'payload_codec' => 'avro',
-        ], $task);
+        ], $task));
         $expected = HistoryBudget::forRun($run);
         $run->unsetRelation('historyEvents');
 

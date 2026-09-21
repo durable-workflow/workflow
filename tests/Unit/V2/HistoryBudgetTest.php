@@ -426,6 +426,7 @@ final class HistoryBudgetTest extends TestCase
             }
 
             if ($staleSummary) {
+                $statusBucket = $run->status->statusBucket();
                 WorkflowRunSummary::query()->create([
                     'id' => $run->id,
                     'workflow_instance_id' => $run->workflow_instance_id,
@@ -435,8 +436,7 @@ final class HistoryBudgetTest extends TestCase
                     'workflow_type' => $run->workflow_type,
                     'namespace' => $run->namespace,
                     'status' => $run->status->value,
-                    'status_bucket' => $run->status->statusBucket()
-->value,
+                    'status_bucket' => $statusBucket->value,
                     'history_event_count' => 1,
                     'history_size_bytes' => 1,
                     'history_fan_out' => 1,
