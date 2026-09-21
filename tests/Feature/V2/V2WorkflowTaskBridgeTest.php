@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Uid\Ulid;
@@ -615,8 +616,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ));
     }
 
-    public function testSuccessfulClaimProjectionUsesOneBoundedAggregateWhenSummaryIsMissing(): void
-    {
+    #[DataProvider('claimHistorySummaryStates')]
+    public function testSuccessfulClaimProjectionUsesOneBoundedAggregateWhenSummaryIsMissingOrStale(
+        bool $staleSummary,
+    ): void {
         $run = $this->createWaitingRun();
 
         /** @var WorkflowTask $task */
@@ -632,7 +635,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'compatibility' => 'build-a',
         ]);
 
-        $expected = $this->recordClaimHistory($run, $task, 12);
+        $this->recordClaimHistory($run, $task, 12);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+            'sequence' => 13,
+            'activity_type' => 'large-inline-echo',
+            'result' => Serializer::serializeWithCodec('avro', str_repeat('x', 376832)),
+            'payload_codec' => 'avro',
+        ], $task);
+        $expected = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+
+        if ($staleSummary) {
+            $this->createHistoryBudgetSummary($run, 1, 1, 1);
+        }
 
         DB::flushQueryLog();
         DB::enableQueryLog();
@@ -655,6 +670,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertFalse($run->relationLoaded('historyEvents'));
         $this->assertCount(1, $historyQueries);
         $this->assertStringContainsString('count(*)', strtolower($historyQueries[0]['query']));
+    }
+
+    /**
+     * @return array<string, array{bool}>
+     */
+    public static function claimHistorySummaryStates(): array
+    {
+        return [
+            'missing summary' => [false],
+            'stale summary' => [true],
+        ];
     }
 
     public function testSuccessfulClaimProjectionRemainsBoundedThroughCustomHistoryRole(): void

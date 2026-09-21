@@ -358,17 +358,15 @@ final class HistoryBudget
             default => self::sqliteAggregateExpressions($eventType, $payload),
         };
 
-        $groupPartition = "CASE WHEN {$groupIdIsValid} AND {$groupSizeIsNumeric} "
-            . "THEN {$groupIdExpression} ELSE NULL END";
-        $perEvent = $query->toBase()
-            ->selectRaw(sprintf(
-                '%s AS history_event_size_bytes, %s AS history_event_fan_out, '
-                . 'ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) AS history_group_position',
-                $sizeExpression,
-                $fanOutExpression,
-                $groupPartition,
-                $sequence,
-            ));
+        // Aggregate only group identities and sequence numbers; a window sort
+        // can carry the entire payload into MySQL's bounded sort buffer.
+        $firstGroupEvents = (clone $query)->toBase()
+            ->selectRaw("MIN({$sequence})")
+            ->whereRaw("{$groupIdIsValid} AND {$groupSizeIsNumeric}")
+            ->groupByRaw($groupIdExpression);
+        $fanOut = (clone $query)->toBase()
+            ->whereIn($model->qualifyColumn('sequence'), $firstGroupEvents)
+            ->selectRaw("COALESCE(MAX({$fanOutExpression}), 0)");
 
         /**
          * @var object{
@@ -377,14 +375,12 @@ final class HistoryBudget
          *     history_fan_out: int|string
          * }|null $aggregates
          */
-        $aggregates = $connection->query()
-            ->fromSub($perEvent, 'history_budget_events')
+        $aggregates = $query->toBase()
             ->selectRaw(
                 'COUNT(*) AS history_event_count, '
-                . 'COALESCE(SUM(history_event_size_bytes), 0) AS history_size_bytes, '
-                . 'COALESCE(MAX(CASE WHEN history_group_position = 1 '
-                . 'THEN history_event_fan_out ELSE 0 END), 0) AS history_fan_out'
+                . "COALESCE(SUM({$sizeExpression}), 0) AS history_size_bytes"
             )
+            ->selectSub($fanOut, 'history_fan_out')
             ->first();
 
         return [
@@ -400,7 +396,9 @@ final class HistoryBudget
     private static function mysqlAggregateExpressions(string $eventType, string $payload): array
     {
         $json = "COALESCE(CAST({$payload} AS CHAR CHARACTER SET utf8mb4), '[]')";
-        $jsonWithoutStrings = "REGEXP_REPLACE({$json}, CONVERT(0x22285B5E225C5C5D7C5C5C2E292A22 USING utf8mb4), '\"\"')";
+        // Consume unescaped string spans together, not one regex alternative
+        // per byte, so large inline Avro values fit MySQL's regex work limit.
+        $jsonWithoutStrings = "REGEXP_REPLACE({$json}, CONVERT(0x225b5e225c5c5d2a285c5c2e5b5e225c5c5d2a292a22 USING utf8mb4), '\"\"')";
         $structuralSpaces = "((CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ':', ''))) + (CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ',', ''))))";
         $canonicalJson = "REPLACE(REPLACE(REPLACE({$json}, "
             . "CONVERT(0x5C2F USING utf8mb4), '/'), "

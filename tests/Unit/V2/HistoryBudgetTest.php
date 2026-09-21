@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\HistoryBudget;
 
 final class HistoryBudgetTest extends TestCase
@@ -394,6 +398,71 @@ final class HistoryBudgetTest extends TestCase
         $this->assertSame($canonical, $bounded);
         $this->assertTrue($bounded['continue_as_new_recommended']);
         $this->assertFalse($run->relationLoaded('historyEvents'));
+    }
+
+    #[DataProvider('largeHistorySummaryStates')]
+    public function testLargeInlineHistoryFitsDefaultMysqlSortBuffer(bool $staleSummary): void
+    {
+        if (DB::connection()->getDriverName() !== 'mysql'
+            || str_contains(strtolower((string) DB::selectOne('SELECT VERSION() AS version')->version), 'mariadb')) {
+            $this->markTestSkipped('Native MySQL sort-buffer regression.');
+        }
+
+        $previousBuffer = (int) DB::selectOne('SELECT @@session.sort_buffer_size AS size')->size;
+        DB::statement('SET SESSION sort_buffer_size = 262144');
+
+        try {
+            $run = $this->createRun();
+            $result = Serializer::serializeWithCodec('avro', str_repeat('x', 376832));
+            foreach (['invalid', 12, 99] as $index => $groupSize) {
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+                    'sequence' => $index + 1,
+                    'activity_type' => 'large-inline-echo',
+                    'result' => $result,
+                    'payload_codec' => 'avro',
+                    'parallel_group_id' => 'group-a',
+                    'parallel_group_size' => $groupSize,
+                ]);
+            }
+
+            if ($staleSummary) {
+                WorkflowRunSummary::query()->create([
+                    'id' => $run->id,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'run_number' => $run->run_number,
+                    'is_current_run' => true,
+                    'class' => $run->workflow_class,
+                    'workflow_type' => $run->workflow_type,
+                    'namespace' => $run->namespace,
+                    'status' => $run->status->value,
+                    'status_bucket' => $run->status->statusBucket()
+->value,
+                    'history_event_count' => 1,
+                    'history_size_bytes' => 1,
+                    'history_fan_out' => 1,
+                ]);
+            }
+
+            $expected = HistoryBudget::forRun($run);
+            $run->unsetRelation('historyEvents');
+            $this->assertSame(12, $expected['history_fan_out']);
+            $this->assertSame($expected, HistoryBudget::forRunBounded($run));
+            $this->assertFalse($run->relationLoaded('historyEvents'));
+            $this->assertSame(262144, (int) DB::selectOne('SELECT @@session.sort_buffer_size AS size')->size);
+        } finally {
+            DB::statement('SET SESSION sort_buffer_size = ' . $previousBuffer);
+        }
+    }
+
+    /**
+     * @return array<string, array{bool}>
+     */
+    public static function largeHistorySummaryStates(): array
+    {
+        return [
+            'missing summary' => [false],
+            'stale summary' => [true],
+        ];
     }
 
     // ---------------------------------------------------------------
