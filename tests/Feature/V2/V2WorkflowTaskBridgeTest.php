@@ -671,6 +671,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertFalse($run->relationLoaded('historyEvents'));
         $this->assertCount(1, $historyQueries);
         $this->assertStringContainsString('count(*)', strtolower($historyQueries[0]['query']));
+
+        $payload = $this->bridge->historyPayloadPaginated($task->id);
+        $this->assertNotNull($payload);
+        $this->assertCount(13, $payload['history_events']);
+        $this->assertHistoryBudgetResponseMatches($expected, $payload);
     }
 
     /**

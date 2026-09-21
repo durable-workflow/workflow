@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.0.16 - 2026-09-21
+
+- Recover missing or stale history-budget summaries without sorting large
+  payloads or exhausting MySQL's regular-expression work limit. Exact byte
+  counts and first-valid parallel-group fan-out are preserved.
+- Select worker history-page keys before loading payloads, keeping large inline
+  values out of MySQL's sort buffer without changing page size, order, or leases.
+
 ## 2.0.15 - 2026-09-21
 
 - Let readiness callers preserve original schema-inspection exceptions through

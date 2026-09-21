@@ -466,12 +466,23 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return null;
         }
 
-        $historyEvents = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+        $historyQuery = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->where('workflow_run_id', $run->id)
-            ->where('sequence', '>', $afterSequence)
+            ->where('sequence', '>', $afterSequence);
+        $historyModel = $historyQuery->getModel();
+        $keyColumn = $historyModel->getQualifiedKeyName();
+        // MySQL may otherwise filesort entire JSON payloads even with a small
+        // page. Materialize only ordered keys, then sort the bounded PHP page.
+        $pageKeys = (clone $historyQuery)
+            ->select($keyColumn . ' as history_event_id')
             ->orderBy('sequence')
-            ->limit($pageSize + 1)
-            ->get();
+            ->limit($pageSize + 1);
+        $historyEvents = $historyQuery
+            ->joinSub($pageKeys, 'history_page', $keyColumn, '=', 'history_page.history_event_id')
+            ->select($historyModel->qualifyColumn('*'))
+            ->get()
+            ->sortBy('sequence')
+            ->values();
 
         $hasMore = $historyEvents->count() > $pageSize;
 
