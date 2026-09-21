@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.15 - 2026-09-21
+
+- Let readiness callers preserve original schema-inspection exceptions through
+  `WaterlineEngineSource::status(throwOnInspectionFailure: true)`. Temporary
+  database connection failures can then be distinguished from genuinely missing
+  tables. Default Waterline diagnostics and engine selection are unchanged.
+
 ## 2.0.14 - 2026-09-12
 
 - Isolate deterministic workflow clock values from caller mutation. Deriving a
