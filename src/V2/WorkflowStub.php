@@ -144,8 +144,12 @@ final class WorkflowStub
         private WorkflowInstance $instance,
         ?WorkflowRun $selectedRun = null,
         private readonly bool $runTargeted = false,
+        private readonly bool $reservationNeedsCurrentRead = false,
     ) {
-        $this->run = $selectedRun ?? CurrentRunResolver::forInstance($this->instance);
+        $this->run = $selectedRun ?? CurrentRunResolver::forInstance(
+            $this->instance,
+            lockForUpdate: $this->reservationNeedsCurrentRead,
+        );
         $this->selectedRunId = $this->run?->id;
     }
 
@@ -582,13 +586,13 @@ final class WorkflowStub
 
         WorkflowInstanceId::assertValid($instanceId);
 
-        $instance = self::reserveCallerSuppliedInstance(
+        [$instance, $reservationNeedsCurrentRead] = self::reserveCallerSuppliedInstance(
             workflow: $workflow,
             workflowType: $workflowType,
             instanceId: $instanceId,
         );
 
-        return new self($instance->fresh());
+        return new self($instance, reservationNeedsCurrentRead: $reservationNeedsCurrentRead);
     }
 
     public static function load(string $instanceId, ?string $namespace = null): self
@@ -855,15 +859,23 @@ final class WorkflowStub
 
     public function refresh(): self
     {
-        $this->instance = self::instanceQuery()
-            ->findOrFail($this->instance->id);
+        $instanceQuery = self::instanceQuery();
+
+        if ($this->reservationNeedsCurrentRead) {
+            $instanceQuery->lockForUpdate();
+        }
+
+        $this->instance = $instanceQuery->findOrFail($this->instance->id);
 
         if ($this->runTargeted && $this->selectedRunId !== null) {
             /** @var WorkflowRun $selectedRun */
             $selectedRun = self::runQuery()->findOrFail($this->selectedRunId);
             $this->run = $selectedRun;
         } else {
-            $this->run = $this->currentRunForInstance($this->instance);
+            $this->run = CurrentRunResolver::forInstance(
+                $this->instance,
+                lockForUpdate: $this->reservationNeedsCurrentRead,
+            );
             $this->selectedRunId = $this->run?->id;
         }
 
@@ -4663,15 +4675,16 @@ final class WorkflowStub
 
     /**
      * @param class-string<Workflow> $workflow
+     * @return array{WorkflowInstance, bool}
      */
     private static function reserveCallerSuppliedInstance(
         string $workflow,
         string $workflowType,
         string $instanceId,
-    ): WorkflowInstance {
+    ): array {
         $now = now();
 
-        self::instanceQuery()->insertOrIgnore([
+        $inserted = self::instanceQuery()->insertOrIgnore([
             'id' => $instanceId,
             'workflow_class' => $workflow,
             'workflow_type' => $workflowType,
@@ -4681,10 +4694,18 @@ final class WorkflowStub
             'updated_at' => $now,
         ]);
 
+        $instanceQuery = self::instanceQuery();
+        $reservationNeedsCurrentRead = $inserted === 0
+            && $instanceQuery->getModel()
+                ->getConnection()
+                ->transactionLevel() > 0;
+
+        if ($reservationNeedsCurrentRead) {
+            $instanceQuery->lockForUpdate();
+        }
+
         /** @var WorkflowInstance $instance */
-        $instance = self::instanceQuery()
-            ->with('currentRun')
-            ->findOrFail($instanceId);
+        $instance = $instanceQuery->findOrFail($instanceId);
 
         if ($instance->workflow_type !== $workflowType) {
             throw new LogicException(sprintf(
@@ -4701,7 +4722,7 @@ final class WorkflowStub
             ])->save();
         }
 
-        return $instance;
+        return [$instance, $reservationNeedsCurrentRead];
     }
 
     private static function instanceQuery()
