@@ -296,12 +296,22 @@ final class WorkflowServiceProviderTest extends TestCase
 
     public function testMigrationsArePublished(): void
     {
-        Artisan::call('vendor:publish', [
-            '--tag' => 'migrations',
-        ]);
+        $existing = glob(database_path('migrations/*.php')) ?: [];
 
-        $migrationFiles = glob(database_path('migrations/*.php'));
-        $this->assertNotEmpty($migrationFiles, 'Migrations should be published');
+        try {
+            Artisan::call('vendor:publish', [
+                '--tag' => 'migrations',
+            ]);
+
+            $migrationFiles = glob(database_path('migrations/*.php'));
+            $this->assertNotEmpty($migrationFiles, 'Migrations should be published');
+        } finally {
+            foreach (glob(database_path('migrations/*.php')) ?: [] as $file) {
+                if (! in_array($file, $existing, true)) {
+                    @unlink($file);
+                }
+            }
+        }
     }
 
     public function testCommandsAreRegistered(): void
