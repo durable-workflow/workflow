@@ -44,6 +44,7 @@ final class WorkflowServiceProviderSchemaTest extends SchemaTestCase
 
         $this->assertTrue(Schema::hasTable('workflows'));
         $this->assertTrue(Schema::hasTable('workflow_instances'));
+        $this->assertTrue(Schema::hasTable('workflows'));
         $this->assertTrue(Schema::hasTable('workflow_runs'));
         $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
         $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'memo'));
@@ -111,7 +112,10 @@ final class WorkflowServiceProviderSchemaTest extends SchemaTestCase
 
     private function deletePublishedWorkflowMigrations(): void
     {
-        $sourceFiles = glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [];
+        $sourceFiles = array_merge(
+            glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [],
+            glob(dirname(__DIR__, 3) . '/src/migrations-v1/*.php') ?: [],
+        );
         $publishedNames = array_fill_keys(array_map('basename', $sourceFiles), true);
 
         foreach (glob(database_path('migrations/*.php')) ?: [] as $file) {

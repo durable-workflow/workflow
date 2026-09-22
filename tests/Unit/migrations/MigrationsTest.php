@@ -79,7 +79,10 @@ final class MigrationsTest extends SchemaTestCase
      */
     public function testEveryPackageMigrationExtendsWorkflowMigrationBase(): void
     {
-        $files = glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [];
+        $files = array_merge(
+            glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [],
+            glob(dirname(__DIR__, 3) . '/src/migrations-v1/*.php') ?: [],
+        );
 
         $this->assertNotEmpty($files);
 
@@ -130,7 +133,7 @@ final class MigrationsTest extends SchemaTestCase
     public function testPackageMigrationCreateTablesAreDetectableByServerAdoptionPatterns(): void
     {
         $migrationFiles = array_merge(
-            glob(dirname(__DIR__, 3) . '/src/migrations/2022_*.php') ?: [],
+            glob(dirname(__DIR__, 3) . '/src/migrations-v1/2022_*.php') ?: [],
             glob(dirname(__DIR__, 3) . '/src/migrations/2026_04_*.php') ?: [],
         );
         sort($migrationFiles);
@@ -286,7 +289,7 @@ final class MigrationsTest extends SchemaTestCase
         );
 
         $this->artisan('migrate:reset', [
-            '--path' => dirname(__DIR__, 3) . '/src/migrations',
+            '--path' => self::packageMigrationPaths(),
             '--realpath' => true,
         ])->run();
 
@@ -340,7 +343,7 @@ final class MigrationsTest extends SchemaTestCase
         try {
             $this->artisan('migrate:fresh', [
                 '--database' => $connection,
-                '--path' => dirname(__DIR__, 3) . '/src/migrations',
+                '--path' => self::packageMigrationPaths(),
                 '--realpath' => true,
             ])->assertExitCode(0);
 
@@ -348,7 +351,7 @@ final class MigrationsTest extends SchemaTestCase
 
             $this->artisan($command, [
                 '--database' => $connection,
-                '--path' => dirname(__DIR__, 3) . '/src/migrations',
+                '--path' => self::packageMigrationPaths(),
                 '--realpath' => true,
             ])->assertExitCode(0);
 
@@ -534,6 +537,14 @@ final class MigrationsTest extends SchemaTestCase
                 "Expected SQLite table [{$table}] to be dropped.",
             );
         }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function packageMigrationPaths(): array
+    {
+        return [dirname(__DIR__, 3) . '/src/migrations-v1', dirname(__DIR__, 3) . '/src/migrations'];
     }
 
     /**

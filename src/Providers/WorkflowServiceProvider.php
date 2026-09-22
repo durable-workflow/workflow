@@ -138,7 +138,13 @@ final class WorkflowServiceProvider extends ServiceProvider
     {
         SerializableClosure::setSecretKey(config('app.key'));
 
+        $v1Enabled = (bool) config('workflows.v1.enabled', true);
+
         $this->loadMigrationsFrom(__DIR__ . '/../migrations');
+
+        if ($v1Enabled) {
+            $this->loadMigrationsFrom(__DIR__ . '/../migrations-v1');
+        }
 
         $this->publishes([
             __DIR__ . '/../config/workflows.php' => config_path('workflows.php'),
@@ -147,6 +153,12 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__ . '/../migrations/' => database_path('/migrations'),
         ], 'migrations');
+
+        if ($v1Enabled) {
+            $this->publishes([
+                __DIR__ . '/../migrations-v1/' => database_path('/migrations'),
+            ], 'migrations');
+        }
 
         $this->commands([
             ActivityMakeCommand::class,
@@ -176,8 +188,10 @@ final class WorkflowServiceProvider extends ServiceProvider
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();
 
-        Event::listen(Looping::class, static function (Looping $event): void {
-            Watchdog::wake($event->connectionName, $event->queue);
+        Event::listen(Looping::class, static function (Looping $event) use ($v1Enabled): void {
+            if ($v1Enabled) {
+                Watchdog::wake($event->connectionName, $event->queue);
+            }
 
             if (config('workflows.v2.matching_role.queue_wake_enabled', true)) {
                 app(MatchingRole::class)->wake($event->connectionName, $event->queue);

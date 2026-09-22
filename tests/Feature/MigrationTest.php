@@ -304,7 +304,7 @@ class MigrationTest extends SchemaTestCase
         ];
 
         foreach ($migrations as $migrationFile) {
-            $path = __DIR__ . '/../../src/migrations/' . $migrationFile;
+            $path = __DIR__ . '/../../src/migrations-v1/' . $migrationFile;
             if (! file_exists($path)) {
                 throw new \RuntimeException("Migration not found: {$path}");
             }

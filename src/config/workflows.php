@@ -32,6 +32,12 @@ return [
 
     'workflow_relationships_table' => 'workflow_relationships',
 
+    'v1' => [
+        // Existing installations keep their v1 drain. Disable only for a
+        // fresh v2-only application or after all legacy work is retired.
+        'enabled' => (bool) Env::dw('DW_V1_ENABLED', 'WORKFLOW_V1_ENABLED', true),
+    ],
+
     'v2' => [
         // Optional embedded-v2 routing defaults. During a v1 drain, set
         // DW_V2_QUEUE to a queue that no v1 workflow uses so new starts can

@@ -26,6 +26,12 @@ composer require durable-workflow/workflow:^2.0
 php artisan migrate
 ```
 
+For a new v2-only application, set `DW_V1_ENABLED=false` before the first
+migration. This omits the legacy v1 tables and queue watchdog. Existing
+applications keep v1 enabled by default so they can drain older work; do not
+disable it until that work is retired. Changing this setting does not drop
+existing tables.
+
 Run a Laravel queue worker or Horizon to execute workflows and activities:
 
 ```bash
