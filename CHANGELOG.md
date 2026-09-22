@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.17 - 2026-09-22
+
+- Resolve a committed caller-supplied workflow identity from a current MySQL
+  read when a concurrent start wins after the caller's repeatable-read snapshot.
+  Duplicate-start policy, durable-type validation, and transaction rollback
+  remain intact.
+
 ## 2.0.16 - 2026-09-21
 
 - Recover missing or stale history-budget summaries without sorting large
