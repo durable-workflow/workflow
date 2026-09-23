@@ -4767,6 +4767,50 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('cancel_flight typed compensation failure', $snapshots[0]['message'] ?? null);
     }
 
+    public function testWorkflowFailureRecordsOnlyVerifiedActivityBoundary(): void
+    {
+        foreach (['matching', 'wrong_execution', 'stale_event'] as $case) {
+            $run = $this->createWaitingRun();
+            $activityId = (string) Str::ulid();
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, [
+                'activity_execution_id' => $activityId,
+                'activity_type' => 'test-greeting-activity',
+                'sequence' => 1,
+                'message' => 'Activity failed.',
+            ]);
+
+            if ($case === 'stale_event') {
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+                    'activity_execution_id' => (string) Str::ulid(),
+                    'activity_type' => 'another-activity',
+                    'sequence' => 2,
+                ]);
+            }
+
+            $task = $this->createLeasedTask($run);
+            $result = $this->bridge->complete($task->id, [[
+                'type' => 'fail_workflow',
+                'message' => 'Activity failed.',
+                'failed_step_sequence' => 1,
+                'failed_activity_execution_id' => $case === 'wrong_execution' ? (string) Str::ulid() : $activityId,
+            ]]);
+
+            $this->assertTrue($result['completed']);
+            $failureEvent = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowFailed)
+                ->sole();
+
+            if ($case === 'matching') {
+                $this->assertSame(1, $failureEvent->payload['failed_step_sequence']);
+                $this->assertSame('activity', $failureEvent->payload['failed_step_kind']);
+            } else {
+                $this->assertArrayNotHasKey('failed_step_sequence', $failureEvent->payload);
+                $this->assertArrayNotHasKey('failed_step_kind', $failureEvent->payload);
+            }
+        }
+    }
+
     public function testCompleteRejectsNonLeasedTask(): void
     {
         $run = $this->createWaitingRun();

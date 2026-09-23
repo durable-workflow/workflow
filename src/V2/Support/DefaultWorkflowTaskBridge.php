@@ -1064,7 +1064,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *     exception_class?: string,
      *     exception_type?: string,
      *     exception?: array<string, mixed>,
-     *     non_retryable?: bool
+     *     non_retryable?: bool,
+     *     failed_step_sequence?: int,
+     *     failed_activity_execution_id?: string
      * } $command
      */
     private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
@@ -1085,6 +1087,22 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
             $exceptionClass
         ));
+        $claimedSequence = $command['failed_step_sequence'] ?? null;
+        $claimedActivityId = $command['failed_activity_execution_id'] ?? null;
+        $lastEvent = is_int($claimedSequence) && $claimedSequence > 0
+            && is_string($claimedActivityId) && $claimedActivityId !== ''
+                ? WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->orderByDesc('sequence')
+                    ->first()
+                : null;
+        $lastPayload = $lastEvent instanceof WorkflowHistoryEvent && is_array($lastEvent->payload)
+            ? $lastEvent->payload
+            : [];
+        $failedActivityBoundary = $lastEvent instanceof WorkflowHistoryEvent
+            && $lastEvent->event_type === HistoryEventType::ActivityFailed
+            && ($lastPayload['sequence'] ?? null) === $claimedSequence
+            && ($lastPayload['activity_execution_id'] ?? null) === $claimedActivityId;
 
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([
@@ -1109,7 +1127,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_progress_at' => now(),
         ])->save();
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
+        $failurePayload = [
             'failure_id' => $failure->id,
             'source_kind' => 'workflow_run',
             'source_id' => $run->id,
@@ -1128,7 +1146,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'trace' => [],
                 'properties' => [],
             ], $structuredException),
-        ], $task);
+        ];
+        if ($failedActivityBoundary) {
+            $failurePayload['failed_step_sequence'] = $claimedSequence;
+            $failurePayload['failed_step_kind'] = 'activity';
+        }
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failurePayload, $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
 
@@ -4970,7 +4993,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *     exception_class?: string,
      *     exception_type?: string,
      *     exception?: array<string, mixed>,
-     *     non_retryable?: bool
+     *     non_retryable?: bool,
+     *     failed_step_sequence?: int,
+     *     failed_activity_execution_id?: string
      * }|null
      */
     private static function normalizeFailWorkflowCommand(array $command): ?array
@@ -4988,6 +5013,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
             'exception' => self::normalizeExceptionPayload($command['exception'] ?? null),
             'non_retryable' => is_bool($command['non_retryable'] ?? null) ? $command['non_retryable'] : null,
+            'failed_step_sequence' => self::normalizePositiveInt($command['failed_step_sequence'] ?? null),
+            'failed_activity_execution_id' => self::normalizeOptionalString(
+                $command['failed_activity_execution_id'] ?? null
+            ),
         ], static fn (mixed $value): bool => $value !== null);
     }
 
