@@ -183,12 +183,18 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
             $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
+            $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
+            $localDefinitionMatches = $workflowClass !== null
+                && is_string($sourceFingerprint)
+                && $sourceFingerprint === WorkflowDefinition::fingerprint($workflowClass);
+            $externalDefinitionMatches = $workflowClass === null
+                && $source->workflow_class === $source->workflow_type
+                && is_string($sourceFingerprint)
+                && $sourceFingerprint !== ''
+                && is_string($externalFingerprint)
+                && hash_equals($sourceFingerprint, $externalFingerprint);
 
-            if (
-                $workflowClass === null
-                || ! is_string($sourceFingerprint)
-                || $sourceFingerprint !== WorkflowDefinition::fingerprint($workflowClass)
-            ) {
+            if (! $localDefinitionMatches && ! $externalDefinitionMatches) {
                 $result['reason'] = 'workflow_definition_unavailable_or_changed';
                 $result['status'] = 409;
 
@@ -377,6 +383,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $fairnessWeight = TaskFairnessKey::normalizeWeight($options['fairness_weight'] ?? null);
 
         $workflowClass = $resolvedClass ?? $workflowType;
+        $externalFingerprint = is_string($options['external_workflow_definition_fingerprint'] ?? null)
+            ? trim($options['external_workflow_definition_fingerprint'])
+            : null;
 
         /** @var WorkflowCommand|null $command */
         $command = null;
@@ -387,6 +396,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $workflowType,
             $workflowClass,
             $resolvedClass,
+            $externalFingerprint,
             $instanceId,
             $arguments,
             $connection,
@@ -475,7 +485,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             $fingerprint = $resolvedClass !== null
                 ? WorkflowDefinition::fingerprint($resolvedClass)
-                : null;
+                : ($externalFingerprint !== '' ? $externalFingerprint : null);
 
             if ($resolvedClass !== null && $connection === null) {
                 $connection = $this->classPropertyDefault($resolvedClass, 'connection');

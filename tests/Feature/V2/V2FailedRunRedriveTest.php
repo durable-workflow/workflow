@@ -6,18 +6,24 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
@@ -160,6 +166,107 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertFalse($result['accepted']);
         $this->assertSame('run_not_failed', $result['reason']);
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-completed-1')->count());
+    }
+
+    public function testServiceRunRequiresMatchingRecordedWorkerDefinitionFingerprint(): void
+    {
+        Queue::fake();
+
+        $controlPlane = app(WorkflowControlPlane::class);
+        $start = $controlPlane->start('remote.redrive', 'redrive-service-1', [
+            'namespace' => 'default',
+            'queue' => 'service-workflows',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'external_workflow_definition_fingerprint' => 'worker-definition-1',
+        ]);
+        $this->assertTrue($start['started']);
+
+        $source = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
+        $this->assertSame('remote.redrive', $source->workflow_class);
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted)
+            ->firstOrFail();
+        $this->assertSame('worker-definition-1', $started->payload['workflow_definition_fingerprint']);
+
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => 'service-activity-1',
+            'activity_type' => 'remote.first',
+            'sequence' => 1,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityCompleted, [
+            'activity_execution_id' => 'service-activity-1',
+            'activity_type' => 'remote.first',
+            'sequence' => 1,
+            'result' => Serializer::serializeWithCodec('avro', 'first-result'),
+            'payload_codec' => 'avro',
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => 'service-activity-2',
+            'activity_type' => 'remote.second',
+            'sequence' => 2,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityFailed, [
+            'activity_execution_id' => 'service-activity-2',
+            'activity_type' => 'remote.second',
+            'sequence' => 2,
+            'message' => 'temporary failure',
+        ]);
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $source->id)
+            ->firstOrFail();
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'service-worker',
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        $source->forceFill([
+            'status' => RunStatus::Waiting,
+        ])->save();
+        $failure = app(DefaultWorkflowTaskBridge::class)->complete($task->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'temporary failure',
+            'failed_step_sequence' => 2,
+            'failed_activity_execution_id' => 'service-activity-2',
+        ]]);
+        $this->assertTrue($failure['completed']);
+
+        $startedPayload = $started->payload;
+        unset($startedPayload['workflow_definition_fingerprint']);
+        $started->forceFill([
+            'payload' => $startedPayload,
+        ])->save();
+        $unrecorded = $controlPlane->redrive('redrive-service-1', $source->id, [
+            'namespace' => 'default',
+            'external_workflow_definition_fingerprint' => 'worker-definition-1',
+        ]);
+        $this->assertSame('workflow_definition_unavailable_or_changed', $unrecorded['reason']);
+        $started->forceFill([
+            'payload' => array_merge($startedPayload, [
+                'workflow_definition_fingerprint' => 'worker-definition-1',
+            ]),
+        ])->save();
+
+        $unverified = $controlPlane->redrive('redrive-service-1', $source->id, [
+            'namespace' => 'default',
+        ]);
+        $this->assertSame('workflow_definition_unavailable_or_changed', $unverified['reason']);
+        $changed = $controlPlane->redrive('redrive-service-1', $source->id, [
+            'namespace' => 'default',
+            'external_workflow_definition_fingerprint' => 'worker-definition-2',
+        ]);
+        $this->assertSame('workflow_definition_unavailable_or_changed', $changed['reason']);
+
+        $redrive = $controlPlane->redrive('redrive-service-1', $source->id, [
+            'namespace' => 'default',
+            'external_workflow_definition_fingerprint' => 'worker-definition-1',
+        ]);
+        $this->assertTrue($redrive['accepted'], (string) $redrive['reason']);
+        $this->assertSame(2, $redrive['resume_step_sequence']);
+        $this->assertSame(RunStatus::Failed, $source->fresh()->status);
+        $this->assertSame('service-workflows', WorkflowRun::query()->findOrFail($redrive['workflow_run_id'])->queue);
     }
 
     public function testWorkflowFailureAfterCompletedActivityHasNoSafeRedriveBoundary(): void
