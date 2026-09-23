@@ -283,7 +283,14 @@ final class WorkflowExecutor
                             );
                         }
                     } catch (Throwable $throwable) {
-                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+                        $this->failRun(
+                            $run,
+                            $task,
+                            $throwable,
+                            'workflow_run',
+                            $run->id,
+                            $activityCompletion->event_type === HistoryEventType::ActivityFailed ? $sequence : null,
+                        );
 
                         return null;
                     }
@@ -350,7 +357,14 @@ final class WorkflowExecutor
                         );
                     }
                 } catch (Throwable $throwable) {
-                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+                    $this->failRun(
+                        $run,
+                        $task,
+                        $throwable,
+                        'workflow_run',
+                        $run->id,
+                        $execution->status === ActivityStatus::Failed ? $sequence : null,
+                    );
 
                     return null;
                 }
@@ -3765,6 +3779,7 @@ final class WorkflowExecutor
         Throwable $throwable,
         string $sourceKind,
         string $sourceId,
+        ?int $failedStepSequence = null,
     ): void {
         if ($run->status === RunStatus::Completed && $run->historyEvents()
             ->where('event_type', HistoryEventType::WorkflowCompleted->value)->exists()) {
@@ -3827,6 +3842,11 @@ final class WorkflowExecutor
             'message' => $failure->message,
             'exception' => $exceptionPayload,
         ];
+
+        if ($failedStepSequence !== null) {
+            $failedEventPayload['failed_step_sequence'] = $failedStepSequence;
+            $failedEventPayload['failed_step_kind'] = 'activity';
+        }
 
         if ($throwable instanceof StructuralLimitExceededException) {
             try {

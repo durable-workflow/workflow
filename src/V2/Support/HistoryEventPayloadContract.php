@@ -829,6 +829,8 @@ final class HistoryEventPayloadContract
         'WorkflowCompleted' => ['output', 'payload_codec'],
         'WorkflowFailed' => [
             'failure_id',
+            'failed_step_sequence',
+            'failed_step_kind',
             'source_kind',
             'source_id',
             'failure_category',

@@ -8,6 +8,7 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestNonRetryableWorkflow;
+use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Enums\ActivityStatus;
@@ -63,6 +64,37 @@ final class V2NonRetryableFailureTest extends TestCase
             ->firstOrFail();
 
         $this->assertTrue($activityFailedEvent->payload['non_retryable']);
+
+        $workflowFailedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->firstOrFail();
+
+        $this->assertSame(1, $workflowFailedEvent->payload['failed_step_sequence']);
+        $this->assertSame('activity', $workflowFailedEvent->payload['failed_step_kind']);
+    }
+
+    public function testWorkflowExceptionAfterCompletedActivityDoesNotClaimTheActivityFailed(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestThrowAfterGreetingWorkflow::class, 'throw-after-greeting-1');
+        $workflow->start('Taylor');
+
+        $this->assertTrue($workflow->refresh()->failed());
+
+        $activityCompletedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityCompleted)
+            ->firstOrFail();
+        $this->assertSame(1, $activityCompletedEvent->payload['sequence']);
+
+        $workflowFailedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->firstOrFail();
+
+        $this->assertArrayNotHasKey('failed_step_sequence', $workflowFailedEvent->payload);
     }
 
     public function testRetryableActivityFailureRecordsNonRetryableFalse(): void
