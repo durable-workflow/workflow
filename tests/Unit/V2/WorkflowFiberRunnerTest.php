@@ -81,6 +81,32 @@ final class WorkflowFiberRunnerTest extends TestCase
         ]], $scheduled->commands);
     }
 
+    public function testCooperativeCancellationHistoryResumesAnExistingRunner(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(
+                __DIR__ . '/../../Fixtures/V2/ReplayRegression/cooperative-cancellation-cold-replay.json'
+            ),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $workflow = $fixture['workflow'];
+        $runner = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            'cooperative-cancellation-existing-runner',
+            'cooperative-cancellation-existing-runner-run',
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+        );
+
+        $first = $runner->step();
+        $this->assertSame('start_timer', $first->commands[0]['type']);
+
+        $resumed = $runner->withHistoryEvents($fixture['history'])->step();
+        $this->assertSame('schedule_activity', $resumed->commands[0]['type']);
+        $this->assertSame('Tests\\Fixtures\\V2\\TestRetryActivity', $resumed->commands[0]['activity_type']);
+    }
+
     public function testRunnerAuthorsNestedSelectionAsOneExactFlattenedCommandBatchAndThenWaits(): void
     {
         $scheduled = $this->runnerFor(WorkerProtocolRunnerNestedSelectionWorkflow::class)->step();

@@ -4,11 +4,15 @@ This document freezes the v2 contract for how workflow cancellation
 and termination propagate across the pieces of an in-flight run:
 open tasks, open activity executions, open timers, and open child
 workflows. It names the scope boundary (cancel is run-level, not
-call-level), the two command types (`cancel` and `terminate`), the
+call-level), the two terminal command types (`cancel` and `terminate`), the
 heartbeat-based cooperation protocol with activity workers, the
 parent-close policy that decides what happens to children when a
 parent closes, and the typed history events that make the whole
 propagation observable.
+
+Embedded v2 also has an additive `requestCancellation()` path for bounded,
+durable workflow cleanup. It does not change the terminal `cancel()` and
+`terminate()` contracts below, and it is not yet a service-mode SDK API.
 
 The guarantees below apply to the `durable-workflow/workflow` package
 at v2 and to every host that embeds it or talks to it over the
@@ -122,6 +126,42 @@ The two command types produce different terminal state:
 `CommandOutcome::Cancelled` / `CommandOutcome::Terminated` name
 the terminal command outcome used in the `CommandResolved`
 history event that closes each command.
+
+## Embedded cooperative cleanup request
+
+`WorkflowStub::requestCancellation($reason, $cleanupTimeoutSeconds)` asks a
+running embedded workflow to stop cooperatively. It is separate from
+`cancel()`: accepting it records `CooperativeCancellationRequested` and leaves
+the run active. Repeating the request for the same run returns the original
+command. The cleanup timeout defaults to 600 seconds and must be between 1
+and 3600 seconds.
+
+When the workflow next reaches a supported activity, timer, signal, or
+condition wait, the engine records `CooperativeCancellationDelivered` and
+throws `WorkflowCancellationRequestedException` into the workflow Fiber.
+Authoring code can put durable cleanup operations in `finally`:
+
+```php
+try {
+    timer(3600);
+} finally {
+    activity(ReleaseReservationActivity::class, $reservationId);
+}
+```
+
+The cleanup activity uses ordinary durable retries and can itself wait on a
+timer. A successful cleanup closes the run as cancelled. An unhandled cleanup
+failure leaves a failed run rather than claiming cleanup succeeded. If the
+deadline expires, the watchdog requests an immediate terminal cancel, even
+if cleanup is still waiting. `terminate()` remains immediate and can stop a
+run during cleanup; it does not wait for `finally` to finish.
+
+Cleanup activities must be idempotent. Neither this request nor worker
+heartbeats can guarantee that external side effects stop at the deadline;
+external leases, expiry, or reconciliation remain necessary. This API is
+currently implemented only by the embedded PHP engine. Server and PHP,
+Python, and Rust service-mode SDK support require separate protocol work and
+must not be inferred from this section.
 
 ## Run-level scope
 

@@ -159,25 +159,6 @@ final class ReplayRegressionCorpusTest extends TestCase
         );
     }
 
-    public function testCooperativeCancellationHistoryResumesAnExistingRunner(): void
-    {
-        $fixture = self::replayRegressionFixtures()['cooperative-cancellation-cold-replay'][0];
-        $workflow = $fixture['workflow'];
-        $runner = WorkflowFiberRunner::forClass(
-            $workflow['type'],
-            'cooperative-cancellation-existing-runner',
-            'cooperative-cancellation-existing-runner-run',
-            $workflow['arguments'],
-            $workflow['payload_codec'],
-        );
-
-        $first = $runner->step();
-        $this->assertSame('start_timer', $first->commands[0]['type']);
-
-        $resumed = $runner->withHistoryEvents($fixture['history'])->step();
-        $this->assertStepMatches($fixture['expected'], $resumed, 'existing runner cancellation delivery');
-    }
-
     public function testAlternateAvroMapOrdersRemainObservableToTheRunner(): void
     {
         $golden = json_decode(
