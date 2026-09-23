@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use RuntimeException;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use Workflow\V2\Activity;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Models\ActivityExecution;
@@ -72,13 +72,19 @@ final class ActivityRetryPolicyTest extends TestCase
         self::assertSame(5, ActivityRetryPolicy::backoffSeconds($execution, $activity, 2));
         self::assertSame(0, ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, 2));
 
-        $execution->retry_policy = ['max_attempts' => null, 'backoff_seconds' => [1, 4]];
+        $execution->retry_policy = [
+            'max_attempts' => null,
+            'backoff_seconds' => [1, 4],
+        ];
         self::assertSame(PHP_INT_MAX, ActivityRetryPolicy::maxAttempts($execution, $activity));
         self::assertSame(PHP_INT_MAX, ActivityRetryPolicy::maxAttemptsFromSnapshot($execution));
         self::assertSame(1, ActivityRetryPolicy::backoffSeconds($execution, $activity, 0));
         self::assertSame(4, ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, 99));
 
-        $execution->retry_policy = ['max_attempts' => 0, 'backoff_seconds' => []];
+        $execution->retry_policy = [
+            'max_attempts' => 0,
+            'backoff_seconds' => [],
+        ];
         self::assertSame(1, ActivityRetryPolicy::maxAttempts($execution, $activity));
         self::assertSame(1, ActivityRetryPolicy::maxAttemptsFromSnapshot($execution));
         self::assertSame(0, ActivityRetryPolicy::backoffSeconds($execution, $activity, 2));
@@ -87,7 +93,9 @@ final class ActivityRetryPolicyTest extends TestCase
     public function testNonRetryableClassificationUsesRecordedClassAndPortableType(): void
     {
         $execution = new ActivityExecution();
-        $execution->retry_policy = ['non_retryable_error_types' => [RuntimeException::class, 'RemoteFailure']];
+        $execution->retry_policy = [
+            'non_retryable_error_types' => [RuntimeException::class, 'RemoteFailure'],
+        ];
 
         self::assertTrue(ActivityRetryPolicy::isNonRetryableFailure($execution, new RuntimeException('invalid')));
         self::assertTrue(ActivityRetryPolicy::isNonRetryableFailure($execution, new RestoredWorkflowException([
@@ -108,10 +116,11 @@ final class ActivityRetryPolicyTest extends TestCase
 
     private function activity(int $tries, array $backoff): Activity
     {
-        return new class($tries, $backoff) extends Activity
-        {
-            public function __construct(int $tries, private readonly array $delays)
-            {
+        return new class($tries, $backoff) extends Activity {
+            public function __construct(
+                int $tries,
+                private readonly array $delays
+            ) {
                 $this->tries = $tries;
             }
 
