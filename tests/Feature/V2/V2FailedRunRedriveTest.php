@@ -298,5 +298,18 @@ final class V2FailedRunRedriveTest extends TestCase
             (new WorkflowReplayer())->replay($reloadedRun)
                 ->workflow->replayTimes()['time_at_start']
         );
+
+        WorkflowHistoryEvent::query()->where('workflow_run_id', $sourceRunId)->delete();
+        WorkflowRun::query()->whereKey($sourceRunId)->delete();
+        DB::purge();
+        DB::reconnect();
+
+        $retainedSuccessor = WorkflowRun::query()->findOrFail($successorRunId);
+        $this->assertSame(
+            $expectedOutput['time_at_start'],
+            (new WorkflowReplayer())->replay($retainedSuccessor)
+                ->workflow->replayTimes()['time_at_start']
+        );
+        $this->assertSame($sourceRunId, RunActivityView::activitiesForRun($retainedSuccessor)[0]['reused_from_run_id']);
     }
 }
