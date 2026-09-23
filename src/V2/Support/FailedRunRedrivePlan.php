@@ -29,6 +29,7 @@ final class FailedRunRedrivePlan
         $started = null;
         $failure = null;
         $activityEvents = [];
+        $lastActivityEvent = null;
 
         foreach ($events as $event) {
             if (! $event instanceof WorkflowHistoryEvent || ! $event->event_type instanceof HistoryEventType) {
@@ -92,6 +93,7 @@ final class FailedRunRedrivePlan
             }
 
             $activityEvents[$sequence][] = $event;
+            $lastActivityEvent = $event;
         }
 
         if ($started === null || $failure === null) {
@@ -196,6 +198,14 @@ final class FailedRunRedrivePlan
             }
 
             $completed[] = $payload;
+        }
+
+        if (
+            ! $lastActivityEvent instanceof WorkflowHistoryEvent
+            || $lastActivityEvent->event_type !== HistoryEventType::ActivityFailed
+            || ($lastActivityEvent->payload['sequence'] ?? null) !== $boundary
+        ) {
+            return self::reject('unrecorded_failure_boundary');
         }
 
         return [
