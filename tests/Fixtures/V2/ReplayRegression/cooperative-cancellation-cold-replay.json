@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cooperative-cancellation-cold-replay",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestCooperativeRetryCleanupWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-09-23T00:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-09-23T00:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "CooperativeCancellationRequested",
+      "payload": {"workflow_command_id": "cancel-1", "command_type": "request_cancellation"},
+      "recorded_at": "2026-09-23T00:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerCancelled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-09-23T00:00:03+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "CooperativeCancellationDelivered",
+      "payload": {"workflow_command_id": "cancel-1", "sequence": 1, "call_kind": "timer"},
+      "recorded_at": "2026-09-23T00:00:03+00:00"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [{"type": "schedule_activity", "activity_type": "Tests\\Fixtures\\V2\\TestRetryActivity"}]
+  }
+}

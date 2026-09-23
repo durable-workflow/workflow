@@ -8,6 +8,8 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestCooperativeActivityCleanupWorkflow;
+use Tests\Fixtures\V2\TestCooperativeRetryCleanupWorkflow;
+use Tests\Fixtures\V2\TestCooperativeWaitCleanupWorkflow;
 use Tests\Fixtures\V2\TestFinallyCleanupWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\CommandOutcome;
@@ -153,7 +155,9 @@ final class V2FinallyCleanupTest extends TestCase
             'waiting on timer'
         );
 
+        self::stopWorkers();
         $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
+        self::restartQueueWorkers();
         $this->waitForWorkflow(
             $workflow,
             static fn (WorkflowStub $workflow): bool => $workflow->refresh()
@@ -206,6 +210,109 @@ final class V2FinallyCleanupTest extends TestCase
         $this->assertSame([
             'cleanup' => 'Hello, cleanup!',
         ], $workflow->memo());
+    }
+
+    public function testCooperativeCancellationInterruptsSignalAndConditionWaits(): void
+    {
+        Queue::fake();
+
+        foreach (['signal', 'condition'] as $waitKind) {
+            $workflow = WorkflowStub::make(TestCooperativeWaitCleanupWorkflow::class);
+            $workflow->start($waitKind);
+            $runId = $workflow->runId();
+            $this->assertIsString($runId);
+            $this->runReadyTask($runId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
+            $this->runReadyTask($runId, TaskType::Workflow);
+            $this->runReadyTask($runId, TaskType::Activity);
+            $this->runReadyTask($runId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->refresh()->cancelled());
+            $this->assertSame([
+                'cleanup' => 'Hello, cleanup!',
+            ], $workflow->memo());
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)
+                ->count());
+        }
+    }
+
+    public function testCooperativeCleanupActivityRetriesBeforeTerminalCancellation(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestCooperativeRetryCleanupWorkflow::class);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
+        $this->runReadyTask($runId, TaskType::Workflow);
+
+        $this->runReadyTask($runId, TaskType::Activity);
+        $this->assertFalse($workflow->refresh()->cancelled());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+            ->count());
+
+        try {
+            Carbon::setTestNow(now()->addSeconds(6));
+            $this->runReadyTask($runId, TaskType::Activity);
+            $this->runReadyTask($runId, TaskType::Workflow);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertTrue($workflow->refresh()->cancelled());
+        $this->assertSame([
+            'cleanup' => 'Hello, cleanup!',
+        ], $workflow->memo());
+    }
+
+    public function testTerminationDuringCooperativeCleanupRemainsImmediate(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestCooperativeActivityCleanupWorkflow::class);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $workflow->requestCancellation('stop', 60);
+        $this->runReadyTask($runId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->terminate('force stop')->accepted());
+        $this->assertSame('terminated', $workflow->refresh()->status());
+        $this->assertSame([], $workflow->memo());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::MemoUpserted->value,
+        ]);
+    }
+
+    public function testFailedCooperativeCleanupIsVisibleAsRunFailure(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestCooperativeRetryCleanupWorkflow::class);
+        $workflow->start(true);
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $workflow->requestCancellation('stop', 60);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $this->runReadyTask($runId, TaskType::Activity);
+        $this->runReadyTask($runId, TaskType::Workflow);
+
+        $this->assertSame('failed', $workflow->refresh()->status());
+        $this->assertSame([], $workflow->memo());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->count());
     }
 
     public function testExpiredCleanupDeadlineFallsBackToTerminalCancellation(): void

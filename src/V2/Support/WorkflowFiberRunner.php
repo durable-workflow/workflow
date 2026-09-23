@@ -17,6 +17,7 @@ use Workflow\V2\Exceptions\DurableOperationCancelledException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Workflow;
@@ -87,6 +88,11 @@ final class WorkflowFiberRunner
      * @var array<int, array{signal_name: string, result: mixed, recorded_at: CarbonInterface|null}>
      */
     private array $recordedSignalOutcomes = [];
+
+    /**
+     * @var array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     */
+    private array $recordedCancellationDeliveries = [];
 
     /**
      * @var array<int, array{signal_name: string, signal_wait_id: string|null}>
@@ -291,6 +297,33 @@ final class WorkflowFiberRunner
             }
 
             $this->applyRecordedUpdatesForCurrentPosition();
+
+            $historySequence = $this->historySequenceForCurrentPosition();
+            $cancellation = $historySequence === null
+                ? null
+                : ($this->recordedCancellationDeliveries[$historySequence] ?? null);
+
+            if ($cancellation !== null) {
+                $callKind = match (true) {
+                    $current instanceof ActivityCall => 'activity',
+                    $current instanceof TimerCall => 'timer',
+                    $current instanceof SignalCall => 'signal',
+                    $current instanceof AwaitCall, $current instanceof AwaitWithTimeoutCall => 'condition',
+                    default => null,
+                };
+
+                if ($cancellation['call_kind'] !== $callKind) {
+                    throw new RuntimeException('Cooperative cancellation delivery does not match the replayed wait.');
+                }
+
+                ++$this->sequence;
+                $this->execution->throw(
+                    new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                    $cancellation['recorded_at'],
+                );
+
+                continue;
+            }
 
             if ($current instanceof CancelDurableOperationCall) {
                 $handle = $current->handle;
@@ -1022,6 +1055,10 @@ final class WorkflowFiberRunner
             return false;
         }
 
+        if (isset($this->recordedCancellationDeliveries[$historySequence])) {
+            return true;
+        }
+
         if ($this->pendingYielded instanceof LocalActivityCall) {
             $this->assertActivityExecutionMode($historySequence, true);
         } elseif ($this->pendingYielded instanceof ActivityCall) {
@@ -1279,6 +1316,7 @@ final class WorkflowFiberRunner
             $this->payloadCodec,
             $this->namespace,
         );
+        $this->recordedCancellationDeliveries = self::indexRecordedCancellationDeliveries($this->historyEvents);
         $this->openSignalWaits = array_diff_key(
             self::indexOpenSignalWaits($this->historyEvents),
             $this->recordedSignalOutcomes,
@@ -1514,6 +1552,7 @@ final class WorkflowFiberRunner
             'TimerScheduled',
             'TimerCancelled',
             'TimerFired',
+            'CooperativeCancellationDelivered',
             'ConditionWaitOpened',
             'ConditionWaitSatisfied',
             'ConditionWaitTimedOut',
@@ -1732,6 +1771,34 @@ final class WorkflowFiberRunner
         }
 
         return $outcomes;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     */
+    private static function indexRecordedCancellationDeliveries(array $historyEvents): array
+    {
+        $deliveries = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'CooperativeCancellationDelivered') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+            $callKind = self::stringValue($payload['call_kind'] ?? null);
+
+            if ($sequence !== null && $callKind !== null) {
+                $deliveries[$sequence] = [
+                    'call_kind' => $callKind,
+                    'recorded_at' => self::eventRecordedAt($event, $payload),
+                ];
+            }
+        }
+
+        return $deliveries;
     }
 
     /**

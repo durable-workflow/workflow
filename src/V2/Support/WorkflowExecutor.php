@@ -426,6 +426,23 @@ final class WorkflowExecutor
 
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
+                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'condition', $resolutionEvent)) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
+
                 if ($resolutionEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -875,6 +892,23 @@ final class WorkflowExecutor
                 }
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
+
+                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'signal', $signalEvent)) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
 
                 if ($signalEvent !== null) {
                     try {
@@ -5040,7 +5074,7 @@ final class WorkflowExecutor
             return false;
         }
 
-        if ($callKind === 'timer') {
+        if (in_array($callKind, ['timer', 'condition', 'signal'], true)) {
             /** @var WorkflowTimer|null $timer */
             $timer = $run->timers->firstWhere('sequence', $sequence);
 
