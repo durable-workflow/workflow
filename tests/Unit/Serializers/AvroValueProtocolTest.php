@@ -81,6 +81,35 @@ final class AvroValueProtocolTest extends TestCase
         self::assertSame($value, Serializer::unserializeWithCodec('avro', $blob));
     }
 
+    public function testExplicitAvroMapPreservesNumericStringKeysWithoutCoercion(): void
+    {
+        $map = AvroMapValue::fromPairs([['0', 'zero'], ['1', 'one']]);
+
+        self::assertSame([['0', 'zero'], ['1', 'one']], $map->pairs);
+        self::assertEquals($map, Avro::unserialize(Avro::serialize($map)));
+    }
+
+    public function testExplicitAvroMapRejectsNonStringAndDuplicateKeys(): void
+    {
+        foreach ([
+            [
+                'pairs' => [[0, 'zero']],
+                'reason' => 'invalid_map_key',
+            ],
+            [
+                'pairs' => [['0', 'first'], ['0', 'second']],
+                'reason' => 'duplicate_map_key',
+            ],
+        ] as $case) {
+            try {
+                AvroMapValue::fromPairs($case['pairs']);
+                self::fail('Expected invalid explicit Avro map entries to be rejected.');
+            } catch (InvalidArgumentException $exception) {
+                self::assertStringContainsString($case['reason'], $exception->getMessage());
+            }
+        }
+    }
+
     public function testPhpObjectsMustBeAdaptedBeforeEncode(): void
     {
         $value = new \stdClass();
