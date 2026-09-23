@@ -80,6 +80,13 @@ final class FailedRunRedrivePlan
             $payload = $event->payload;
             $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
 
+            if (is_array($payload) && (
+                ($payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($payload['local_activity'] ?? null) === true
+            )) {
+                return self::reject('unsupported_local_activity');
+            }
+
             if ($started === null || ! is_int($sequence) || $sequence < 1) {
                 return self::reject('invalid_activity_sequence');
             }

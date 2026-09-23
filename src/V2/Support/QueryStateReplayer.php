@@ -55,7 +55,7 @@ final class QueryStateReplayer
         $this->syncWorkflowCursor($workflow, 1);
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
-        $workflowExecution = WorkflowExecution::start($workflow, $arguments, $run->started_at);
+        $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
 
         if (! $workflowExecution->valid()) {
@@ -123,7 +123,7 @@ final class QueryStateReplayer
                     if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
                         $current = $workflowExecution->send(
                             $this->activityResult($activityCompletion, $run),
-                            $activityCompletion->recorded_at,
+                            RedriveReplayClock::activityCompletedAt($activityCompletion),
                         );
                     } else {
                         $current = $workflowExecution->throw(
@@ -164,7 +164,7 @@ final class QueryStateReplayer
                     if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
                         $current = $workflowExecution->send(
                             $this->activityResult($activityCompletion, $run),
-                            $activityCompletion->recorded_at,
+                            RedriveReplayClock::activityCompletedAt($activityCompletion),
                         );
                     } else {
                         $current = $workflowExecution->throw(

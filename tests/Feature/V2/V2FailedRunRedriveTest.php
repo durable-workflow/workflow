@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
@@ -16,6 +17,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
 final class V2FailedRunRedriveTest extends TestCase
@@ -114,6 +116,24 @@ final class V2FailedRunRedriveTest extends TestCase
         $export = HistoryExport::forRun($successorRun->fresh());
         $this->assertSame($failedRunId, $export['activities'][0]['reused_from_run_id']);
         $this->assertNull($export['activities'][1]['reused_from_run_id']);
+
+        $portableExport = json_decode(json_encode($export, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+        $replayed = (new WorkflowReplayer())->replayExport($portableExport);
+        $this->assertNull($replayed->current);
+        $this->assertSame(3, $replayed->sequence);
+        $this->assertSame([
+            'time_at_start' => $successorRun->workflowOutput()['time_at_start'],
+            'time_after_first_activity' => $successorRun->workflowOutput()['time_after_first_activity'],
+        ], $replayed->workflow->replayTimes());
+
+        DB::disconnect();
+        DB::reconnect();
+        $reloadedRun = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(
+            $replayed->workflow->replayTimes(),
+            (new WorkflowReplayer())->replay($reloadedRun)
+                ->workflow->replayTimes()
+        );
     }
 
     public function testCompletedRunIsNotEligibleForRedrive(): void

@@ -73,6 +73,18 @@ final class FailedRunRedrivePlanTest extends TestCase
         self::assertSame('unsupported_history', $plan['reason']);
     }
 
+    public function testRefusesCompletedLocalActivityThatWouldRunAgain(): void
+    {
+        $history = $this->linearFailureHistory();
+        $history[3]['payload']['execution_mode'] = 'local';
+        $history[3]['payload']['local_activity'] = true;
+
+        $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($history));
+
+        self::assertFalse($plan['eligible']);
+        self::assertSame('unsupported_local_activity', $plan['reason']);
+    }
+
     public function testRefusesMissingOrCorruptCompletedResult(): void
     {
         $history = $this->linearFailureHistory();
