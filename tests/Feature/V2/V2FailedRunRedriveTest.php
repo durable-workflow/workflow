@@ -188,6 +188,7 @@ final class V2FailedRunRedriveTest extends TestCase
             ->where('event_type', HistoryEventType::WorkflowStarted)
             ->firstOrFail();
         $this->assertSame('worker-definition-1', $started->payload['workflow_definition_fingerprint']);
+        $this->assertSame('worker', $started->payload['workflow_definition_fingerprint_source']);
 
         WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
             'activity_execution_id' => 'service-activity-1',
@@ -267,6 +268,11 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(2, $redrive['resume_step_sequence']);
         $this->assertSame(RunStatus::Failed, $source->fresh()->status);
         $this->assertSame('service-workflows', WorkflowRun::query()->findOrFail($redrive['workflow_run_id'])->queue);
+        $successorStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $redrive['workflow_run_id'])
+            ->where('event_type', HistoryEventType::WorkflowStarted)
+            ->firstOrFail();
+        $this->assertSame('worker', $successorStarted->payload['workflow_definition_fingerprint_source']);
     }
 
     public function testWorkflowFailureAfterCompletedActivityHasNoSafeRedriveBoundary(): void

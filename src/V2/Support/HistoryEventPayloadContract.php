@@ -66,6 +66,7 @@ final class HistoryEventPayloadContract
             'execution_deadline_at',
             'run_deadline_at',
             'workflow_definition_fingerprint',
+            'workflow_definition_fingerprint_source',
             'declared_queries',
             'declared_query_contracts',
             'declared_signals',

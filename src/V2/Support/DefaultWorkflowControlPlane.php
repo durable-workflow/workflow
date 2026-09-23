@@ -631,6 +631,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
                 'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => $fingerprint,
+                'workflow_definition_fingerprint_source' => $resolvedClass === null && $fingerprint !== null
+                    ? 'worker'
+                    : null,
             ], static fn (mixed $v): bool => $v !== null);
 
             if ($commandContract !== null) {
