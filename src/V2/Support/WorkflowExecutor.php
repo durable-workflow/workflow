@@ -149,6 +149,64 @@ final class WorkflowExecutor
             if ($current instanceof DurableOperationHandle) {
                 $resolution = $this->durableOperationResolution($run, $current);
 
+                $handleResolution = $this->selectionOperationCancelledEvent($run, $current);
+                if (! $handleResolution instanceof WorkflowHistoryEvent) {
+                    $handleResolution = $current->call instanceof AllCall
+                        ? $this->parallelResolutionEvent(
+                            $run,
+                            $current->call,
+                            $current->baseSequence,
+                            $current->call->leafDescriptors($current->baseSequence),
+                        )
+                        : $this->waitResolutionEvent($run, $current->call, $current->baseSequence);
+                }
+
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'selection_handle',
+                    $handleResolution,
+                    $workflowExecution,
+                )) {
+                    if ($current->call instanceof AllCall) {
+                        foreach ($current->call->leafDescriptors($current->baseSequence) as $descriptor) {
+                            $this->cancelOpenWaitAtSequence(
+                                $run,
+                                $task,
+                                $current->baseSequence + $descriptor['offset'],
+                                $descriptor['call'] instanceof ActivityCall ? 'activity' : (
+                                    $descriptor['call'] instanceof ChildWorkflowCall ? 'child' : 'timer'
+                                ),
+                            );
+                        }
+                    } else {
+                        $this->cancelOpenWaitAtSequence(
+                            $run,
+                            $task,
+                            $current->baseSequence,
+                            $current->call instanceof ActivityCall ? 'activity' : (
+                                $current->call instanceof ChildWorkflowCall ? 'child' : 'timer'
+                            ),
+                        );
+                    }
+
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
+
                 if (! $resolution['resolved']) {
                     $this->syncWorkflowCursor($workflow, $sequence);
 
@@ -272,7 +330,14 @@ final class WorkflowExecutor
 
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
-                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'activity', $activityCompletion)) {
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'activity',
+                    $activityCompletion,
+                    $workflowExecution
+                )) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
@@ -426,7 +491,14 @@ final class WorkflowExecutor
 
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
-                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'condition', $resolutionEvent)) {
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'condition',
+                    $resolutionEvent,
+                    $workflowExecution
+                )) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
@@ -784,7 +856,14 @@ final class WorkflowExecutor
 
                 $timerFired = $this->timerFiredEvent($run, $sequence);
 
-                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'timer', $timerFired)) {
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'timer',
+                    $timerFired,
+                    $workflowExecution
+                )) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
@@ -893,7 +972,14 @@ final class WorkflowExecutor
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
-                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'signal', $signalEvent)) {
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'signal',
+                    $signalEvent,
+                    $workflowExecution
+                )) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
@@ -1138,6 +1224,30 @@ final class WorkflowExecutor
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
                 $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
 
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'child',
+                    $resolutionEvent,
+                    $workflowExecution
+                )) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
+
                 if ($resolutionEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1302,6 +1412,33 @@ final class WorkflowExecutor
 
                 if (! $this->ensureParallelGroupHistoryCompatible($run, $task, $sequence, $leafDescriptors)) {
                     return null;
+                }
+
+                $groupResolution = $this->parallelResolutionEvent($run, $current, $sequence, $leafDescriptors);
+
+                if ($this->deliverCancellationAtCall(
+                    $run,
+                    $task,
+                    $sequence,
+                    'parallel',
+                    $groupResolution,
+                    $workflowExecution,
+                    $current
+                )) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    $sequence += $groupSize;
+                    continue;
                 }
 
                 $scheduledTasks = [];
@@ -5044,12 +5181,83 @@ final class WorkflowExecutor
         return $event;
     }
 
+    /**
+     * @param list<array{call: ActivityCall|ChildWorkflowCall|TimerCall|SignalCall|AwaitCall|AwaitWithTimeoutCall, offset: int, result_path: list<int>, group_path: list<array<string, int|string>>}> $leafDescriptors
+     */
+    private function parallelResolutionEvent(
+        WorkflowRun $run,
+        AllCall $group,
+        int $baseSequence,
+        array $leafDescriptors,
+    ): ?WorkflowHistoryEvent {
+        if ($group instanceof SelectCall) {
+            $groupId = ParallelChildGroup::payloadForPath($leafDescriptors[0]['group_path'])[
+                'parallel_group_path'
+            ][0]['parallel_group_id'];
+
+            return ParallelChildGroup::selectionResolution($run, $groupId);
+        }
+
+        $latest = null;
+        $earliestFailure = null;
+        $allResolved = true;
+
+        foreach ($leafDescriptors as $descriptor) {
+            $call = $descriptor['call'];
+            $itemSequence = $baseSequence + $descriptor['offset'];
+            $event = $this->waitResolutionEvent($run, $call, $itemSequence);
+
+            if (! $event instanceof WorkflowHistoryEvent) {
+                $allResolved = false;
+
+                continue;
+            }
+
+            if ($latest === null || $event->sequence > $latest->sequence) {
+                $latest = $event;
+            }
+
+            if (in_array($event->event_type, [
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
+                HistoryEventType::ChildRunFailed,
+                HistoryEventType::ChildRunCancelled,
+                HistoryEventType::ChildRunTerminated,
+            ], true) && ($earliestFailure === null || $event->sequence < $earliestFailure->sequence)) {
+                $earliestFailure = $event;
+            }
+        }
+
+        return $earliestFailure ?? ($allResolved ? $latest : null);
+    }
+
+    private function waitResolutionEvent(
+        WorkflowRun $run,
+        ActivityCall|ChildWorkflowCall|TimerCall|SignalCall|AwaitCall|AwaitWithTimeoutCall $call,
+        int $sequence,
+    ): ?WorkflowHistoryEvent {
+        return match (true) {
+            $call instanceof ActivityCall => $this->activityCompletionEvent($run, $sequence),
+            $call instanceof TimerCall => $this->timerFiredEvent($run, $sequence),
+            $call instanceof AwaitCall, $call instanceof AwaitWithTimeoutCall => $this->conditionWaitResolutionEvent(
+                $run,
+                $sequence
+            ),
+            $call instanceof SignalCall => $this->appliedSignalEvent($run, $sequence, $call)
+                ?? $this->signalTimeoutFiredEvent($run, $sequence, $call->name),
+            default => ChildRunHistory::resolutionEventForSequence($run, $sequence),
+        };
+    }
+
     private function deliverCancellationAtCall(
         WorkflowRun $run,
         WorkflowTask $task,
         int $sequence,
         string $callKind,
         ?WorkflowHistoryEvent $completionEvent,
+        WorkflowExecution $workflowExecution,
+        ?AllCall $parallelCall = null,
     ): bool {
         if (! is_string($run->cancellation_request_command_id)) {
             return false;
@@ -5057,6 +5265,10 @@ final class WorkflowExecutor
 
         if ($run->cancellation_delivery_sequence !== null) {
             return $run->cancellation_delivery_sequence === $sequence;
+        }
+
+        if (WorkflowFiberContext::cancellationShielded($workflowExecution->fiber())) {
+            return false;
         }
 
         /** @var WorkflowHistoryEvent|null $requested */
@@ -5074,6 +5286,46 @@ final class WorkflowExecutor
             return false;
         }
 
+        if ($parallelCall instanceof AllCall) {
+            foreach ($parallelCall->leafDescriptors($sequence) as $descriptor) {
+                $call = $descriptor['call'];
+                $this->cancelOpenWaitAtSequence(
+                    $run,
+                    $task,
+                    $sequence + $descriptor['offset'],
+                    $call instanceof ActivityCall ? 'activity' : (
+                        $call instanceof ChildWorkflowCall ? 'child' : 'timer'
+                    ),
+                );
+            }
+        } else {
+            $this->cancelOpenWaitAtSequence($run, $task, $sequence, $callKind);
+        }
+
+        $deliveredAt = now();
+        $run->forceFill([
+            'cancellation_delivery_sequence' => $sequence,
+            'cancellation_delivered_at' => $deliveredAt,
+            'last_progress_at' => $deliveredAt,
+        ])->save();
+
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
+            'workflow_command_id' => $run->cancellation_request_command_id,
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'call_kind' => $callKind,
+        ], $task, $run->cancellation_request_command_id);
+        $run->historyEvents->push($event);
+
+        return true;
+    }
+
+    private function cancelOpenWaitAtSequence(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $callKind,
+    ): void {
         if (in_array($callKind, ['timer', 'condition', 'signal'], true)) {
             /** @var WorkflowTimer|null $timer */
             $timer = $run->timers->firstWhere('sequence', $sequence);
@@ -5106,23 +5358,6 @@ final class WorkflowExecutor
                 );
             }
         }
-
-        $deliveredAt = now();
-        $run->forceFill([
-            'cancellation_delivery_sequence' => $sequence,
-            'cancellation_delivered_at' => $deliveredAt,
-            'last_progress_at' => $deliveredAt,
-        ])->save();
-
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
-            'workflow_command_id' => $run->cancellation_request_command_id,
-            'workflow_run_id' => $run->id,
-            'sequence' => $sequence,
-            'call_kind' => $callKind,
-        ], $task, $run->cancellation_request_command_id);
-        $run->historyEvents->push($event);
-
-        return true;
     }
 
     private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent

@@ -47,6 +47,13 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
     }
 }
 
+if (! function_exists(__NAMESPACE__ . '\\cancellationShield')) {
+    function cancellationShield(callable $callback): mixed
+    {
+        return WorkflowFiberContext::cancellationShield($callback);
+    }
+}
+
 if (! function_exists(__NAMESPACE__ . '\\localActivity')) {
     function localActivity(string $activity, mixed ...$arguments): mixed
     {

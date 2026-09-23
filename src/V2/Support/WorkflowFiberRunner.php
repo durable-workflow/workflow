@@ -309,6 +309,9 @@ final class WorkflowFiberRunner
                     $current instanceof TimerCall => 'timer',
                     $current instanceof SignalCall => 'signal',
                     $current instanceof AwaitCall, $current instanceof AwaitWithTimeoutCall => 'condition',
+                    $current instanceof ChildWorkflowCall => 'child',
+                    $current instanceof AllCall => 'parallel',
+                    $current instanceof DurableOperationHandle => 'selection_handle',
                     default => null,
                 };
 
@@ -316,7 +319,7 @@ final class WorkflowFiberRunner
                     throw new RuntimeException('Cooperative cancellation delivery does not match the replayed wait.');
                 }
 
-                ++$this->sequence;
+                $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
                 $this->execution->throw(
                     new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
                     $cancellation['recorded_at'],

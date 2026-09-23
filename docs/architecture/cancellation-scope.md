@@ -136,16 +136,21 @@ the run active. Repeating the request for the same run returns the original
 command. The cleanup timeout defaults to 600 seconds and must be between 1
 and 3600 seconds.
 
-When the workflow next reaches a supported activity, timer, signal, or
-condition wait, the engine records `CooperativeCancellationDelivered` and
-throws `WorkflowCancellationRequestedException` into the workflow Fiber.
-Authoring code can put durable cleanup operations in `finally`:
+When the workflow next reaches a supported activity, timer, signal, condition,
+child-workflow, parallel-group, or selected-operation-handle wait, the engine
+records `CooperativeCancellationDelivered` and throws
+`WorkflowCancellationRequestedException` into the workflow Fiber.
+Authoring code should protect durable cleanup in `finally` with
+`cancellationShield()`. This defers a newly arriving cooperative request
+while cleanup is already in progress:
 
 ```php
 try {
     timer(3600);
 } finally {
-    activity(ReleaseReservationActivity::class, $reservationId);
+    cancellationShield(static function () use ($reservationId): void {
+        activity(ReleaseReservationActivity::class, $reservationId);
+    });
 }
 ```
 
@@ -154,7 +159,9 @@ timer. A successful cleanup closes the run as cancelled. An unhandled cleanup
 failure leaves a failed run rather than claiming cleanup succeeded. If the
 deadline expires, the watchdog requests an immediate terminal cancel, even
 if cleanup is still waiting. `terminate()` remains immediate and can stop a
-run during cleanup; it does not wait for `finally` to finish.
+run during cleanup; it does not wait for `finally` to finish. The shield is
+not a permanent opt-out from cancellation or a protection against process
+termination.
 
 Cleanup activities must be idempotent. Neither this request nor worker
 heartbeats can guarantee that external side effects stop at the deadline;

@@ -25,6 +25,11 @@ final class WorkflowFiberContext
      */
     private static array $workflowTime = [];
 
+    /**
+     * @var array<int, int>
+     */
+    private static array $cancellationShields = [];
+
     public static function enter(): void
     {
         $fiber = Fiber::getCurrent();
@@ -46,6 +51,7 @@ final class WorkflowFiberContext
 
         unset(self::$activeFibers[spl_object_id($fiber)]);
         unset(self::$workflowTime[spl_object_id($fiber)]);
+        unset(self::$cancellationShields[spl_object_id($fiber)]);
     }
 
     public static function active(): bool
@@ -57,6 +63,34 @@ final class WorkflowFiberContext
         }
 
         return isset(self::$activeFibers[spl_object_id($fiber)]);
+    }
+
+    public static function cancellationShield(callable $callback): mixed
+    {
+        $fiber = Fiber::getCurrent();
+
+        if (! $fiber instanceof Fiber || ! self::active()) {
+            throw new LogicException('Cancellation shields can only run inside a workflow Fiber.');
+        }
+
+        $fiberId = spl_object_id($fiber);
+        self::$cancellationShields[$fiberId] = (self::$cancellationShields[$fiberId] ?? 0) + 1;
+
+        try {
+            return $callback();
+        } finally {
+            --self::$cancellationShields[$fiberId];
+
+            if (self::$cancellationShields[$fiberId] === 0) {
+                unset(self::$cancellationShields[$fiberId]);
+            }
+        }
+    }
+
+    public static function cancellationShielded(?Fiber $fiber): bool
+    {
+        return $fiber instanceof Fiber
+            && (self::$cancellationShields[spl_object_id($fiber)] ?? 0) > 0;
     }
 
     /**

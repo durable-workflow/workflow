@@ -467,6 +467,15 @@ abstract class Workflow
     }
 
     /**
+     * Defer a cooperative cancellation request while durable cleanup runs.
+     * Terminal cancel, terminate, and the cleanup deadline still take effect.
+     */
+    public static function cancellationShield(callable $callback): mixed
+    {
+        return cancellationShield($callback);
+    }
+
+    /**
      * Capture the result of a side-effect closure in history so replay
      * returns the same value on subsequent attempts.
      *
