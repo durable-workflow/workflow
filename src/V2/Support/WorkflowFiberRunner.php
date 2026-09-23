@@ -1374,7 +1374,7 @@ final class WorkflowFiberRunner
             $firstEventTime ??= $eventTime;
 
             if (self::eventType($event) === 'WorkflowStarted' && $eventTime !== null) {
-                return $eventTime;
+                return self::eventTime($payload['replayed_started_at'] ?? null) ?? $eventTime;
             }
         }
 
@@ -1566,7 +1566,10 @@ final class WorkflowFiberRunner
                 continue;
             }
 
-            $recordedAt = self::eventRecordedAt($event, $payload);
+            $recordedAt = $type === 'ActivityCompleted'
+                ? (self::eventTime($payload['reused_recorded_at'] ?? null)
+                    ?? self::eventRecordedAt($event, $payload))
+                : self::eventRecordedAt($event, $payload);
 
             if ($type === 'ActivityCompleted') {
                 $outcomes[$sequence] = [

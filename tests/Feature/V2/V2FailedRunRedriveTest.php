@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
@@ -311,5 +312,18 @@ final class V2FailedRunRedriveTest extends TestCase
                 ->workflow->replayTimes()['time_at_start']
         );
         $this->assertSame($sourceRunId, RunActivityView::activitiesForRun($retainedSuccessor)[0]['reused_from_run_id']);
+
+        $database = config('database.connections.' . config('database.default'));
+        $this->assertIsArray($database);
+        $coldReplay = new Process([PHP_BINARY, __DIR__ . '/../../Fixtures/V2/redrive_cold_replay.php'], env: [
+            'REDRIVE_DB_CONFIG' => json_encode($database, JSON_THROW_ON_ERROR),
+            'REDRIVE_RUN_ID' => $successorRunId,
+        ]);
+        $coldReplay->mustRun();
+
+        $this->assertSame([
+            'completed' => true,
+            'result' => $expectedOutput,
+        ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
     }
 }
