@@ -12,7 +12,7 @@
         }
     },
     "ratchet": {
-        "accepted_baseline_basis_points": 8772,
+        "accepted_baseline_basis_points": 8774,
         "target_basis_points": 10000
     },
     "provenance": {
