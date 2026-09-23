@@ -156,12 +156,18 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
-            if ($source->execution_deadline_at !== null || $source->run_timeout_seconds !== null) {
-                $result['reason'] = 'unsupported_timeout_policy';
+            $now = now();
+            $executionDeadlineAt = $source->execution_deadline_at;
+            if ($executionDeadlineAt !== null && $now->gte($executionDeadlineAt)) {
+                $result['reason'] = 'execution_deadline_elapsed';
                 $result['status'] = 409;
 
                 return;
             }
+            $runTimeoutSeconds = $source->run_timeout_seconds;
+            $runDeadlineAt = $runTimeoutSeconds !== null && $runTimeoutSeconds > 0
+                ? $now->copy()->addSeconds($runTimeoutSeconds)
+                : null;
 
             $workflowClass = $this->tryResolveWorkflowClass($source->workflow_type)
                 ?? (is_subclass_of($source->workflow_class, \Workflow\V2\Workflow::class)
@@ -212,7 +218,6 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
-            $now = now();
             /** @var WorkflowRun $continuedRun */
             $continuedRun = $this->runQuery()
                 ->create([
@@ -227,6 +232,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'compatibility' => $source->compatibility,
                     'payload_codec' => $source->payload_codec,
                     'arguments' => $source->arguments,
+                    'run_timeout_seconds' => $runTimeoutSeconds,
+                    'execution_deadline_at' => $executionDeadlineAt,
+                    'run_deadline_at' => $runDeadlineAt,
                     'connection' => $source->connection,
                     'queue' => $source->queue,
                     'priority' => $source->priority,
@@ -286,6 +294,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'continued_from_run_id' => $source->id,
                     'resume_step_sequence' => $plan['resume_step_sequence'],
                     'recovery_kind' => 'redrive',
+                    'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+                    'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                     'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
                         ? $startedPayload['replayed_started_at']
                         : $source->started_at?->toIso8601String(),

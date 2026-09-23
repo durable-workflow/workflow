@@ -61,6 +61,13 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(1, (int) Cache::get('test:redrive:second-calls'));
 
         $controlPlane = app(WorkflowControlPlane::class);
+        $source = WorkflowRun::query()->findOrFail($failedRunId);
+        $source->forceFill(['execution_deadline_at' => now()->subSecond()])->save();
+        $expired = $controlPlane->redrive('redrive-activity-1', $failedRunId);
+        $this->assertFalse($expired['accepted']);
+        $this->assertSame('execution_deadline_elapsed', $expired['reason']);
+        $source->forceFill(['execution_deadline_at' => null])->save();
+
         $foreignNamespace = $controlPlane->redrive('redrive-activity-1', $failedRunId, [
             'namespace' => 'another-namespace',
         ]);
@@ -178,6 +185,8 @@ final class V2FailedRunRedriveTest extends TestCase
             'queue' => 'service-workflows',
             'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
             'external_workflow_definition_fingerprint' => 'worker-definition-1',
+            'execution_timeout_seconds' => 3600,
+            'run_timeout_seconds' => 600,
         ]);
         $this->assertTrue($start['started']);
 
@@ -268,11 +277,20 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(2, $redrive['resume_step_sequence']);
         $this->assertSame(RunStatus::Failed, $source->fresh()->status);
         $this->assertSame('service-workflows', WorkflowRun::query()->findOrFail($redrive['workflow_run_id'])->queue);
+        $successor = WorkflowRun::query()->findOrFail($redrive['workflow_run_id']);
+        $this->assertSame(
+            $source->fresh()->execution_deadline_at?->toIso8601String(),
+            $successor->execution_deadline_at?->toIso8601String(),
+        );
+        $this->assertSame(600, $successor->run_timeout_seconds);
+        $this->assertTrue($successor->run_deadline_at->gt($source->fresh()->run_deadline_at));
+        $this->assertSame(600.0, $successor->started_at->diffInSeconds($successor->run_deadline_at));
         $successorStarted = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $redrive['workflow_run_id'])
             ->where('event_type', HistoryEventType::WorkflowStarted)
             ->firstOrFail();
         $this->assertSame('worker', $successorStarted->payload['workflow_definition_fingerprint_source']);
+        $this->assertSame($successor->run_deadline_at->toIso8601String(), $successorStarted->payload['run_deadline_at']);
     }
 
     public function testWorkflowFailureAfterCompletedActivityHasNoSafeRedriveBoundary(): void
