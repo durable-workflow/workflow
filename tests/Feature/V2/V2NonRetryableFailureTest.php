@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHandleFailureThenThrowWorkflow;
 use Tests\Fixtures\V2\TestNonRetryableWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
@@ -88,6 +89,23 @@ final class V2NonRetryableFailureTest extends TestCase
             ->where('event_type', HistoryEventType::ActivityCompleted)
             ->firstOrFail();
         $this->assertSame(1, $activityCompletedEvent->payload['sequence']);
+
+        $workflowFailedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->firstOrFail();
+
+        $this->assertArrayNotHasKey('failed_step_sequence', $workflowFailedEvent->payload);
+    }
+
+    public function testDifferentExceptionAfterHandledActivityFailureDoesNotClaimActivityBoundary(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestHandleFailureThenThrowWorkflow::class, 'handled-failure-1');
+        $workflow->start();
+
+        $this->assertTrue($workflow->refresh()->failed());
 
         $workflowFailedEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
