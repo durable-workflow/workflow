@@ -231,6 +231,45 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
+    public function testFailWorkflowPreservesPairedUncaughtActivityIdentity(): void
+    {
+        $command = [
+            'type' => 'fail_workflow',
+            'message' => 'activity failed',
+            'failed_step_sequence' => 2,
+            'failed_activity_execution_id' => 'activity-123',
+        ];
+
+        $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command]));
+    }
+
+    public function testFailWorkflowRejectsIncompleteUncaughtActivityIdentity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([[
+            'type' => 'fail_workflow',
+            'message' => 'activity failed',
+            'failed_step_sequence' => 2,
+        ]]);
+
+        $this->assertSame(
+            ['Uncaught activity failure identity requires both failed_step_sequence and failed_activity_execution_id.'],
+            $errors['commands.0.failed_step_sequence'],
+        );
+    }
+
+    public function testUncaughtActivityIdentityIsScopedToFailWorkflow(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([[
+            'type' => 'complete_workflow',
+            'result' => null,
+            'failed_step_sequence' => 2,
+            'failed_activity_execution_id' => 'activity-123',
+        ]]);
+
+        $this->assertArrayHasKey('commands.0.failed_step_sequence', $errors);
+        $this->assertArrayHasKey('commands.0.failed_activity_execution_id', $errors);
+    }
+
     public function testFailWorkflowRejectsNonObjectExceptionPayload(): void
     {
         $errors = $this->normalizeAndCaptureErrors([

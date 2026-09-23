@@ -134,6 +134,14 @@ final class WorkflowCommandNormalizer
             'allowed' => ['fail_workflow'],
             'guidance' => 'exception carries the structured terminal workflow failure payload and only applies to a fail_workflow command.',
         ],
+        'failed_step_sequence' => [
+            'allowed' => ['fail_workflow'],
+            'guidance' => 'failed_step_sequence identifies an uncaught activity failure and only applies to a fail_workflow command.',
+        ],
+        'failed_activity_execution_id' => [
+            'allowed' => ['fail_workflow'],
+            'guidance' => 'failed_activity_execution_id identifies an uncaught activity failure and only applies to a fail_workflow command.',
+        ],
         'parent_close_policy' => [
             'allowed' => ['start_child_workflow'],
             'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
@@ -458,6 +466,19 @@ final class WorkflowCommandNormalizer
                 }
 
                 $exception = self::optionalExceptionPayload($command, $index, $errors);
+                $failedStepSequence = self::optionalPositiveInt($command, 'failed_step_sequence', $index, $errors);
+                $failedActivityExecutionId = self::optionalCommandString(
+                    $command,
+                    'failed_activity_execution_id',
+                    $index,
+                    $errors,
+                );
+
+                if (($failedStepSequence === null) !== ($failedActivityExecutionId === null)) {
+                    $errors["commands.{$index}.failed_step_sequence"] = [
+                        'Uncaught activity failure identity requires both failed_step_sequence and failed_activity_execution_id.',
+                    ];
+                }
 
                 $normalized[] = array_filter([
                     'type' => $type,
@@ -472,6 +493,8 @@ final class WorkflowCommandNormalizer
                     'non_retryable' => is_bool($command['non_retryable'] ?? null)
                         ? $command['non_retryable']
                         : null,
+                    'failed_step_sequence' => $failedStepSequence,
+                    'failed_activity_execution_id' => $failedActivityExecutionId,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
