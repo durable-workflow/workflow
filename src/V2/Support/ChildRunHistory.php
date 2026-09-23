@@ -521,7 +521,13 @@ final class ChildRunHistory
 
     public static function continuedFromRunId(WorkflowRun $run): ?string
     {
-        return self::stringValue(self::workflowStartedEvent($run)?->payload['continued_from_run_id'] ?? null);
+        $payload = self::workflowStartedEvent($run)?->payload;
+
+        if (! is_array($payload) || ($payload['recovery_kind'] ?? null) === 'redrive') {
+            return null;
+        }
+
+        return self::stringValue($payload['continued_from_run_id'] ?? null);
     }
 
     public static function resolvedStatus(

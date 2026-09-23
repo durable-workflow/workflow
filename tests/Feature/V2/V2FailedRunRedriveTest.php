@@ -14,7 +14,10 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\WorkflowReplayer;
@@ -214,6 +217,86 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(
             $firstCompletion->payload['reused_recorded_at'],
             $secondCompletion->payload['reused_recorded_at']
+        );
+    }
+
+    public function testFailedSourceAndRedriveSuccessorSurviveExportImport(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-import-1');
+        $workflow->start('Taylor');
+        $sourceRunId = $workflow->runId();
+
+        $redrive = app(WorkflowControlPlane::class)->redrive('redrive-import-1', $sourceRunId);
+        $this->assertTrue($redrive['accepted'], (string) $redrive['reason']);
+        $successorRunId = $redrive['workflow_run_id'];
+        $sourceExport = HistoryExport::forRun(WorkflowRun::query()->findOrFail($sourceRunId));
+        $successorExport = HistoryExport::forRun(WorkflowRun::query()->findOrFail($successorRunId));
+        $expectedOutput = WorkflowRun::query()->findOrFail($successorRunId)->workflowOutput();
+        $this->assertCount(1, $sourceExport['links']['children']);
+        $this->assertCount(1, $successorExport['links']['parents']);
+        $this->assertSame('redrive', $successorExport['links']['parents'][0]['type']);
+        $this->assertSame([], $successorExport['links']['children']);
+
+        foreach ([
+            'workflow_run_summaries',
+            'workflow_run_waits',
+            'workflow_run_timeline_entries',
+            'workflow_run_timer_entries',
+            'workflow_run_lineage_entries',
+            'workflow_search_attributes',
+            'workflow_memos',
+            'workflow_history_events',
+            'workflow_tasks',
+            'activity_attempts',
+            'activity_executions',
+            'workflow_run_timers',
+            'workflow_failures',
+            'workflow_links',
+            'workflow_signal_records',
+            'workflow_updates',
+            'workflow_commands',
+            'workflow_runs',
+            'workflow_instances',
+        ] as $table) {
+            DB::table($table)->delete();
+        }
+
+        $this->assertSame(0, DB::table('workflow_links')->count());
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($sourceExport)['status']);
+        $this->assertSame(1, DB::table('workflow_links')->count());
+        DB::table('workflow_links')->update([
+            'sequence' => 999,
+        ]);
+        $conflictingImport = EmbeddedV2HistoryImport::import($successorExport);
+        $this->assertSame('rejected', $conflictingImport['status']);
+        $this->assertSame('target.write_failed', $conflictingImport['eligibility']['errors'][0]['rule']);
+        $this->assertNull(WorkflowRun::query()->find($successorRunId));
+        DB::table('workflow_links')->update([
+            'sequence' => $redrive['resume_step_sequence'],
+        ]);
+        $successorImport = EmbeddedV2HistoryImport::import($successorExport);
+        $this->assertSame('imported', $successorImport['status'], json_encode($successorImport, JSON_THROW_ON_ERROR));
+        $this->assertSame(1, DB::table('workflow_links')->count());
+
+        DB::purge();
+        DB::reconnect();
+
+        $reloadedRun = WorkflowRun::query()->findOrFail($successorRunId);
+        $this->assertSame($expectedOutput, $reloadedRun->workflowOutput());
+        $reloadedInstance = WorkflowInstance::query()->findOrFail('redrive-import-1');
+        $this->assertSame($successorRunId, $reloadedInstance->current_run_id);
+        $importedLink = WorkflowLink::query()
+            ->where('child_workflow_run_id', $successorRunId)
+            ->where('link_type', 'redrive')
+            ->firstOrFail();
+        $this->assertSame($sourceRunId, $importedLink->parent_workflow_run_id);
+        $this->assertSame($sourceRunId, RunActivityView::activitiesForRun($reloadedRun)[0]['reused_from_run_id']);
+        $this->assertSame(
+            $expectedOutput['time_at_start'],
+            (new WorkflowReplayer())->replay($reloadedRun)
+                ->workflow->replayTimes()['time_at_start']
         );
     }
 }

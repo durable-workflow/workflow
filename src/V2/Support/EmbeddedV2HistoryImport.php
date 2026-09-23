@@ -720,7 +720,7 @@ final class EmbeddedV2HistoryImport
                 continue;
             }
 
-            WorkflowLink::query()->create([
+            $count += self::insertLink([
                 'id' => self::ulidValue($link['id'] ?? null) ?? (string) Str::ulid(),
                 'link_type' => self::stringValue($link['type'] ?? null) ?? 'parent',
                 'sequence' => self::intValue($link['sequence'] ?? null),
@@ -731,8 +731,7 @@ final class EmbeddedV2HistoryImport
                 'is_primary_parent' => (bool) ($link['is_primary_parent'] ?? false),
                 'created_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
                 'updated_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
-            ]);
-            $count++;
+            ]) ? 1 : 0;
         }
 
         foreach (self::listValue($links['children'] ?? null) as $link) {
@@ -743,7 +742,7 @@ final class EmbeddedV2HistoryImport
                 continue;
             }
 
-            WorkflowLink::query()->create([
+            $count += self::insertLink([
                 'id' => self::ulidValue($link['id'] ?? null) ?? (string) Str::ulid(),
                 'link_type' => self::stringValue($link['type'] ?? null) ?? 'child',
                 'sequence' => self::intValue($link['sequence'] ?? null),
@@ -754,11 +753,47 @@ final class EmbeddedV2HistoryImport
                 'is_primary_parent' => (bool) ($link['is_primary_parent'] ?? false),
                 'created_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
                 'updated_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
-            ]);
-            $count++;
+            ]) ? 1 : 0;
         }
 
         return $count;
+    }
+
+    /**
+     * A link appears in both run exports when its parent and child are imported separately.
+     *
+     * @param array<string, mixed> $attributes
+     */
+    private static function insertLink(array $attributes): bool
+    {
+        /** @var WorkflowLink|null $existing */
+        $existing = WorkflowLink::query()->find($attributes['id']);
+
+        if ($existing instanceof WorkflowLink) {
+            foreach ([
+                'link_type',
+                'sequence',
+                'parent_workflow_instance_id',
+                'parent_workflow_run_id',
+                'child_workflow_instance_id',
+                'child_workflow_run_id',
+                'is_primary_parent',
+            ] as $field) {
+                if ($existing->{$field} !== $attributes[$field]) {
+                    throw new InvalidArgumentException(sprintf(
+                        'Imported workflow link [%s] conflicts on [%s].',
+                        $attributes['id'],
+                        $field
+                    ));
+                }
+            }
+
+            return false;
+        }
+
+        WorkflowLink::query()->create($attributes);
+
+        return true;
     }
 
     /**
