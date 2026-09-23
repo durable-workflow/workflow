@@ -197,10 +197,11 @@ final class V2FinallyCleanupTest extends TestCase
             ->where('workflow_run_id', $workflow->runId())
             ->where('command_type', CommandType::Cancel->value)
             ->count());
-        $this->assertSame($request->commandId(), WorkflowHistoryEvent::query()
+        $terminalEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->where('event_type', HistoryEventType::WorkflowCancelled->value)
-            ->firstOrFail()->workflow_command_id);
+            ->firstOrFail();
+        $this->assertSame($request->commandId(), $terminalEvent->workflow_command_id);
     }
 
     public function testCooperativeCancellationInterruptsActivityWaitAndCompletesCleanup(): void
@@ -773,10 +774,11 @@ final class V2FinallyCleanupTest extends TestCase
             'workflow_run_id' => $runId,
             'event_type' => HistoryEventType::CooperativeCancellationDelivered->value,
         ]);
-        $this->assertSame($request->commandId(), WorkflowHistoryEvent::query()
+        $terminalEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->where('event_type', HistoryEventType::WorkflowCancelled->value)
-            ->firstOrFail()->workflow_command_id);
+            ->firstOrFail();
+        $this->assertSame($request->commandId(), $terminalEvent->workflow_command_id);
     }
 
     public function testWatchdogEnforcesDeadlineWhileCleanupTimerIsPending(): void
