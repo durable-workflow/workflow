@@ -7,6 +7,7 @@ namespace Workflow\V2\Enums;
 enum CommandOutcome: string
 {
     case StartedNew = 'started_new';
+    case Redriven = 'redriven';
     case ReturnedExistingActive = 'returned_existing_active';
     case RejectedDuplicate = 'rejected_duplicate';
     case SignalReceived = 'signal_received';

@@ -7,6 +7,7 @@ namespace Workflow\V2\Enums;
 enum CommandType: string
 {
     case Start = 'start';
+    case Redrive = 'redrive';
     case Signal = 'signal';
     case Update = 'update';
     case Repair = 'repair';

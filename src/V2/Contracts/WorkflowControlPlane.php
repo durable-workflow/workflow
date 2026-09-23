@@ -59,6 +59,19 @@ interface WorkflowControlPlane
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array;
 
     /**
+     * Continue a terminally failed run in a new linked run.
+     *
+     * Only histories with a validated failure boundary are eligible. The
+     * failed run remains immutable, and a repeated request returns its
+     * existing successor.
+     *
+     * Options: namespace, request_id, command_context.
+     *
+     * @return array<string, mixed>
+     */
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array;
+
+    /**
      * Send a signal to a workflow instance by name.
      *
      * Options:

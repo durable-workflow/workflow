@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
@@ -28,6 +29,7 @@ use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
@@ -36,6 +38,313 @@ use Workflow\V2\WorkflowStub;
 
 final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, WorkflowControlPlane
 {
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        $namespace = $this->namespaceOption($options);
+        $requestId = is_string($options['request_id'] ?? null) && $options['request_id'] !== ''
+            ? $options['request_id']
+            : null;
+        $result = [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_run_id' => null,
+            'continued_from_run_id' => $failedRunId,
+            'resume_step_sequence' => null,
+            'task_id' => null,
+            'reason' => 'instance_not_found',
+            'status' => 404,
+        ];
+        $task = null;
+
+        if ($requestId !== null && strlen($requestId) > 191) {
+            $result['reason'] = 'invalid_request_id';
+            $result['status'] = 422;
+
+            return $result;
+        }
+
+        DB::transaction(function () use (
+            $instanceId,
+            $failedRunId,
+            $namespace,
+            $requestId,
+            $options,
+            &$result,
+            &$task
+        ): void {
+            $instanceQuery = $this->instanceQuery()
+                ->whereKey($instanceId);
+
+            if ($namespace !== null) {
+                $instanceQuery->where('namespace', $namespace);
+            }
+
+            /** @var WorkflowInstance|null $instance */
+            $instance = $instanceQuery->lockForUpdate()
+                ->first();
+
+            if (! $instance instanceof WorkflowInstance) {
+                return;
+            }
+
+            /** @var WorkflowRun|null $source */
+            $source = $this->runQuery()
+                ->where('workflow_instance_id', $instanceId)
+                ->whereKey($failedRunId)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $source instanceof WorkflowRun) {
+                $result['reason'] = 'run_not_found';
+
+                return;
+            }
+
+            /** @var WorkflowLink|null $existingLink */
+            $existingLink = WorkflowLink::query()
+                ->where('parent_workflow_run_id', $source->id)
+                ->where('link_type', 'redrive')
+                ->first();
+
+            if ($existingLink instanceof WorkflowLink) {
+                $result = array_merge($result, [
+                    'accepted' => true,
+                    'workflow_run_id' => $existingLink->child_workflow_run_id,
+                    'resume_step_sequence' => $existingLink->sequence,
+                    'reason' => null,
+                    'status' => 200,
+                ]);
+
+                return;
+            }
+
+            $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
+
+            if ($currentRun?->id !== $source->id) {
+                $result['reason'] = 'source_run_not_current';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            $plan = FailedRunRedrivePlan::forRun($source);
+
+            if (! $plan['eligible']) {
+                $result['reason'] = $plan['reason'];
+                $result['status'] = 409;
+
+                return;
+            }
+
+            if ($source->memos()->exists() || $source->searchAttributes()->exists()) {
+                $result['reason'] = 'unsupported_visibility_metadata';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            if (
+                (is_string($source->arguments) && ExternalPayloads::isStoredReference($source->arguments))
+                || WorkflowLink::query()
+                    ->where('child_workflow_run_id', $source->id)
+                    ->where('link_type', 'child_workflow')
+                    ->exists()
+            ) {
+                $result['reason'] = 'unsupported_source_link_or_payload';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            if ($source->execution_deadline_at !== null || $source->run_timeout_seconds !== null) {
+                $result['reason'] = 'unsupported_timeout_policy';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            $workflowClass = $this->tryResolveWorkflowClass($source->workflow_type)
+                ?? (is_subclass_of($source->workflow_class, \Workflow\V2\Workflow::class)
+                    ? $source->workflow_class
+                    : null);
+            $startedEvent = $source->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted);
+            $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
+                ? $startedEvent->payload
+                : [];
+            unset($startedPayload['command'], $startedPayload['task']);
+            if (
+                ! empty($startedPayload['memo'])
+                || ! empty($startedPayload['search_attributes'])
+                || ! empty($startedPayload['parent_workflow_run_id'])
+            ) {
+                $result['reason'] = 'unsupported_source_metadata';
+                $result['status'] = 409;
+
+                return;
+            }
+            $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
+
+            if (
+                $workflowClass === null
+                || ! is_string($sourceFingerprint)
+                || $sourceFingerprint !== WorkflowDefinition::fingerprint($workflowClass)
+            ) {
+                $result['reason'] = 'workflow_definition_unavailable_or_changed';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            if ($requestId !== null && WorkflowCommand::query()
+                ->where('workflow_instance_id', $instance->id)
+                ->where('command_type', CommandType::Redrive->value)
+                ->where('request_id', $requestId)
+                ->exists()) {
+                $result['reason'] = 'request_id_already_used';
+                $result['status'] = 409;
+
+                return;
+            }
+
+            $now = now();
+            /** @var WorkflowRun $continuedRun */
+            $continuedRun = $this->runQuery()
+                ->create([
+                    'workflow_instance_id' => $instance->id,
+                    'run_number' => $source->run_number + 1,
+                    'workflow_class' => $source->workflow_class,
+                    'workflow_type' => $source->workflow_type,
+                    'namespace' => $source->namespace,
+                    'business_key' => $source->business_key,
+                    'visibility_labels' => $source->visibility_labels,
+                    'status' => RunStatus::Pending->value,
+                    'compatibility' => $source->compatibility,
+                    'payload_codec' => $source->payload_codec,
+                    'arguments' => $source->arguments,
+                    'connection' => $source->connection,
+                    'queue' => $source->queue,
+                    'priority' => $source->priority,
+                    'fairness_key' => $source->fairness_key,
+                    'fairness_weight' => $source->fairness_weight,
+                    'started_at' => $now,
+                    'last_progress_at' => $now,
+                    'last_history_sequence' => 0,
+                ]);
+
+            $command = WorkflowCommand::record($instance, $continuedRun, $this->commandAttributes(
+                $this->commandContext($options),
+                [
+                    'command_type' => CommandType::Redrive->value,
+                    'target_scope' => 'run',
+                    'requested_workflow_run_id' => $source->id,
+                    'resolved_workflow_run_id' => $continuedRun->id,
+                    'request_id' => $requestId,
+                    'status' => CommandStatus::Accepted->value,
+                    'outcome' => CommandOutcome::Redriven->value,
+                    'payload_codec' => $source->payload_codec,
+                    'accepted_at' => $now,
+                    'applied_at' => $now,
+                ],
+            ));
+
+            $link = WorkflowLink::query()->create([
+                'link_type' => 'redrive',
+                'sequence' => $plan['resume_step_sequence'],
+                'parent_workflow_instance_id' => $instance->id,
+                'parent_workflow_run_id' => $source->id,
+                'child_workflow_instance_id' => $instance->id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'is_primary_parent' => true,
+            ]);
+
+            $instance->forceFill([
+                'current_run_id' => $continuedRun->id,
+                'run_count' => $continuedRun->run_number,
+            ])->save();
+
+            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::StartAccepted, [
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $continuedRun->id,
+                'workflow_class' => $continuedRun->workflow_class,
+                'workflow_type' => $continuedRun->workflow_type,
+                'outcome' => $command->outcome?->value,
+            ], null, $command);
+
+            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, array_merge(
+                $startedPayload,
+                [
+                    'workflow_instance_id' => $instance->id,
+                    'workflow_run_id' => $continuedRun->id,
+                    'workflow_command_id' => $command->id,
+                    'continued_from_run_id' => $source->id,
+                    'resume_step_sequence' => $plan['resume_step_sequence'],
+                    'recovery_kind' => 'redrive',
+                    'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
+                        ? $startedPayload['replayed_started_at']
+                        : $source->started_at?->toIso8601String(),
+                    'workflow_link_id' => $link->id,
+                ],
+            ), null, $command);
+
+            foreach ($plan['completed'] as $completion) {
+                WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ActivityCompleted, [
+                    'activity_execution_id' => (string) Str::ulid(),
+                    'activity_class' => $completion['activity_class'] ?? null,
+                    'activity_type' => $completion['activity_type'],
+                    'sequence' => $completion['sequence'],
+                    'result' => $completion['result'],
+                    'payload_codec' => $completion['payload_codec'],
+                    'reused_from_run_id' => $source->id,
+                    'reused_activity_execution_id' => $completion['activity_execution_id'] ?? null,
+                    'reused_recorded_at' => is_string($completion['reused_recorded_at'] ?? null)
+                        ? $completion['reused_recorded_at']
+                        : $source->historyEvents
+                            ->first(
+                                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCompleted
+                                && ($event->payload['sequence'] ?? null) === $completion['sequence']
+                            )?->recorded_at?->toIso8601String(),
+                ]);
+            }
+
+            /** @var WorkflowTask $task */
+            $task = $this->taskQuery()
+                ->create([
+                    'workflow_run_id' => $continuedRun->id,
+                    'namespace' => $continuedRun->namespace,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $now,
+                    'payload' => [],
+                    'connection' => $continuedRun->connection,
+                    'queue' => $continuedRun->queue,
+                    'compatibility' => $continuedRun->compatibility,
+                    'priority' => $continuedRun->priority,
+                    'fairness_key' => $continuedRun->fairness_key,
+                    'fairness_weight' => $continuedRun->fairness_weight,
+                ]);
+
+            $result = array_merge($result, [
+                'accepted' => true,
+                'workflow_run_id' => $continuedRun->id,
+                'resume_step_sequence' => $plan['resume_step_sequence'],
+                'task_id' => $task->id,
+                'reason' => null,
+                'status' => 202,
+            ]);
+        }, self::storageTransactionAttempts());
+
+        if ($task instanceof WorkflowTask) {
+            try {
+                TaskDispatcher::dispatch($task);
+            } catch (Throwable) {
+                // The durable task remains available for the next poll cycle.
+            }
+        }
+
+        return $result;
+    }
+
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
@@ -718,6 +1027,12 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $classResolvable = $this->tryResolveWorkflowClass(
             $instance->workflow_type ?? $instance->workflow_class,
         ) !== null;
+        $startedEvent = $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->first();
+        $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
+            ? $startedEvent->payload
+            : [];
 
         return [
             'found' => true,
@@ -732,6 +1047,15 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             'run' => [
                 'workflow_run_id' => $run->id,
                 'run_number' => (int) $run->run_number,
+                'continued_from_run_id' => is_string($startedPayload['continued_from_run_id'] ?? null)
+                    ? $startedPayload['continued_from_run_id']
+                    : null,
+                'resume_step_sequence' => is_int($startedPayload['resume_step_sequence'] ?? null)
+                    ? $startedPayload['resume_step_sequence']
+                    : null,
+                'recovery_kind' => is_string($startedPayload['recovery_kind'] ?? null)
+                    ? $startedPayload['recovery_kind']
+                    : null,
                 'is_current_run' => $isCurrentRun,
                 'status' => $run->status->value,
                 'status_bucket' => $run->status->statusBucket()

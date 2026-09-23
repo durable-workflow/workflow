@@ -55,10 +55,12 @@ class WorkflowCommand extends Model
     public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
     {
         $commandType = $attributes['command_type'] ?? null;
-        $isUpdate = $commandType === CommandType::Update
-            || $commandType === CommandType::Update->value;
+        $usesRequestId = $commandType === CommandType::Update
+            || $commandType === CommandType::Update->value
+            || $commandType === CommandType::Redrive
+            || $commandType === CommandType::Redrive->value;
 
-        if ($isUpdate) {
+        if ($usesRequestId) {
             $request = is_array($attributes['context']['request'] ?? null)
                 ? $attributes['context']['request']
                 : [];

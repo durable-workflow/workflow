@@ -20,6 +20,11 @@ final class WorkflowControlPlaneBoundaryTest extends TestCase
                 return [];
             }
 
+            public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+            {
+                return [];
+            }
+
             public function signal(string $instanceId, string $name, array $options = []): array
             {
                 return [];
@@ -78,6 +83,7 @@ final class WorkflowControlPlaneBoundaryTest extends TestCase
             'cancel',
             'describe',
             'query',
+            'redrive',
             'repair',
             'signal',
             'start',

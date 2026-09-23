@@ -279,6 +279,9 @@ final class RunActivityView
                 ))
                 : [],
             'history_unsupported_reason' => $unsupportedReason,
+            'reused_from_run_id' => self::stringValue($state['reused_from_run_id'] ?? null),
+            'reused_activity_execution_id' => self::stringValue($state['reused_activity_execution_id'] ?? null),
+            'reused_recorded_at' => self::stringValue($state['reused_recorded_at'] ?? null),
             'row_status' => self::stringValue($state['row_status'] ?? null),
             'parallel_group_kind' => $state['parallel_group_kind'] ?? null,
             'parallel_group_id' => $state['parallel_group_id'] ?? null,

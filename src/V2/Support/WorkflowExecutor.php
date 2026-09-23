@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Str;
 use LogicException;
@@ -66,8 +67,18 @@ final class WorkflowExecutor
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
 
+        $startedEvent = $run->run_number > 1
+            ? $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->first()
+            : null;
         try {
-            $workflowExecution = WorkflowExecution::start($workflow, $arguments, $run->started_at);
+            $replayedStartedAt = $startedEvent instanceof WorkflowHistoryEvent
+                && ($startedEvent->payload['recovery_kind'] ?? null) === 'redrive'
+                && is_string($startedEvent->payload['replayed_started_at'] ?? null)
+                    ? Carbon::parse($startedEvent->payload['replayed_started_at'])
+                    : $run->started_at;
+            $workflowExecution = WorkflowExecution::start($workflow, $arguments, $replayedStartedAt);
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -264,9 +275,12 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                            $reusedRecordedAt = $activityCompletion->payload['reused_recorded_at'] ?? null;
                             $current = $workflowExecution->send(
                                 $this->activityResult($activityCompletion, $run),
-                                $activityCompletion->recorded_at,
+                                is_string($reusedRecordedAt)
+                                    ? Carbon::parse($reusedRecordedAt)
+                                    : $activityCompletion->recorded_at,
                             );
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;

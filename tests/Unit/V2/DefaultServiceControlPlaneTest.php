@@ -1177,6 +1177,11 @@ final class FakeServiceWorkflowControlPlane implements WorkflowControlPlane
         return $this->startResult;
     }
 
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        return [];
+    }
+
     public function signal(string $instanceId, string $name, array $options = []): array
     {
         $this->signals[] = [

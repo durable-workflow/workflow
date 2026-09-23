@@ -95,6 +95,22 @@ final class FailedRunRedrivePlanTest extends TestCase
         self::assertSame('duplicate_activity_completion', $plan['reason']);
     }
 
+    public function testRefusesExternalCompletedResultWithoutIndependentRetention(): void
+    {
+        $history = $this->linearFailureHistory();
+        $history[3]['payload']['result'] = [
+            'codec' => 'avro',
+            'external_storage' => [
+                'key' => 'source-run-only',
+            ],
+        ];
+
+        $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($history));
+
+        self::assertFalse($plan['eligible']);
+        self::assertSame('external_activity_result_not_supported', $plan['reason']);
+    }
+
     public function testRefusesActivitySequenceGap(): void
     {
         $history = $this->linearFailureHistory();

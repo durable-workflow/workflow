@@ -1483,6 +1483,9 @@ final class HistoryExport
                 ))
                 : [],
             'history_unsupported_reason' => $unsupportedReason,
+            'reused_from_run_id' => $activity['reused_from_run_id'] ?? ($state['reused_from_run_id'] ?? null),
+            'reused_activity_execution_id' => $activity['reused_activity_execution_id'] ?? ($state['reused_activity_execution_id'] ?? null),
+            'reused_recorded_at' => $activity['reused_recorded_at'] ?? ($state['reused_recorded_at'] ?? null),
             'row_status' => self::stringValue($activity['row_status'] ?? null)
                 ?? self::stringValue($state['row_status'] ?? null),
             'parallel_group_kind' => $activity['parallel_group_kind'] ?? ($state['parallel_group_kind'] ?? null),
@@ -1608,6 +1611,9 @@ final class HistoryExport
                 ? array_values($activity['history_event_types'])
                 : [],
             'history_unsupported_reason' => $activity['history_unsupported_reason'] ?? null,
+            'reused_from_run_id' => $activity['reused_from_run_id'] ?? null,
+            'reused_activity_execution_id' => $activity['reused_activity_execution_id'] ?? null,
+            'reused_recorded_at' => $activity['reused_recorded_at'] ?? null,
             'row_status' => $activity['row_status'] ?? null,
             'parallel_group_kind' => $activity['parallel_group_kind'] ?? null,
             'parallel_group_id' => $activity['parallel_group_id'] ?? null,

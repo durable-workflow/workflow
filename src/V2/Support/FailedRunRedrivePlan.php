@@ -168,6 +168,14 @@ final class FailedRunRedrivePlan
                 return self::reject('missing_activity_result');
             }
 
+            if (is_array($payload['result']) && isset($payload['result']['external_storage'])) {
+                return self::reject('external_activity_result_not_supported');
+            }
+
+            if (is_string($payload['result']) && ExternalPayloads::isStoredReference($payload['result'])) {
+                return self::reject('external_activity_result_not_supported');
+            }
+
             try {
                 $blob = ExternalPayloads::payloadBlob($payload['result'], $payload['payload_codec'], $run->namespace);
 

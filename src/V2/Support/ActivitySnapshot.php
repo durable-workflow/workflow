@@ -97,6 +97,9 @@ final class ActivitySnapshot
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
             'result' => self::payloadValue($payload['result'] ?? null),
+            'reused_from_run_id' => self::stringValue($payload['reused_from_run_id'] ?? null),
+            'reused_activity_execution_id' => self::stringValue($payload['reused_activity_execution_id'] ?? null),
+            'reused_recorded_at' => self::stringValue($payload['reused_recorded_at'] ?? null),
             'last_heartbeat_progress' => HeartbeatProgress::fromStored($payload['progress'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
@@ -173,6 +176,9 @@ final class ActivitySnapshot
             'closed_at' => self::stringValue($snapshot['closed_at'] ?? null),
             'arguments' => self::payloadValue($snapshot['arguments'] ?? null),
             'result' => self::payloadValue($snapshot['result'] ?? null),
+            'reused_from_run_id' => self::stringValue($snapshot['reused_from_run_id'] ?? null),
+            'reused_activity_execution_id' => self::stringValue($snapshot['reused_activity_execution_id'] ?? null),
+            'reused_recorded_at' => self::stringValue($snapshot['reused_recorded_at'] ?? null),
             'exception' => self::payloadValue($snapshot['exception'] ?? null),
             'last_heartbeat_progress' => HeartbeatProgress::fromStored($snapshot['last_heartbeat_progress'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);

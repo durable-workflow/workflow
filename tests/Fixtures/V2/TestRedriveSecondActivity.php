@@ -12,8 +12,11 @@ final class TestRedriveSecondActivity extends Activity
 {
     public function handle(string $greeting): string
     {
-        if (Cache::increment('test:redrive:second-calls') === 1) {
-            throw new NonRetryableException('The first attempt failed.');
+        if (Cache::increment('test:redrive:second-calls') <= (int) config(
+            'workflows.v2.testing.redrive_failures_before_success',
+            1
+        )) {
+            throw new NonRetryableException('This attempt failed.');
         }
 
         return $greeting . ' Redrive completed.';
