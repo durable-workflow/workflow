@@ -400,6 +400,10 @@ final class TaskWatchdog
                 })->orWhere(static function ($run) use ($now): void {
                     $run->whereNotNull('run_deadline_at')
                         ->where('run_deadline_at', '<=', $now);
+                })->orWhere(static function ($cancellation) use ($now): void {
+                    $cancellation->whereNotNull('cancellation_request_command_id')
+                        ->whereNotNull('cancellation_deadline_at')
+                        ->where('cancellation_deadline_at', '<=', $now);
                 });
             })
             ->whereDoesntHave('tasks', static function ($task): void {
@@ -459,7 +463,12 @@ final class TaskWatchdog
 
                 $now = now();
                 $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
-                    || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at));
+                    || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at))
+                    || (
+                        is_string($run->cancellation_request_command_id)
+                        && $run->cancellation_deadline_at !== null
+                        && $now->gte($run->cancellation_deadline_at)
+                    );
 
                 if (! $deadlineExpired) {
                     return null;

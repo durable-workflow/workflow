@@ -12,6 +12,7 @@ enum CommandType: string
     case Update = 'update';
     case Repair = 'repair';
     case Cancel = 'cancel';
+    case RequestCancellation = 'request_cancellation';
     case Terminate = 'terminate';
     case Archive = 'archive';
 }

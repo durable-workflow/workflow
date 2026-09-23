@@ -1260,6 +1260,21 @@ final class WorkflowStub
         return $result;
     }
 
+    public function requestCancellation(?string $reason = null, int $cleanupTimeoutSeconds = 600): CommandResult
+    {
+        $result = $this->attemptRequestCancellation($reason, $cleanupTimeoutSeconds);
+
+        if ($result->rejected()) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot receive a cancellation request: %s.',
+                $this->instance->id,
+                $result->rejectionReason() ?? 'unknown',
+            ));
+        }
+
+        return $result;
+    }
+
     public function signal(string $name, ...$arguments): CommandResult
     {
         $result = $this->attemptSignalWithArguments($name, $arguments);
@@ -1681,6 +1696,148 @@ final class WorkflowStub
             'cancelled',
             $reason,
         );
+    }
+
+    public function attemptRequestCancellation(?string $reason = null, int $cleanupTimeoutSeconds = 600): CommandResult
+    {
+        if ($cleanupTimeoutSeconds < 1 || $cleanupTimeoutSeconds > 3600) {
+            throw new LogicException('Cancellation cleanup timeout must be between 1 and 3600 seconds.');
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = null;
+        $task = null;
+
+        DB::transaction(function () use (&$command, &$task, $reason, $cleanupTimeoutSeconds): void {
+            /** @var WorkflowInstance $instance */
+            $instance = self::instanceQuery()->lockForUpdate()->findOrFail($this->instance->id);
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    null,
+                    CommandType::RequestCancellation,
+                    'instance_not_started',
+                    $this->commandTargetScope(),
+                );
+
+                return;
+            }
+
+            if ($this->runTargeted) {
+                /** @var WorkflowRun $run */
+                $run = self::runQuery()->lockForUpdate()->findOrFail($this->selectedRunId);
+
+                if ($run->id !== $currentRun->id) {
+                    $command = $this->rejectCommand(
+                        $instance,
+                        $run,
+                        CommandType::RequestCancellation,
+                        'selected_run_not_current',
+                        $this->commandTargetScope(),
+                        [
+                            'resolved_workflow_run_id' => $currentRun->id,
+                        ],
+                    );
+
+                    return;
+                }
+            } else {
+                $run = $currentRun;
+            }
+
+            if (is_string($run->cancellation_request_command_id)) {
+                $command = WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id);
+
+                return;
+            }
+
+            if (! $this->runIsActive($run)) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::RequestCancellation,
+                    'run_not_active',
+                    $this->commandTargetScope(),
+                );
+
+                return;
+            }
+
+            $requestedAt = now();
+            $deadline = $requestedAt->copy()
+                ->addSeconds($cleanupTimeoutSeconds);
+            /** @var WorkflowCommand $command */
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                'command_type' => CommandType::RequestCancellation->value,
+                'target_scope' => $this->commandTargetScope(),
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => CommandOutcome::CancellationRequested->value,
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec(
+                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    [
+                        'reason' => $reason,
+                        'cleanup_deadline_at' => $deadline->toISOString(),
+                    ],
+                ),
+                'accepted_at' => $requestedAt,
+                'applied_at' => $requestedAt,
+            ]));
+
+            $run->forceFill([
+                'cancellation_request_command_id' => $command->id,
+                'cancellation_requested_at' => $requestedAt,
+                'cancellation_deadline_at' => $deadline,
+                'last_progress_at' => $requestedAt,
+            ])->save();
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationRequested, array_filter([
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'command_type' => CommandType::RequestCancellation->value,
+                'reason' => $reason,
+                'cleanup_deadline_at' => $deadline->toISOString(),
+            ], static fn (mixed $value): bool => $value !== null), null, $command);
+
+            if (! $this->hasOpenWorkflowTask($run->id)) {
+                /** @var WorkflowTask $task */
+                $task = self::taskQuery()->create([
+                    'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $requestedAt,
+                    'payload' => [
+                        'resume_source_kind' => 'cancellation_request',
+                        'resume_source_id' => $command->id,
+                        'workflow_command_id' => $command->id,
+                    ],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                ]);
+            }
+
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+        });
+
+        $this->refresh();
+
+        if ($task instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($task);
+        }
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record a cancellation request.',
+                $this->instance->id,
+            ));
+        }
+
+        return new CommandResult($command);
     }
 
     public function terminate(?string $reason = null): CommandResult

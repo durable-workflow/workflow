@@ -780,6 +780,15 @@ final class HistoryEventPayloadContract
             'command_type',
             'reason',
         ],
+        'CooperativeCancellationRequested' => [
+            'workflow_command_id',
+            'workflow_instance_id',
+            'workflow_run_id',
+            'command_type',
+            'reason',
+            'cleanup_deadline_at',
+        ],
+        'CooperativeCancellationDelivered' => ['workflow_command_id', 'workflow_run_id', 'sequence', 'call_kind'],
         'WorkflowCancelled' => [
             'workflow_command_id',
             'workflow_instance_id',

@@ -16,6 +16,7 @@ enum CommandOutcome: string
     case RepairDispatched = 'repair_dispatched';
     case RepairNotNeeded = 'repair_not_needed';
     case Cancelled = 'cancelled';
+    case CancellationRequested = 'cancellation_requested';
     case Terminated = 'terminated';
     case Archived = 'archived';
     case ArchiveNotNeeded = 'archive_not_needed';

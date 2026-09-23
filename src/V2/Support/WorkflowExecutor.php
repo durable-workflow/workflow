@@ -37,6 +37,7 @@ use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -51,6 +52,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -58,6 +60,18 @@ final class WorkflowExecutor
     public function run(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
     {
         if ($this->timeoutIfDeadlineExpired($run, $task)) {
+            return null;
+        }
+
+        if (
+            is_string($run->cancellation_request_command_id)
+            && $run->cancellation_deadline_at !== null
+            && now()
+                ->gte($run->cancellation_deadline_at)
+        ) {
+            WorkflowStub::loadRun($run->id, $run->namespace)
+                ->attemptCancel('Cooperative cancellation cleanup deadline expired.');
+
             return null;
         }
 
@@ -257,6 +271,23 @@ final class WorkflowExecutor
                 }
 
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
+
+                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'activity', $activityCompletion)) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
 
                 if ($activityCompletion !== null) {
                     $propagatedActivityFailure = null;
@@ -735,6 +766,23 @@ final class WorkflowExecutor
                 }
 
                 $timerFired = $this->timerFiredEvent($run, $sequence);
+
+                if ($this->deliverCancellationAtCall($run, $task, $sequence, 'timer', $timerFired)) {
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->throw(
+                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            $run->cancellation_delivered_at,
+                        );
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
 
                 if ($timerFired !== null) {
                     try {
@@ -3526,6 +3574,12 @@ final class WorkflowExecutor
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
     {
+        if (is_string($run->cancellation_request_command_id)) {
+            WorkflowStub::loadRun($run->id, $run->namespace)->attemptCancel('Cooperative cancellation completed.');
+
+            return;
+        }
+
         $outputCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
             ? $run->payload_codec
             : CodecRegistry::defaultCodec();
@@ -3786,6 +3840,12 @@ final class WorkflowExecutor
         string $sourceId,
         ?int $failedStepSequence = null,
     ): void {
+        if ($throwable instanceof WorkflowCancellationRequestedException) {
+            WorkflowStub::loadRun($run->id, $run->namespace)->attemptCancel('Cooperative cancellation completed.');
+
+            return;
+        }
+
         if ($run->status === RunStatus::Completed && $run->historyEvents()
             ->where('event_type', HistoryEventType::WorkflowCompleted->value)->exists()) {
             // Completion side effects failed, not workflow code. Roll back this task attempt.
@@ -4948,6 +5008,87 @@ final class WorkflowExecutor
         $run->historyEvents->push($event);
 
         return $event;
+    }
+
+    private function deliverCancellationAtCall(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $callKind,
+        ?WorkflowHistoryEvent $completionEvent,
+    ): bool {
+        if (! is_string($run->cancellation_request_command_id)) {
+            return false;
+        }
+
+        if ($run->cancellation_delivery_sequence !== null) {
+            return $run->cancellation_delivery_sequence === $sequence;
+        }
+
+        /** @var WorkflowHistoryEvent|null $requested */
+        $requested = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type
+                === HistoryEventType::CooperativeCancellationRequested
+                && $event->workflow_command_id === $run->cancellation_request_command_id,
+        );
+
+        if (! $requested instanceof WorkflowHistoryEvent) {
+            throw new LogicException('Cooperative cancellation request has no matching history event.');
+        }
+
+        if ($completionEvent instanceof WorkflowHistoryEvent && $completionEvent->sequence < $requested->sequence) {
+            return false;
+        }
+
+        if ($callKind === 'timer') {
+            /** @var WorkflowTimer|null $timer */
+            $timer = $run->timers->firstWhere('sequence', $sequence);
+
+            if ($timer instanceof WorkflowTimer && $timer->status === TimerStatus::Pending) {
+                $timer->forceFill([
+                    'status' => TimerStatus::Cancelled,
+                ])->save();
+                TimerCancellation::record($run, $timer, $task, $run->cancellation_request_command_id);
+            }
+        } elseif ($callKind === 'activity') {
+            /** @var ActivityExecution|null $execution */
+            $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
+
+            if ($execution instanceof ActivityExecution && in_array(
+                $execution->status,
+                [ActivityStatus::Pending, ActivityStatus::Running],
+                true,
+            )) {
+                /** @var WorkflowTask|null $activityTask */
+                $activityTask = $run->tasks->first(
+                    static fn (WorkflowTask $candidate): bool => $candidate->task_type === TaskType::Activity
+                        && ($candidate->payload['activity_execution_id'] ?? null) === $execution->id,
+                );
+                ActivityCancellation::record(
+                    $run,
+                    $execution,
+                    $activityTask,
+                    $run->cancellation_request_command_id,
+                );
+            }
+        }
+
+        $deliveredAt = now();
+        $run->forceFill([
+            'cancellation_delivery_sequence' => $sequence,
+            'cancellation_delivered_at' => $deliveredAt,
+            'last_progress_at' => $deliveredAt,
+        ])->save();
+
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
+            'workflow_command_id' => $run->cancellation_request_command_id,
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'call_kind' => $callKind,
+        ], $task, $run->cancellation_request_command_id);
+        $run->historyEvents->push($event);
+
+        return true;
     }
 
     private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
