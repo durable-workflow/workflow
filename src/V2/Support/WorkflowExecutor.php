@@ -52,7 +52,6 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
-use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -69,8 +68,7 @@ final class WorkflowExecutor
             && now()
                 ->gte($run->cancellation_deadline_at)
         ) {
-            WorkflowStub::loadRun($run->id, $run->namespace)
-                ->attemptCancel('Cooperative cancellation cleanup deadline expired.');
+            $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
 
             return null;
         }
@@ -3743,10 +3741,103 @@ final class WorkflowExecutor
         return $continuedTask;
     }
 
+    private function finishCooperativeCancellation(WorkflowRun $run, WorkflowTask $task, string $reason): void
+    {
+        $commandId = $run->cancellation_request_command_id;
+        if (! is_string($commandId)) {
+            throw new LogicException('Cooperative cancellation has no request command.');
+        }
+
+        // The caller holds the run lock; acquiring the instance lock here would invert command lock order.
+        $openTasks = $run->tasks
+            ->filter(static fn (WorkflowTask $candidate): bool => in_array(
+                $candidate->status,
+                [TaskStatus::Ready, TaskStatus::Leased],
+                true,
+            ));
+        $tasksByActivityExecutionId = $openTasks
+            ->filter(static fn (WorkflowTask $candidate): bool => is_string(
+                $candidate->payload['activity_execution_id'] ?? null
+            ))
+            ->keyBy(static fn (WorkflowTask $candidate): string => $candidate->payload['activity_execution_id']);
+
+        foreach ($openTasks as $openTask) {
+            $openTask->forceFill([
+                'status' => TaskStatus::Cancelled,
+                'lease_expires_at' => null,
+                'last_error' => null,
+            ])->save();
+        }
+
+        foreach ($run->activityExecutions as $execution) {
+            if (! in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                continue;
+            }
+
+            /** @var WorkflowTask|null $activityTask */
+            $activityTask = $tasksByActivityExecutionId->get($execution->id);
+            ActivityCancellation::record($run, $execution, $activityTask, $commandId);
+        }
+
+        foreach ($run->timers as $timer) {
+            if ($timer->status !== TimerStatus::Pending) {
+                continue;
+            }
+
+            $timer->forceFill([
+                'status' => TimerStatus::Cancelled,
+            ])->save();
+            TimerCancellation::record($run, $timer, $task, $commandId);
+        }
+
+        $closedAt = now();
+        $message = sprintf('Workflow cancelled: %s', $reason);
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'propagation_kind' => 'cancelled',
+            'failure_category' => FailureCategory::Cancelled->value,
+            'handled' => false,
+            'exception_class' => 'Workflow\\V2\\Exceptions\\WorkflowCancelledException',
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        $run->forceFill([
+            'status' => RunStatus::Cancelled,
+            'closed_reason' => 'cancelled',
+            'closed_at' => $closedAt,
+            'last_progress_at' => $closedAt,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCancelled, [
+            'workflow_command_id' => $commandId,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'failure_id' => $failure->id,
+            'failure_category' => FailureCategory::Cancelled->value,
+            'closed_reason' => 'cancelled',
+            'exception_class' => $failure->exception_class,
+            'message' => $message,
+            'reason' => $reason,
+        ], $task, $commandId);
+
+        PendingUpdateCloser::closeForTerminalRun($run, $task);
+        ParentClosePolicyEnforcer::enforce($run);
+        $this->dispatchParentResumeTasks($run);
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
     {
         if (is_string($run->cancellation_request_command_id)) {
-            WorkflowStub::loadRun($run->id, $run->namespace)->attemptCancel('Cooperative cancellation completed.');
+            $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
 
             return;
         }
@@ -4011,8 +4102,9 @@ final class WorkflowExecutor
         string $sourceId,
         ?int $failedStepSequence = null,
     ): void {
-        if ($throwable instanceof WorkflowCancellationRequestedException) {
-            WorkflowStub::loadRun($run->id, $run->namespace)->attemptCancel('Cooperative cancellation completed.');
+        if ($throwable instanceof WorkflowCancellationRequestedException
+            && is_string($run->cancellation_request_command_id)) {
+            $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
 
             return;
         }

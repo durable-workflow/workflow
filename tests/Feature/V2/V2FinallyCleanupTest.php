@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestCooperativeActivityCleanupWorkflow;
@@ -27,6 +28,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -168,7 +170,8 @@ final class V2FinallyCleanupTest extends TestCase
         );
 
         self::stopWorkers();
-        $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
+        $request = $workflow->requestCancellation('stop', 60);
+        $this->assertTrue($request->accepted());
         self::restartQueueWorkers();
         $this->waitForWorkflow(
             $workflow,
@@ -190,6 +193,14 @@ final class V2FinallyCleanupTest extends TestCase
         $this->assertContains(HistoryEventType::TimerCancelled->value, $types);
         $this->assertContains(HistoryEventType::MemoUpserted->value, $types);
         $this->assertContains(HistoryEventType::WorkflowCancelled->value, $types);
+        $this->assertSame(0, WorkflowCommand::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('command_type', CommandType::Cancel->value)
+            ->count());
+        $this->assertSame($request->commandId(), WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->firstOrFail()->workflow_command_id);
     }
 
     public function testCooperativeCancellationInterruptsActivityWaitAndCompletesCleanup(): void
@@ -543,6 +554,179 @@ final class V2FinallyCleanupTest extends TestCase
         ]);
     }
 
+    public function testConcurrentCancellationRequestAndTerminationSerializeAtTheInstance(): void
+    {
+        if (DB::connection()->getDriverName() !== 'mysql' || ! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('MySQL row locks and process control are required.');
+        }
+
+        Queue::fake();
+
+        foreach ([true, false] as $requestFirst) {
+            $workflow = WorkflowStub::make(TestCooperativeActivityCleanupWorkflow::class);
+            $workflow->start();
+            $runId = $workflow->runId();
+            $this->assertIsString($runId);
+            $this->runReadyTask($runId, TaskType::Workflow);
+
+            $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+            $this->assertIsArray($sockets);
+            DB::purge();
+            $pid = pcntl_fork();
+            $this->assertNotSame(-1, $pid);
+
+            if ($pid === 0) {
+                fclose($sockets[0]);
+                try {
+                    DB::reconnect();
+                    if (fgets($sockets[1]) !== "go\n") {
+                        throw new \RuntimeException('Missing race start signal.');
+                    }
+
+                    fwrite($sockets[1], "attempt\n");
+                    $childWorkflow = WorkflowStub::load($workflow->id());
+                    $result = $requestFirst
+                        ? $childWorkflow->attemptTerminate('forced')
+                        : $childWorkflow->attemptRequestCancellation('stop', 60);
+                    fwrite($sockets[1], json_encode([
+                        'accepted' => $result->accepted(),
+                        'rejection_reason' => $result->rejectionReason(),
+                    ], JSON_THROW_ON_ERROR) . "\n");
+                    fclose($sockets[1]);
+                    exit(0);
+                } catch (\Throwable $error) {
+                    fwrite($sockets[1], $error::class . ': ' . $error->getMessage() . "\n");
+                    fclose($sockets[1]);
+                    exit(1);
+                }
+            }
+
+            fclose($sockets[1]);
+            stream_set_timeout($sockets[0], 20);
+            try {
+                DB::reconnect();
+                DB::transaction(function () use ($workflow, $requestFirst, $sockets): void {
+                    WorkflowInstance::query()->lockForUpdate()->findOrFail($workflow->id());
+                    fwrite($sockets[0], "go\n");
+                    $this->assertSame("attempt\n", fgets($sockets[0]));
+
+                    $result = $requestFirst
+                        ? $workflow->attemptRequestCancellation('stop', 60)
+                        : $workflow->attemptTerminate('forced');
+                    $this->assertTrue($result->accepted());
+
+                    $read = [$sockets[0]];
+                    $write = null;
+                    $except = null;
+                    $this->assertSame(0, stream_select($read, $write, $except, 0, 200_000));
+                });
+
+                $childResult = json_decode((string) fgets($sockets[0]), true, flags: JSON_THROW_ON_ERROR);
+                $this->assertSame($requestFirst, $childResult['accepted']);
+                $this->assertSame($requestFirst ? null : 'run_not_active', $childResult['rejection_reason']);
+                pcntl_waitpid($pid, $status);
+                $this->assertSame(0, pcntl_wexitstatus($status));
+                $pid = 0;
+            } finally {
+                fclose($sockets[0]);
+                if ($pid > 0) {
+                    posix_kill($pid, SIGKILL);
+                    pcntl_waitpid($pid, $status);
+                }
+                DB::purge();
+                DB::reconnect();
+            }
+
+            $this->assertSame('terminated', $workflow->refresh()->status());
+            $this->assertSame($requestFirst ? 1 : 0, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested->value)
+                ->count());
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTerminated->value)
+                ->count());
+            $this->assertSame([], $workflow->memo());
+        }
+    }
+
+    public function testCleanupCompletionDoesNotAcquireInstanceLockWhileHoldingRunLock(): void
+    {
+        if (DB::connection()->getDriverName() !== 'mysql' || ! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('MySQL row locks and process control are required.');
+        }
+
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestCooperativeActivityCleanupWorkflow::class);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $workflow->requestCancellation('stop', 60);
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $this->runReadyTask($runId, TaskType::Activity);
+
+        $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($sockets);
+        DB::purge();
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+
+        if ($pid === 0) {
+            fclose($sockets[0]);
+            try {
+                DB::reconnect();
+                if (fgets($sockets[1]) !== "go\n") {
+                    throw new \RuntimeException('Missing lock-race start signal.');
+                }
+
+                DB::transaction(static function () use ($workflow, $runId, $sockets): void {
+                    WorkflowInstance::query()->lockForUpdate()->findOrFail($workflow->id());
+                    fwrite($sockets[1], "instance_locked\n");
+                    WorkflowRun::query()->lockForUpdate()->findOrFail($runId);
+                });
+                fwrite($sockets[1], "done\n");
+                fclose($sockets[1]);
+                exit(0);
+            } catch (\Throwable $error) {
+                fwrite($sockets[1], $error::class . ': ' . $error->getMessage() . "\n");
+                fclose($sockets[1]);
+                exit(1);
+            }
+        }
+
+        fclose($sockets[1]);
+        stream_set_timeout($sockets[0], 20);
+        try {
+            DB::reconnect();
+            DB::transaction(function () use ($workflow, $runId, $sockets): void {
+                WorkflowRun::query()->lockForUpdate()->findOrFail($runId);
+                fwrite($sockets[0], "go\n");
+                $this->assertSame("instance_locked\n", fgets($sockets[0]));
+                $this->runReadyTask($runId, TaskType::Workflow);
+                $this->assertTrue($workflow->refresh()->cancelled());
+            });
+
+            $this->assertSame("done\n", fgets($sockets[0]));
+            pcntl_waitpid($pid, $status);
+            $this->assertSame(0, pcntl_wexitstatus($status));
+            $pid = 0;
+        } finally {
+            fclose($sockets[0]);
+            if ($pid > 0) {
+                posix_kill($pid, SIGKILL);
+                pcntl_waitpid($pid, $status);
+            }
+            DB::purge();
+            DB::reconnect();
+        }
+
+        $this->assertTrue($workflow->refresh()->cancelled());
+        $this->assertSame([
+            'cleanup' => 'Hello, cleanup!',
+        ], $workflow->memo());
+    }
+
     public function testFailedCooperativeCleanupIsVisibleAsRunFailure(): void
     {
         Queue::fake();
@@ -574,7 +758,7 @@ final class V2FinallyCleanupTest extends TestCase
         $runId = $workflow->runId();
         $this->assertIsString($runId);
         $this->runReadyTask($runId, TaskType::Workflow);
-        $workflow->requestCancellation('stop', 1);
+        $request = $workflow->requestCancellation('stop', 1);
 
         try {
             Carbon::setTestNow($workflow->run()?->cancellation_deadline_at?->copy()->addSecond());
@@ -589,6 +773,10 @@ final class V2FinallyCleanupTest extends TestCase
             'workflow_run_id' => $runId,
             'event_type' => HistoryEventType::CooperativeCancellationDelivered->value,
         ]);
+        $this->assertSame($request->commandId(), WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->firstOrFail()->workflow_command_id);
     }
 
     public function testWatchdogEnforcesDeadlineWhileCleanupTimerIsPending(): void
