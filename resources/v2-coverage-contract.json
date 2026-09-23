@@ -12,11 +12,11 @@
         }
     },
     "ratchet": {
-        "accepted_baseline_basis_points": 8777,
+        "accepted_baseline_basis_points": 8785,
         "target_basis_points": 10000
     },
     "provenance": {
         "observed_at": "2026-09-23",
-        "evidence": "Public full qualification run 35912107607 measured 54,084 of 61,618 executable lines (87.77%) at commit 2ee069618db37678a81ad19305470069b41c76e7 by unioning one unit report with all four MySQL feature-shard reports across the complete 528-file production source inventory."
+        "evidence": "Public full qualification run 35921760052 measured 54,133 of 61,618 executable lines (87.85%) at commit 9000597bfb2b8b874df956904f7ec44ce137ef89 by unioning one unit report with all four MySQL feature-shard reports across the complete 528-file production source inventory."
     }
 }
