@@ -62,11 +62,16 @@ final class V2FailedRunRedriveTest extends TestCase
 
         $controlPlane = app(WorkflowControlPlane::class);
         $source = WorkflowRun::query()->findOrFail($failedRunId);
-        $source->forceFill(['execution_deadline_at' => now()->subSecond()])->save();
+        $source->forceFill([
+            'execution_deadline_at' => now()
+                ->subSecond(),
+        ])->save();
         $expired = $controlPlane->redrive('redrive-activity-1', $failedRunId);
         $this->assertFalse($expired['accepted']);
         $this->assertSame('execution_deadline_elapsed', $expired['reason']);
-        $source->forceFill(['execution_deadline_at' => null])->save();
+        $source->forceFill([
+            'execution_deadline_at' => null,
+        ])->save();
 
         $foreignNamespace = $controlPlane->redrive('redrive-activity-1', $failedRunId, [
             'namespace' => 'another-namespace',
@@ -279,7 +284,8 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame('service-workflows', WorkflowRun::query()->findOrFail($redrive['workflow_run_id'])->queue);
         $successor = WorkflowRun::query()->findOrFail($redrive['workflow_run_id']);
         $this->assertSame(
-            $source->fresh()->execution_deadline_at?->toIso8601String(),
+            $source->fresh()
+                ->execution_deadline_at?->toIso8601String(),
             $successor->execution_deadline_at?->toIso8601String(),
         );
         $this->assertSame(600, $successor->run_timeout_seconds);
@@ -290,7 +296,10 @@ final class V2FailedRunRedriveTest extends TestCase
             ->where('event_type', HistoryEventType::WorkflowStarted)
             ->firstOrFail();
         $this->assertSame('worker', $successorStarted->payload['workflow_definition_fingerprint_source']);
-        $this->assertSame($successor->run_deadline_at->toIso8601String(), $successorStarted->payload['run_deadline_at']);
+        $this->assertSame(
+            $successor->run_deadline_at->toIso8601String(),
+            $successorStarted->payload['run_deadline_at']
+        );
     }
 
     public function testWorkflowFailureAfterCompletedActivityHasNoSafeRedriveBoundary(): void

@@ -166,7 +166,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             }
             $runTimeoutSeconds = $source->run_timeout_seconds;
             $runDeadlineAt = $runTimeoutSeconds !== null && $runTimeoutSeconds > 0
-                ? $now->copy()->addSeconds($runTimeoutSeconds)
+                ? $now->copy()
+                    ->addSeconds($runTimeoutSeconds)
                 : null;
 
             $workflowClass = $this->tryResolveWorkflowClass($source->workflow_type)
