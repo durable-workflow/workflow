@@ -22,13 +22,17 @@ use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
@@ -201,6 +205,17 @@ final class V2FinallyCleanupTest extends TestCase
         $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
         $this->runReadyTask($runId, TaskType::Workflow);
 
+        $pendingRun = WorkflowRun::query()->findOrFail($runId);
+        $this->assertFalse($pendingRun->status->isTerminal());
+        $detail = RunDetailView::forRun($pendingRun);
+        $this->assertContains(CommandType::RequestCancellation->value, array_column($detail['commands'], 'type'));
+        $export = HistoryExport::forRun($pendingRun);
+        $this->assertContains(CommandType::RequestCancellation->value, array_column($export['commands'], 'type'));
+        $this->assertContains(
+            HistoryEventType::CooperativeCancellationDelivered->value,
+            array_column($export['history_events'], 'type'),
+        );
+
         $this->assertSame(1, WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->where('event_type', HistoryEventType::ActivityCancelled->value)
@@ -218,6 +233,19 @@ final class V2FinallyCleanupTest extends TestCase
         $this->assertSame([
             'cleanup' => 'Hello, cleanup!',
         ], $workflow->memo());
+
+        $database = config('database.connections.' . config('database.default'));
+        $this->assertIsArray($database);
+        $replay = new Process([PHP_BINARY, __DIR__ . '/../../Fixtures/V2/cooperative_cold_replay.php'], env: [
+            'COOPERATIVE_DB_CONFIG' => json_encode($database, JSON_THROW_ON_ERROR),
+            'COOPERATIVE_RUN_ID' => $runId,
+        ]);
+        $replay->mustRun();
+        $replayed = json_decode($replay->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(WorkflowCancellationRequestedException::class, $replayed['terminal_exception']);
+        $this->assertSame(WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->count(), $replayed['history_events']);
     }
 
     public function testCooperativeCancellationInterruptsSignalAndConditionWaits(): void
