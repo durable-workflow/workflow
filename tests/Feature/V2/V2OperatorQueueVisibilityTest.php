@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\V2\TestStandaloneWorkerRegistration;
 use Tests\TestCase;
@@ -351,6 +353,33 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame('external', $details[0]['queue']);
         $this->assertTrue($details[0]['supports_required']);
         $this->assertSame([], WorkerCompatibilityFleet::detailsForNamespace('missing', 'build-a'));
+    }
+
+    public function testCompatibilitySummaryKeepsImmutableHeartbeatTimestamps(): void
+    {
+        Date::use(CarbonImmutable::class);
+
+        try {
+            $now = CarbonImmutable::parse('2026-04-16 12:00:00 UTC');
+            Date::setTestNow($now);
+            WorkerCompatibilityFleet::clear();
+
+            StandaloneWorkerVisibility::recordCompatibility('default', 'worker-immutable', 'external', 'build-a');
+
+            $details = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a');
+            $summary = StandaloneWorkerVisibility::fleetSummary('default');
+            $this->assertCount(1, $details);
+            $this->assertSame('database', $details[0]['source']);
+            $this->assertInstanceOf(CarbonImmutable::class, $details[0]['recorded_at']);
+            $this->assertInstanceOf(CarbonImmutable::class, $details[0]['expires_at']);
+            $this->assertSame(1, $summary['active_workers']);
+            $this->assertSame($now->toJSON(), $summary['workers'][0]['recorded_at']);
+            $this->assertNotNull($summary['workers'][0]['expires_at']);
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+            WorkerCompatibilityFleet::clear();
+        }
     }
 
     public function testStandaloneWorkerVisibilityForgetsOneNamespaceWorkerCompatibility(): void
