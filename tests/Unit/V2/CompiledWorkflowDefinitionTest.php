@@ -195,6 +195,97 @@ final class CompiledWorkflowDefinitionTest extends TestCase
         $this->assertSame('explicit_version', $compiledSelected['version_selection']['strategy']);
     }
 
+    public function testVersionSelectorHonorsCurrentMarkerBeforeHighestVersion(): void
+    {
+        $current = $this->compiledVersion('1.0.0');
+        $current['metadata']['current'] = true;
+        $newer = $this->compiledVersion('2.0.0');
+
+        $selected = WorkflowDefinitionVersionSelector::select([$newer, $current]);
+
+        $this->assertSame('1.0.0', $selected['definition_version']);
+        $this->assertSame('current_marker', $selected['version_selection']['strategy']);
+        $this->assertSame(['1.0.0', '2.0.0'], $selected['version_selection']['available_versions']);
+        $this->assertNull($selected['version_selection']['requested_version']);
+
+        $explicit = WorkflowDefinitionVersionSelector::select([$newer, $current], '2.0.0');
+        $this->assertSame('2.0.0', $explicit['definition_version']);
+        $this->assertSame('explicit_version', $explicit['version_selection']['strategy']);
+    }
+
+    public function testVersionSelectorUsesDeterministicFallbackForNonSemanticVersions(): void
+    {
+        $legacyA = $this->compiledVersion('legacy-a');
+        $legacyZ = $this->compiledVersion('legacy-z');
+        $semantic = $this->compiledVersion('1.0.0');
+
+        $selected = WorkflowDefinitionVersionSelector::select([$legacyZ, $legacyA]);
+        $this->assertSame('legacy-z', $selected['definition_version']);
+        $this->assertSame('highest_deterministic_version', $selected['version_selection']['strategy']);
+        $this->assertSame(['legacy-a', 'legacy-z'], $selected['version_selection']['available_versions']);
+
+        $mixed = WorkflowDefinitionVersionSelector::select([$semantic, $legacyZ]);
+        $this->assertSame('1.0.0', $mixed['definition_version']);
+        $this->assertSame('highest_deterministic_version', $mixed['version_selection']['strategy']);
+        $this->assertSame(['legacy-z', '1.0.0'], $mixed['version_selection']['available_versions']);
+    }
+
+    public function testVersionSelectorRejectsAmbiguousCurrentMarkers(): void
+    {
+        $first = $this->compiledVersion('1.0.0');
+        $first['current'] = true;
+        $second = $this->compiledVersion('2.0.0');
+        $second['metadata']['current'] = true;
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('multiple current definitions');
+
+        WorkflowDefinitionVersionSelector::select([$first, $second]);
+    }
+
+    public function testVersionSelectorRejectsDuplicateVersions(): void
+    {
+        $compiled = $this->compiledVersion('1.0.0');
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('appears more than once');
+
+        WorkflowDefinitionVersionSelector::select([$compiled, $compiled]);
+    }
+
+    public function testVersionSelectorRejectsUnavailableExplicitVersion(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Available versions: [1.0.0, 2.0.0]');
+
+        WorkflowDefinitionVersionSelector::select([
+            $this->compiledVersion('2.0.0'),
+            $this->compiledVersion('1.0.0'),
+        ], '3.0.0');
+    }
+
+    public function testVersionSelectorRejectsEmptyVersionSet(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('empty compiled workflow definition version set');
+
+        WorkflowDefinitionVersionSelector::select([]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function compiledVersion(string $version): array
+    {
+        return ServerlessWorkflowCompiler::compile(
+            $this->serverlessWorkflowDocument($version, [[
+                'name' => 'Start',
+                'type' => 'operation',
+                'end' => true,
+            ]]),
+        );
+    }
+
     /**
      * @param list<array<string, mixed>> $states
      * @return array<string, mixed>
