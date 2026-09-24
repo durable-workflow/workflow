@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use BadMethodCallException;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Date;
 use LogicException;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
+use Tests\Fixtures\V2\TestTimerThenActivityWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
@@ -353,6 +356,32 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->pluck('event_type')
             ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
             ->all());
+    }
+
+    public function testFakeModeRunsActivityAfterTimerWithImmutableApplicationDates(): void
+    {
+        Date::use(CarbonImmutable::class);
+
+        try {
+            WorkflowStub::fake();
+            WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+            $workflow = WorkflowStub::make(TestTimerThenActivityWorkflow::class, 'fake-immutable-timer-activity');
+            $workflow->start('Taylor');
+
+            $this->assertSame('waiting', $workflow->refresh()->status());
+
+            $this->travel(61)
+                ->seconds();
+            WorkflowStub::runReadyTasks();
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame('Hello, Taylor!', $workflow->output());
+            WorkflowStub::assertDispatchedTimes(TestGreetingActivity::class, 1);
+        } finally {
+            $this->travelBack();
+            Date::useDefault();
+        }
     }
 
     public function testFakeModeSignalResumesWaitingWorkflowInline(): void
