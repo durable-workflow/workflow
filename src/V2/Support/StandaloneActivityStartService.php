@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
@@ -252,7 +252,7 @@ final class StandaloneActivityStartService
     private function resolveOrCreateInstance(
         ?string $providedActivityId,
         ?string $namespace,
-        Carbon $now,
+        CarbonInterface $now,
     ): WorkflowInstance {
         if ($providedActivityId === null) {
             /** @var WorkflowInstance $instance */
