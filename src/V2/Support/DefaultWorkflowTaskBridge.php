@@ -3552,6 +3552,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'timed_out' => ActivityStatus::Failed,
             default => ActivityStatus::Failed,
         };
+        $exception = $outcome === 'completed' ? null : ExternalPayloads::externalizeForNamespace(
+            Serializer::serializeWithCodec($payloadCodec, $command['message'] ?? 'Local activity failed.'),
+            $payloadCodec,
+            $namespace,
+        );
         $attempts = is_array($command['attempts'] ?? null)
             ? array_values($command['attempts'])
             : [];
@@ -3619,7 +3624,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'schedule_to_close_timeout' => $command['schedule_to_close_timeout'] ?? null,
                 'heartbeat_timeout' => $command['heartbeat_timeout'] ?? null,
             ], static fn (mixed $value): bool => $value !== null),
-            'exception' => $outcome === 'completed' ? null : ($command['message'] ?? 'Local activity failed.'),
+            'exception' => $exception,
             'started_at' => $attempts[0]['started_at'] ?? $now,
             'last_heartbeat_at' => $latestHeartbeatAt,
             'closed_at' => $now,
@@ -3810,7 +3815,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 : ($outcome === 'timed_out'
                     ? ActivityTimeoutException::class
                     : RuntimeException::class);
-
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $run->id,
                 'source_kind' => 'activity_execution',
