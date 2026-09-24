@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
@@ -63,6 +65,36 @@ use Workflow\V2\TaskWatchdog;
  */
 final class V2StandaloneActivityHostTest extends TestCase
 {
+    public function testActivityClaimWorksWithImmutableApplicationDates(): void
+    {
+        Date::use(CarbonImmutable::class);
+
+        try {
+            Date::setTestNow(CarbonImmutable::parse('2026-09-24 13:00:00 UTC'));
+            $start = $this->app->make(StandaloneActivityStartService::class)->start([
+                'namespace' => 'default',
+                'activity_id' => 'standalone-immutable-claim',
+                'activity_type' => 'tests.greeting-activity',
+                'activity_class' => TestGreetingActivity::class,
+                'task_queue' => 'standalone-activities',
+                'payload_codec' => CodecRegistry::defaultCodec(),
+            ]);
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $start['workflow_run_id'])
+                ->where('task_type', TaskType::Activity->value)
+                ->firstOrFail();
+
+            $claim = ActivityTaskClaimer::claimDetailed($task->id);
+
+            $this->assertNotNull($claim['claim']);
+            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            $this->assertInstanceOf(CarbonImmutable::class, $task->fresh()->lease_expires_at);
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
     public function testStartCreatesHostRunAndReadyActivityTask(): void
     {
         $service = $this->app->make(StandaloneActivityStartService::class);

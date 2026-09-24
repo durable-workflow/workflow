@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -35,7 +36,7 @@ final class WorkerCompatibilityFleet
     private static array $lastRecorded = [];
 
     /**
-     * @var list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>|null
+     * @var list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>|null
      */
     private static ?array $snapshotCache = null;
 
@@ -85,8 +86,8 @@ final class WorkerCompatibilityFleet
      *     queue: string|null,
      *     supported: list<string>,
      *     supports_required: bool,
-     *     recorded_at: \Illuminate\Support\Carbon|null,
-     *     expires_at: \Illuminate\Support\Carbon|null,
+     *     recorded_at: CarbonInterface|null,
+     *     expires_at: CarbonInterface|null,
      *     source: string
      * }>
      */
@@ -442,8 +443,8 @@ final class WorkerCompatibilityFleet
      *     queue: string|null,
      *     supported: list<string>,
      *     supports_required: bool,
-     *     recorded_at: \Illuminate\Support\Carbon|null,
-     *     expires_at: \Illuminate\Support\Carbon|null,
+     *     recorded_at: CarbonInterface|null,
+     *     expires_at: CarbonInterface|null,
      *     source: string
      * }>
      */
@@ -647,7 +648,7 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>
      */
     private static function matchingSnapshots(
         ?string $namespace = null,
@@ -717,7 +718,7 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>
      */
     private static function legacyCacheSnapshots(): array
     {
@@ -771,9 +772,9 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $preferred
-     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $fallback
-     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>  $preferred
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>  $fallback
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>
      */
     private static function mergeSnapshots(array $preferred, array $fallback): array
     {
@@ -810,8 +811,8 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $snapshots
-     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>  $snapshots
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: CarbonInterface|null, expires_at: CarbonInterface|null, source: string}>
      */
     private static function sortSnapshots(array $snapshots): array
     {
@@ -896,9 +897,9 @@ final class WorkerCompatibilityFleet
         return $value === '' ? null : $value;
     }
 
-    private static function latestCarbon(?Carbon $current, mixed $candidate): ?Carbon
+    private static function latestCarbon(?CarbonInterface $current, mixed $candidate): ?CarbonInterface
     {
-        if (! $candidate instanceof Carbon) {
+        if (! $candidate instanceof CarbonInterface) {
             return $current;
         }
 
