@@ -87,7 +87,7 @@ return new class() extends WorkflowMigration {
 
     private function isLegacyText(mixed $value): bool
     {
-        if (! is_string($value) || $value === '' || ExternalPayloads::isStoredReference($value)) {
+        if (! is_string($value) || ExternalPayloads::isStoredReference($value)) {
             return false;
         }
 

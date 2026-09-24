@@ -7178,20 +7178,22 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     }
 
     #[DataProvider('localActivityTerminalOutcomes')]
-    public function testLegacyLocalActivityExceptionsAreReencodedWithoutChangingTheirMessages(string $outcome): void
-    {
+    public function testLegacyLocalActivityExceptionsAreReencodedWithoutChangingTheirMessages(
+        string $outcome,
+        string $message,
+    ): void {
         $run = $this->createWaitingRun();
         $task = $this->createLeasedTask($run);
-        $message = "Legacy local activity {$outcome}.";
+        $commandMessage = $message === '' ? 'Original failure.' : $message;
         $command = [
             'type' => 'record_local_activity',
             'activity_type' => 'legacy-local-activity',
             'outcome' => $outcome,
-            'message' => $message,
+            'message' => $commandMessage,
             'attempts' => [[
                 'attempt_number' => 1,
                 'outcome' => $outcome,
-                'message' => $message,
+                'message' => $commandMessage,
             ]],
         ];
         if ($outcome === 'timed_out') {
@@ -7249,14 +7251,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     }
 
     /**
-     * @return array<string, array{string}>
+     * @return array<string, array{string, string}>
      */
     public static function localActivityTerminalOutcomes(): array
     {
         return [
-            'failure' => ['failed'],
-            'timeout' => ['timed_out'],
-            'cancellation' => ['cancelled'],
+            'failure' => ['failed', 'Legacy local activity failed.'],
+            'timeout' => ['timed_out', 'Legacy local activity timed_out.'],
+            'cancellation' => ['cancelled', 'Legacy local activity cancelled.'],
+            'empty failure' => ['failed', ''],
         ];
     }
 
