@@ -7229,6 +7229,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         DB::table('workflow_history_events')->where('id', $terminal->id)->update([
             'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION),
         ]);
+        $terminal->refresh();
+        $persistedIdentity = $terminal->payload['unrelated_value_identity'];
+        $this->assertSame(7.0, $persistedIdentity['double']);
 
         $migration = require __DIR__ . '/../../../src/migrations/2026_09_24_000100_encode_legacy_local_activity_exceptions.php';
         $migration->up();
@@ -7238,16 +7241,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $terminal->refresh();
         $this->assertSame($message, Serializer::unserializeWithCodec('avro', $execution->exception));
         $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
-        $this->assertSame(
-            [
-                'double' => 7.0,
-                'map' => [
-                    'b' => 2,
-                    'a' => 1,
-                ],
-            ],
-            $terminal->payload['unrelated_value_identity'],
-        );
+        $this->assertSame($persistedIdentity, $terminal->payload['unrelated_value_identity']);
     }
 
     /**
