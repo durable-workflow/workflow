@@ -7115,10 +7115,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', HistoryEventType::ActivityTimedOut->value)
             ->sole();
         $this->assertSame($failure->id, $terminal->payload['failure_id']);
-        $this->assertSame(
-            $execution->exception,
-            $terminal->payload['activity']['exception'],
-        );
+        $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
     }
 
     public function testCompleteProjectsFailedAndCancelledLocalActivityOutcomes(): void
@@ -7215,15 +7212,23 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', $eventType->value)
             ->sole();
 
-        DB::table('activity_executions')->where('id', $execution->id)->update(['exception' => $message]);
+        DB::table('activity_executions')->where('id', $execution->id)->update([
+            'exception' => $message,
+        ]);
         $payload = $terminal->payload;
         $payload['activity']['exception'] = $message;
-        $payload['unrelated_value_identity'] = ['double' => 7.0, 'map' => ['b' => 2, 'a' => 1]];
+        $payload['unrelated_value_identity'] = [
+            'double' => 7.0,
+            'map' => [
+                'b' => 2,
+                'a' => 1,
+            ],
+        ];
         DB::table('workflow_history_events')->where('id', $terminal->id)->update([
             'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION),
         ]);
 
-        $migration = require __DIR__.'/../../../src/migrations/2026_09_24_000100_encode_legacy_local_activity_exceptions.php';
+        $migration = require __DIR__ . '/../../../src/migrations/2026_09_24_000100_encode_legacy_local_activity_exceptions.php';
         $migration->up();
         $migration->up();
 
@@ -7232,12 +7237,20 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($message, Serializer::unserializeWithCodec('avro', $execution->exception));
         $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
         $this->assertSame(
-            ['double' => 7.0, 'map' => ['b' => 2, 'a' => 1]],
+            [
+                'double' => 7.0,
+                'map' => [
+                    'b' => 2,
+                    'a' => 1,
+                ],
+            ],
             $terminal->payload['unrelated_value_identity'],
         );
     }
 
-    /** @return array<string, array{string}> */
+    /**
+     * @return array<string, array{string}>
+     */
     public static function localActivityTerminalOutcomes(): array
     {
         return [

@@ -93,6 +93,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertPortableLocalActivityAttemptTimelineReplay($fixture);
             }
 
+            if (($fixture['id'] ?? null) === 'portable-local-activity-failure-avro-cold-replay') {
+                $this->assertPortableLocalActivityFailureUsesAvro($fixture);
+            }
+
             $consumers = $fixture['consumers'] ?? ['workflow-fiber-runner'];
             if (in_array('embedded-history-import', $consumers, true)) {
                 $this->assertHistoryImportMetadataRoundTrips($fixture);
@@ -168,6 +172,60 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $fixture['expected_condition_wait_occurrence_ids'],
             array_column(ConditionWaits::forRun($run->fresh(['historyEvents'])), 'condition_wait_occurrence_id'),
         );
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertPortableLocalActivityFailureUsesAvro(array $fixture): void
+    {
+        $this->clearWorkflowState();
+
+        $terminal = $fixture['history'][count($fixture['history']) - 1]['payload'];
+        $expectedException = $terminal['activity']['exception'];
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $stub = WorkflowStub::make(
+            $fixture['workflow']['type'],
+            sprintf('regression-corpus-local-failure-%d', ++$this->workflowNumber),
+        );
+        $stub->start(...$fixture['workflow']['arguments']);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+        $this->assertTrue($bridge->claimStatus($task->id, 'regression-corpus-local-failure')['claimed']);
+
+        $completion = $bridge->complete($task->id, [[
+            'type' => 'record_local_activity',
+            'activity_type' => $terminal['activity_type'],
+            'outcome' => 'failed',
+            'message' => $terminal['message'],
+            'attempts' => [[
+                'attempt_number' => 1,
+                'outcome' => 'failed',
+                'message' => $terminal['message'],
+            ]],
+            'retry_policy' => [
+                'max_attempts' => 1,
+            ],
+            'execution_mode' => 'local',
+        ]]);
+
+        $this->assertTrue($completion['completed']);
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->sole();
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->sole();
+        $this->assertSame($expectedException, $execution->exception);
+        $this->assertSame($expectedException, $event->payload['activity']['exception']);
     }
 
     /**

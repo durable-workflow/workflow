@@ -6,9 +6,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Serializers\Avro;
 use Workflow\Serializers\CodecDecodeException;
+use Workflow\Support\WorkflowMigration;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ExternalPayloads;
-use Workflow\Support\WorkflowMigration;
 
 return new class() extends WorkflowMigration {
     public function up(): void
@@ -32,7 +32,9 @@ return new class() extends WorkflowMigration {
 
                         DB::table('activity_executions')
                             ->where('id', $execution->id)
-                            ->update(['exception' => Avro::serialize($execution->exception)]);
+                            ->update([
+                                'exception' => Avro::serialize($execution->exception),
+                            ]);
                     }
                 }, 'id');
         }
@@ -68,10 +70,12 @@ return new class() extends WorkflowMigration {
                     $payload['activity']['exception'] = Avro::serialize($activity['exception']);
                     DB::table('workflow_history_events')
                         ->where('id', $event->id)
-                        ->update(['payload' => json_encode(
-                            $payload,
-                            JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES,
-                        )]);
+                        ->update([
+                            'payload' => json_encode(
+                                $payload,
+                                JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES,
+                            ),
+                        ]);
                 }
             }, 'id');
     }
