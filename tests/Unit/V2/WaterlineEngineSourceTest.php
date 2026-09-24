@@ -121,6 +121,48 @@ final class WaterlineEngineSourceTest extends TestCase
             'configured_workflow_run_summaries',
             WaterlineEngineSource::status()['required_tables'][10]['table']
         );
+
+        Schema::drop('configured_workflow_run_summaries');
+
+        $this->assertFalse(
+            WaterlineEngineSource::status(throwOnInspectionFailure: true)['v2_operator_surface_available']
+        );
+    }
+
+    public function testMysqlListingRespectsConfiguredConnectionAndPrefix(): void
+    {
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            $this->markTestSkipped('This case uses a MySQL connection prefix.');
+        }
+
+        $configuration = config('database.connections.mysql');
+        $this->assertIsArray($configuration);
+        config()
+            ->set('database.connections.operator_surface_test', [
+                ...$configuration,
+                'prefix' => 'operator_',
+            ]);
+
+        $schema = Schema::connection('operator_surface_test');
+        $schema->create('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->string('id')
+                ->primary();
+        });
+
+        try {
+            config()->set('workflows.v2.run_summary_model', PrefixedWaterlineEngineSourceWorkflowRunSummary::class);
+            $this->assertTrue(
+                WaterlineEngineSource::status(throwOnInspectionFailure: true)['v2_operator_surface_available']
+            );
+
+            $schema->drop('workflow_run_summaries');
+            $this->assertFalse(
+                WaterlineEngineSource::status(throwOnInspectionFailure: true)['v2_operator_surface_available']
+            );
+        } finally {
+            $schema->dropIfExists('workflow_run_summaries');
+            DB::purge('operator_surface_test');
+        }
     }
 
     public function testDefaultStatusKeepsSchemaFailureDiagnostics(): void
@@ -167,4 +209,9 @@ final class MissingWaterlineEngineSourceWorkflowRunSummary extends WorkflowRunSu
 final class ConfiguredWaterlineEngineSourceWorkflowRunSummary extends WorkflowRunSummary
 {
     protected $table = 'configured_workflow_run_summaries';
+}
+
+final class PrefixedWaterlineEngineSourceWorkflowRunSummary extends WorkflowRunSummary
+{
+    protected $connection = 'operator_surface_test';
 }
