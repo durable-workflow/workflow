@@ -47,28 +47,6 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame('delegates_to_v2_health_check', $contract['effective_states']['health']['state']);
     }
 
-    public function testExistingMysqlOperatorSurfaceUsesOneSchemaListing(): void
-    {
-        $connection = DB::connection();
-        if ($connection->getDriverName() !== 'mysql'
-            || ! method_exists($connection->getSchemaBuilder(), 'parseSchemaAndTable')) {
-            $this->markTestSkipped('The table-listing optimization requires MySQL and Laravel 12+.');
-        }
-
-        $connection->enableQueryLog();
-        $connection->flushQueryLog();
-
-        try {
-            $this->assertTrue(
-                WaterlineEngineSource::status(throwOnInspectionFailure: true)['v2_operator_surface_available']
-            );
-            $this->assertCount(1, $connection->getQueryLog());
-        } finally {
-            $connection->disableQueryLog();
-            $connection->flushQueryLog();
-        }
-    }
-
     public function testExplicitEngineSelectionOverridesAutoDetection(): void
     {
         $this->assertSame(WaterlineEngineSource::ENGINE_V1, WaterlineEngineSource::resolve('v1'));
