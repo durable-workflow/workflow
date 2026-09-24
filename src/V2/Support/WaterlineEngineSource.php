@@ -218,9 +218,10 @@ final class WaterlineEngineSource
     {
         $requiredTables = [];
         $issues = [];
+        $tableListings = [];
 
         foreach (self::requiredModelClasses() as $definition) {
-            $inspection = self::inspectModel($definition, $throwOnInspectionFailure);
+            $inspection = self::inspectModel($definition, $throwOnInspectionFailure, $tableListings);
             $requiredTables[] = [
                 'config_key' => $inspection['config_key'],
                 'model' => $inspection['model'],
@@ -252,6 +253,7 @@ final class WaterlineEngineSource
 
     /**
      * @param array{config_key: string|null, model: string} $definition
+     * @param array<string, list<string>> $tableListings
      * @return array{
      *     config_key: string|null,
      *     model: string,
@@ -262,8 +264,11 @@ final class WaterlineEngineSource
      *     message: string
      * }
      */
-    private static function inspectModel(array $definition, bool $throwOnInspectionFailure): array
-    {
+    private static function inspectModel(
+        array $definition,
+        bool $throwOnInspectionFailure,
+        array &$tableListings
+    ): array {
         $modelClass = $definition['model'];
 
         if (! is_a($modelClass, Model::class, true)) {
@@ -303,9 +308,23 @@ final class WaterlineEngineSource
             }
 
             $table = trim($table);
-            $available = DB::connection($connection)
-                ->getSchemaBuilder()
-                ->hasTable($table);
+            $database = DB::connection($connection);
+            $schemaBuilder = $database->getSchemaBuilder();
+            if ($database->getDriverName() === 'mysql' && method_exists($schemaBuilder, 'parseSchemaAndTable')) {
+                [$schema, $tableName] = $schemaBuilder->parseSchemaAndTable($table, true);
+                $listingKey = spl_object_id($database) . ':' . ($schema ?? '');
+
+                // Share one fresh listing within this inspection, never across requests.
+                if (! array_key_exists($listingKey, $tableListings)) {
+                    $tableListings[$listingKey] = $schemaBuilder->getTableListing($schema, false);
+                }
+
+                $prefixedTable = $database->getTablePrefix() . $tableName;
+                $available = in_array($prefixedTable, $tableListings[$listingKey], true)
+                    || $schemaBuilder->hasTable($table);
+            } else {
+                $available = $schemaBuilder->hasTable($table);
+            }
 
             return [
                 'config_key' => $definition['config_key'],
