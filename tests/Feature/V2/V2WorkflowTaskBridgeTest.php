@@ -7101,6 +7101,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('activity_execution_id', $execution->id)
             ->sole();
         $this->assertSame('failed', $attempt->status->value);
+        $this->assertSame('Heartbeat expired.', Serializer::unserializeWithCodec('avro', $execution->exception));
 
         $failure = WorkflowFailure::query()
             ->where('source_kind', 'activity_execution')
@@ -7114,6 +7115,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', HistoryEventType::ActivityTimedOut->value)
             ->sole();
         $this->assertSame($failure->id, $terminal->payload['failure_id']);
+        $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
     }
 
     public function testCompleteProjectsFailedAndCancelledLocalActivityOutcomes(): void
@@ -7147,6 +7149,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $execution = ActivityExecution::query()
                 ->where('workflow_run_id', $run->id)
                 ->sole();
+            $this->assertSame($message, Serializer::unserializeWithCodec('avro', $execution->exception));
             $attempt = ActivityAttempt::query()
                 ->where('activity_execution_id', $execution->id)
                 ->sole();
@@ -7170,7 +7173,88 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                     : HistoryEventType::ActivityCancelled->value)
                 ->sole();
             $this->assertSame($attempt->id, $terminal->payload['activity_attempt_id']);
+            $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
         }
+    }
+
+    #[DataProvider('localActivityTerminalOutcomes')]
+    public function testLegacyLocalActivityExceptionsAreReencodedWithoutChangingTheirMessages(
+        string $outcome,
+        string $message,
+    ): void {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $commandMessage = $message === '' ? 'Original failure.' : $message;
+        $command = [
+            'type' => 'record_local_activity',
+            'activity_type' => 'legacy-local-activity',
+            'outcome' => $outcome,
+            'message' => $commandMessage,
+            'attempts' => [[
+                'attempt_number' => 1,
+                'outcome' => $outcome,
+                'message' => $commandMessage,
+            ]],
+        ];
+        if ($outcome === 'timed_out') {
+            $command['timeout_kind'] = 'heartbeat';
+            $command['attempts'][0]['timeout_kind'] = 'heartbeat';
+        }
+
+        $result = $this->bridge->complete($task->id, [$command]);
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $execution = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $eventType = match ($outcome) {
+            'timed_out' => HistoryEventType::ActivityTimedOut,
+            'cancelled' => HistoryEventType::ActivityCancelled,
+            default => HistoryEventType::ActivityFailed,
+        };
+        $terminal = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', $eventType->value)
+            ->sole();
+
+        DB::table('activity_executions')->where('id', $execution->id)->update([
+            'exception' => $message,
+        ]);
+        $payload = $terminal->payload;
+        $payload['activity']['exception'] = $message;
+        $payload['unrelated_value_identity'] = [
+            'double' => 7.0,
+            'map' => [
+                'b' => 2,
+                'a' => 1,
+            ],
+        ];
+        DB::table('workflow_history_events')->where('id', $terminal->id)->update([
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION),
+        ]);
+        $terminal->refresh();
+        $persistedIdentity = $terminal->payload['unrelated_value_identity'];
+        $this->assertSame(7.0, $persistedIdentity['double']);
+
+        $migration = require __DIR__ . '/../../../src/migrations/2026_09_24_000100_encode_legacy_local_activity_exceptions.php';
+        $migration->up();
+        $migration->up();
+
+        $execution->refresh();
+        $terminal->refresh();
+        $this->assertSame($message, Serializer::unserializeWithCodec('avro', $execution->exception));
+        $this->assertSame($execution->exception, $terminal->payload['activity']['exception']);
+        $this->assertSame($persistedIdentity, $terminal->payload['unrelated_value_identity']);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function localActivityTerminalOutcomes(): array
+    {
+        return [
+            'failure' => ['failed', 'Legacy local activity failed.'],
+            'timeout' => ['timed_out', 'Legacy local activity timed_out.'],
+            'cancellation' => ['cancelled', 'Legacy local activity cancelled.'],
+            'empty failure' => ['failed', ''],
+        ];
     }
 
     public function testCompleteSchedulesActivityPreservesExternalArgumentsPayloadCodec(): void
