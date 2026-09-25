@@ -282,7 +282,9 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
                 $model = StoredWorkflow::class;
             }
 
-            return Schema::hasTable((new $model())->getTable());
+            $storedWorkflow = new $model();
+
+            return Schema::connection($storedWorkflow->getConnectionName())->hasTable($storedWorkflow->getTable());
         } catch (\Throwable) {
             return false;
         }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Check for the engine's tables on the configured `workflows.storage.connection`
+  instead of the application's default connection when gating the V2 task
+  watchdog, worker-compatibility heartbeats, and the v1 watchdog. With a
+  dedicated storage connection those gates were always false, so expired
+  leases were never repaired and activity timeouts never enforced. Behaviour
+  on the default connection is unchanged.
+
 ## 2.0.17 - 2026-09-22
 
 - Resolve a committed caller-supplied workflow identity from a current MySQL

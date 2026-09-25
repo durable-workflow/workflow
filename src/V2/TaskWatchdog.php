@@ -434,7 +434,9 @@ final class TaskWatchdog
                 new WorkflowRunSummary(),
                 new ActivityExecution(),
             ] as $model) {
-                if (! Schema::hasTable($model->getTable())) {
+                // The models honour workflows.storage.connection; ask that connection,
+                // not the application default, whether their tables exist.
+                if (! Schema::connection($model->getConnectionName())->hasTable($model->getTable())) {
                     return false;
                 }
             }
