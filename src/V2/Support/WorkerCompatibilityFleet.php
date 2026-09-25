@@ -966,7 +966,9 @@ final class WorkerCompatibilityFleet
         }
 
         try {
-            return Schema::hasTable((new WorkerCompatibilityHeartbeat())->getTable());
+            $heartbeat = new WorkerCompatibilityHeartbeat();
+
+            return Schema::connection($heartbeat->getConnectionName())->hasTable($heartbeat->getTable());
         } catch (Throwable) {
             return false;
         }
