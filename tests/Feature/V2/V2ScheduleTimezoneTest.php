@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
@@ -194,6 +195,27 @@ final class V2ScheduleTimezoneTest extends TestCase
             $schedule->save();
             $schedule = $schedule->fresh();
             $this->assertSame($dueAt->getTimestamp(), $schedule->next_fire_at->getTimestamp(), $case);
+
+            $connection = $schedule->getConnection();
+            $database = $connection->getConfig();
+            $coldReadback = new Process([
+                PHP_BINARY,
+                __DIR__ . '/../../Fixtures/V2/schedule_cold_readback.php',
+            ], env: [
+                'SCHEDULE_DB_DRIVER' => (string) ($database['driver'] ?? ''),
+                'SCHEDULE_DB_DATABASE' => (string) ($database['database'] ?? ''),
+                'SCHEDULE_DB_HOST' => (string) ($database['host'] ?? ''),
+                'SCHEDULE_DB_PORT' => (string) ($database['port'] ?? ''),
+                'SCHEDULE_DB_USERNAME' => (string) ($database['username'] ?? ''),
+                'SCHEDULE_DB_PASSWORD' => (string) ($database['password'] ?? ''),
+                'SCHEDULE_ID' => (string) $schedule->id,
+                'SCHEDULE_DUE_AT' => $dueAt->format('Y-m-d H:i:s.u'),
+            ]);
+            $coldReadback->mustRun();
+            $coldResult = json_decode($coldReadback->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertIsArray($coldResult);
+            $this->assertSame($dueAt->getTimestamp(), $coldResult['timestamp'], $case . ' cold readback');
+            $this->assertSame(1, $coldResult['due_count'], $case . ' cold due query');
 
             // Carbon's named-zone test clock loses the first fold offset when
             // constructing now(); freeze the absolute UTC instant instead.
