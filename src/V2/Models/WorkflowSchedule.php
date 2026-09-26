@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\UtcScheduleTimestamp;
 
 /**
  * Canonical workflow schedule.
@@ -61,11 +62,11 @@ class WorkflowSchedule extends Model
         'recent_actions' => 'array',
         'buffered_actions' => 'array',
         'overlap_policy' => 'string',
-        'last_fired_at' => 'datetime',
-        'next_fire_at' => 'datetime',
-        'paused_at' => 'datetime',
-        'deleted_at' => 'datetime',
-        'last_skipped_at' => 'datetime',
+        'last_fired_at' => UtcScheduleTimestamp::class,
+        'next_fire_at' => UtcScheduleTimestamp::class,
+        'paused_at' => UtcScheduleTimestamp::class,
+        'deleted_at' => UtcScheduleTimestamp::class,
+        'last_skipped_at' => UtcScheduleTimestamp::class,
         'jitter_seconds' => 'integer',
         'max_runs' => 'integer',
         'remaining_actions' => 'integer',

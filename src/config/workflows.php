@@ -68,6 +68,14 @@ return [
         'run_lineage_entry_model' => Workflow\V2\Models\WorkflowRunLineageEntry::class,
         'schedule_model' => Workflow\V2\Models\WorkflowSchedule::class,
         'schedule_history_event_model' => Workflow\V2\Models\WorkflowScheduleHistoryEvent::class,
+        // One-time upgrade conversion of pre-UTC schedule timestamp columns.
+        // Set this to the PHP timezone used when the existing rows were written
+        // if it differs from the application's timezone during migration.
+        'legacy_schedule_storage_timezone' => Env::dw(
+            'DW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE',
+            'WORKFLOW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE',
+            null,
+        ),
         'service_endpoint_model' => Workflow\V2\Models\WorkflowServiceEndpoint::class,
         'service_model' => Workflow\V2\Models\WorkflowService::class,
         'service_operation_model' => Workflow\V2\Models\WorkflowServiceOperation::class,

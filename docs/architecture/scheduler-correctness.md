@@ -271,6 +271,38 @@ continue to fire at their next tick cadence. If the acceleration
 layer is propagating stale signals, the scheduler still reads
 `next_fire_at` directly and is therefore not misled.
 
+### Schedule instants and the UTC upgrade
+
+The schedule spec's `timezone` controls which local wall-clock times a cron
+expression selects. `next_fire_at`, `last_fired_at`, `paused_at`, `deleted_at`,
+and `last_skipped_at` are absolute instants. Their offset-free database columns
+store UTC, and due-time queries compare against a UTC value. For MySQL
+`TIMESTAMP` columns, keep the database session timezone at UTC so MySQL does not
+convert these UTC values on read or write.
+
+Before this change, the schedule model serialized these columns in the PHP
+default timezone. During a repeated local hour, the first and second occurrence
+could become the same stored string. The migration
+`2026_09_26_000100_normalize_workflow_schedule_timestamps` converts existing
+strings from the timezone used by the old PHP writer into UTC. Stop scheduler
+ticks and schedule writers, back up the workflow database, then run migrations
+before starting processes with the new code. If the old writer timezone differs
+from the timezone of the migration process, set
+`DW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE` to that original IANA timezone for
+the migration. Confirm the database session timezone is UTC for MySQL.
+If multiple PHP timezones wrote the old rows, a single migration timezone
+cannot convert all of them correctly; reconcile those rows from their audit
+evidence before upgrading.
+
+A legacy value inside a repeated local hour has already lost its offset. The
+migration preserves the instant that the old Eloquent cast would hydrate
+(the later, standard-time occurrence in the tested Kyiv case); it cannot infer
+whether the first occurrence was originally intended. Review such schedules
+against schedule audit events or other retained evidence, and explicitly
+correct their next occurrence when necessary. The migration does not rewrite
+schedule audit events, which already carry offsets. Its `down()` method does
+not convert UTC values back into ambiguous local strings.
+
 ## Lease expiry and redelivery
 
 Lease expiry and redelivery are DB-only by contract.
