@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ScheduleStartResult;
@@ -387,6 +388,227 @@ final class V2ScheduleTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $triggered->payload['occurrence_time']);
+    }
+
+    public function testManualTriggerInvalidatesAnOccurrenceReadByTick(): void
+    {
+        WorkflowStub::fake();
+        Carbon::setTestNow(Carbon::parse('2026-09-26 12:00:00', 'UTC'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'stale-tick-after-manual-trigger',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+            );
+            $schedule->forceFill([
+                'next_fire_at' => now()
+                    ->subMinute(),
+            ])->save();
+
+            // The tick evaluator reads this due occurrence before taking the row lock.
+            $staleSnapshot = $schedule->fresh();
+            $oldOccurrence = $staleSnapshot->next_fire_at->copy();
+
+            // A manual trigger commits while the evaluator is paused.
+            $firstInstanceId = ScheduleManager::trigger($schedule);
+            $this->assertNotNull($firstInstanceId);
+            WorkflowRun::query()->findOrFail(WorkflowStub::load($firstInstanceId)->runId())
+                ->forceFill([
+                    'status' => 'running',
+                ])
+                ->save();
+            $nextAfterManualTrigger = $schedule->fresh()
+                ->next_fire_at->toIso8601String();
+
+            Carbon::setTestNow(Carbon::parse('2026-09-26 12:01:00', 'UTC'));
+            $result = ScheduleManager::triggerDetailed($staleSnapshot, occurrenceTime: $oldOccurrence);
+
+            $this->assertSame($nextAfterManualTrigger, $schedule->fresh()->next_fire_at->toIso8601String());
+            $this->assertSame('skipped', $result->outcome);
+            $this->assertSame('stale_occurrence', $result->reason);
+            $this->assertSame(1, (int) $schedule->fresh()->fires_count);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testSecondTickEvaluatorSkipsAnOccurrenceAlreadyProcessedByTheFirst(): void
+    {
+        WorkflowStub::fake();
+        Carbon::setTestNow(Carbon::parse('2026-09-26 12:00:00', 'UTC'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'two-tick-evaluators',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+            );
+            $schedule->forceFill([
+                'next_fire_at' => now()
+                    ->subMinute(),
+            ])->save();
+            $firstSnapshot = $schedule->fresh();
+            $secondSnapshot = $schedule->fresh();
+            $occurrence = $firstSnapshot->next_fire_at->copy();
+
+            $first = ScheduleManager::triggerDetailed($firstSnapshot, occurrenceTime: $occurrence);
+            $this->assertSame('triggered', $first->outcome);
+            $nextAfterFirst = $schedule->fresh()
+                ->next_fire_at->toIso8601String();
+
+            $second = ScheduleManager::triggerDetailed($secondSnapshot, occurrenceTime: $occurrence);
+            $this->assertSame('skipped', $second->outcome);
+            $this->assertSame('stale_occurrence', $second->reason);
+            $this->assertSame($nextAfterFirst, $schedule->fresh()->next_fire_at->toIso8601String());
+            $this->assertSame(1, (int) $schedule->fresh()->fires_count);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return array<string, array{ScheduleOverlapPolicy}>
+     */
+    public static function staleOccurrenceOverlapPolicies(): array
+    {
+        return [
+            'skip' => [ScheduleOverlapPolicy::Skip],
+            'buffer one' => [ScheduleOverlapPolicy::BufferOne],
+            'buffer all' => [ScheduleOverlapPolicy::BufferAll],
+            'allow all' => [ScheduleOverlapPolicy::AllowAll],
+            'cancel other' => [ScheduleOverlapPolicy::CancelOther],
+            'terminate other' => [ScheduleOverlapPolicy::TerminateOther],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('staleOccurrenceOverlapPolicies')]
+    public function testStaleOccurrenceHasNoOverlapPolicyEffects(ScheduleOverlapPolicy $policy): void
+    {
+        WorkflowStub::fake();
+        Carbon::setTestNow(Carbon::parse('2026-09-26 12:00:00', 'UTC'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'stale-' . $policy->value,
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                overlapPolicy: $policy,
+                maxRuns: 3,
+            );
+            $schedule->forceFill([
+                'next_fire_at' => now()
+                    ->subMinute(),
+            ])->save();
+            $snapshot = $schedule->fresh();
+            $oldOccurrence = $snapshot->next_fire_at->copy();
+
+            $firstInstanceId = ScheduleManager::trigger($schedule);
+            $this->assertNotNull($firstInstanceId);
+            $run = WorkflowRun::query()->findOrFail(WorkflowStub::load($firstInstanceId)->runId());
+            $run->forceFill([
+                'status' => 'running',
+            ])->save();
+
+            $protectedFields = [
+                'next_fire_at', 'last_fired_at', 'fires_count', 'failures_count',
+                'remaining_actions', 'buffered_actions', 'latest_workflow_instance_id',
+            ];
+            $before = array_intersect_key(
+                $schedule->fresh()
+                    ->getRawOriginal(),
+                array_fill_keys($protectedFields, true)
+            );
+            $runStatus = $run->fresh()
+->status;
+
+            Carbon::setTestNow(Carbon::parse('2026-09-26 12:01:00', 'UTC'));
+            $result = ScheduleManager::triggerDetailed($snapshot, occurrenceTime: $oldOccurrence);
+
+            $this->assertSame('skipped', $result->outcome);
+            $this->assertSame('stale_occurrence', $result->reason);
+            $this->assertSame(
+                $before,
+                array_intersect_key($schedule->fresh()->getRawOriginal(), array_fill_keys($protectedFields, true)),
+            );
+            $this->assertSame($runStatus, $run->fresh()->status);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testOldOccurrenceAfterItsRunCompletesIsSkipped(): void
+    {
+        config()
+            ->set('queue.default', 'database');
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'queue');
+        $this->app->bind(ScheduleWorkflowStarter::class, PhpClassScheduleStarter::class);
+        Carbon::setTestNow(Carbon::parse('2026-09-26 12:00:00', 'UTC'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'stale-after-completion',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                connection: 'database',
+                queue: 'stale-occurrence-repro',
+            );
+            $schedule->forceFill([
+                'next_fire_at' => now()
+                    ->subMinute(),
+            ])->save();
+            $snapshot = $schedule->fresh();
+            $oldOccurrence = $snapshot->next_fire_at->copy();
+            $first = ScheduleManager::triggerDetailed($snapshot, occurrenceTime: $oldOccurrence);
+            $this->assertSame('triggered', $first->outcome);
+
+            WorkflowRun::query()->findOrFail($first->runId)
+                ->forceFill([
+                    'status' => 'completed',
+                ])
+                ->save();
+            $nextAfterFirst = $schedule->fresh()
+                ->next_fire_at->toIso8601String();
+
+            $second = ScheduleManager::triggerDetailed($snapshot, occurrenceTime: $oldOccurrence);
+            $this->assertSame('skipped', $second->outcome);
+            $this->assertSame('stale_occurrence', $second->reason);
+            $this->assertSame($nextAfterFirst, $schedule->fresh()->next_fire_at->toIso8601String());
+            $this->assertSame(1, (int) $schedule->fresh()->fires_count);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testOccurrenceComparisonPreservesOffsetAndMicroseconds(): void
+    {
+        WorkflowStub::fake();
+        Carbon::setTestNow(Carbon::parse('2026-10-25T00:31:00Z'));
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'stale-occurrence-precision',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+            );
+            $dueAt = Carbon::parse('2026-10-25T03:30:00.123456+03:00');
+            $schedule->forceFill([
+                'next_fire_at' => $dueAt,
+            ])->save();
+
+            $differentMicrosecond = Carbon::parse('2026-10-25T00:30:00.123455Z');
+            $stale = ScheduleManager::triggerDetailed($schedule, occurrenceTime: $differentMicrosecond);
+            $this->assertSame('stale_occurrence', $stale->reason);
+            $this->assertSame(0, (int) $schedule->fresh()->fires_count);
+
+            $sameInstant = Carbon::parse('2026-10-25T00:30:00.123456Z');
+            $current = ScheduleManager::triggerDetailed($schedule, occurrenceTime: $sameInstant);
+            $this->assertSame('triggered', $current->outcome);
+            $this->assertSame(1, (int) $schedule->fresh()->fires_count);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     /**
