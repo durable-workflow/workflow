@@ -283,10 +283,11 @@ final class OperatorMetrics
             ->where('status', ScheduleStatus::Paused->value)
             ->count();
 
+        $dueAt = UtcScheduleTimestamp::databaseValue($now);
         $missedQuery = self::scheduleQuery($namespace)
             ->where('status', ScheduleStatus::Active->value)
             ->whereNotNull('next_fire_at')
-            ->where('next_fire_at', '<=', $now);
+            ->where('next_fire_at', '<=', $dueAt);
 
         $missed = $missedQuery->count();
 
@@ -295,17 +296,18 @@ final class OperatorMetrics
             : self::scheduleQuery($namespace)
                 ->where('status', ScheduleStatus::Active->value)
                 ->whereNotNull('next_fire_at')
-                ->where('next_fire_at', '<=', $now)
+                ->where('next_fire_at', '<=', $dueAt)
                 ->min('next_fire_at');
 
-        $oldestOverdue = self::jsonTimestamp($oldestOverdueAt);
+        $oldest = $oldestOverdueAt === null ? null : \Illuminate\Support\Carbon::parse(
+            (string) $oldestOverdueAt,
+            'UTC'
+        );
+        $oldestOverdue = $oldest?->toJSON();
 
         $maxOverdueMs = 0;
 
-        if ($oldestOverdue !== null && $oldestOverdueAt !== null) {
-            $oldest = $oldestOverdueAt instanceof CarbonInterface
-                ? $oldestOverdueAt
-                : \Illuminate\Support\Carbon::parse((string) $oldestOverdueAt);
+        if ($oldest !== null) {
             $maxOverdueMs = max(0, (int) $oldest->diffInMilliseconds($now));
         }
 
