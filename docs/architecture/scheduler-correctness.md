@@ -259,12 +259,15 @@ acceleration-layer cooperation.
   frozen by the Phase 4 role split. The scheduler does not
   bypass duplicate-start policies, compatibility pinning, or
   namespace checks.
-- When the scheduler role is deployed as multiple replicas, the
-  per-schedule row lock taken by `ScheduleManager::triggerDetailed()`
-  is the correctness seam, not a cache-held leader key. Phase 6
-  will harden leader coordination with explicit health;
-  this contract requires that the scheduler-role surface NOT
-  depend on cache coherence for deduplicated firing.
+- When the scheduler role is deployed as multiple replicas,
+  `ScheduleManager::triggerDetailed()` must lock the schedule row and
+  verify that the tick's captured occurrence still equals the row's
+  current `next_fire_at` before applying an overlap policy or starting
+  work. An obsolete occurrence is skipped without advancing the
+  schedule. The row and occurrence check is the correctness seam, not
+  a cache-held leader key. Phase 6 will harden leader coordination
+  with explicit health; this contract requires that the scheduler-role
+  surface NOT depend on cache coherence for deduplicated firing.
 
 If the acceleration layer is unavailable, scheduled workflows
 continue to fire at their next tick cadence. If the acceleration
