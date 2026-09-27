@@ -86,7 +86,7 @@ final class RunTimerTask implements ShouldQueue
             $task = WorkflowTask::query()->find($this->taskId);
 
             if ($task instanceof WorkflowTask) {
-                TaskDispatcher::dispatch($task);
+                TaskDispatcher::dispatch($task, queueTimerWakeup: true);
             }
 
             return;

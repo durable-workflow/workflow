@@ -9,6 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
@@ -835,6 +836,70 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame(TaskStatus::Ready, $task->status);
         $this->assertNotNull($task->last_dispatched_at);
         $this->assertNull($task->last_dispatch_error);
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function earlyTimerWakeupCases(): array
+    {
+        return [
+            'fractional Redis deadline' => ['redis', '2026-09-27 13:55:13.554193 UTC', '2026-09-27 13:55:14 UTC'],
+            'capped SQS deadline' => ['sqs', '2026-09-27 14:55:13.554193 UTC', '2026-09-27 14:10:13.308731 UTC'],
+        ];
+    }
+
+    #[DataProvider('earlyTimerWakeupCases')]
+    public function testEarlyTimerWakeupQueuesAnotherJobInPollMode(
+        string $connection,
+        string $deadlineAt,
+        string $expectedWakeupAt,
+    ): void {
+        Carbon::setTestNow(Carbon::parse('2026-09-27 13:55:13.308731 UTC'));
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('queue.default', $connection);
+        config()
+            ->set("queue.connections.{$connection}.driver", $connection);
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000015');
+        $deadline = Carbon::parse($deadlineAt);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $deadline,
+            'payload' => [
+                'timer_id' => 'pending-timer',
+            ],
+            'connection' => $connection,
+            'queue' => 'default',
+        ]);
+
+        (new RunTimerTask($task->id))->handle();
+
+        Queue::assertPushed(RunTimerTask::class, 1);
+        Queue::assertPushed(
+            RunTimerTask::class,
+            static fn (RunTimerTask $job): bool =>
+            $job->taskId === $task->id
+            && $job->delay instanceof Carbon
+            && $job->delay->equalTo(Carbon::parse($expectedWakeupAt))
+        );
+        $this->assertSame(TaskStatus::Ready, $task->fresh()->status);
+        $this->assertSame(0, $task->fresh()->attempt_count);
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->count());
     }
 
     public function testQueueModeStillDispatchesToBus(): void

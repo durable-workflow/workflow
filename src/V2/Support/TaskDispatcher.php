@@ -20,18 +20,18 @@ use Workflow\V2\WorkflowStub;
 
 final class TaskDispatcher
 {
-    public static function dispatch(WorkflowTask $task): void
+    public static function dispatch(WorkflowTask $task, bool $queueTimerWakeup = false): void
     {
         if (DB::transactionLevel() > 0) {
-            DB::afterCommit(static fn () => self::publish($task->id));
+            DB::afterCommit(static fn () => self::publish($task->id, $queueTimerWakeup));
 
             return;
         }
 
-        self::publish($task->id);
+        self::publish($task->id, $queueTimerWakeup);
     }
 
-    private static function publish(string $taskId): void
+    private static function publish(string $taskId, bool $queueTimerWakeup = false): void
     {
         /** @var WorkflowTask|null $task */
         $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
@@ -53,7 +53,7 @@ final class TaskDispatcher
             return;
         }
 
-        if (self::isPollMode()) {
+        if (self::isPollMode() && ! $queueTimerWakeup) {
             self::markDispatched($task, $attemptedAt);
 
             return;
@@ -62,7 +62,8 @@ final class TaskDispatcher
         try {
             self::ensureBackendSupportsDispatch($task);
 
-            $fleetBlockReason = self::fleetBlockReason($task);
+            // Timer wakeups are server infrastructure work, independent of SDK worker compatibility.
+            $fleetBlockReason = $queueTimerWakeup ? null : self::fleetBlockReason($task);
 
             if ($fleetBlockReason !== null) {
                 self::markDispatchFailure($task, $attemptedAt, $fleetBlockReason);
