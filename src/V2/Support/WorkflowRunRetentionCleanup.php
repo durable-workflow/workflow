@@ -163,7 +163,9 @@ final class WorkflowRunRetentionCleanup
                 ->delete();
 
             if ($lockedRun->details_pruned_at === null) {
-                $lockedRun->forceFill(['details_pruned_at' => now('UTC')])->save();
+                $lockedRun->forceFill([
+                    'details_pruned_at' => now('UTC'),
+                ])->save();
             }
 
             return $report;

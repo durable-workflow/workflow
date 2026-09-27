@@ -109,7 +109,8 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         $emptyRun = $this->seedRun(status: RunStatus::Completed, closed: true);
         $this->seedRetainedRows($failedRun, $emptyRun);
 
-        config()->set('workflows.v2.run_model', ConfiguredRetentionWorkflowRun::class);
+        config()
+            ->set('workflows.v2.run_model', ConfiguredRetentionWorkflowRun::class);
 
         $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id)->details_pruned_at);
         $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($emptyRun->id)->details_pruned_at);
@@ -126,7 +127,10 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
 
         $repeatReport = WorkflowRunRetentionCleanup::pruneRun($failedRun->id);
         $this->assertSame(0, array_sum($repeatReport));
-        $this->assertEquals($firstPrunedAt, ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id)->details_pruned_at);
+        $this->assertEquals(
+            $firstPrunedAt,
+            ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id)->details_pruned_at
+        );
         $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($emptyRun->id)->details_pruned_at);
     }
 
@@ -136,9 +140,12 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         $this->seedTask($run);
 
         $defaultConnection = (string) config('database.default');
-        config()->set('database.connections.retention_alternate', config('database.connections.' . $defaultConnection));
-        config()->set('workflows.storage.connection', 'retention_alternate');
-        config()->set('workflows.v2.run_model', FailingRetentionWorkflowRun::class);
+        config()
+            ->set('database.connections.retention_alternate', config('database.connections.' . $defaultConnection));
+        config()
+            ->set('workflows.storage.connection', 'retention_alternate');
+        config()
+            ->set('workflows.v2.run_model', FailingRetentionWorkflowRun::class);
 
         try {
             WorkflowRunRetentionCleanup::pruneRun($run->id);
@@ -533,7 +540,9 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
     }
 }
 
-final class ConfiguredRetentionWorkflowRun extends WorkflowRun {}
+final class ConfiguredRetentionWorkflowRun extends WorkflowRun
+{
+}
 
 final class FailingRetentionWorkflowRun extends WorkflowRun
 {
