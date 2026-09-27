@@ -6,7 +6,6 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\DB;
 use LogicException;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
@@ -70,7 +69,11 @@ final class WorkflowRunRetentionCleanup
     {
         $runId = $run instanceof WorkflowRun ? (string) $run->getKey() : $run;
 
-        return DB::transaction(static function () use ($runId): array {
+        $runConnection = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->getModel()
+            ->getConnection();
+
+        return $runConnection->transaction(static function () use ($runId): array {
             /** @var WorkflowRun $lockedRun */
             $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($runId)
@@ -158,6 +161,10 @@ final class WorkflowRunRetentionCleanup
             $report['run_summary_deleted'] = ConfiguredV2Models::query('run_summary_model', WorkflowRunSummary::class)
                 ->whereKey($runId)
                 ->delete();
+
+            if ($lockedRun->details_pruned_at === null) {
+                $lockedRun->forceFill(['details_pruned_at' => now('UTC')])->save();
+            }
 
             return $report;
         });

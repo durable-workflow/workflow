@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
+use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -83,6 +85,7 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         $this->assertDatabaseHas('workflow_runs', [
             'id' => $run->id,
         ]);
+        $this->assertNotNull(WorkflowRun::query()->findOrFail($run->id)->details_pruned_at);
         $this->assertDatabaseMissing('workflow_run_summaries', [
             'id' => $run->id,
         ]);
@@ -91,12 +94,63 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         $this->assertDatabaseHas('workflow_runs', [
             'id' => $otherRun->id,
         ]);
+        $this->assertNull(WorkflowRun::query()->findOrFail($otherRun->id)->details_pruned_at);
         $this->assertDatabaseHas('workflow_tasks', [
             'workflow_run_id' => $otherRun->id,
         ]);
         $this->assertDatabaseHas('workflow_run_summaries', [
             'id' => $otherRun->id,
         ]);
+    }
+
+    public function testFailedAndEmptyRetainedRunsExposeOnlyCommittedPruning(): void
+    {
+        $failedRun = $this->seedRun(status: RunStatus::Failed, closed: true);
+        $emptyRun = $this->seedRun(status: RunStatus::Completed, closed: true);
+        $this->seedRetainedRows($failedRun, $emptyRun);
+
+        config()->set('workflows.v2.run_model', ConfiguredRetentionWorkflowRun::class);
+
+        $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id)->details_pruned_at);
+        $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($emptyRun->id)->details_pruned_at);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $emptyRun->id)->count());
+
+        WorkflowRunRetentionCleanup::pruneRun($failedRun->id);
+
+        $prunedRun = ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id);
+        $firstPrunedAt = $prunedRun->details_pruned_at;
+        $this->assertNotNull($firstPrunedAt);
+        $this->assertSame(RunStatus::Failed, $prunedRun->status);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $failedRun->id)->count());
+        $this->assertSame(0, WorkflowFailure::query()->where('workflow_run_id', $failedRun->id)->count());
+
+        $repeatReport = WorkflowRunRetentionCleanup::pruneRun($failedRun->id);
+        $this->assertSame(0, array_sum($repeatReport));
+        $this->assertEquals($firstPrunedAt, ConfiguredRetentionWorkflowRun::query()->findOrFail($failedRun->id)->details_pruned_at);
+        $this->assertNull(ConfiguredRetentionWorkflowRun::query()->findOrFail($emptyRun->id)->details_pruned_at);
+    }
+
+    public function testFailedMarkerWriteRollsBackDetailDeletionOnConfiguredStorageConnection(): void
+    {
+        $run = $this->seedRun(status: RunStatus::Completed, closed: true);
+        $this->seedTask($run);
+
+        $defaultConnection = (string) config('database.default');
+        config()->set('database.connections.retention_alternate', config('database.connections.' . $defaultConnection));
+        config()->set('workflows.storage.connection', 'retention_alternate');
+        config()->set('workflows.v2.run_model', FailingRetentionWorkflowRun::class);
+
+        try {
+            WorkflowRunRetentionCleanup::pruneRun($run->id);
+            $this->fail('The configured marker write should fail.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('marker write failed', $exception->getMessage());
+        }
+
+        $this->assertNull(FailingRetentionWorkflowRun::query()->findOrFail($run->id)->details_pruned_at);
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertNotNull(WorkflowRunSummary::query()->find($run->id));
+        $this->assertSame(0, DB::connection('retention_alternate')->transactionLevel());
     }
 
     public function testRejectsOpenRunsWithoutDeletingRetainedRows(): void
@@ -113,6 +167,7 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
             $this->assertDatabaseHas('workflow_runs', [
                 'id' => $run->id,
             ]);
+            $this->assertNull(WorkflowRun::query()->findOrFail($run->id)->details_pruned_at);
             $this->assertDatabaseHas('workflow_tasks', [
                 'workflow_run_id' => $run->id,
             ]);
@@ -133,6 +188,7 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         try {
             WorkflowRunRetentionCleanup::pruneRun($run);
         } finally {
+            $this->assertNull(WorkflowRun::query()->findOrFail($run->id)->details_pruned_at);
             $this->assertDatabaseHas('workflow_tasks', [
                 'workflow_run_id' => $run->id,
             ]);
@@ -474,5 +530,19 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
         ]);
 
         return $task;
+    }
+}
+
+final class ConfiguredRetentionWorkflowRun extends WorkflowRun {}
+
+final class FailingRetentionWorkflowRun extends WorkflowRun
+{
+    public function save(array $options = []): bool
+    {
+        if ($this->details_pruned_at !== null) {
+            throw new RuntimeException('marker write failed');
+        }
+
+        return parent::save($options);
     }
 }

@@ -160,6 +160,28 @@ Additive changes — new public methods, new optional parameters with
 defaults, new constants — are minor-version changes and do not require a
 major bump.
 
+### Retained-run pruning state
+
+The persisted `Workflow\V2\Models\WorkflowRun` read surface exposes nullable
+`details_pruned_at`. `WorkflowRunRetentionCleanup::pruneRun()` sets it in the
+same storage transaction that deletes run details and preserves the terminal
+run and instance. A non-null value means that cleanup committed. A repeated
+successful call preserves the original timestamp. Rejected or rolled-back
+cleanup leaves it null.
+
+Null does not prove that detail is retained. A run may genuinely have no
+history or failure rows, and runs pruned before this field was introduced are
+not backfilled from empty tables. Hosts with older prunes need their own
+authoritative marker for those records. Consumers should use this field to
+label retained-detail state while preserving the run's original terminal
+status; they must not treat retained row counts as lifetime counts.
+
+The package migration adds the nullable column to `workflow_runs`. Hosts that
+replace the configured run model's table must add the same column in their
+own migration before invoking retention cleanup. The run and its configured
+detail models must use the same workflow storage connection for the deletion
+and marker to be atomic.
+
 ### Workflow command grammar ownership
 
 `Workflow\V2\Support\WorkflowCommandNormalizer` is the single source of

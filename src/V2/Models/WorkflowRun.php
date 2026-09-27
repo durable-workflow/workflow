@@ -51,6 +51,7 @@ class WorkflowRun extends Model
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
         'archived_at' => 'datetime',
+        'details_pruned_at' => 'datetime',
         'last_progress_at' => 'datetime',
         'import_contract_version' => 'integer',
         'imported_at' => 'datetime',
