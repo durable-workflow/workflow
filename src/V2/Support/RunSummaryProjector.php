@@ -43,7 +43,7 @@ final class RunSummaryProjector
 
         return $summary instanceof WorkflowRunSummary
             && $summary->projection_schema_version === self::SCHEMA_VERSION
-            && HistoryBudget::summaryIsComplete($run, $summary)
+            && HistoryBudget::hasCompleteSummary($run, $summary)
             && is_string($summary->next_task_id)
             && $summary->next_task_id !== ''
             && $summary->next_task_type === TaskType::Workflow->value
@@ -67,7 +67,7 @@ final class RunSummaryProjector
 
         $budget = HistoryBudget::fromCounters(
             (int) $summary->history_event_count + 1,
-            (int) $summary->history_size_bytes + HistoryBudget::eventSizeBytes($event),
+            (int) $summary->history_size_bytes + HistoryBudget::sizeOfEvent($event),
             (int) $summary->history_fan_out,
         );
         $summary->forceFill([

@@ -115,6 +115,16 @@ final class HistoryBudget
         return self::summarize(max(0, $historyEventCount), max(0, $historySizeBytes), max(0, $historyFanOut));
     }
 
+    public static function hasCompleteSummary(WorkflowRun $run, WorkflowRunSummary $summary): bool
+    {
+        return self::summaryIsComplete($run, $summary);
+    }
+
+    public static function sizeOfEvent(WorkflowHistoryEvent $event): int
+    {
+        return self::eventSizeBytes($event);
+    }
+
     public static function eventHardThreshold(): int
     {
         return self::positiveIntegerConfig(
@@ -292,7 +302,7 @@ final class HistoryBudget
         return $maxSize;
     }
 
-    public static function summaryIsComplete(WorkflowRun $run, WorkflowRunSummary $summary): bool
+    private static function summaryIsComplete(WorkflowRun $run, WorkflowRunSummary $summary): bool
     {
         $eventCount = (int) $summary->history_event_count;
         $sizeBytes = (int) $summary->history_size_bytes;
@@ -609,7 +619,7 @@ final class HistoryBudget
         ];
     }
 
-    public static function eventSizeBytes(WorkflowHistoryEvent $event): int
+    private static function eventSizeBytes(WorkflowHistoryEvent $event): int
     {
         $eventType = $event->event_type instanceof \BackedEnum
             ? (string) $event->event_type->value
