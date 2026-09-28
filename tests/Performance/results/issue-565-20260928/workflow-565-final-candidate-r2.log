@@ -1,0 +1,11 @@
+PHPUnit 13.3.2 by Sebastian Bergmann and contributors.
+
+Runtime:       PHP 8.4.26
+Configuration: /workspace/phpunit.xml
+
+{"first_50_ms":{"mean":12.409,"p50":11.932,"p95":12.572,"max":38.477},"last_50_ms":{"mean":12.087,"p50":12.048,"p95":13.113,"max":15.331},"first_50_queries":{"mean":37.5,"p50":37,"p95":37,"max":62},"last_50_queries":{"mean":37,"p50":37,"p95":37,"max":37},"total_seconds":2.418,"cpu_seconds":2.42,"peak_memory_mib":60.5,"received_events":200,"pending_signals":200}
+.                                                                   1 / 1 (100%)
+
+Time: 00:02.738, Memory: 62.50 MB
+
+OK (1 test, 202 assertions)
