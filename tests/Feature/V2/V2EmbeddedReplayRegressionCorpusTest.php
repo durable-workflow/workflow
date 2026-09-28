@@ -171,15 +171,13 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $this->markTestSkipped('Durable-only timeline projection fixture is not present in the base corpus.');
         }
 
-        config(['queue.default' => 'database']);
+        config([
+            'queue.default' => 'database',
+        ]);
         Queue::fake();
 
         /** @var array<string, mixed> $fixture */
-        $fixture = json_decode(
-            (string) file_get_contents($fixturePath),
-            true,
-            flags: JSON_THROW_ON_ERROR,
-        );
+        $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
     }
