@@ -262,7 +262,10 @@ final class TaskWatchdog
             });
 
             if ($task instanceof WorkflowTask) {
-                TaskDispatcher::dispatch($task);
+                TaskDispatcher::dispatch(
+                    $task,
+                    boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
+                );
             }
         } catch (Throwable $throwable) {
             report($throwable);

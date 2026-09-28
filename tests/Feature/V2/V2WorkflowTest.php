@@ -6411,6 +6411,11 @@ final class V2WorkflowTest extends TestCase
             $queries,
             static fn (array $query): bool => str_contains($query['query'], 'workflow_run_timeline_entries'),
         ));
+        $timelineWrites = array_values(array_filter(
+            $timelineQueries,
+            static fn (array $query): bool => preg_match('/^(update|insert|delete)\b/i', trim($query['query'])) === 1,
+        ));
+        $this->assertSame([], $timelineWrites, 'Redispatch should not rewrite timeline rows.');
         $this->assertLessThanOrEqual(2, count($timelineQueries), 'Redispatch should not add a full timeline scan.');
 
         $task->refresh();

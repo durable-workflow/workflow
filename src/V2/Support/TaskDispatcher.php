@@ -8,6 +8,7 @@ use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
@@ -20,19 +21,27 @@ use Workflow\V2\WorkflowStub;
 
 final class TaskDispatcher
 {
-    public static function dispatch(WorkflowTask $task, bool $queueTimerWakeup = false): void
-    {
+    public static function dispatch(
+        WorkflowTask $task,
+        bool $queueTimerWakeup = false,
+        bool $boundedWorkflowTaskProjection = false,
+    ): void {
         if (DB::transactionLevel() > 0) {
-            DB::afterCommit(static fn () => self::publish($task->id, $queueTimerWakeup));
+            DB::afterCommit(
+                static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
+            );
 
             return;
         }
 
-        self::publish($task->id, $queueTimerWakeup);
+        self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection);
     }
 
-    private static function publish(string $taskId, bool $queueTimerWakeup = false): void
-    {
+    private static function publish(
+        string $taskId,
+        bool $queueTimerWakeup = false,
+        bool $boundedWorkflowTaskProjection = false,
+    ): void {
         /** @var WorkflowTask|null $task */
         $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
 
@@ -44,7 +53,7 @@ final class TaskDispatcher
         $attemptedAt = now();
 
         if (WorkflowStub::faked()) {
-            self::markDispatched($task, $attemptedAt);
+            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
 
             if ($task->available_at === null || ! $task->available_at->isFuture()) {
                 app()->call([$job, 'handle']);
@@ -54,7 +63,7 @@ final class TaskDispatcher
         }
 
         if (self::isPollMode() && ! $queueTimerWakeup) {
-            self::markDispatched($task, $attemptedAt);
+            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
 
             return;
         }
@@ -66,15 +75,15 @@ final class TaskDispatcher
             $fleetBlockReason = $queueTimerWakeup ? null : self::fleetBlockReason($task);
 
             if ($fleetBlockReason !== null) {
-                self::markDispatchFailure($task, $attemptedAt, $fleetBlockReason);
+                self::markDispatchFailure($task, $attemptedAt, $fleetBlockReason, $boundedWorkflowTaskProjection);
 
                 return;
             }
 
             app(BusDispatcher::class)->dispatch($job);
-            self::markDispatched($task, $attemptedAt);
+            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
         } catch (Throwable $throwable) {
-            self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage());
+            self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage(), $boundedWorkflowTaskProjection);
 
             throw $throwable;
         }
@@ -157,8 +166,11 @@ final class TaskDispatcher
         return $job;
     }
 
-    private static function markDispatched(WorkflowTask $task, mixed $attemptedAt): void
-    {
+    private static function markDispatched(
+        WorkflowTask $task,
+        mixed $attemptedAt,
+        bool $boundedWorkflowTaskProjection,
+    ): void {
         $task->forceFill([
             'last_dispatch_attempt_at' => $attemptedAt,
             'last_dispatched_at' => $attemptedAt,
@@ -166,11 +178,15 @@ final class TaskDispatcher
             'repair_available_at' => null,
         ])->save();
 
-        self::refreshRunSummary($task);
+        self::refreshRunSummary($task, $boundedWorkflowTaskProjection);
     }
 
-    private static function markDispatchFailure(WorkflowTask $task, mixed $attemptedAt, string $message): void
-    {
+    private static function markDispatchFailure(
+        WorkflowTask $task,
+        mixed $attemptedAt,
+        string $message,
+        bool $boundedWorkflowTaskProjection,
+    ): void {
         $task->forceFill([
             'last_dispatch_attempt_at' => $attemptedAt,
             'last_dispatch_error' => $message,
@@ -181,16 +197,28 @@ final class TaskDispatcher
             ),
         ])->save();
 
-        self::refreshRunSummary($task);
+        self::refreshRunSummary($task, $boundedWorkflowTaskProjection);
     }
 
-    private static function refreshRunSummary(WorkflowTask $task): void
+    private static function refreshRunSummary(WorkflowTask $task, bool $boundedWorkflowTaskProjection): void
     {
         /** @var WorkflowRun|null $run */
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
 
         if ($run instanceof WorkflowRun) {
-            self::historyProjectionRole()->projectRun($run);
+            $projectionRole = self::historyProjectionRole();
+
+            if (
+                $boundedWorkflowTaskProjection
+                && $task->task_type === TaskType::Workflow
+                && $task->status === TaskStatus::Ready
+                && ! $run->status->isTerminal()
+                && $projectionRole instanceof WorkflowTaskRepairProjectionRole
+            ) {
+                $projectionRole->projectRepairedWorkflowTask($run, $task);
+            } else {
+                $projectionRole->projectRun($run);
+            }
         }
     }
 
