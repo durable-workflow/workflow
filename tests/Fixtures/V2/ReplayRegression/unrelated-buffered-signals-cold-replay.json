@@ -4,6 +4,7 @@
   "id": "unrelated-buffered-signals-cold-replay",
   "protocol_version": "1.19",
   "bindings": ["php"],
+  "projection_extra_unrelated_signals": 128,
   "workflow": {
     "type": "Tests\\Fixtures\\V2\\TestBufferedSignalHistoryWorkflow",
     "arguments": [2],
