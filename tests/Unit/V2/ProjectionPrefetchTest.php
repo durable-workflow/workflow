@@ -144,6 +144,41 @@ final class ProjectionPrefetchTest extends TestCase
         $this->assertSame(count($entries), $otherRows[0]->newQuery()->where('workflow_run_id', $otherRun->id)->count());
     }
 
+    public function testTimelineReprojectionDoesNotRewriteEquivalentJsonPayload(): void
+    {
+        $run = $this->seedRun('timeline-json-order');
+        $entries = [$this->entries()[0]];
+        $row = RunTimelineProjector::project($run, $entries)[0];
+        $payload = $row->payload;
+        $this->assertIsArray($payload);
+        ksort($payload);
+
+        $connection = $row->getConnection();
+        $connection->table($row->getTable())
+            ->where('id', $row->getKey())
+            ->update([
+                'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            ]);
+        $connection->flushQueryLog();
+        $connection->enableQueryLog();
+
+        try {
+            RunTimelineProjector::project($run->fresh(), $entries);
+            $queries = $connection->getQueryLog();
+        } finally {
+            $connection->disableQueryLog();
+        }
+
+        $writes = array_filter($queries, static fn (array $query): bool =>
+            str_starts_with(strtolower($query['query']), 'update')
+            && str_contains($query['query'], $row->getTable()));
+        $this->assertCount(0, $writes);
+
+        $entries[0]['status'] = 'changed';
+        RunTimelineProjector::project($run->fresh(), $entries);
+        $this->assertSame('changed', $row->fresh()->payload['status']);
+    }
+
     /**
      * @return list<array<string, mixed>>
      */

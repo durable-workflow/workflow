@@ -185,34 +185,42 @@ final class RunTimelineProjector
         array $entry,
         ?WorkflowTimelineEntry $existing = null,
     ): WorkflowTimelineEntry {
+        $values = [
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'history_event_id' => $historyEventId,
+            'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
+            'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
+            'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
+            'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
+            'source_kind' => self::stringValue($entry['source_kind'] ?? null),
+            'source_id' => self::stringValue($entry['source_id'] ?? null),
+            'summary' => self::stringValue($entry['summary'] ?? null),
+            'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
+            'command_id' => self::stringValue($entry['command_id'] ?? null),
+            'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
+            'task_id' => self::stringValue($entry['task_id'] ?? null),
+            'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
+            'timer_id' => self::stringValue($entry['timer_id'] ?? null),
+            'failure_id' => self::stringValue($entry['failure_id'] ?? null),
+            'payload' => self::normalizedPayload($entry),
+        ];
+
+        // MySQL normalizes JSON object key order on write. Filling the same
+        // payload again can therefore make Eloquent issue an UPDATE for every
+        // old timeline row even though its decoded value has not changed.
+        if (
+            $existing instanceof WorkflowTimelineEntry
+            && self::canonicalizeValue($existing->payload) === self::canonicalizeValue($values['payload'])
+        ) {
+            unset($values['payload']);
+        }
+
         /** @var WorkflowTimelineEntry $row */
-        $row = IdempotentProjectionUpsert::upsert(
-            $entryModel,
-            [
-                'id' => $projectionId,
-            ],
-            [
-                'workflow_run_id' => $run->id,
-                'workflow_instance_id' => $run->workflow_instance_id,
-                'history_event_id' => $historyEventId,
-                'sequence' => self::intValue($entry['sequence'] ?? null) ?? 0,
-                'type' => self::stringValue($entry['type'] ?? null) ?? 'Unknown',
-                'kind' => self::stringValue($entry['kind'] ?? null) ?? 'workflow',
-                'entry_kind' => self::stringValue($entry['entry_kind'] ?? null) ?? 'point',
-                'source_kind' => self::stringValue($entry['source_kind'] ?? null),
-                'source_id' => self::stringValue($entry['source_id'] ?? null),
-                'summary' => self::stringValue($entry['summary'] ?? null),
-                'recorded_at' => self::timestamp($entry['recorded_at'] ?? null),
-                'command_id' => self::stringValue($entry['command_id'] ?? null),
-                'command_sequence' => self::intValue($entry['command_sequence'] ?? null),
-                'task_id' => self::stringValue($entry['task_id'] ?? null),
-                'activity_execution_id' => self::stringValue($entry['activity_execution_id'] ?? null),
-                'timer_id' => self::stringValue($entry['timer_id'] ?? null),
-                'failure_id' => self::stringValue($entry['failure_id'] ?? null),
-                'payload' => self::normalizedPayload($entry),
-            ],
-            $existing,
-        );
+        $key = [
+            'id' => $projectionId,
+        ];
+        $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing);
 
         return $row;
     }
