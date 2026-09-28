@@ -80,6 +80,42 @@ final class CompletionHistoryScopedReadsTest extends TestCase
         $this->assertSame(102, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
     }
 
+    public function testOlderActiveProjectionCannotPruneNewerTimelineRows(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => 'TestWorkflow',
+            'workflow_type' => 'test-workflow',
+            'reserved_at' => now(),
+            'run_count' => 1,
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'TestWorkflow',
+            'workflow_type' => 'test-workflow',
+            'status' => 'waiting',
+        ]);
+        $this->historyEvent($run, 1, HistoryEventType::WorkflowStarted, []);
+        $olderSnapshot = $run->fresh(['historyEvents']);
+        $this->assertNotNull($olderSnapshot);
+
+        $this->historyEvent($run, 2, HistoryEventType::SignalReceived, [
+            'signal_name' => 'append',
+        ]);
+        RunTimelineProjector::project($run->fresh());
+        $this->assertSame(2, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+
+        RunTimelineProjector::project($olderSnapshot);
+        $this->assertSame(2, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+
+        $run->forceFill([
+            'status' => 'completed',
+        ])->save();
+        WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->where('sequence', 2)->delete();
+        RunTimelineProjector::project($run->fresh());
+        $this->assertSame(1, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+    }
+
     /**
      * @param array<string, mixed> $payload
      */

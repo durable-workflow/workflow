@@ -73,8 +73,14 @@ final class RunTimelineProjector
             unset($existing, $page);
         }
 
-        self::historyProjectionMaintenanceRole()
-            ->pruneStaleProjectionRowsForRun($entryModel, $run->id, $seen);
+        // Active histories only append. A repair pass can start with an older
+        // loaded history and finish after another process projects new events.
+        // Pruning from that older snapshot would delete the newer rows. The
+        // terminal projection reconciles stale rows once history stops growing.
+        if ($run->status->isTerminal()) {
+            self::historyProjectionMaintenanceRole()
+                ->pruneStaleProjectionRowsForRun($entryModel, $run->id, $seen);
+        }
 
         $run->unsetRelation('timelineEntries');
 
