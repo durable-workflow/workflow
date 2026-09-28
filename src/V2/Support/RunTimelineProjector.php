@@ -21,7 +21,6 @@ final class RunTimelineProjector
      */
     public static function project(WorkflowRun $run, ?array $entries = null, bool $collectRows = true): array
     {
-        $entries ??= HistoryTimeline::fromHistory($run);
         $entryModel = self::entryModel();
         $seen = [];
         $projected = [];
@@ -29,8 +28,7 @@ final class RunTimelineProjector
         // A completed long run can already have thousands of projected signal
         // rows. Load only the existing rows for this page, and let callers that
         // only need the durable side effect avoid retaining every saved model.
-        for ($offset = 0; $offset < count($entries); $offset += 100) {
-            $page = array_slice($entries, $offset, 100);
+        foreach (self::pages($entries ?? HistoryTimeline::iterateFromHistory($run)) as $page) {
             $projectionIds = [];
 
             foreach ($page as $entry) {
@@ -256,6 +254,28 @@ final class RunTimelineProjector
         $role = App::make(HistoryProjectionMaintenanceRole::class);
 
         return $role;
+    }
+
+    /**
+     * @param iterable<array<string, mixed>> $entries
+     * @return \Generator<int, list<array<string, mixed>>>
+     */
+    private static function pages(iterable $entries): \Generator
+    {
+        $page = [];
+
+        foreach ($entries as $entry) {
+            $page[] = $entry;
+
+            if (count($page) === 100) {
+                yield $page;
+                $page = [];
+            }
+        }
+
+        if ($page !== []) {
+            yield $page;
+        }
     }
 
     /**
