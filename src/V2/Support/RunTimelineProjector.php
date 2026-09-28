@@ -217,7 +217,9 @@ final class RunTimelineProjector
         }
 
         /** @var WorkflowTimelineEntry $row */
-        $key = ['id' => $projectionId];
+        $key = [
+            'id' => $projectionId,
+        ];
         $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing);
 
         return $row;
