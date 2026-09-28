@@ -28,12 +28,14 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ConditionWaits;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStep;
@@ -161,6 +163,25 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testDurableOnlyTimelineProjectionRetainsEveryBufferedSignal(): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/unrelated-buffered-signals-cold-replay.json';
+
+        if (! is_file($fixturePath)) {
+            $this->markTestSkipped('Durable-only timeline projection fixture is not present in the base corpus.');
+        }
+
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        /** @var array<string, mixed> $fixture */
+        $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
     /**
      * @param array<string, mixed> $fixture
      */
@@ -171,6 +192,34 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame(
             $fixture['expected_condition_wait_occurrence_ids'],
             array_column(ConditionWaits::forRun($run->fresh(['historyEvents'])), 'condition_wait_occurrence_id'),
+        );
+    }
+
+    /**
+     * The fixture's unrelated signals cross a timeline page boundary. A full
+     * projection must persist every row without returning a growing model list.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertDurableOnlyTimelineProjection(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $signalPayload = $fixture['history'][3]['payload'];
+        $extraSignals = $fixture['projection_extra_unrelated_signals'];
+
+        for ($index = 0; $index < $extraSignals; $index++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_merge($signalPayload, [
+                'signal_id' => sprintf('projection-unrelated-%d', $index),
+                'signal_wait_id' => sprintf('projection-unrelated-wait-%d', $index),
+            ]));
+        }
+
+        $eventCount = $run->historyEvents()
+            ->count();
+        $this->assertSame([], RunTimelineProjector::project($run, collectRows: false));
+        $this->assertSame(
+            $eventCount,
+            WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count(),
         );
     }
 

@@ -30,6 +30,18 @@ final class HistoryTimeline
      */
     public static function fromHistory(WorkflowRun $run): array
     {
+        return iterator_to_array(self::iterateFromHistory($run), false);
+    }
+
+    /**
+     * Map each event when the consumer is ready for it. Full projection can
+     * then persist one page at a time without retaining a second array of the
+     * run's entire mapped history.
+     *
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public static function iterateFromHistory(WorkflowRun $run): \Generator
+    {
         $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers', 'failures']);
 
         /** @var Collection<string, WorkflowCommand> $commands */
@@ -45,20 +57,9 @@ final class HistoryTimeline
             ->filter(static fn (array $failure): bool => is_string($failure['id'] ?? null))
             ->keyBy('id');
 
-        return $run->historyEvents
-            ->sortBy('sequence')
-            ->map(
-                static fn (WorkflowHistoryEvent $event): array => self::mapEvent(
-                    $event,
-                    $commands,
-                    $tasks,
-                    $activities,
-                    $timers,
-                    $failures,
-                )
-            )
-            ->values()
-            ->all();
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            yield self::mapEvent($event, $commands, $tasks, $activities, $timers, $failures);
+        }
     }
 
     /**

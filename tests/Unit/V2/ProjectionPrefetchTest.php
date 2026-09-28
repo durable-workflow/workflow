@@ -84,6 +84,16 @@ final class ProjectionPrefetchTest extends TestCase
                 count($entries),
                 DB::connection('projection-secondary')->table('custom_projection_rows')->count()
             );
+            if ($projector === RunTimelineProjector::class) {
+                $projector::project($run->fresh(), []);
+                $this->assertSame(
+                    count($entries),
+                    DB::connection('projection-secondary')->table('custom_projection_rows')->count()
+                );
+                $run->forceFill([
+                    'status' => 'completed',
+                ])->save();
+            }
             $projector::project($run->fresh(), []);
             $this->assertSame(0, DB::connection('projection-secondary')->table('custom_projection_rows')->count());
             $this->assertNotNull($original->fresh());
@@ -114,8 +124,8 @@ final class ProjectionPrefetchTest extends TestCase
 
         $reads = array_filter($queries, static fn (array $query): bool =>
             str_starts_with(strtolower($query['query']), 'select') && str_contains($query['query'], $table));
-        // One prefetched row set plus the existing stale-cleanup primary-key snapshot.
-        $this->assertCount(2, $reads);
+        // Active timelines append, so only terminal runs need the stale-cleanup read.
+        $this->assertCount($projector === RunTimelineProjector::class ? 1 : 2, $reads);
         $this->assertSame($expected, array_map(self::attributes(...), $reprojected));
 
         $rows[0]->forceFill([
@@ -131,6 +141,11 @@ final class ProjectionPrefetchTest extends TestCase
         ])->save();
         $otherRun = $this->seedRun('unrelated');
         $otherRows = $projector::project($otherRun, $entries);
+        if ($projector === RunTimelineProjector::class) {
+            $run->forceFill([
+                'status' => 'completed',
+            ])->save();
+        }
 
         $repaired = $projector::project($run->fresh(), $entries);
         $this->assertCount(count($entries), $repaired);

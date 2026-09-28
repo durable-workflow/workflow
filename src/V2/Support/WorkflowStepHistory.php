@@ -45,6 +45,43 @@ final class WorkflowStepHistory
     public const VERSION_MARKER = 'version marker';
 
     /**
+     * @var list<HistoryEventType>
+     */
+    private const WORKFLOW_STEP_EVENT_TYPES = [
+        HistoryEventType::ActivityScheduled,
+        HistoryEventType::ActivityStarted,
+        HistoryEventType::ActivityHeartbeatRecorded,
+        HistoryEventType::ActivityRetryScheduled,
+        HistoryEventType::ActivityCompleted,
+        HistoryEventType::ActivityFailed,
+        HistoryEventType::ActivityCancelled,
+        HistoryEventType::ActivityTimedOut,
+        HistoryEventType::ChildWorkflowScheduled,
+        HistoryEventType::ChildRunStarted,
+        HistoryEventType::ChildRunCompleted,
+        HistoryEventType::ChildRunFailed,
+        HistoryEventType::ChildRunCancelled,
+        HistoryEventType::ChildRunTerminated,
+        HistoryEventType::ServiceCallStarted,
+        HistoryEventType::ServiceCallCompleted,
+        HistoryEventType::ServiceCallFailed,
+        HistoryEventType::ServiceCallCancelled,
+        HistoryEventType::WorkflowContinuedAsNew,
+        HistoryEventType::ConditionWaitOpened,
+        HistoryEventType::ConditionWaitSatisfied,
+        HistoryEventType::ConditionWaitTimedOut,
+        HistoryEventType::SignalWaitOpened,
+        HistoryEventType::SignalApplied,
+        HistoryEventType::MemoUpserted,
+        HistoryEventType::SearchAttributesUpserted,
+        HistoryEventType::SideEffectRecorded,
+        HistoryEventType::VersionMarkerRecorded,
+        HistoryEventType::TimerScheduled,
+        HistoryEventType::TimerFired,
+        HistoryEventType::TimerCancelled,
+    ];
+
+    /**
      * Return the next identity in the workflow's yielded-command sequence.
      *
      * History rows and control-plane command snapshots have their own sequence
@@ -53,21 +90,28 @@ final class WorkflowStepHistory
      */
     public static function nextDurableCommandSequence(WorkflowRun $run): int
     {
-        $lastSequence = 0;
-
-        foreach (self::historyEventsForRun($run) as $event) {
-            if (! $event instanceof WorkflowHistoryEvent || ! self::isWorkflowStepEvent($event)) {
-                continue;
-            }
-
-            $sequence = self::intValue($event->payload['sequence'] ?? null);
-
-            if ($sequence !== null) {
-                $lastSequence = max($lastSequence, $sequence);
-            }
+        if ($run->relationLoaded('historyEvents')) {
+            return self::nextSequenceFromEvents(self::historyEventsForRun($run));
         }
 
-        return $lastSequence + 1;
+        try {
+            $stepTypes = array_map(
+                static fn (HistoryEventType $type): string => $type->value,
+                self::WORKFLOW_STEP_EVENT_TYPES,
+            );
+
+            return self::nextSequenceFromEvents(
+                $run->historyEvents()
+                    ->whereIn('event_type', $stepTypes)
+                    ->cursor(),
+            );
+        } catch (BindingResolutionException $exception) {
+            if (! str_contains($exception->getMessage(), '[config]')) {
+                throw $exception;
+            }
+
+            return self::nextSequenceFromEvents(self::historyEventsForRun($run));
+        }
     }
 
     /**
@@ -192,6 +236,28 @@ final class WorkflowStepHistory
         }
 
         return array_values(array_unique($eventTypes));
+    }
+
+    /**
+     * @param iterable<WorkflowHistoryEvent> $events
+     */
+    private static function nextSequenceFromEvents(iterable $events): int
+    {
+        $lastSequence = 0;
+
+        foreach ($events as $event) {
+            if (! $event instanceof WorkflowHistoryEvent || ! self::isWorkflowStepEvent($event)) {
+                continue;
+            }
+
+            $sequence = self::intValue($event->payload['sequence'] ?? null);
+
+            if ($sequence !== null) {
+                $lastSequence = max($lastSequence, $sequence);
+            }
+        }
+
+        return $lastSequence + 1;
     }
 
     /**
@@ -456,39 +522,7 @@ final class WorkflowStepHistory
 
     private static function isWorkflowStepEvent(WorkflowHistoryEvent $event): bool
     {
-        return in_array($event->event_type, [
-            HistoryEventType::ActivityScheduled,
-            HistoryEventType::ActivityStarted,
-            HistoryEventType::ActivityHeartbeatRecorded,
-            HistoryEventType::ActivityRetryScheduled,
-            HistoryEventType::ActivityCompleted,
-            HistoryEventType::ActivityFailed,
-            HistoryEventType::ActivityCancelled,
-            HistoryEventType::ActivityTimedOut,
-            HistoryEventType::ChildWorkflowScheduled,
-            HistoryEventType::ChildRunStarted,
-            HistoryEventType::ChildRunCompleted,
-            HistoryEventType::ChildRunFailed,
-            HistoryEventType::ChildRunCancelled,
-            HistoryEventType::ChildRunTerminated,
-            HistoryEventType::ServiceCallStarted,
-            HistoryEventType::ServiceCallCompleted,
-            HistoryEventType::ServiceCallFailed,
-            HistoryEventType::ServiceCallCancelled,
-            HistoryEventType::WorkflowContinuedAsNew,
-            HistoryEventType::ConditionWaitOpened,
-            HistoryEventType::ConditionWaitSatisfied,
-            HistoryEventType::ConditionWaitTimedOut,
-            HistoryEventType::SignalWaitOpened,
-            HistoryEventType::SignalApplied,
-            HistoryEventType::MemoUpserted,
-            HistoryEventType::SearchAttributesUpserted,
-            HistoryEventType::SideEffectRecorded,
-            HistoryEventType::VersionMarkerRecorded,
-            HistoryEventType::TimerScheduled,
-            HistoryEventType::TimerFired,
-            HistoryEventType::TimerCancelled,
-        ], true);
+        return in_array($event->event_type, self::WORKFLOW_STEP_EVENT_TYPES, true);
     }
 
     private static function isLocalActivityEvent(WorkflowHistoryEvent $event): bool

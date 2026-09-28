@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "unrelated-buffered-signals-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "projection_extra_unrelated_signals": 128,
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestBufferedSignalHistoryWorkflow",
+    "arguments": [2],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {"sequence": 2, "event_type": "SignalWaitOpened", "payload": {
+      "sequence": 1, "signal_name": "append", "signal_wait_id": "first-signal-wait"
+    }},
+    {"sequence": 3, "event_type": "SignalReceived", "payload": {
+      "signal_id": "first-signal", "signal_name": "append", "signal_wait_id": "first-signal-wait",
+      "arguments": "wwHioz3/VYAiNwwCCgpmaXJzdAA=", "payload_codec": "avro"
+    }},
+    {"sequence": 4, "event_type": "SignalReceived", "payload": {
+      "signal_id": "unrelated-signal-1", "signal_name": "other", "signal_wait_id": "unrelated-wait-1",
+      "arguments": "wwHioz3/VYAiNwwCCgpmaXJzdAA=", "payload_codec": "avro"
+    }},
+    {"sequence": 5, "event_type": "SignalReceived", "payload": {
+      "signal_id": "unrelated-signal-2", "signal_name": "other", "signal_wait_id": "unrelated-wait-2",
+      "arguments": "wwHioz3/VYAiNwwCCgpmaXJzdAA=", "payload_codec": "avro"
+    }},
+    {"sequence": 6, "event_type": "SignalReceived", "payload": {
+      "signal_id": "second-signal", "signal_name": "append", "signal_wait_id": "buffered-second-signal-wait",
+      "arguments": "wwHioz3/VYAiNwwCCgxzZWNvbmQA", "payload_codec": "avro"
+    }},
+    {"sequence": 7, "event_type": "SignalApplied", "payload": {
+      "sequence": 1, "signal_name": "append", "signal_wait_id": "first-signal-wait",
+      "value": "wwHioz3/VYAiNwoKZmlyc3Q="
+    }},
+    {"sequence": 8, "event_type": "SignalWaitOpened", "payload": {
+      "sequence": 2, "signal_name": "append", "signal_wait_id": "buffered-second-signal-wait"
+    }},
+    {"sequence": 9, "event_type": "SignalApplied", "payload": {
+      "sequence": 2, "signal_name": "append", "signal_wait_id": "buffered-second-signal-wait",
+      "value": "wwHioz3/VYAiNwoMc2Vjb25k"
+    }}
+  ],
+  "expected": {
+    "completed": true,
+    "result": ["first", "second"],
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

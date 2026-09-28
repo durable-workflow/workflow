@@ -13,6 +13,23 @@ use Workflow\V2\Models\WorkflowRun;
 final class ConditionWaits
 {
     /**
+     * @var list<HistoryEventType>
+     */
+    private const RELEVANT_EVENT_TYPES = [
+        HistoryEventType::ConditionWaitOpened,
+        HistoryEventType::TimerScheduled,
+        HistoryEventType::TimerFired,
+        HistoryEventType::ConditionWaitSatisfied,
+        HistoryEventType::ConditionWaitTimedOut,
+        HistoryEventType::SelectionOperationCancelled,
+        HistoryEventType::WorkflowCompleted,
+        HistoryEventType::WorkflowFailed,
+        HistoryEventType::WorkflowCancelled,
+        HistoryEventType::WorkflowTerminated,
+        HistoryEventType::WorkflowContinuedAsNew,
+    ];
+
+    /**
      * @return list<array{
      *     id: string,
      *     condition_wait_id: string,
@@ -34,12 +51,20 @@ final class ConditionWaits
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing('historyEvents');
+        $events = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->sortBy('sequence')
+            : $run->historyEvents()
+                ->whereIn('event_type', array_map(
+                    static fn (HistoryEventType $type): string => $type->value,
+                    self::RELEVANT_EVENT_TYPES,
+                ))
+                ->orderBy('sequence')
+                ->cursor();
 
         $waits = [];
         $openWaitIds = [];
 
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+        foreach ($events as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
