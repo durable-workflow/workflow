@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Model;
+use Workflow\V2\Contracts\BufferedSignalProjectionRole;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\HistoryEventType;
@@ -19,11 +20,24 @@ use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
-final class DefaultHistoryProjectionRole implements HistoryProjectionRole, HistoryProjectionMaintenanceRole
+final class DefaultHistoryProjectionRole implements HistoryProjectionRole, HistoryProjectionMaintenanceRole, BufferedSignalProjectionRole
 {
     public function projectRun(WorkflowRun $run): WorkflowRunSummary
     {
         return RunSummaryProjector::project($run);
+    }
+
+    public function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary
+    {
+        return RunSummaryProjector::bufferedSignalSummary($run);
+    }
+
+    public function projectBufferedSignal(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $summary,
+    ): WorkflowRunSummary {
+        return RunSummaryProjector::projectBufferedSignal($run, $event, $summary);
     }
 
     public function recordActivityStarted(

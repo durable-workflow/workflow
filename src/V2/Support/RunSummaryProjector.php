@@ -31,6 +31,71 @@ final class RunSummaryProjector
      */
     public const SCHEMA_VERSION = 2;
 
+    public static function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary
+    {
+        if ($run->status->isTerminal()) {
+            return null;
+        }
+
+        $summaryModel = self::summaryModel();
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = $summaryModel::query()->find($run->id);
+
+        return $summary instanceof WorkflowRunSummary
+            && $summary->projection_schema_version === self::SCHEMA_VERSION
+            && HistoryBudget::summaryIsComplete($run, $summary)
+            && is_string($summary->next_task_id)
+            && $summary->next_task_id !== ''
+            && $summary->next_task_type === TaskType::Workflow->value
+            && in_array($summary->next_task_status, [TaskStatus::Ready->value, TaskStatus::Leased->value], true)
+            ? $summary
+            : null;
+    }
+
+    public static function projectBufferedSignal(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $summary,
+    ): WorkflowRunSummary {
+        if (
+            $event->workflow_run_id !== $run->id
+            || $event->event_type !== HistoryEventType::SignalReceived
+            || (int) $event->sequence !== (int) $summary->history_event_count + 1
+        ) {
+            throw new \LogicException('Buffered signal projection requires the next signal event on this run.');
+        }
+
+        $budget = HistoryBudget::fromCounters(
+            (int) $summary->history_event_count + 1,
+            (int) $summary->history_size_bytes + HistoryBudget::eventSizeBytes($event),
+            (int) $summary->history_fan_out,
+        );
+        $summary->forceFill([
+            'history_event_count' => $budget['history_event_count'],
+            'history_size_bytes' => $budget['history_size_bytes'],
+            'continue_as_new_recommended' => $budget['continue_as_new_recommended'],
+            'history_budget_pressure' => $budget['pressure'],
+            'updated_at' => $run->last_progress_at ?? $run->updated_at,
+        ])->save();
+
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->whereKey($summary->next_task_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return self::project($run);
+        }
+
+        $summary = self::projectOpenWorkflowTask($run, $task, []);
+        RunTimelineProjector::projectSignalReceivedEvent($run, $event);
+
+        return $summary;
+    }
+
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
         $claimedTask = WorkflowTaskClaimProjectionContext::taskFor($run);

@@ -16,6 +16,7 @@ use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\BufferedSignalProjectionRole;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -2514,7 +2515,25 @@ final class WorkflowStub
                 return;
             }
 
-            $this->loadLockedRunRelations($run, $instance);
+            $projectionRole = self::historyProjectionRole();
+            $bufferedSignalSummary = null;
+
+            if (
+                ! $runtimeReserved
+                && $projectionRole instanceof BufferedSignalProjectionRole
+                && $this->hasOpenWorkflowTask($run->id)
+                && WorkflowSignal::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('signal_name', $name)
+                    ->where('status', SignalStatus::Received->value)
+                    ->exists()
+            ) {
+                $bufferedSignalSummary = $projectionRole->bufferedSignalSummary($run);
+            }
+
+            if (! $bufferedSignalSummary instanceof WorkflowRunSummary) {
+                $this->loadLockedRunRelations($run, $instance);
+            }
 
             if (! $runtimeReserved) {
                 $signalAdmission = $this->signalAdmissionForRun($run, $name);
@@ -2622,7 +2641,9 @@ final class WorkflowStub
                 'accepted_at' => now(),
             ]));
 
-            $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $command->id);
+            $signalWaitId = $bufferedSignalSummary instanceof WorkflowRunSummary
+                ? SignalWaits::bufferedWaitIdForCommandId($command->id)
+                : $this->signalWaitIdForAcceptedCommand($run, $name, $command->id);
             $signal = $this->recordAcceptedSignal(
                 $instance,
                 $run,
@@ -2634,7 +2655,7 @@ final class WorkflowStub
                 $serializedSignalArguments,
             );
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
+            $event = WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
                 'workflow_command_id' => $command->id,
                 'signal_id' => $signal->id,
                 'workflow_instance_id' => $instance->id,
@@ -2649,11 +2670,18 @@ final class WorkflowStub
                 'payload_codec' => $signal->payload_codec,
             ], static fn (mixed $value): bool => $value !== null), null, $command);
 
-            if (! $this->hasOpenWorkflowTask($run->id)) {
+            if (! $bufferedSignalSummary instanceof WorkflowRunSummary && ! $this->hasOpenWorkflowTask($run->id)) {
                 $task = PendingMessageTask::createForRun($run);
             }
 
-            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            if (
+                $bufferedSignalSummary instanceof WorkflowRunSummary
+                && $projectionRole instanceof BufferedSignalProjectionRole
+            ) {
+                $projectionRole->projectBufferedSignal($run, $event, $bufferedSignalSummary);
+            } else {
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            }
         });
 
         $this->refresh();

@@ -85,6 +85,18 @@ final class HistoryTimeline
         return self::mapEvent($event, collect(), collect(), collect(), collect(), $failures);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public static function fromSignalReceivedEvent(WorkflowHistoryEvent $event): array
+    {
+        if ($event->event_type !== HistoryEventType::SignalReceived) {
+            throw new \LogicException('Incremental signal timeline projection requires a SignalReceived event.');
+        }
+
+        return self::mapEvent($event, collect(), collect(), collect(), collect(), collect());
+    }
+
     private static function mapEvent(
         WorkflowHistoryEvent $event,
         Collection $commands,
