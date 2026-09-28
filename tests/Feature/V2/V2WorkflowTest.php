@@ -15,6 +15,7 @@ use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestAsyncGeneratorCallbackWorkflow;
 use Tests\Fixtures\V2\TestAsyncWorkflow;
 use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
+use Tests\Fixtures\V2\TestBufferedSignalHistoryWorkflow;
 use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
@@ -5357,6 +5358,48 @@ final class V2WorkflowTest extends TestCase
             ->orderBy('sequence')
             ->pluck('workflow_command_id')
             ->all());
+    }
+
+    public function testManyBufferedSignalsSurviveWorkerResumeWithExactHistory(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBufferedSignalHistoryWorkflow::class, 'many-buffered-signals');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+        $this->drainReadyTasks();
+
+        for ($index = 0; $index < 60; $index++) {
+            $this->assertTrue($workflow->signal('append', (string) $index)->accepted());
+        }
+
+        $this->assertSame(60, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->count());
+        $this->assertSame(63, $workflow->summary()?->history_event_count);
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+        $this->assertCount(63, $detail['timeline']);
+        $this->assertCount(60, array_filter(
+            $detail['timeline'],
+            static fn (array $event): bool => ($event['type'] ?? null) === HistoryEventType::SignalReceived->value
+        ));
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame(array_map(strval(...), range(0, 59)), $workflow->output());
+        $this->assertSame(60, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->count());
     }
 
     public function testBufferedSameNamedSignalsKeepDurableWaitIdsBeforeLaterWaitsOpen(): void
