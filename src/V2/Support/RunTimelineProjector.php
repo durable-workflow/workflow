@@ -19,31 +19,58 @@ final class RunTimelineProjector
      * @param list<array<string, mixed>>|null $entries
      * @return list<WorkflowTimelineEntry>
      */
-    public static function project(WorkflowRun $run, ?array $entries = null): array
+    public static function project(WorkflowRun $run, ?array $entries = null, bool $collectRows = true): array
     {
         $entries ??= HistoryTimeline::fromHistory($run);
         $entryModel = self::entryModel();
-        $existing = $entryModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
         $seen = [];
         $projected = [];
 
-        foreach (array_values($entries) as $entry) {
-            $historyEventId = self::stringValue($entry['id'] ?? null);
+        // A completed long run can already have thousands of projected signal
+        // rows. Load only the existing rows for this page, and let callers that
+        // only need the durable side effect avoid retaining every saved model.
+        for ($offset = 0; $offset < count($entries); $offset += 100) {
+            $page = array_slice($entries, $offset, 100);
+            $projectionIds = [];
 
-            if ($historyEventId === null) {
-                continue;
+            foreach ($page as $entry) {
+                $historyEventId = self::stringValue($entry['id'] ?? null);
+
+                if ($historyEventId !== null) {
+                    $projectionIds[] = self::projectionId($run->id, $historyEventId);
+                }
             }
 
-            $projectionId = self::projectionId($run->id, $historyEventId);
-            $seen[] = $projectionId;
-            $projected[] = self::upsertEntry(
-                $run,
-                $entryModel,
-                $projectionId,
-                $historyEventId,
-                $entry,
-                $existing->get($projectionId)
-            );
+            $existing = $entryModel::query()
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('id', $projectionIds)
+                ->get()
+                ->keyBy('id');
+
+            foreach ($page as $entry) {
+                $historyEventId = self::stringValue($entry['id'] ?? null);
+
+                if ($historyEventId === null) {
+                    continue;
+                }
+
+                $projectionId = self::projectionId($run->id, $historyEventId);
+                $seen[] = $projectionId;
+                $row = self::upsertEntry(
+                    $run,
+                    $entryModel,
+                    $projectionId,
+                    $historyEventId,
+                    $entry,
+                    $existing->get($projectionId)
+                );
+
+                if ($collectRows) {
+                    $projected[] = $row;
+                }
+            }
+
+            unset($existing, $page);
         }
 
         self::historyProjectionMaintenanceRole()

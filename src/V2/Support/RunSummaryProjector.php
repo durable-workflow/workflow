@@ -465,7 +465,7 @@ final class RunSummaryProjector
         );
 
         RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers));
-        RunTimelineProjector::project($run);
+        RunTimelineProjector::project($run, collectRows: false);
         RunTimerProjector::project($run, $timers);
         RunLineageProjector::project($run);
 

@@ -10,7 +10,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ConditionWaits;
+use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\WorkflowStepHistory;
 
 final class CompletionHistoryScopedReadsTest extends TestCase
@@ -73,6 +75,9 @@ final class CompletionHistoryScopedReadsTest extends TestCase
         $this->assertNotNull($loadedRun);
         $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($loadedRun));
         $this->assertEquals(ConditionWaits::forRun($loadedRun), $boundedWaits);
+
+        $this->assertSame([], RunTimelineProjector::project($run, collectRows: false));
+        $this->assertSame(102, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
     }
 
     /**
