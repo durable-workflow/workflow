@@ -86,6 +86,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
@@ -6375,13 +6376,42 @@ final class V2WorkflowTest extends TestCase
             'queue' => 'default',
         ]);
 
+        foreach (range(1, 5) as $sequence) {
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'event_type' => HistoryEventType::SignalReceived,
+                'payload' => [
+                    'signal_name' => 'probe',
+                    'arguments' => [$sequence],
+                ],
+                'recorded_at' => now(),
+            ]);
+        }
+        $run->forceFill([
+            'last_history_sequence' => 5,
+        ])->save();
+
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
         $this->assertSame('repair_needed', WorkflowRunSummary::query()->findOrFail($run->id)->liveness_state);
+        $this->assertSame(5, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
 
         $this->wakeTaskWatchdog();
+
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        DB::flushQueryLog();
+        $timelineQueries = array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_run_timeline_entries'),
+        ));
+        $this->assertLessThanOrEqual(2, count($timelineQueries), 'Redispatch should not add a full timeline scan.');
 
         $task->refresh();
 

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Workflow\V2\Contracts\BufferedSignalProjectionRole;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -20,11 +21,16 @@ use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
-final class DefaultHistoryProjectionRole implements HistoryProjectionRole, HistoryProjectionMaintenanceRole, BufferedSignalProjectionRole
+final class DefaultHistoryProjectionRole implements HistoryProjectionRole, HistoryProjectionMaintenanceRole, BufferedSignalProjectionRole, WorkflowTaskRepairProjectionRole
 {
     public function projectRun(WorkflowRun $run): WorkflowRunSummary
     {
         return RunSummaryProjector::project($run);
+    }
+
+    public function projectRepairedWorkflowTask(WorkflowRun $run, WorkflowTask $task): WorkflowRunSummary
+    {
+        return RunSummaryProjector::projectRepairedWorkflowTask($run, $task);
     }
 
     public function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary

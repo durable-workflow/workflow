@@ -472,6 +472,13 @@ final class RunSummaryProjector
         return $summary;
     }
 
+    public static function projectRepairedWorkflowTask(WorkflowRun $run, WorkflowTask $task): WorkflowRunSummary
+    {
+        // Redispatch changes task availability, not history. Rebuild the open
+        // task's operator view without replaying or rewriting the run timeline.
+        return self::projectOpenWorkflowTask($run, $task, []);
+    }
+
     /**
      * @param class-string<WorkflowRunSummary> $summaryModel
      * @param array<string, mixed> $values

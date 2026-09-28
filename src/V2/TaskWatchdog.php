@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -243,9 +244,19 @@ final class TaskWatchdog
 
                 $task = TaskRepair::recoverExistingTask($task, $run);
 
-                self::historyProjectionRole()->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
+                $projectionRole = self::historyProjectionRole();
+
+                if (
+                    $task instanceof WorkflowTask
+                    && $task->task_type === TaskType::Workflow
+                    && $projectionRole instanceof WorkflowTaskRepairProjectionRole
+                ) {
+                    $projectionRole->projectRepairedWorkflowTask($run->fresh(), $task);
+                } else {
+                    $projectionRole->projectRun(
+                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    );
+                }
 
                 return $task;
             });
