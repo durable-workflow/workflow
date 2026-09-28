@@ -73,6 +73,30 @@ final class BackendCapabilitiesTest extends TestCase
         }
     }
 
+    public function testSnapshotUsesWorkflowStorageConnectionBeforeApplicationDefault(): void
+    {
+        config()->set('database.default', 'mongodb');
+        config()
+            ->set('database.connections.mongodb.driver', 'mongodb');
+        config()
+            ->set('workflows.storage.connection', 'mysql');
+        config()
+            ->set('database.connections.mysql.driver', 'mysql');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('mysql', $snapshot['database']['connection']);
+        $this->assertSame('mysql', $snapshot['database']['driver']);
+        $this->assertTrue($snapshot['database']['supported']);
+        $this->assertNotContains('database_driver_unsupported', array_column($snapshot['issues'], 'code'));
+
+        $explicit = BackendCapabilities::snapshot(databaseConnection: 'mongodb');
+
+        $this->assertSame('mongodb', $explicit['database']['connection']);
+        $this->assertFalse($explicit['database']['supported']);
+        $this->assertContains('database_driver_unsupported', array_column($explicit['issues'], 'code'));
+    }
+
     public function testSnapshotIncludesFrozenReadinessContractMatrix(): void
     {
         $snapshot = BackendCapabilities::snapshot();

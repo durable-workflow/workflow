@@ -79,7 +79,9 @@ final class BackendCapabilities
      */
     private static function database(?string $configuredConnection = null): array
     {
-        $connection = self::normalize($configuredConnection) ?? self::normalize(config('database.default'));
+        $connection = self::normalize($configuredConnection)
+            ?? self::normalize(config('workflows.storage.connection'))
+            ?? self::normalize(config('database.default'));
         $driver = $connection === null
             ? null
             : self::normalize(config(sprintf('database.connections.%s.driver', $connection)));
