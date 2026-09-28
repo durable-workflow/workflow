@@ -184,53 +184,6 @@ final class HistoryBudget
         );
     }
 
-    public static function summaryIsComplete(WorkflowRun $run, WorkflowRunSummary $summary): bool
-    {
-        $eventCount = (int) $summary->history_event_count;
-        $sizeBytes = (int) $summary->history_size_bytes;
-        $fanOut = (int) $summary->history_fan_out;
-        $lastHistorySequence = max(0, (int) ($run->last_history_sequence ?? 0));
-
-        if (
-            $eventCount < 0
-            || $sizeBytes < 0
-            || $fanOut < 0
-            || $eventCount !== $lastHistorySequence
-        ) {
-            return false;
-        }
-
-        if ($eventCount === 0) {
-            return $sizeBytes === 0 && $fanOut === 0;
-        }
-
-        if ($sizeBytes === 0) {
-            return false;
-        }
-
-        // Zero is a complete, authoritative fan-out for histories without a
-        // parallel group; negative fan-out was rejected above.
-        return true;
-    }
-
-    public static function eventSizeBytes(WorkflowHistoryEvent $event): int
-    {
-        $eventType = $event->event_type instanceof \BackedEnum
-            ? (string) $event->event_type->value
-            : (string) $event->event_type;
-
-        try {
-            $payload = json_encode(
-                $event->payload ?? [],
-                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
-            );
-        } catch (JsonException) {
-            $payload = serialize($event->payload ?? []);
-        }
-
-        return strlen($eventType) + strlen($payload);
-    }
-
     /**
      * @return array{
      *     history_event_count: int,
@@ -337,6 +290,35 @@ final class HistoryBudget
         }
 
         return $maxSize;
+    }
+
+    public static function summaryIsComplete(WorkflowRun $run, WorkflowRunSummary $summary): bool
+    {
+        $eventCount = (int) $summary->history_event_count;
+        $sizeBytes = (int) $summary->history_size_bytes;
+        $fanOut = (int) $summary->history_fan_out;
+        $lastHistorySequence = max(0, (int) ($run->last_history_sequence ?? 0));
+
+        if (
+            $eventCount < 0
+            || $sizeBytes < 0
+            || $fanOut < 0
+            || $eventCount !== $lastHistorySequence
+        ) {
+            return false;
+        }
+
+        if ($eventCount === 0) {
+            return $sizeBytes === 0 && $fanOut === 0;
+        }
+
+        if ($sizeBytes === 0) {
+            return false;
+        }
+
+        // Zero is a complete, authoritative fan-out for histories without a
+        // parallel group; negative fan-out was rejected above.
+        return true;
     }
 
     /**
@@ -625,6 +607,24 @@ final class HistoryBudget
             $groupSizeIsNumeric,
             "CASE WHEN {$groupIdIsValid} AND {$groupSizeIsNumeric} THEN CAST({$groupSize} AS INTEGER) ELSE 0 END",
         ];
+    }
+
+    public static function eventSizeBytes(WorkflowHistoryEvent $event): int
+    {
+        $eventType = $event->event_type instanceof \BackedEnum
+            ? (string) $event->event_type->value
+            : (string) $event->event_type;
+
+        try {
+            $payload = json_encode(
+                $event->payload ?? [],
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            );
+        } catch (JsonException) {
+            $payload = serialize($event->payload ?? []);
+        }
+
+        return strlen($eventType) + strlen($payload);
     }
 
     private static function positiveIntegerConfig(string $key, int $default): int
