@@ -327,8 +327,10 @@ might write during a rolling upgrade.
 
 A manual trigger has no nominal occurrence. If it advances `next_fire_at`
 while a tick holds an older due time, the tick records `stale_occurrence` and
-does not start another workflow. Competing schedulers lock the schedule row
-and apply the same check after acquiring that lock.
+does not start another workflow. If the tick commits first, the later manual
+request is an independent trigger and can start another workflow. The row lock
+makes the order visible in schedule history. Competing schedulers lock the
+schedule row and apply the same check after acquiring that lock.
 
 ## Lease expiry and redelivery
 

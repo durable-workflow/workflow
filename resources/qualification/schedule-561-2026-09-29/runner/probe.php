@@ -21,6 +21,7 @@ $cases = [
     'kyiv_gap' => ['Europe/Kyiv', '30 3 * * *', '2026-03-29T00:59:00Z', ['2026-03-29T01:30:00Z']],
     'kyiv_fold' => ['Europe/Kyiv', '11 3 * * *', '2026-10-25T00:10:00Z', ['2026-10-25T00:11:00Z', '2026-10-25T01:11:00Z']],
     'manual_race' => ['UTC', '* * * * *', '2026-04-14T00:59:00Z', ['2026-04-14T01:00:00Z']],
+    'manual_concurrent' => ['UTC', '* * * * *', '2026-04-14T00:59:00Z', ['2026-04-14T01:00:00Z']],
     'concurrent' => ['UTC', '* * * * *', '2026-04-14T00:59:00Z', ['2026-04-14T01:00:00Z']],
     'backfill_collision' => ['UTC', '* * * * *', '2026-04-14T00:59:00Z', ['2026-04-14T01:00:00Z']],
 ];
@@ -37,7 +38,7 @@ if ($phase === 'init') {
         cronExpression: $cron,
         timezone: $zone,
         overlapPolicy: ScheduleOverlapPolicy::AllowAll,
-        maxRuns: $case === 'manual_race' || $case === 'backfill_collision' ? 3 : count($due),
+        maxRuns: in_array($case, ['manual_race', 'manual_concurrent', 'backfill_collision'], true) ? 3 : count($due),
     );
     $results = [];
 } elseif ($phase === 'status') {

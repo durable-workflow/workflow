@@ -46,6 +46,17 @@
             "buffered_actions": null
         },
         {
+            "id": "01m3q0r0y841rxmq493n5nbxp8",
+            "schedule_id": "schedule-561-manual_concurrent",
+            "status": "active",
+            "next_fire_at": "2026-04-14 01:01:00.000000",
+            "fires_count": 2,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
             "id": "01m3pymw4my36cnxq9q9swx3yj",
             "schedule_id": "schedule-561-manual_race",
             "status": "active",
@@ -216,6 +227,33 @@
             "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyhzyb0smk5mffxhqvcjch\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-03-29T01:30:00+00:00\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-kyiv_gap\", \"last_fired_at\": \"2026-03-29T01:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-kyiv_gap:backfill:1774747800\"}, \"deleted_at\": \"2026-03-29T01:30:00+00:00\"}"
         },
         {
+            "schedule_id": "schedule-561-manual_concurrent",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"UTC\", \"cron_expressions\": [\"* * * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3q0r0y841rxmq493n5nbxp8\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-manual_concurrent\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-manual_concurrent",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:backfill:1776128400",
+            "workflow_run_id": "01m3q0s0hvhkg5x2006m7msn5z",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3q0r0y841rxmq493n5nbxp8\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-manual_concurrent\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-04-14T01:00:00.000000+00:00\", \"workflow_run_id\": \"01m3q0s0hvhkg5x2006m7msn5z\", \"workflow_instance_id\": \"schedule:schedule-561-manual_concurrent:backfill:1776128400\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-manual_concurrent",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:1776128400000",
+            "workflow_run_id": "01m3q0s1g7zjv6t8y7hq3412ac",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3q0r0y841rxmq493n5nbxp8\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-manual_concurrent\", \"next_fire_at\": \"2026-04-14T01:01:00+00:00\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-manual_concurrent:backfill:1776128400\"}, \"trigger_number\": 2, \"workflow_run_id\": \"01m3q0s1g7zjv6t8y7hq3412ac\", \"workflow_instance_id\": \"schedule:schedule-561-manual_concurrent:1776128400000\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
             "schedule_id": "schedule-561-manual_race",
             "sequence": 1,
             "event_type": "ScheduleCreated",
@@ -335,6 +373,16 @@
         {
             "id": "01m3pyj10y5wccqv545zhn8j16",
             "workflow_instance_id": "schedule:schedule-561-kyiv_gap:backfill:1774747800",
+            "status": "completed"
+        },
+        {
+            "id": "01m3q0s1g7zjv6t8y7hq3412ac",
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:1776128400000",
+            "status": "completed"
+        },
+        {
+            "id": "01m3q0s0hvhkg5x2006m7msn5z",
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:backfill:1776128400",
             "status": "completed"
         },
         {

@@ -1,0 +1,27 @@
+{
+    "case": "manual_concurrent",
+    "phase": "init",
+    "time_utc": "2026-04-14T00:59:00+00:00",
+    "expected_due_utc": [
+        "2026-04-14T01:00:00Z"
+    ],
+    "next_fire_utc": "2026-04-14T01:00:00+00:00",
+    "schedule_status": "active",
+    "fires_count": 0,
+    "failures_count": 0,
+    "skipped_trigger_count": null,
+    "last_skip_reason": null,
+    "results": [],
+    "instances": [],
+    "runs": [],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

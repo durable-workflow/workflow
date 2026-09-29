@@ -1,0 +1,30 @@
+{
+    "actor": "manual",
+    "result": {
+        "outcome": "triggered",
+        "instance_id": "schedule:schedule-561-manual_concurrent:1776128400000",
+        "reason": null
+    },
+    "fires_count": 2,
+    "next_fire_at": "2026-04-14T01:01:00+00:00",
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:backfill:1776128400",
+            "workflow_run_id": "01m3q0s0hvhkg5x2006m7msn5z"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-manual_concurrent:1776128400000",
+            "workflow_run_id": "01m3q0s1g7zjv6t8y7hq3412ac"
+        }
+    ]
+}
