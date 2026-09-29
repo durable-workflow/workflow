@@ -6,6 +6,9 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use LogicException;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
@@ -1338,6 +1341,70 @@ final class V2ScheduleTest extends TestCase
             $this->assertSame(0, (int) $schedule->failures_count);
         } finally {
             Carbon::setTestNow();
+        }
+    }
+
+    public function testOccurrenceMigrationBackfillsLegacyHistoryWithoutRejectingInvalidTimes(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'legacy-occurrence-history',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+        $migration = require __DIR__ . '/../../../src/migrations/2026_09_29_000100_index_schedule_occurrences.php';
+        $migration->down();
+
+        try {
+            $sequence = (int) DB::table('workflow_schedule_history_events')
+                ->where('workflow_schedule_id', $schedule->id)
+                ->max('sequence');
+            $events = [
+                'valid' => [
+                    HistoryEventType::ScheduleTriggered->value, [
+                        'occurrence_time' => '2026-04-14T01:00:00+03:00',
+                    ]],
+                'invalid' => [
+                    HistoryEventType::ScheduleTriggered->value, [
+                        'occurrence_time' => 'not-a-date',
+                    ]],
+                'non_string' => [
+                    HistoryEventType::ScheduleTriggered->value, [
+                        'occurrence_time' => 42,
+                    ]],
+                'non_object' => [HistoryEventType::ScheduleTriggered->value, null],
+                'other_event' => [
+                    HistoryEventType::ScheduleTriggerSkipped->value, [
+                        'occurrence_time' => '2026-04-14T01:00:00+03:00',
+                    ]],
+            ];
+            $ids = [];
+
+            foreach ($events as $name => [$eventType, $payload]) {
+                $ids[$name] = (string) Str::ulid();
+                DB::table('workflow_schedule_history_events')->insert([
+                    'id' => $ids[$name],
+                    'workflow_schedule_id' => $schedule->id,
+                    'schedule_id' => $schedule->schedule_id,
+                    'sequence' => ++$sequence,
+                    'event_type' => $eventType,
+                    'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+                ]);
+            }
+
+            $migration->up();
+
+            $stored = DB::table('workflow_schedule_history_events')
+                ->whereIn('id', array_values($ids))
+                ->pluck('occurrence_at_utc', 'id');
+            $this->assertSame('2026-04-13 22:00:00.000000', $stored[$ids['valid']]);
+
+            foreach (['invalid', 'non_string', 'non_object', 'other_event'] as $name) {
+                $this->assertNull($stored[$ids[$name]]);
+            }
+        } finally {
+            if (! Schema::hasColumn('workflow_schedule_history_events', 'occurrence_at_utc')) {
+                $migration->up();
+            }
         }
     }
 
