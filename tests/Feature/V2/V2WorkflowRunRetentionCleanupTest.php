@@ -73,6 +73,10 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
                     $expected = Carbon::parse($instant, 'UTC');
                     Carbon::setTestNow($expected);
                     $run = $this->seedRun(status: RunStatus::Completed, closed: true);
+                    $run->forceFill([
+                        'archived_at' => $expected->copy()->subMinute(),
+                    ])->save();
+                    $rawArchivedAt = DB::table('workflow_runs')->where('id', $run->id)->value('archived_at');
 
                     WorkflowRunRetentionCleanup::pruneRun($run->id);
 
@@ -89,6 +93,10 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
                         $timezone . ' ' . $instant . ' hydrated'
                     );
                     $this->assertSame(RunStatus::Completed, $hydrated->status);
+                    $this->assertSame(
+                        $rawArchivedAt,
+                        DB::table('workflow_runs')->where('id', $run->id)->value('archived_at')
+                    );
 
                     Carbon::setTestNow($expected->copy()->addHour());
                     WorkflowRunRetentionCleanup::pruneRun($run->id);
@@ -99,6 +107,10 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
                     $this->assertSame(
                         $expected->getTimestamp(),
                         WorkflowRun::query()->findOrFail($run->id)->details_pruned_at?->getTimestamp()
+                    );
+                    $this->assertSame(
+                        $rawArchivedAt,
+                        DB::table('workflow_runs')->where('id', $run->id)->value('archived_at')
                     );
                 }
             }
