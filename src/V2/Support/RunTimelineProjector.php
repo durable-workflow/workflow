@@ -16,10 +16,10 @@ use Workflow\V2\Models\WorkflowTimelineEntry;
 final class RunTimelineProjector
 {
     /**
-     * @param list<array<string, mixed>>|null $entries
+     * @param iterable<array<string, mixed>>|null $entries
      * @return list<WorkflowTimelineEntry>
      */
-    public static function project(WorkflowRun $run, ?array $entries = null, bool $collectRows = true): array
+    public static function project(WorkflowRun $run, ?iterable $entries = null, bool $collectRows = true): array
     {
         $entryModel = self::entryModel();
         $seen = [];
