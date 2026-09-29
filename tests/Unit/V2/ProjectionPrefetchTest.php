@@ -129,7 +129,10 @@ final class ProjectionPrefetchTest extends TestCase
             str_starts_with(strtolower($query['query']), 'select') && str_contains($query['query'], $table));
         // Active timelines append, so only terminal runs need the stale-cleanup read.
         $this->assertCount($projector === RunTimelineProjector::class ? 1 : 2, $reads);
-        $this->assertSame($expected, array_map(static fn (Model $row): array => self::attributes($row->refresh()), $reprojected));
+        $this->assertSame(
+            $expected,
+            array_map(static fn (Model $row): array => self::attributes($row->refresh()), $reprojected)
+        );
 
         $rows[0]->forceFill([
             'payload' => [
