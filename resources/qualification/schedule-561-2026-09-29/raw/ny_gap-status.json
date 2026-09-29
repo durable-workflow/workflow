@@ -1,0 +1,46 @@
+{
+    "case": "ny_gap",
+    "phase": "status",
+    "time_utc": "2026-09-29T16:01:06+00:00",
+    "expected_due_utc": [
+        "2026-03-08T07:30:00Z"
+    ],
+    "next_fire_utc": null,
+    "fires_count": 1,
+    "results": [],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "current_run_id": "01m3pya0wb2741k0gvqxwj62np"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pya0wb2741k0gvqxwj62np",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "status": "completed"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "workflow_run_id": "01m3pya0wb2741k0gvqxwj62np"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

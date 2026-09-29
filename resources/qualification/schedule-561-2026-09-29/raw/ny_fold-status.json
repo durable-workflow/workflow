@@ -1,0 +1,62 @@
+{
+    "case": "ny_fold",
+    "phase": "status",
+    "time_utc": "2026-09-29T16:01:07+00:00",
+    "expected_due_utc": [
+        "2026-11-01T05:30:00Z",
+        "2026-11-01T06:30:00Z"
+    ],
+    "next_fire_utc": null,
+    "fires_count": 2,
+    "results": [],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "current_run_id": "01m3py99cc6jpc9mp22nrgz8wq"
+        },
+        {
+            "id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "current_run_id": "01m3py9j81wm8zncaxvc3579fj"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3py99cc6jpc9mp22nrgz8wq",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "status": "completed"
+        },
+        {
+            "id": "01m3py9j81wm8zncaxvc3579fj",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "status": "completed"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "workflow_run_id": "01m3py99cc6jpc9mp22nrgz8wq"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "workflow_run_id": "01m3py9j81wm8zncaxvc3579fj"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

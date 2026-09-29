@@ -1,0 +1,62 @@
+{
+    "case": "kyiv_fold",
+    "phase": "status",
+    "time_utc": "2026-09-29T16:01:09+00:00",
+    "expected_due_utc": [
+        "2026-10-25T00:11:00Z",
+        "2026-10-25T01:11:00Z"
+    ],
+    "next_fire_utc": null,
+    "fires_count": 2,
+    "results": [],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "current_run_id": "01m3pya5mzxdbzq2gh9hw3qvtm"
+        },
+        {
+            "id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "current_run_id": "01m3pya6z0ytg68r1acwt9sgj3"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pya5mzxdbzq2gh9hw3qvtm",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pya6z0ytg68r1acwt9sgj3",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "status": "completed"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "workflow_run_id": "01m3pya5mzxdbzq2gh9hw3qvtm"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "workflow_run_id": "01m3pya6z0ytg68r1acwt9sgj3"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

@@ -1,0 +1,254 @@
+{
+    "driver": "sqlite",
+    "schedules": [
+        {
+            "id": "01m3pze6w2qn0xvq02rnf3g480",
+            "schedule_id": "schedule-561-backfill_collision",
+            "status": "active",
+            "next_fire_at": "2026-04-14 01:01:00.000000",
+            "fires_count": 1,
+            "failures_count": 1,
+            "skipped_trigger_count": 1,
+            "last_skip_reason": "already_fired_occurrence",
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pya4h6n3t65gjrq6n35w2c",
+            "schedule_id": "schedule-561-kyiv_fold",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 2,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pya24n1sm54y72aq92v7fe",
+            "schedule_id": "schedule-561-kyiv_gap",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3py948tm17zdt6svsxs0hnv",
+            "schedule_id": "schedule-561-ny_fold",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 2,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3py9zsfaygk0szpkhjpfcxk",
+            "schedule_id": "schedule-561-ny_gap",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        }
+    ],
+    "schedule_history": [
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\":{\"cron_expressions\":[\"* * * * *\"],\"timezone\":\"UTC\"},\"action\":{\"workflow_type\":\"schedule-561-probe\",\"workflow_class\":\"App\\\\Workflows\\\\ProbeWorkflow\",\"input\":[]},\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-04-14T01:00:00+00:00\",\"schedule\":{\"id\":\"01m3pze6w2qn0xvq02rnf3g480\",\"schedule_id\":\"schedule-561-backfill_collision\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-04-14T01:00:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "workflow_run_id": "01m3pze8021100a67zppvbtkyn",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-backfill_collision:backfill:1776128400\",\"workflow_run_id\":\"01m3pze8021100a67zppvbtkyn\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":1,\"occurrence_time\":\"2026-04-14T01:00:00.000000+00:00\",\"schedule\":{\"id\":\"01m3pze6w2qn0xvq02rnf3g480\",\"schedule_id\":\"schedule-561-backfill_collision\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-04-14T01:00:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 3,
+            "event_type": "ScheduleTriggerSkipped",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\":\"already_fired_occurrence\",\"skipped_trigger_count\":1,\"last_skipped_at\":\"2026-04-14T01:00:00+00:00\",\"schedule\":{\"id\":\"01m3pze6w2qn0xvq02rnf3g480\",\"schedule_id\":\"schedule-561-backfill_collision\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-04-14T01:01:00+00:00\",\"last_fired_at\":\"2026-04-14T01:00:00+00:00\",\"last_skip_reason\":\"already_fired_occurrence\",\"last_skipped_at\":\"2026-04-14T01:00:00+00:00\",\"fires_count\":1,\"skipped_trigger_count\":1,\"latest_workflow_instance_id\":\"schedule:schedule-561-backfill_collision:backfill:1776128400\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\":{\"cron_expressions\":[\"11 3 * * *\"],\"timezone\":\"Europe\\\/Kyiv\"},\"action\":{\"workflow_type\":\"schedule-561-probe\",\"workflow_class\":\"App\\\\Workflows\\\\ProbeWorkflow\",\"input\":[]},\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-10-25T00:11:00+00:00\",\"schedule\":{\"id\":\"01m3pya4h6n3t65gjrq6n35w2c\",\"schedule_id\":\"schedule-561-kyiv_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-10-25T00:11:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-10-25 00:11:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "workflow_run_id": "01m3pya5mzxdbzq2gh9hw3qvtm",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-kyiv_fold:backfill:1792887060\",\"workflow_run_id\":\"01m3pya5mzxdbzq2gh9hw3qvtm\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":1,\"occurrence_time\":\"2026-10-25T00:11:00.000000+00:00\",\"schedule\":{\"id\":\"01m3pya4h6n3t65gjrq6n35w2c\",\"schedule_id\":\"schedule-561-kyiv_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-10-25T00:11:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-10-25 01:11:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "workflow_run_id": "01m3pya6z0ytg68r1acwt9sgj3",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-kyiv_fold:backfill:1792890660\",\"workflow_run_id\":\"01m3pya6z0ytg68r1acwt9sgj3\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":2,\"occurrence_time\":\"2026-10-25T01:11:00.000000+00:00\",\"schedule\":{\"id\":\"01m3pya4h6n3t65gjrq6n35w2c\",\"schedule_id\":\"schedule-561-kyiv_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-10-25T01:11:00+00:00\",\"last_fired_at\":\"2026-10-25T00:11:00+00:00\",\"fires_count\":1,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-kyiv_fold:backfill:1792887060\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\":\"max_runs_exhausted\",\"deleted_at\":\"2026-10-25T01:11:00+00:00\",\"schedule\":{\"id\":\"01m3pya4h6n3t65gjrq6n35w2c\",\"schedule_id\":\"schedule-561-kyiv_fold\",\"namespace\":\"default\",\"status\":\"deleted\",\"overlap_policy\":\"allow_all\",\"last_fired_at\":\"2026-10-25T01:11:00+00:00\",\"deleted_at\":\"2026-10-25T01:11:00+00:00\",\"fires_count\":2,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-kyiv_fold:backfill:1792890660\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\":{\"cron_expressions\":[\"30 3 * * *\"],\"timezone\":\"Europe\\\/Kyiv\"},\"action\":{\"workflow_type\":\"schedule-561-probe\",\"workflow_class\":\"App\\\\Workflows\\\\ProbeWorkflow\",\"input\":[]},\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-29T01:30:00+00:00\",\"schedule\":{\"id\":\"01m3pya24n1sm54y72aq92v7fe\",\"schedule_id\":\"schedule-561-kyiv_gap\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-29T01:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-03-29 01:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_gap:backfill:1774747800",
+            "workflow_run_id": "01m3pya38ebfxwn52zh69cgmxc",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-kyiv_gap:backfill:1774747800\",\"workflow_run_id\":\"01m3pya38ebfxwn52zh69cgmxc\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":1,\"occurrence_time\":\"2026-03-29T01:30:00.000000+00:00\",\"schedule\":{\"id\":\"01m3pya24n1sm54y72aq92v7fe\",\"schedule_id\":\"schedule-561-kyiv_gap\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-29T01:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\":\"max_runs_exhausted\",\"deleted_at\":\"2026-03-29T01:30:00+00:00\",\"schedule\":{\"id\":\"01m3pya24n1sm54y72aq92v7fe\",\"schedule_id\":\"schedule-561-kyiv_gap\",\"namespace\":\"default\",\"status\":\"deleted\",\"overlap_policy\":\"allow_all\",\"last_fired_at\":\"2026-03-29T01:30:00+00:00\",\"deleted_at\":\"2026-03-29T01:30:00+00:00\",\"fires_count\":1,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-kyiv_gap:backfill:1774747800\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\":{\"cron_expressions\":[\"30 1 * * *\"],\"timezone\":\"America\\\/New_York\"},\"action\":{\"workflow_type\":\"schedule-561-probe\",\"workflow_class\":\"App\\\\Workflows\\\\ProbeWorkflow\",\"input\":[]},\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-11-01T05:30:00+00:00\",\"schedule\":{\"id\":\"01m3py948tm17zdt6svsxs0hnv\",\"schedule_id\":\"schedule-561-ny_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-11-01T05:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-11-01 05:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "workflow_run_id": "01m3py99cc6jpc9mp22nrgz8wq",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-ny_fold:backfill:1793511000\",\"workflow_run_id\":\"01m3py99cc6jpc9mp22nrgz8wq\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":1,\"occurrence_time\":\"2026-11-01T05:30:00.000000+00:00\",\"schedule\":{\"id\":\"01m3py948tm17zdt6svsxs0hnv\",\"schedule_id\":\"schedule-561-ny_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-11-01T05:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-11-01 06:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "workflow_run_id": "01m3py9j81wm8zncaxvc3579fj",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-ny_fold:backfill:1793514600\",\"workflow_run_id\":\"01m3py9j81wm8zncaxvc3579fj\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":2,\"occurrence_time\":\"2026-11-01T06:30:00.000000+00:00\",\"schedule\":{\"id\":\"01m3py948tm17zdt6svsxs0hnv\",\"schedule_id\":\"schedule-561-ny_fold\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-11-01T06:30:00+00:00\",\"last_fired_at\":\"2026-11-01T05:30:00+00:00\",\"fires_count\":1,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-ny_fold:backfill:1793511000\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\":\"max_runs_exhausted\",\"deleted_at\":\"2026-11-01T06:30:00+00:00\",\"schedule\":{\"id\":\"01m3py948tm17zdt6svsxs0hnv\",\"schedule_id\":\"schedule-561-ny_fold\",\"namespace\":\"default\",\"status\":\"deleted\",\"overlap_policy\":\"allow_all\",\"last_fired_at\":\"2026-11-01T06:30:00+00:00\",\"deleted_at\":\"2026-11-01T06:30:00+00:00\",\"fires_count\":2,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-ny_fold:backfill:1793514600\"}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\":{\"cron_expressions\":[\"30 2 * * *\"],\"timezone\":\"America\\\/New_York\"},\"action\":{\"workflow_type\":\"schedule-561-probe\",\"workflow_class\":\"App\\\\Workflows\\\\ProbeWorkflow\",\"input\":[]},\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-08T07:30:00+00:00\",\"schedule\":{\"id\":\"01m3py9zsfaygk0szpkhjpfcxk\",\"schedule_id\":\"schedule-561-ny_gap\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-08T07:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-03-08 07:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "workflow_run_id": "01m3pya0wb2741k0gvqxwj62np",
+            "payload": "{\"workflow_instance_id\":\"schedule:schedule-561-ny_gap:backfill:1772955000\",\"workflow_run_id\":\"01m3pya0wb2741k0gvqxwj62np\",\"outcome\":\"scheduled\",\"effective_overlap_policy\":\"allow_all\",\"trigger_number\":1,\"occurrence_time\":\"2026-03-08T07:30:00.000000+00:00\",\"schedule\":{\"id\":\"01m3py9zsfaygk0szpkhjpfcxk\",\"schedule_id\":\"schedule-561-ny_gap\",\"namespace\":\"default\",\"status\":\"active\",\"overlap_policy\":\"allow_all\",\"next_fire_at\":\"2026-03-08T07:30:00+00:00\",\"fires_count\":0,\"skipped_trigger_count\":0}}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\":\"max_runs_exhausted\",\"deleted_at\":\"2026-03-08T07:30:00+00:00\",\"schedule\":{\"id\":\"01m3py9zsfaygk0szpkhjpfcxk\",\"schedule_id\":\"schedule-561-ny_gap\",\"namespace\":\"default\",\"status\":\"deleted\",\"overlap_policy\":\"allow_all\",\"last_fired_at\":\"2026-03-08T07:30:00+00:00\",\"deleted_at\":\"2026-03-08T07:30:00+00:00\",\"fires_count\":1,\"skipped_trigger_count\":0,\"latest_workflow_instance_id\":\"schedule:schedule-561-ny_gap:backfill:1772955000\"}}"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pze8021100a67zppvbtkyn",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pya5mzxdbzq2gh9hw3qvtm",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pya6z0ytg68r1acwt9sgj3",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pya38ebfxwn52zh69cgmxc",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_gap:backfill:1774747800",
+            "status": "completed"
+        },
+        {
+            "id": "01m3py99cc6jpc9mp22nrgz8wq",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "status": "completed"
+        },
+        {
+            "id": "01m3py9j81wm8zncaxvc3579fj",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pya0wb2741k0gvqxwj62np",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "status": "completed"
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

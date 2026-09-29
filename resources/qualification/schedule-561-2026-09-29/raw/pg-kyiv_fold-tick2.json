@@ -1,0 +1,74 @@
+{
+    "case": "kyiv_fold",
+    "phase": "tick2",
+    "time_utc": "2026-10-25T01:11:00+00:00",
+    "expected_due_utc": [
+        "2026-10-25T00:11:00Z",
+        "2026-10-25T01:11:00Z"
+    ],
+    "next_fire_utc": null,
+    "schedule_status": "deleted",
+    "fires_count": 2,
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "results": [
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "outcome": "triggered",
+            "run_id": "01m3pywv2qa55gtmejjq89ks2r",
+            "occurrence_time": "2026-10-25T01:11:00.000000+00:00",
+            "last_fired_at": "2026-10-25T01:11:00.000000+00:00"
+        }
+    ],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "current_run_id": "01m3pywsm934b67j98nfqye1jf"
+        },
+        {
+            "id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "current_run_id": "01m3pywv2qa55gtmejjq89ks2r"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pywv2qa55gtmejjq89ks2r",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "status": "pending"
+        },
+        {
+            "id": "01m3pywsm934b67j98nfqye1jf",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "status": "pending"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "workflow_run_id": "01m3pywsm934b67j98nfqye1jf"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "workflow_run_id": "01m3pywv2qa55gtmejjq89ks2r"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 6,
+    "failed_queue_jobs": 0
+}

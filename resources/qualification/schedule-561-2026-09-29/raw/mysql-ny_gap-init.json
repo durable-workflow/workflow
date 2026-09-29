@@ -1,0 +1,23 @@
+{
+    "case": "ny_gap",
+    "phase": "init",
+    "time_utc": "2026-03-08T06:59:00+00:00",
+    "expected_due_utc": [
+        "2026-03-08T07:30:00Z"
+    ],
+    "next_fire_utc": "2026-03-08T07:30:00+00:00",
+    "fires_count": 0,
+    "results": [],
+    "instances": [],
+    "runs": [],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

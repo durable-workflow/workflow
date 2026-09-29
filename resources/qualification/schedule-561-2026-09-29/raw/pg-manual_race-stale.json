@@ -1,0 +1,57 @@
+{
+    "case": "manual_race",
+    "phase": "stale",
+    "time_utc": "2026-04-14T01:00:00+00:00",
+    "expected_due_utc": [
+        "2026-04-14T01:00:00Z"
+    ],
+    "next_fire_utc": "2026-04-14T01:01:00+00:00",
+    "schedule_status": "active",
+    "fires_count": 1,
+    "failures_count": 0,
+    "skipped_trigger_count": 1,
+    "last_skip_reason": "stale_occurrence",
+    "results": {
+        "stale": {
+            "outcome": "skipped",
+            "instance_id": null,
+            "reason": "stale_occurrence"
+        },
+        "tick": []
+    },
+    "instances": [
+        {
+            "id": "schedule:schedule-561-manual_race:1776128400000",
+            "current_run_id": "01m3pz9s7f05hy3wsn1xj5cpb5"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pz9s7f05hy3wsn1xj5cpb5",
+            "workflow_instance_id": "schedule:schedule-561-manual_race:1776128400000",
+            "status": "pending"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-manual_race:1776128400000",
+            "workflow_run_id": "01m3pz9s7f05hy3wsn1xj5cpb5"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggerSkipped",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 1,
+    "failed_queue_jobs": 0
+}

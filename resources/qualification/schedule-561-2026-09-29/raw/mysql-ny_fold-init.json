@@ -1,0 +1,24 @@
+{
+    "case": "ny_fold",
+    "phase": "init",
+    "time_utc": "2026-11-01T05:29:00+00:00",
+    "expected_due_utc": [
+        "2026-11-01T05:30:00Z",
+        "2026-11-01T06:30:00Z"
+    ],
+    "next_fire_utc": "2026-11-01T05:30:00+00:00",
+    "fires_count": 0,
+    "results": [],
+    "instances": [],
+    "runs": [],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 1,
+    "failed_queue_jobs": 0
+}

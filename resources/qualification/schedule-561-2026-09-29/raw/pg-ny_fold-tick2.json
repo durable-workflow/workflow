@@ -1,0 +1,74 @@
+{
+    "case": "ny_fold",
+    "phase": "tick2",
+    "time_utc": "2026-11-01T06:30:00+00:00",
+    "expected_due_utc": [
+        "2026-11-01T05:30:00Z",
+        "2026-11-01T06:30:00Z"
+    ],
+    "next_fire_utc": null,
+    "schedule_status": "deleted",
+    "fires_count": 2,
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "results": [
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "outcome": "triggered",
+            "run_id": "01m3pywmdgj71y63n4z16gshv5",
+            "occurrence_time": "2026-11-01T06:30:00.000000+00:00",
+            "last_fired_at": "2026-11-01T06:30:00.000000+00:00"
+        }
+    ],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "current_run_id": "01m3pywk3my92kh7jrbwbcvyvn"
+        },
+        {
+            "id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "current_run_id": "01m3pywmdgj71y63n4z16gshv5"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pywk3my92kh7jrbwbcvyvn",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "status": "pending"
+        },
+        {
+            "id": "01m3pywmdgj71y63n4z16gshv5",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "status": "pending"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "workflow_run_id": "01m3pywk3my92kh7jrbwbcvyvn"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "workflow_run_id": "01m3pywmdgj71y63n4z16gshv5"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 3,
+    "failed_queue_jobs": 0
+}

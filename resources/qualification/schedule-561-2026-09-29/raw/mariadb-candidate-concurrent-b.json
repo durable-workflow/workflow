@@ -1,0 +1,36 @@
+{
+    "actor": "b",
+    "result": [
+        {
+            "schedule_id": "schedule-561-concurrent",
+            "instance_id": "schedule:schedule-561-concurrent:backfill:1776128400",
+            "outcome": "triggered",
+            "run_id": "01m3pzd4t3xrpftgadcdq2jq1p",
+            "occurrence_time": "2026-04-14T01:00:00.000000+00:00",
+            "last_fired_at": "2026-04-14T01:00:00.000000+00:00"
+        }
+    ],
+    "fires_count": 1,
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-concurrent:backfill:1776128400"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "workflow_instance_id": null
+        },
+        {
+            "sequence": 4,
+            "event_type": "ScheduleTriggerSkipped",
+            "workflow_instance_id": null
+        }
+    ]
+}

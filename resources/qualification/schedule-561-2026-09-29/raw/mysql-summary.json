@@ -1,0 +1,363 @@
+{
+    "driver": "mysql",
+    "schedules": [
+        {
+            "id": "01m3pymzk24zfq4z8kdradrkth",
+            "schedule_id": "schedule-561-backfill_collision",
+            "status": "active",
+            "next_fire_at": "2026-04-14 01:01:00.000000",
+            "fires_count": 2,
+            "failures_count": 1,
+            "skipped_trigger_count": 1,
+            "last_skip_reason": "already_fired_occurrence",
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pyn37e42xmhbgtgw7e8at5",
+            "schedule_id": "schedule-561-concurrent",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 1,
+            "last_skip_reason": "stale_occurrence",
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pyj2a4q059vtk6d6f6xmqw",
+            "schedule_id": "schedule-561-kyiv_fold",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 2,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pyhzyb0smk5mffxhqvcjch",
+            "schedule_id": "schedule-561-kyiv_gap",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pymw4my36cnxq9q9swx3yj",
+            "schedule_id": "schedule-561-manual_race",
+            "status": "active",
+            "next_fire_at": "2026-04-14 01:01:00.000000",
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 1,
+            "last_skip_reason": "stale_occurrence",
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pyhw9mtxb6gpnc4q1n77cq",
+            "schedule_id": "schedule-561-ny_fold",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 2,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        },
+        {
+            "id": "01m3pyhsza0ztqpr7x5s5zzdtz",
+            "schedule_id": "schedule-561-ny_gap",
+            "status": "deleted",
+            "next_fire_at": null,
+            "fires_count": 1,
+            "failures_count": 0,
+            "skipped_trigger_count": 0,
+            "last_skip_reason": null,
+            "buffered_actions": null
+        }
+    ],
+    "schedule_history": [
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"UTC\", \"cron_expressions\": [\"* * * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pymzk24zfq4z8kdradrkth\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-backfill_collision\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-04-14 01:00:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "workflow_run_id": "01m3pyn0qg2q70001cd71r2bhs",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pymzk24zfq4z8kdradrkth\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-backfill_collision\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-04-14T01:00:00.000000+00:00\", \"workflow_run_id\": \"01m3pyn0qg2q70001cd71r2bhs\", \"workflow_instance_id\": \"schedule:schedule-561-backfill_collision:backfill:1776128400\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-04-14 00:59:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128340",
+            "workflow_run_id": "01m3pyn21gzz42bagfqtf31z4k",
+            "payload": "{\"outcome\": \"backfilled\", \"schedule\": {\"id\": \"01m3pymzk24zfq4z8kdradrkth\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-backfill_collision\", \"next_fire_at\": \"2026-04-14T01:01:00+00:00\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-backfill_collision:backfill:1776128400\"}, \"trigger_number\": 2, \"occurrence_time\": \"2026-04-14T00:59:00.000000+00:00\", \"workflow_run_id\": \"01m3pyn21gzz42bagfqtf31z4k\", \"workflow_instance_id\": \"schedule:schedule-561-backfill_collision:backfill:1776128340\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "sequence": 4,
+            "event_type": "ScheduleTriggerSkipped",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"already_fired_occurrence\", \"schedule\": {\"id\": \"01m3pymzk24zfq4z8kdradrkth\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 2, \"schedule_id\": \"schedule-561-backfill_collision\", \"next_fire_at\": \"2026-04-14T01:01:00+00:00\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"last_skip_reason\": \"already_fired_occurrence\", \"skipped_trigger_count\": 1, \"latest_workflow_instance_id\": \"schedule:schedule-561-backfill_collision:backfill:1776128340\"}, \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"skipped_trigger_count\": 1}"
+        },
+        {
+            "schedule_id": "schedule-561-concurrent",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"UTC\", \"cron_expressions\": [\"* * * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pyn37e42xmhbgtgw7e8at5\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-concurrent\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-concurrent",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-04-14 01:00:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-concurrent:backfill:1776128400",
+            "workflow_run_id": "01m3pyqsk944yzsevj8da0450k",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyn37e42xmhbgtgw7e8at5\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-concurrent\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-04-14T01:00:00.000000+00:00\", \"workflow_run_id\": \"01m3pyqsk944yzsevj8da0450k\", \"workflow_instance_id\": \"schedule:schedule-561-concurrent:backfill:1776128400\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-concurrent",
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyn37e42xmhbgtgw7e8at5\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-04-14T01:00:00+00:00\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-concurrent\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-concurrent:backfill:1776128400\"}, \"deleted_at\": \"2026-04-14T01:00:00+00:00\"}"
+        },
+        {
+            "schedule_id": "schedule-561-concurrent",
+            "sequence": 4,
+            "event_type": "ScheduleTriggerSkipped",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"stale_occurrence\", \"schedule\": {\"id\": \"01m3pyn37e42xmhbgtgw7e8at5\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-04-14T01:00:00+00:00\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-concurrent\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"last_skip_reason\": \"stale_occurrence\", \"skipped_trigger_count\": 1, \"latest_workflow_instance_id\": \"schedule:schedule-561-concurrent:backfill:1776128400\"}, \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"skipped_trigger_count\": 1}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"Europe\/Kyiv\", \"cron_expressions\": [\"11 3 * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pyj2a4q059vtk6d6f6xmqw\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-kyiv_fold\", \"next_fire_at\": \"2026-10-25T00:11:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-10-25T00:11:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-10-25 00:11:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "workflow_run_id": "01m3pyj3ccmpammee5tkdmj8bz",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyj2a4q059vtk6d6f6xmqw\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-kyiv_fold\", \"next_fire_at\": \"2026-10-25T00:11:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-10-25T00:11:00.000000+00:00\", \"workflow_run_id\": \"01m3pyj3ccmpammee5tkdmj8bz\", \"workflow_instance_id\": \"schedule:schedule-561-kyiv_fold:backfill:1792887060\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-10-25 01:11:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "workflow_run_id": "01m3pyj4m9yf3r845dqx9256rd",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyj2a4q059vtk6d6f6xmqw\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-kyiv_fold\", \"next_fire_at\": \"2026-10-25T01:11:00+00:00\", \"last_fired_at\": \"2026-10-25T00:11:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-kyiv_fold:backfill:1792887060\"}, \"trigger_number\": 2, \"occurrence_time\": \"2026-10-25T01:11:00.000000+00:00\", \"workflow_run_id\": \"01m3pyj4m9yf3r845dqx9256rd\", \"workflow_instance_id\": \"schedule:schedule-561-kyiv_fold:backfill:1792890660\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_fold",
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyj2a4q059vtk6d6f6xmqw\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-10-25T01:11:00+00:00\", \"fires_count\": 2, \"schedule_id\": \"schedule-561-kyiv_fold\", \"last_fired_at\": \"2026-10-25T01:11:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-kyiv_fold:backfill:1792890660\"}, \"deleted_at\": \"2026-10-25T01:11:00+00:00\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"Europe\/Kyiv\", \"cron_expressions\": [\"30 3 * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pyhzyb0smk5mffxhqvcjch\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-kyiv_gap\", \"next_fire_at\": \"2026-03-29T01:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-03-29T01:30:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-03-29 01:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_gap:backfill:1774747800",
+            "workflow_run_id": "01m3pyj10y5wccqv545zhn8j16",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyhzyb0smk5mffxhqvcjch\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-kyiv_gap\", \"next_fire_at\": \"2026-03-29T01:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-03-29T01:30:00.000000+00:00\", \"workflow_run_id\": \"01m3pyj10y5wccqv545zhn8j16\", \"workflow_instance_id\": \"schedule:schedule-561-kyiv_gap:backfill:1774747800\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-kyiv_gap",
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyhzyb0smk5mffxhqvcjch\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-03-29T01:30:00+00:00\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-kyiv_gap\", \"last_fired_at\": \"2026-03-29T01:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-kyiv_gap:backfill:1774747800\"}, \"deleted_at\": \"2026-03-29T01:30:00+00:00\"}"
+        },
+        {
+            "schedule_id": "schedule-561-manual_race",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"UTC\", \"cron_expressions\": [\"* * * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pymw4my36cnxq9q9swx3yj\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-manual_race\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-manual_race",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": "schedule:schedule-561-manual_race:1776128400000",
+            "workflow_run_id": "01m3pymx7dq554yf8jxeqq8hp9",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pymw4my36cnxq9q9swx3yj\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-manual_race\", \"next_fire_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"workflow_run_id\": \"01m3pymx7dq554yf8jxeqq8hp9\", \"workflow_instance_id\": \"schedule:schedule-561-manual_race:1776128400000\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-manual_race",
+            "sequence": 3,
+            "event_type": "ScheduleTriggerSkipped",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"stale_occurrence\", \"schedule\": {\"id\": \"01m3pymw4my36cnxq9q9swx3yj\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-manual_race\", \"next_fire_at\": \"2026-04-14T01:01:00+00:00\", \"last_fired_at\": \"2026-04-14T01:00:00+00:00\", \"overlap_policy\": \"allow_all\", \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"last_skip_reason\": \"stale_occurrence\", \"skipped_trigger_count\": 1, \"latest_workflow_instance_id\": \"schedule:schedule-561-manual_race:1776128400000\"}, \"last_skipped_at\": \"2026-04-14T01:00:00+00:00\", \"skipped_trigger_count\": 1}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"America\/New_York\", \"cron_expressions\": [\"30 1 * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pyhw9mtxb6gpnc4q1n77cq\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-ny_fold\", \"next_fire_at\": \"2026-11-01T05:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-11-01T05:30:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-11-01 05:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "workflow_run_id": "01m3pyhxc1v6g09tw17feck7rx",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyhw9mtxb6gpnc4q1n77cq\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-ny_fold\", \"next_fire_at\": \"2026-11-01T05:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-11-01T05:30:00.000000+00:00\", \"workflow_run_id\": \"01m3pyhxc1v6g09tw17feck7rx\", \"workflow_instance_id\": \"schedule:schedule-561-ny_fold:backfill:1793511000\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 3,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-11-01 06:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "workflow_run_id": "01m3pyhym6cs5y73f02dr7qrf6",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyhw9mtxb6gpnc4q1n77cq\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-ny_fold\", \"next_fire_at\": \"2026-11-01T06:30:00+00:00\", \"last_fired_at\": \"2026-11-01T05:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-ny_fold:backfill:1793511000\"}, \"trigger_number\": 2, \"occurrence_time\": \"2026-11-01T06:30:00.000000+00:00\", \"workflow_run_id\": \"01m3pyhym6cs5y73f02dr7qrf6\", \"workflow_instance_id\": \"schedule:schedule-561-ny_fold:backfill:1793514600\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_fold",
+            "sequence": 4,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyhw9mtxb6gpnc4q1n77cq\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-11-01T06:30:00+00:00\", \"fires_count\": 2, \"schedule_id\": \"schedule-561-ny_fold\", \"last_fired_at\": \"2026-11-01T06:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-ny_fold:backfill:1793514600\"}, \"deleted_at\": \"2026-11-01T06:30:00+00:00\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"spec\": {\"timezone\": \"America\/New_York\", \"cron_expressions\": [\"30 2 * * *\"]}, \"action\": {\"input\": [], \"workflow_type\": \"schedule-561-probe\", \"workflow_class\": \"App\\\\Workflows\\\\ProbeWorkflow\"}, \"schedule\": {\"id\": \"01m3pyhsza0ztqpr7x5s5zzdtz\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-ny_gap\", \"next_fire_at\": \"2026-03-08T07:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"next_fire_at\": \"2026-03-08T07:30:00+00:00\", \"overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "occurrence_at_utc": "2026-03-08 07:30:00.000000",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "workflow_run_id": "01m3pyhv11sytwcwppxp9ts3n4",
+            "payload": "{\"outcome\": \"scheduled\", \"schedule\": {\"id\": \"01m3pyhsza0ztqpr7x5s5zzdtz\", \"status\": \"active\", \"namespace\": \"default\", \"fires_count\": 0, \"schedule_id\": \"schedule-561-ny_gap\", \"next_fire_at\": \"2026-03-08T07:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0}, \"trigger_number\": 1, \"occurrence_time\": \"2026-03-08T07:30:00.000000+00:00\", \"workflow_run_id\": \"01m3pyhv11sytwcwppxp9ts3n4\", \"workflow_instance_id\": \"schedule:schedule-561-ny_gap:backfill:1772955000\", \"effective_overlap_policy\": \"allow_all\"}"
+        },
+        {
+            "schedule_id": "schedule-561-ny_gap",
+            "sequence": 3,
+            "event_type": "ScheduleDeleted",
+            "occurrence_at_utc": null,
+            "workflow_instance_id": null,
+            "workflow_run_id": null,
+            "payload": "{\"reason\": \"max_runs_exhausted\", \"schedule\": {\"id\": \"01m3pyhsza0ztqpr7x5s5zzdtz\", \"status\": \"deleted\", \"namespace\": \"default\", \"deleted_at\": \"2026-03-08T07:30:00+00:00\", \"fires_count\": 1, \"schedule_id\": \"schedule-561-ny_gap\", \"last_fired_at\": \"2026-03-08T07:30:00+00:00\", \"overlap_policy\": \"allow_all\", \"skipped_trigger_count\": 0, \"latest_workflow_instance_id\": \"schedule:schedule-561-ny_gap:backfill:1772955000\"}, \"deleted_at\": \"2026-03-08T07:30:00+00:00\"}"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pyn21gzz42bagfqtf31z4k",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128340",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyn0qg2q70001cd71r2bhs",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyqsk944yzsevj8da0450k",
+            "workflow_instance_id": "schedule:schedule-561-concurrent:backfill:1776128400",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyj3ccmpammee5tkdmj8bz",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792887060",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyj4m9yf3r845dqx9256rd",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_fold:backfill:1792890660",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyj10y5wccqv545zhn8j16",
+            "workflow_instance_id": "schedule:schedule-561-kyiv_gap:backfill:1774747800",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pymx7dq554yf8jxeqq8hp9",
+            "workflow_instance_id": "schedule:schedule-561-manual_race:1776128400000",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyhxc1v6g09tw17feck7rx",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793511000",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyhym6cs5y73f02dr7qrf6",
+            "workflow_instance_id": "schedule:schedule-561-ny_fold:backfill:1793514600",
+            "status": "completed"
+        },
+        {
+            "id": "01m3pyhv11sytwcwppxp9ts3n4",
+            "workflow_instance_id": "schedule:schedule-561-ny_gap:backfill:1772955000",
+            "status": "completed"
+        }
+    ],
+    "pending_queue_jobs": 0,
+    "failed_queue_jobs": 0
+}

@@ -1,0 +1,56 @@
+{
+    "case": "backfill_collision",
+    "phase": "backfill",
+    "time_utc": "2026-04-14T01:00:00+00:00",
+    "expected_due_utc": [
+        "2026-04-14T01:00:00Z"
+    ],
+    "next_fire_utc": "2026-04-14T01:01:00+00:00",
+    "schedule_status": "active",
+    "fires_count": 1,
+    "failures_count": 1,
+    "skipped_trigger_count": 1,
+    "last_skip_reason": "already_fired_occurrence",
+    "results": [
+        {
+            "schedule_id": "schedule-561-backfill_collision",
+            "instance_id": null,
+            "cron_time": "2026-04-14T01:00:00+00:00"
+        }
+    ],
+    "instances": [
+        {
+            "id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "current_run_id": "01m3pze8021100a67zppvbtkyn"
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m3pze8021100a67zppvbtkyn",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "status": "pending"
+        }
+    ],
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "ScheduleCreated",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        },
+        {
+            "sequence": 2,
+            "event_type": "ScheduleTriggered",
+            "workflow_instance_id": "schedule:schedule-561-backfill_collision:backfill:1776128400",
+            "workflow_run_id": "01m3pze8021100a67zppvbtkyn"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ScheduleTriggerSkipped",
+            "workflow_instance_id": null,
+            "workflow_run_id": null
+        }
+    ],
+    "pending_queue_jobs": 1,
+    "failed_queue_jobs": 0
+}
