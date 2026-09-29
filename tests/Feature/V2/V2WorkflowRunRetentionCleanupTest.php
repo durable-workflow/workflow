@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
@@ -50,6 +51,78 @@ use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 final class V2WorkflowRunRetentionCleanupTest extends TestCase
 {
+    public function testPruningMarkerPreservesUtcInstantAcrossApplicationTimezones(): void
+    {
+        $originalTimezone = date_default_timezone_get();
+        $originalAppTimezone = config('app.timezone');
+        $instants = [
+            '2026-01-15T12:00:00Z',
+            '2026-07-15T12:00:00Z',
+            '2026-03-29T00:59:59Z',
+            '2026-03-29T01:00:01Z',
+            '2026-10-25T00:59:59Z',
+            '2026-10-25T01:00:01Z',
+        ];
+
+        try {
+            foreach (['UTC', 'Europe/Kyiv'] as $timezone) {
+                config()->set('app.timezone', $timezone);
+                date_default_timezone_set($timezone);
+
+                foreach ($instants as $instant) {
+                    $expected = Carbon::parse($instant, 'UTC');
+                    Carbon::setTestNow($expected);
+                    $run = $this->seedRun(status: RunStatus::Completed, closed: true);
+                    $run->forceFill([
+                        'archived_at' => $expected->copy()
+                            ->subMinute(),
+                    ])->save();
+                    $rawArchivedAt = DB::table('workflow_runs')->where('id', $run->id)->value('archived_at');
+
+                    WorkflowRunRetentionCleanup::pruneRun($run->id);
+
+                    $raw = DB::table('workflow_runs')->where('id', $run->id)->value('details_pruned_at');
+                    $hydrated = WorkflowRun::query()->findOrFail($run->id);
+                    $this->assertSame(
+                        $expected->getTimestamp(),
+                        Carbon::parse($raw, 'UTC')->getTimestamp(),
+                        $timezone . ' ' . $instant . ' raw'
+                    );
+                    $this->assertSame(
+                        $expected->getTimestamp(),
+                        $hydrated->details_pruned_at?->getTimestamp(),
+                        $timezone . ' ' . $instant . ' hydrated'
+                    );
+                    $this->assertSame(RunStatus::Completed, $hydrated->status);
+                    $this->assertSame(
+                        $rawArchivedAt,
+                        DB::table('workflow_runs')->where('id', $run->id)->value('archived_at')
+                    );
+
+                    Carbon::setTestNow($expected->copy()->addHour());
+                    WorkflowRunRetentionCleanup::pruneRun($run->id);
+                    $this->assertSame(
+                        $raw,
+                        DB::table('workflow_runs')->where('id', $run->id)->value('details_pruned_at')
+                    );
+                    $this->assertSame(
+                        $expected->getTimestamp(),
+                        WorkflowRun::query()->findOrFail($run->id)->details_pruned_at?->getTimestamp()
+                    );
+                    $this->assertSame(
+                        $rawArchivedAt,
+                        DB::table('workflow_runs')->where('id', $run->id)->value('archived_at')
+                    );
+                }
+            }
+        } finally {
+            Carbon::setTestNow();
+            config()
+                ->set('app.timezone', $originalAppTimezone);
+            date_default_timezone_set($originalTimezone);
+        }
+    }
+
     public function testPrunesRetainedRowsForClosedRunAndLeavesRunTombstone(): void
     {
         $run = $this->seedRun(status: RunStatus::Completed, closed: true);

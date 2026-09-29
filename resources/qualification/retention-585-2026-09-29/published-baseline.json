@@ -1,0 +1,30 @@
+{
+    "winter": {
+        "expected_utc": "2026-01-15T12:00:00Z",
+        "raw_utc": "2026-01-15 12:00:00",
+        "hydrated_utc": "2026-01-15T10:00:00+00:00",
+        "serialized": "2026-01-15T12:00:00+02:00",
+        "notice_timestamp": "2026-01-15 12:00:00+02:00",
+        "status": "completed",
+        "archived_at": "2026-01-15T09:59:00.000000Z",
+        "raw_archived_at": "2026-01-15 11:59:00",
+        "archive_timestamp_matches": false,
+        "retained_history_event_count": 0,
+        "retained_exception_count": 0,
+        "timestamp_matches": false
+    },
+    "summer": {
+        "expected_utc": "2026-07-15T12:00:00Z",
+        "raw_utc": "2026-07-15 12:00:00",
+        "hydrated_utc": "2026-07-15T09:00:00+00:00",
+        "serialized": "2026-07-15T12:00:00+03:00",
+        "notice_timestamp": "2026-07-15 12:00:00+03:00",
+        "status": "failed",
+        "archived_at": "2026-07-15T08:59:00.000000Z",
+        "raw_archived_at": "2026-07-15 11:59:00",
+        "archive_timestamp_matches": false,
+        "retained_history_event_count": 0,
+        "retained_exception_count": 0,
+        "timestamp_matches": false
+    }
+}

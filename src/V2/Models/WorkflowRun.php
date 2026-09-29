@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Carbon;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\Traits\ResolvesStorageConnection;
@@ -56,6 +57,14 @@ class WorkflowRun extends Model
         'import_contract_version' => 'integer',
         'imported_at' => 'datetime',
     ];
+
+    public function getDetailsPrunedAtAttribute(?string $value): ?Carbon
+    {
+        // The database stores this marker as a UTC wall-clock value without
+        // timezone information. Laravel's generic datetime cast otherwise
+        // interprets it in PHP's default timezone on hydration.
+        return $value === null ? null : Carbon::parse($value, 'UTC');
+    }
 
     public function instance(): BelongsTo
     {
