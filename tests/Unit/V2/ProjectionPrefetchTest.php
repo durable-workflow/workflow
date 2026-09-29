@@ -110,7 +110,8 @@ final class ProjectionPrefetchTest extends TestCase
         /** @var list<Model> $rows */
         $rows = $projector::project($run, $entries);
         // Compare persisted rows on both sides. PostgreSQL can drop trailing
-        // zeroes from fractional seconds when hydrating timestamp columns.
+        // zeroes from fractional seconds and SQLite can return booleans as
+        // integers when hydrating columns.
         $expected = array_map(static fn (Model $row): array => self::attributes($row->refresh()), $rows);
         $connection = $rows[0]->getConnection();
         $table = $rows[0]->getTable();
@@ -128,7 +129,7 @@ final class ProjectionPrefetchTest extends TestCase
             str_starts_with(strtolower($query['query']), 'select') && str_contains($query['query'], $table));
         // Active timelines append, so only terminal runs need the stale-cleanup read.
         $this->assertCount($projector === RunTimelineProjector::class ? 1 : 2, $reads);
-        $this->assertSame($expected, array_map(self::attributes(...), $reprojected));
+        $this->assertSame($expected, array_map(static fn (Model $row): array => self::attributes($row->refresh()), $reprojected));
 
         $rows[0]->forceFill([
             'payload' => [
