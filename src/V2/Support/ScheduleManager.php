@@ -384,6 +384,12 @@ final class ScheduleManager
                 return new ScheduleTriggerResult('skipped', null, null, 'remaining_actions_exhausted');
             }
 
+            if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                self::skipFiredOccurrence($schedule, $occurrenceTime, $context);
+
+                return new ScheduleTriggerResult('skipped', null, null, 'already_fired_occurrence');
+            }
+
             $overlapPolicy = $overlapPolicyOverride
                 ?? ScheduleOverlapPolicy::tryFrom($schedule->overlap_policy ?? '')
                 ?? ScheduleOverlapPolicy::Skip;
@@ -470,11 +476,24 @@ final class ScheduleManager
                     $schedule->save();
 
                     $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
+                    if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                        self::skipFiredOccurrence($schedule, $occurrenceTime);
+
+                        return [
+                            'instance_id' => null,
+                            'run_id' => null,
+                            'outcome' => 'skipped',
+                            'reason' => 'already_fired_occurrence',
+                            'occurrence_time' => $occurrenceTime->format('Y-m-d\TH:i:s.uP'),
+                        ];
+                    }
+
                     $startResult = self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'drained');
 
                     return [
                         'instance_id' => $startResult->instanceId,
                         'run_id' => $startResult->runId,
+                        'outcome' => 'drained',
                         'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
                     ];
                 });
@@ -486,7 +505,8 @@ final class ScheduleManager
                         'schedule_id' => $schedule->schedule_id,
                         'instance_id' => $drained['instance_id'],
                         'run_id' => $drained['run_id'],
-                        'outcome' => 'drained',
+                        'outcome' => $drained['outcome'],
+                        'reason' => $drained['reason'] ?? null,
                         'occurrence_time' => $drained['occurrence_time'],
                         'last_fired_at' => $schedule->last_fired_at?->format('Y-m-d\TH:i:s.uP'),
                         'next_fire_at' => $schedule->next_fire_at?->format('Y-m-d\TH:i:s.uP'),
@@ -781,6 +801,12 @@ final class ScheduleManager
                 return null;
             }
 
+            if (self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                self::skipFiredOccurrence($schedule, $occurrenceTime, $context);
+
+                return null;
+            }
+
             if (! self::overlapAllowed($schedule, $effectivePolicy)) {
                 self::recordSkip($schedule, 'overlap_policy_' . $effectivePolicy->value, $context);
 
@@ -805,6 +831,60 @@ final class ScheduleManager
                 return null;
             }
         });
+    }
+
+    private static function hasFiredOccurrence(
+        WorkflowSchedule $schedule,
+        DateTimeInterface $occurrenceTime,
+    ): bool {
+        $key = WorkflowScheduleHistoryEvent::utcOccurrenceKey($occurrenceTime);
+        $history = ConfiguredV2Models::query('schedule_history_event_model', WorkflowScheduleHistoryEvent::class)
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value);
+
+        if ((clone $history)->where('occurrence_at_utc', $key)->exists()) {
+            return true;
+        }
+
+        // An older scheduler can still write during a rolling upgrade after
+        // the migration has filled existing history. Its new rows lack the
+        // indexed key until every scheduler runs the updated package.
+        foreach ((clone $history)->whereNull('occurrence_at_utc')->cursor() as $event) {
+            $payload = $event->payload;
+            $stored = is_array($payload) ? ($payload['occurrence_time'] ?? null) : null;
+
+            if (! is_string($stored) || $stored === '') {
+                continue;
+            }
+
+            try {
+                if (WorkflowScheduleHistoryEvent::utcOccurrenceKey(new \DateTimeImmutable($stored)) === $key) {
+                    return true;
+                }
+            } catch (\Exception) {
+                continue;
+            }
+        }
+
+        return false;
+    }
+
+    private static function skipFiredOccurrence(
+        WorkflowSchedule $schedule,
+        DateTimeInterface $occurrenceTime,
+        ?CommandContext $context = null,
+    ): void {
+        self::recordSkip($schedule, 'already_fired_occurrence', $context);
+
+        if ($schedule->next_fire_at !== null
+            && WorkflowScheduleHistoryEvent::utcOccurrenceKey($schedule->next_fire_at)
+                === WorkflowScheduleHistoryEvent::utcOccurrenceKey($occurrenceTime)
+            && now()
+                ->getTimestamp() >= $occurrenceTime->getTimestamp()) {
+            $schedule->forceFill([
+                'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
+            ])->save();
+        }
     }
 
     /**

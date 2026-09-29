@@ -1284,6 +1284,102 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(ScheduleStatus::Deleted, $schedule->status);
     }
 
+    public function testBackfillSkipsAnOccurrenceAlreadyStartedByTick(): void
+    {
+        $starter = $this->createMock(ScheduleWorkflowStarter::class);
+        $starter->expects($this->once())
+            ->method('start')
+            ->willReturn(new ScheduleStartResult('remote-first', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+
+        Carbon::setTestNowAndTimezone(Carbon::parse('2026-04-14T00:59:00Z')->setTimezone('UTC'), 'UTC');
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'backfill-after-tick',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+                maxRuns: 3,
+            );
+            $dueAt = $schedule->next_fire_at;
+            $this->assertNotNull($dueAt);
+
+            Carbon::setTestNowAndTimezone($dueAt, 'UTC');
+            $tick = ScheduleManager::tick();
+            $this->assertSame('triggered', $tick[0]['outcome']);
+
+            $backfill = ScheduleManager::backfill($schedule, $dueAt, $dueAt->copy()->addMinute());
+            $this->assertCount(1, $backfill);
+            $this->assertNull($backfill[0]['instance_id']);
+            $this->assertArrayNotHasKey('error', $backfill[0]);
+            $this->assertSame(1, (int) $schedule->refresh()->fires_count);
+            $this->assertSame(0, (int) $schedule->failures_count);
+            $this->assertSame('already_fired_occurrence', $schedule->last_skip_reason);
+            $this->assertSame(1, WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->where('occurrence_at_utc', WorkflowScheduleHistoryEvent::utcOccurrenceKey($dueAt))
+                ->count());
+
+            // A scheduler still on the previous package may write after the
+            // migration while this process is already using the new code.
+            WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->update([
+                    'occurrence_at_utc' => null,
+                ]);
+            $rollingUpgradeBackfill = ScheduleManager::backfill($schedule, $dueAt, $dueAt->copy()->addMinute());
+            $this->assertNull($rollingUpgradeBackfill[0]['instance_id']);
+            $this->assertArrayNotHasKey('error', $rollingUpgradeBackfill[0]);
+            $this->assertSame(1, (int) $schedule->refresh()->fires_count);
+            $this->assertSame(0, (int) $schedule->failures_count);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testTickSkipsAnOccurrenceAlreadyStartedByBackfill(): void
+    {
+        $starter = $this->createMock(ScheduleWorkflowStarter::class);
+        $starter->expects($this->once())
+            ->method('start')
+            ->willReturn(new ScheduleStartResult('remote-first', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+
+        Carbon::setTestNowAndTimezone(Carbon::parse('2026-04-14T00:59:00Z')->setTimezone('UTC'), 'UTC');
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'tick-after-backfill',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+                maxRuns: 3,
+            );
+            $dueAt = $schedule->next_fire_at;
+            $this->assertNotNull($dueAt);
+
+            $backfill = ScheduleManager::backfill($schedule, $dueAt, $dueAt->copy()->addMinute());
+            $this->assertSame('remote-first', $backfill[0]['instance_id']);
+
+            Carbon::setTestNowAndTimezone($dueAt, 'UTC');
+            $tick = ScheduleManager::tick();
+            $this->assertCount(1, $tick);
+            $this->assertSame('skipped', $tick[0]['outcome']);
+            $this->assertSame('already_fired_occurrence', $tick[0]['reason']);
+            $this->assertSame('2026-04-14T01:01:00+00:00', $schedule->refresh()->next_fire_at?->toIso8601String());
+            $this->assertSame(1, (int) $schedule->fires_count);
+            $this->assertSame(0, (int) $schedule->failures_count);
+            $this->assertSame([], ScheduleManager::tick());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testBackfillDeletedScheduleThrows(): void
     {
         $schedule = ScheduleManager::create(
@@ -1547,6 +1643,57 @@ final class V2ScheduleTest extends TestCase
         $schedule->refresh();
         $this->assertFalse($schedule->hasBufferedActions());
         $this->assertSame(2, (int) $schedule->fires_count);
+    }
+
+    public function testBufferedOccurrenceAlreadyStartedByBackfillIsNotDrainedAgain(): void
+    {
+        WorkflowStub::fake();
+        Carbon::setTestNowAndTimezone(Carbon::parse('2026-04-14T00:59:00Z')->setTimezone('UTC'), 'UTC');
+
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'buffer-backfill-collision',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '* * * * *',
+                overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+                maxRuns: 5,
+            );
+            $dueAt = $schedule->next_fire_at;
+            $this->assertNotNull($dueAt);
+
+            $firstInstanceId = ScheduleManager::trigger($schedule);
+            $this->assertNotNull($firstInstanceId);
+            $firstRun = WorkflowRun::query()->findOrFail(WorkflowStub::load($firstInstanceId)->runId());
+            $firstRun->forceFill([
+                'status' => 'running',
+            ])->save();
+
+            Carbon::setTestNowAndTimezone($dueAt, 'UTC');
+            $buffered = ScheduleManager::triggerDetailed($schedule, occurrenceTime: $dueAt);
+            $this->assertSame('buffered', $buffered->outcome);
+            $this->assertTrue($schedule->refresh()->hasBufferedActions());
+
+            $backfill = ScheduleManager::backfill($schedule, $dueAt, $dueAt->copy()->addMinute());
+            $this->assertNotNull($backfill[0]['instance_id']);
+            $backfillRun = WorkflowRun::query()->findOrFail(WorkflowStub::load($backfill[0]['instance_id'])->runId());
+            $backfillRun->forceFill([
+                'status' => 'completed',
+            ])->save();
+
+            $drain = ScheduleManager::tick();
+            $this->assertCount(1, $drain);
+            $this->assertSame('skipped', $drain[0]['outcome']);
+            $this->assertSame('already_fired_occurrence', $drain[0]['reason']);
+            $this->assertFalse($schedule->refresh()->hasBufferedActions());
+            $this->assertSame(2, (int) $schedule->fires_count);
+            $this->assertSame(0, (int) $schedule->failures_count);
+            $this->assertSame(2, WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->count());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testJitterAppliesRandomOffsetToNextFireAt(): void

@@ -306,6 +306,30 @@ correct their next occurrence when necessary. The migration does not rewrite
 schedule audit events, which already carry offsets. Its `down()` method does
 not convert UTC values back into ambiguous local strings.
 
+### Calendar boundaries and competing starts
+
+A cron expression selects local minutes in its schedule timezone. A minute
+missing from a spring clock change fires at the corresponding minute after
+the gap. For example, New York `30 2 * * *` on 2026-03-08 fires at 03:30
+EDT, or 07:30 UTC. A repeated minute in the fall fires at both distinct UTC
+instants. New York `30 1 * * *` on 2026-11-01 fires at 05:30 and 06:30 UTC.
+The same rules apply to other IANA timezones, including Europe/Kyiv.
+
+Each nominal UTC occurrence may start at most one workflow, whether it is
+reached by a scheduled tick, buffer drain, or backfill. Backfill covers the
+half-open interval from `from` through but excluding `to`. Replaying an
+occurrence that already started records an `already_fired_occurrence` skip;
+it does not count as a schedule failure or consume another action. The
+schedule history records the original start and the later skip. The indexed
+UTC occurrence key in schedule history is filled for existing events during
+upgrade. A new scheduler also checks unindexed events that an older process
+might write during a rolling upgrade.
+
+A manual trigger has no nominal occurrence. If it advances `next_fire_at`
+while a tick holds an older due time, the tick records `stale_occurrence` and
+does not start another workflow. Competing schedulers lock the schedule row
+and apply the same check after acquiring that lock.
+
 ## Lease expiry and redelivery
 
 Lease expiry and redelivery are DB-only by contract.

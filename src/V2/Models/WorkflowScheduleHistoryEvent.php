@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Models;
 
 use Carbon\CarbonInterface;
+use DateTimeImmutable;
+use DateTimeInterface;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -65,6 +67,12 @@ class WorkflowScheduleHistoryEvent extends Model
         $snapshot = self::snapshotPayload($schedule, $payload);
         $workflowInstanceId = self::stringValue($payload['workflow_instance_id'] ?? null);
         $workflowRunId = self::stringValue($payload['workflow_run_id'] ?? null);
+        $occurrenceTime = $eventType === HistoryEventType::ScheduleTriggered
+            ? self::stringValue($payload['occurrence_time'] ?? null)
+            : null;
+        $occurrenceAtUtc = $occurrenceTime !== null
+            ? self::utcOccurrenceKey(new DateTimeImmutable($occurrenceTime))
+            : null;
 
         for ($attempt = 1; $attempt <= self::SEQUENCE_RETRY_LIMIT; $attempt++) {
             $sequence = ((int) ConfiguredV2Models::query('schedule_history_event_model', self::class)
@@ -82,6 +90,7 @@ class WorkflowScheduleHistoryEvent extends Model
                     'payload' => $snapshot,
                     'workflow_instance_id' => $workflowInstanceId,
                     'workflow_run_id' => $workflowRunId,
+                    'occurrence_at_utc' => $occurrenceAtUtc,
                     'recorded_at' => now(),
                 ]);
 
@@ -97,6 +106,13 @@ class WorkflowScheduleHistoryEvent extends Model
 
         // Unreachable: the loop either returns or re-throws at the final attempt.
         throw new \LogicException('Schedule history sequence allocation exhausted retries.');
+    }
+
+    public static function utcOccurrenceKey(DateTimeInterface $occurrence): string
+    {
+        return \Carbon\CarbonImmutable::instance($occurrence)
+            ->utc()
+            ->format('Y-m-d H:i:s.u');
     }
 
     /**
