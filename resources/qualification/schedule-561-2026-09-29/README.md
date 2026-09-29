@@ -2,6 +2,8 @@
 
 Issue: [#561](https://github.com/durable-workflow/workflow/issues/561). The `raw/` directory contains the unedited JSON emitted by the `runner/` programs from an isolated Laravel application. All schedule IDs, workflow IDs, and payloads are synthetic. Each case phase was a fresh PHP process. The worker ran separately after scheduling, and the summary files were captured after the queue drained.
 
+`boundary-scenarios.json` lists the repeatable calendar and concurrency criteria for this qualification. It is a supplementary qualification artifact; the existing platform conformance suite's stable schedule manifest remains pinned to its immutable suite version 38 snapshot.
+
 ## Artifacts and environment
 
 | Component | Pinned artifact |

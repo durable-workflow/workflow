@@ -1,0 +1,73 @@
+{
+  "schema": "durable-workflow.v2.schedule-boundary-qualification",
+  "version": 1,
+  "artifact_policy": "published_workflow_package",
+  "required_backends": ["sqlite", "mysql", "pgsql", "mariadb"],
+  "required_observations": [
+    "resolved_package_version_and_dist_reference",
+    "database_image_or_sqlite_version",
+    "intended_occurrence_utc",
+    "actual_schedule_history_utc",
+    "durable_workflow_instance_ids",
+    "run_status_after_worker_drain",
+    "pending_and_failed_queue_jobs"
+  ],
+  "calendar_cases": [
+    {
+      "id": "ny_gap",
+      "timezone": "America/New_York",
+      "cron_expression": "30 2 * * *",
+      "local_boundary": "2026-03-08 02:30",
+      "expected_occurrences_utc": ["2026-03-08T07:30:00Z"]
+    },
+    {
+      "id": "kyiv_gap",
+      "timezone": "Europe/Kyiv",
+      "cron_expression": "30 3 * * *",
+      "local_boundary": "2026-03-29 03:30",
+      "expected_occurrences_utc": ["2026-03-29T01:30:00Z"]
+    },
+    {
+      "id": "ny_fold",
+      "timezone": "America/New_York",
+      "cron_expression": "30 1 * * *",
+      "local_boundary": "2026-11-01 01:30",
+      "expected_occurrences_utc": ["2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"]
+    },
+    {
+      "id": "kyiv_fold",
+      "timezone": "Europe/Kyiv",
+      "cron_expression": "11 3 * * *",
+      "local_boundary": "2026-10-25 03:11",
+      "expected_occurrences_utc": ["2026-10-25T00:11:00Z", "2026-10-25T01:11:00Z"]
+    }
+  ],
+  "boundary_cases": [
+    {
+      "id": "restart_at_due",
+      "operation": "create schedule before due, exit scheduler process, start fresh scheduler process at due",
+      "expected": "one durable workflow for the nominal occurrence"
+    },
+    {
+      "id": "competing_due_ticks",
+      "operation": "release two scheduler processes together at the same due minute",
+      "expected": "one start and one stale_occurrence skip"
+    },
+    {
+      "id": "manual_during_due_tick",
+      "operation": "release manual trigger and due tick in separate processes at the same instant",
+      "expected": "manual-first commits one start and a stale tick; tick-first commits one nominal start and may then accept an independent manual start; record commit order"
+    },
+    {
+      "id": "tick_then_backfill_same_occurrence",
+      "operation": "tick the due occurrence, then backfill the same half-open UTC interval",
+      "expected": "one durable workflow for the nominal occurrence, an already_fired_occurrence skip, and no additional schedule failure"
+    }
+  ],
+  "passing_run_requires": [
+    "all intended occurrences have a corresponding completed workflow",
+    "each nominal UTC occurrence starts at most one workflow",
+    "no unexpected schedule failure or failed queue job",
+    "all queues drain after a fresh worker process starts"
+  ]
+}
