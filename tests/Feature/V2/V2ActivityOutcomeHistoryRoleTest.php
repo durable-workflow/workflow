@@ -147,6 +147,36 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
     }
 
+    public function testMissingOrOutOfDateSummaryUsesFullTimelineRebuild(): void
+    {
+        foreach (['missing', 'behind', 'old-schema'] as $state) {
+            [$run, , , $attempt] = $this->scaffoldLeasedAttempt(sprintf('activity-fallback-%s', $state));
+            $this->addUnrelatedSignals($run);
+            $summary = RunSummaryProjector::project($run->fresh());
+            WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)
+                ->where('type', HistoryEventType::SignalReceived->value)->firstOrFail()->delete();
+
+            if ($state === 'missing') {
+                $summary->delete();
+            } else {
+                $summary->forceFill($state === 'behind'
+                    ? [
+                        'history_event_count' => $summary->history_event_count - 1,
+                    ]
+                    : [
+                        'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION - 1,
+                    ])->save();
+            }
+
+            $outcome = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'fallback result', null);
+
+            $this->assertTrue($outcome['recorded']);
+            $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+            $this->assertSame(253, WorkflowRunSummary::query()->findOrFail($run->id)->history_event_count);
+            $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
+        }
+    }
+
     public function testProjectionFailureRollsBackOutcomeAndCanBeRetriedAndRebuilt(): void
     {
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt('bounded-activity-rollback');
