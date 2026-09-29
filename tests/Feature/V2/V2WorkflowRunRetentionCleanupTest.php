@@ -74,7 +74,8 @@ final class V2WorkflowRunRetentionCleanupTest extends TestCase
                     Carbon::setTestNow($expected);
                     $run = $this->seedRun(status: RunStatus::Completed, closed: true);
                     $run->forceFill([
-                        'archived_at' => $expected->copy()->subMinute(),
+                        'archived_at' => $expected->copy()
+                            ->subMinute(),
                     ])->save();
                     $rawArchivedAt = DB::table('workflow_runs')->where('id', $run->id)->value('archived_at');
 
