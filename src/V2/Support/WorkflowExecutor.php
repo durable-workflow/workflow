@@ -62,14 +62,7 @@ final class WorkflowExecutor
             return null;
         }
 
-        if (
-            is_string($run->cancellation_request_command_id)
-            && $run->cancellation_deadline_at !== null
-            && now()
-                ->gte($run->cancellation_deadline_at)
-        ) {
-            $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
-
+        if ($this->cancelIfCleanupDeadlineExpired($run, $task)) {
             return null;
         }
 
@@ -2239,6 +2232,40 @@ final class WorkflowExecutor
         }
 
         $this->timeoutRun($run, $task);
+
+        return true;
+    }
+
+    /**
+     * Revoke portable task authority when a cooperative cleanup deadline elapses.
+     * The caller holds the task and run locks, before renewal or command acceptance.
+     */
+    public function cancelIfCleanupDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        if (
+            $run->status->isTerminal()
+            || ! is_string($run->cancellation_request_command_id)
+            || $run->cancellation_deadline_at === null
+            || now()
+                ->lt($run->cancellation_deadline_at)
+        ) {
+            return false;
+        }
+
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'updates',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
 
         return true;
     }

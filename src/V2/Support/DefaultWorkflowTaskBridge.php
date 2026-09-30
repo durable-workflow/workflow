@@ -690,7 +690,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function heartbeat(string $taskId): array
     {
-        return DB::transaction(static function () use ($taskId): array {
+        return DB::transaction(function () use ($taskId): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -726,6 +726,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->lockForUpdate()
                 ->find($task->workflow_run_id);
+
+            if ($run !== null && $this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
+                $task->refresh();
+            }
 
             if ($run !== null && $run->status->isTerminal()) {
                 return [
@@ -928,6 +932,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'run_status' => $run->status->value,
                     'created_task_ids' => [],
                     'reason' => 'run_timed_out',
+                ];
+            }
+
+            if ($this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'run_cancelled',
                 ];
             }
 
