@@ -103,6 +103,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertPortableLocalActivityFailureUsesAvro($fixture);
             }
 
+            if (($fixture['id'] ?? null) === 'portable-cooperative-cleanup-deadline-cold-reload') {
+                $this->assertPortableCleanupDeadlineAfterColdReload($fixture);
+            }
+
             $consumers = $fixture['consumers'] ?? ['workflow-fiber-runner'];
             if (in_array('embedded-history-import', $consumers, true)) {
                 $this->assertHistoryImportMetadataRoundTrips($fixture);
@@ -1199,6 +1203,77 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->firstOrFail();
 
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertPortableCleanupDeadlineAfterColdReload(array $fixture): void
+    {
+        /** @var WorkflowTaskBridge $bridge */
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+
+        try {
+            foreach (['heartbeat', 'completion'] as $boundary) {
+                Carbon::setTestNow(Carbon::parse($fixture['history'][0]['recorded_at']));
+                $stub = WorkflowStub::make(
+                    $fixture['workflow']['type'],
+                    sprintf('regression-corpus-deadline-%d', ++$this->workflowNumber),
+                );
+                $stub->start(...$fixture['workflow']['arguments']);
+                /** @var WorkflowRun $run */
+                $run = WorkflowRun::query()->findOrFail($stub->runId());
+                $requestCommandId = null;
+
+                foreach ($fixture['history'] as $event) {
+                    Carbon::setTestNow(Carbon::parse($event['recorded_at']));
+                    $eventType = HistoryEventType::from($event['event_type']);
+                    if ($eventType === HistoryEventType::WorkflowStarted) {
+                        continue;
+                    }
+                    if ($eventType === HistoryEventType::CooperativeCancellationRequested) {
+                        $request = $stub->requestCancellation('cleanup deadline corpus', 60);
+                        $this->assertTrue($request->accepted());
+                        $requestCommandId = $request->commandId();
+                        $run->refresh();
+                        continue;
+                    }
+
+                    $payload = $event['payload'];
+                    if (isset($payload['workflow_command_id'])) {
+                        $payload['workflow_command_id'] = $requestCommandId;
+                    }
+                    WorkflowHistoryEvent::record($run, $eventType, $payload);
+                }
+
+                $run = $run->fresh();
+                $this->assertNotNull($run);
+                $deadline = $run->cancellation_deadline_at;
+                $this->assertNotNull($deadline);
+                /** @var WorkflowTask $task */
+                $task = $run->tasks()
+                    ->where('task_type', TaskType::Workflow->value)->sole();
+                $this->assertTrue($bridge->claimStatus($task->id, 'cold-cleanup-worker')['claimed']);
+
+                Carbon::setTestNow($deadline);
+                $result = $boundary === 'heartbeat'
+                    ? $bridge->heartbeat($task->id)
+                    : $bridge->complete($task->id, [[
+                        'type' => 'start_timer',
+                        'delay_seconds' => 1,
+                    ]]);
+                $this->assertFalse($result[$boundary === 'heartbeat' ? 'renewed' : 'completed']);
+                $this->assertSame('cancelled', $result['run_status']);
+                $this->assertSame('cancelled', $run->refresh()->status->value);
+                $this->assertNull($run->output);
+                $this->assertSame(1, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+                    ->where('workflow_command_id', $requestCommandId)
+                    ->count());
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     private function bindNoOpHistoryProjection(): void

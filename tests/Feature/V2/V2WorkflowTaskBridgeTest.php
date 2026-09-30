@@ -97,6 +97,7 @@ use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 use Workflow\V2\Support\WorkflowTaskPayload;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow as V2Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -3748,6 +3749,113 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', HistoryEventType::WorkflowCancelled->value)
             ->where('workflow_command_id', $run->cancellation_request_command_id)
             ->count());
+    }
+
+    #[DataProvider('portableCleanupDeadlineBoundaries')]
+    public function testPortableCleanupDeadlineCancelsOpenResources(string $boundary): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+
+        $cleanup = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'cleanup-activity',
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ],
+        ]);
+        $this->assertTrue($cleanup['completed']);
+        $this->assertSame('waiting', $cleanup['run_status']);
+        $this->assertSame(ActivityStatus::Pending, $run->activityExecutions()->sole()->status);
+        $this->assertSame(TimerStatus::Pending, $run->timers()->sole()->status);
+        $task = $this->createLeasedTask($run);
+
+        try {
+            Carbon::setTestNow($deadline);
+            $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+            $this->assertSame(0, $report['deadline_expired_tasks_created']);
+            $result = $boundary === 'heartbeat'
+                ? $this->bridge->heartbeat($task->id)
+                : $this->bridge->complete($task->id, [[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'too-late-activity',
+                ]]);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertFalse($result[$boundary === 'heartbeat' ? 'renewed' : 'completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame(ActivityStatus::Cancelled, $run->activityExecutions()->sole()->status);
+        $this->assertSame(TimerStatus::Cancelled, $run->timers()->sole()->status);
+        $this->assertSame(0, $run->tasks()->whereIn('status', [
+            TaskStatus::Ready->value,
+            TaskStatus::Leased->value,
+        ])->count());
+        $this->assertSame(0, $run->tasks()->whereNotNull('lease_expires_at')->count());
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCancelled->value)
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerCancelled->value)
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
+        $this->assertDatabaseMissing('activity_executions', [
+            'workflow_run_id' => $run->id,
+            'activity_type' => 'too-late-activity',
+        ]);
+
+        $duplicate = $this->bridge->heartbeat($task->id);
+        $this->assertFalse($duplicate['renewed']);
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->count());
+    }
+
+    public function testPortableCleanupDeadlineRejectsCompletionAfterWatchdogReclaimsLostWorker(): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+        $task->forceFill([
+            'lease_expires_at' => $deadline->copy()
+                ->subSecond(),
+        ])->save();
+
+        try {
+            Carbon::setTestNow($deadline);
+            $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+            $this->assertSame(1, $report['repaired_existing_tasks']);
+            $this->assertSame(TaskStatus::Ready, $task->refresh()->status);
+            $claimed = $this->bridge->claimStatus($task->id, 'replacement-cleanup-worker');
+            $this->assertTrue($claimed['claimed']);
+            $result = $this->bridge->complete($task->id, [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('late replacement result'),
+            ]]);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('run_cancelled', $result['reason']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertNull($run->output);
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
+    }
+
+    public static function portableCleanupDeadlineBoundaries(): iterable
+    {
+        yield 'heartbeat' => ['heartbeat'];
+        yield 'completion' => ['completion'];
     }
 
     public function testPortableHeartbeatRetainsCooperativeCleanupBeforeDeadline(): void
