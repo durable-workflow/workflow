@@ -36,6 +36,7 @@ use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -95,6 +96,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
+        $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
 
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 

@@ -259,6 +259,12 @@ final class WorkflowStepHistory
             $sequence = self::intValue($event->payload['sequence'] ?? null);
 
             if ($sequence !== null) {
+                if ($event->event_type === HistoryEventType::CooperativeCancellationDelivered) {
+                    $span = self::intValue($event->payload['sequence_span'] ?? null) ?? 1;
+                    if ($span > 1 && $sequence <= PHP_INT_MAX - $span) {
+                        $sequence += $span - 1;
+                    }
+                }
                 $lastSequence = max($lastSequence, $sequence);
             }
         }

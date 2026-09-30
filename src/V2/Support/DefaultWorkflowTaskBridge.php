@@ -15,10 +15,10 @@ use Throwable;
 use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
-use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
@@ -50,7 +50,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -688,6 +688,74 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         });
     }
 
+    public function deliverCancellation(
+        string $taskId,
+        string $requestId,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): array {
+        return DB::transaction(function () use (
+            $taskId,
+            $requestId,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+        ): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
+            $response = static fn (?string $reason, ?WorkflowRun $run = null, ?WorkflowHistoryEvent $event = null): array => [
+                'delivered' => $event !== null,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run?->id,
+                'request_id' => $event?->workflow_command_id,
+                'sequence' => $event?->payload['sequence'] ?? null,
+                'call_kind' => $event?->payload['call_kind'] ?? null,
+                'sequence_span' => $event === null ? null : ($event->payload['sequence_span'] ?? 1),
+                'operation_sequence' => $event?->payload['operation_sequence'] ?? null,
+                'operation_sequence_span' => $event === null ? null : ($event->payload['operation_sequence_span'] ?? 1),
+                'reason' => $reason,
+            ];
+            if ($task === null || $task->task_type !== TaskType::Workflow) {
+                return $response($task === null ? 'task_not_found' : 'task_not_workflow');
+            }
+            if ($task->status !== TaskStatus::Leased) {
+                return $response('task_not_leased');
+            }
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()->find($task->workflow_run_id);
+            if ($run === null || $run->status->isTerminal()) {
+                return $response($run === null ? 'run_not_found' : 'run_closed', $run);
+            }
+            if ($this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
+                return $response('run_cancelled', $run);
+            }
+            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
+                return $response('run_timed_out', $run);
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return $response('lease_expired', $run);
+            }
+            $invalid = CooperativeCancellationDelivery::validate(
+                $run, $requestId, $sequence, $callKind, $sequenceSpan, $operationSequence, $operationSequenceSpan,
+            );
+            if ($invalid !== null) {
+                return $response($invalid, $run);
+            }
+            $event = $this->executor->deliverPortableCancellation(
+                $run, $task, $sequence, $callKind, $sequenceSpan, $operationSequence, $operationSequenceSpan,
+            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return $response(null, $run, $event);
+        });
+    }
+
     public function heartbeat(string $taskId): array
     {
         return DB::transaction(function () use ($taskId): array {
@@ -1020,6 +1088,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function applyWorkflowCompletion(WorkflowRun $run, WorkflowTask $task, array $command): void
     {
+        if ($this->executor->finishPortableCooperativeCancellation($run, $task)) {
+            return;
+        }
         $outputCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
@@ -1086,6 +1157,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
     {
+        if ($this->executor->finishPortableCooperativeCancellation($run, $task)) {
+            return;
+        }
         $structuredException = self::normalizeExceptionPayload($command['exception'] ?? null) ?? [];
         $message = self::normalizeOptionalString($command['message'] ?? null)
             ?? self::normalizeOptionalString($structuredException['message'] ?? null)
@@ -4084,6 +4158,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array $command,
         array &$createdTaskIds = [],
     ): void {
+        if ($this->executor->finishPortableCooperativeCancellation($run, $task)) {
+            return;
+        }
         $now = now();
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $hasReplacementArguments = isset($command['arguments'])
