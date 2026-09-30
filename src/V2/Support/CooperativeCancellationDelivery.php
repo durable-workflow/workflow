@@ -31,6 +31,7 @@ final class CooperativeCancellationDelivery
         HistoryEventType::ActivityCancelled,
         HistoryEventType::ActivityTimedOut,
         HistoryEventType::TimerFired,
+        HistoryEventType::TimerCancelled,
         HistoryEventType::ConditionWaitSatisfied,
         HistoryEventType::ConditionWaitTimedOut,
         HistoryEventType::SignalApplied,
@@ -67,7 +68,9 @@ final class CooperativeCancellationDelivery
             return 'invalid_cancellation_delivery';
         }
 
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
         $request = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type
                 === HistoryEventType::CooperativeCancellationRequested
@@ -138,7 +141,9 @@ final class CooperativeCancellationDelivery
 
     public static function recorded(WorkflowRun $run): ?WorkflowHistoryEvent
     {
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
 
         return $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type
@@ -195,7 +200,9 @@ final class CooperativeCancellationDelivery
 
     public static function callKindAt(WorkflowRun $run, int $sequence): ?string
     {
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
         foreach ($run->historyEvents as $event) {
             if (($event->payload['sequence'] ?? null) !== $sequence) {
                 continue;
@@ -227,7 +234,15 @@ final class CooperativeCancellationDelivery
         WorkflowHistoryEvent $request,
     ): bool {
         return $run->historyEvents->contains(
-            static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === $sequence
+            static fn (WorkflowHistoryEvent $event): bool => (
+                ($event->payload['sequence'] ?? null) === $sequence
+                || ($event->event_type === HistoryEventType::SelectionOperationCancelled
+                    && is_int($event->payload['member_base_sequence'] ?? null)
+                    && is_int($event->payload['member_size'] ?? null)
+                    && $event->payload['member_base_sequence'] >= 1
+                    && $event->payload['member_base_sequence'] <= $sequence
+                    && $event->payload['member_size'] > $sequence - $event->payload['member_base_sequence'])
+            )
                 && in_array($event->event_type, self::RESOLUTION_TYPES, true)
                 && $event->sequence < $request->sequence,
         );
@@ -240,15 +255,23 @@ final class CooperativeCancellationDelivery
         WorkflowHistoryEvent $request,
     ): ?string {
         $path = ParallelChildGroup::metadataPathForSequence($run, $sequence);
-        $group = $path[0] ?? null;
-        if (! is_array($group) || ($group['parallel_group_base_sequence'] ?? null) !== $sequence
-            || ($group['parallel_group_size'] ?? null) !== $span) {
+        $groupIndex = null;
+        foreach ($path as $index => $candidate) {
+            if ($candidate['parallel_group_base_sequence'] === $sequence
+                && $candidate['parallel_group_size'] === $span) {
+                $groupIndex = $index;
+                break;
+            }
+        }
+        if ($groupIndex === null) {
             return 'cancellation_delivery_shape_mismatch';
         }
+        $group = $path[$groupIndex];
         $allResolved = true;
         for ($offset = 0; $offset < $span; ++$offset) {
             $memberPath = ParallelChildGroup::metadataPathForSequence($run, $sequence + $offset);
-            if (($memberPath[0]['parallel_group_id'] ?? null) !== ($group['parallel_group_id'] ?? null)) {
+            if (($memberPath[$groupIndex]['parallel_group_id'] ?? null) !== $group['parallel_group_id']
+                || ($memberPath[$groupIndex]['parallel_group_index'] ?? null) !== $offset) {
                 return 'cancellation_delivery_shape_mismatch';
             }
             $allResolved = $allResolved && self::resolvedBeforeRequest($run, $sequence + $offset, $request);

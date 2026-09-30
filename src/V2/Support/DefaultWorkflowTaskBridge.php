@@ -728,7 +728,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             }
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()->find($task->workflow_run_id);
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
             if ($run === null || $run->status->isTerminal()) {
                 return $response($run === null ? 'run_not_found' : 'run_closed', $run);
             }
@@ -742,13 +743,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 return $response('lease_expired', $run);
             }
             $invalid = CooperativeCancellationDelivery::validate(
-                $run, $requestId, $sequence, $callKind, $sequenceSpan, $operationSequence, $operationSequenceSpan,
+                $run,
+                $requestId,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan,
             );
             if ($invalid !== null) {
                 return $response($invalid, $run);
             }
             $event = $this->executor->deliverPortableCancellation(
-                $run, $task, $sequence, $callKind, $sequenceSpan, $operationSequence, $operationSequenceSpan,
+                $run,
+                $task,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan,
             );
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 

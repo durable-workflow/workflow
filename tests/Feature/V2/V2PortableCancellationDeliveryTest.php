@@ -37,12 +37,25 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         parent::setUp();
         Queue::fake();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
         $this->bridge = $this->app->make(WorkflowTaskBridge::class);
     }
 
     public function testOptionalCooperativeBridgeUsesTheExistingBinding(): void
     {
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
+    }
+
+    public function testExistingCustomBridgeDoesNotAcquireCooperativeCapability(): void
+    {
+        $custom = \Mockery::mock(WorkflowTaskBridge::class);
+        $this->app->instance(WorkflowTaskBridge::class, $custom);
+        $resolved = $this->app->make(CooperativeWorkflowTaskBridge::class);
+        $this->assertSame($custom, $resolved);
+        $this->assertNotInstanceOf(CooperativeWorkflowTaskBridge::class, $resolved);
     }
 
     public function testDeliveryWithoutAScheduledCallReservesItsPositionAndPreservesCleanupAuthority(): void
@@ -61,7 +74,10 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame($lease, $task->lease_expires_at?->toISOString());
         $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at?->toISOString());
         $this->assertTrue($this->bridge->heartbeat($task->id)['renewed']);
-        $cleanup = $this->bridge->complete($task->id, [['type' => 'start_timer', 'delay_seconds' => 10]]);
+        $cleanup = $this->bridge->complete($task->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 10,
+        ]]);
         $this->assertTrue($cleanup['completed']);
         $this->assertSame(2, $run->timers()->sole()->sequence);
         $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
@@ -73,9 +89,14 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         [$run, $task] = $this->newRun();
         $this->request($run);
         $first = $this->deliver($run, $task);
-        $deliveredAt = $run->refresh()->cancellation_delivered_at?->toISOString();
+        $deliveredAt = $run->refresh()
+            ->cancellation_delivered_at?->toISOString();
         $this->assertTrue($this->bridge->complete(
-            $task->id, [['type' => 'start_timer', 'delay_seconds' => 10]],
+            $task->id,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 10,
+            ]],
         )['completed']);
         $replacement = $this->newLease($run);
 
@@ -98,7 +119,11 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertTrue($delivery['delivered']);
         $this->assertSame(3, $delivery['sequence_span']);
         $this->assertTrue($this->bridge->complete(
-            $task->id, [['type' => 'start_timer', 'delay_seconds' => 10]],
+            $task->id,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 10,
+            ]],
         )['completed']);
         $this->assertSame(4, $run->timers()->sole()->sequence);
     }
@@ -113,15 +138,17 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         ]]);
         $this->assertTrue($scheduled['completed']);
         $activityBridge = $this->app->make(ActivityTaskBridge::class);
-        $claim = $activityBridge->claim($scheduled['created_task_ids'][0], 'remote-worker', 'build-a');
-        $this->assertTrue($claim['claimed']);
+        $claim = $activityBridge->claimStatus($scheduled['created_task_ids'][0], 'remote-worker');
+        $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
         $this->request($run);
         $resume = $this->leaseReadyTask($run);
 
         $this->assertTrue($this->deliver($run, $resume)['delivered']);
-        $execution = $run->activityExecutions()->sole();
+        $execution = $run->activityExecutions()
+            ->sole();
         $this->assertSame(ActivityStatus::Cancelled, $execution->status);
-        $attempt = $execution->attempts()->sole();
+        $attempt = $execution->attempts()
+            ->sole();
         $this->assertSame(ActivityAttemptStatus::Cancelled, $attempt->status);
         $this->assertNull($attempt->lease_expires_at);
         $this->assertSame(TaskStatus::Leased, $resume->refresh()->status);
@@ -135,7 +162,11 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         [$run, $task] = $this->newRun();
         $this->assertTrue($this->bridge->complete(
-            $task->id, [['type' => 'start_timer', 'delay_seconds' => 300]],
+            $task->id,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ]],
         )['completed']);
         $this->request($run);
         $resume = $this->leaseReadyTask($run);
@@ -151,7 +182,11 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         [$run, $task] = $this->newRun();
         $this->assertTrue($this->bridge->complete(
-            $task->id, [['type' => 'start_timer', 'delay_seconds' => 300]],
+            $task->id,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ]],
         )['completed']);
         $this->request($run);
         $result = $this->deliver($run, $this->leaseReadyTask($run), 1, 'activity');
@@ -161,20 +196,70 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(0, $this->deliveryCount($run));
     }
 
+    #[DataProvider('openWaits')]
+    public function testOpenWaitsCanBeInterruptedWithoutRevokingCleanupAuthority(
+        string $kind,
+        array $command,
+    ): void {
+        [$run, $task] = $this->newRun();
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+        $this->request($run);
+        $resume = $this->leaseReadyTask($run);
+        $this->assertTrue($this->deliver($run, $resume, 1, $kind)['delivered']);
+        $this->assertSame(TaskStatus::Leased, $resume->refresh()->status);
+        $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
+        foreach ($run->timers()->get() as $timer) {
+            $this->assertSame(TimerStatus::Cancelled, $timer->status);
+        }
+        $this->assertTrue($this->bridge->complete($resume->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 10,
+        ]])['completed']);
+        $cleanup = $run->timers()
+            ->where('sequence', 2)
+            ->sole();
+        $this->assertSame(TimerStatus::Pending, $cleanup->status);
+    }
+
+    public static function openWaits(): iterable
+    {
+        foreach ([null, 300] as $timeout) {
+            yield 'condition timeout ' . ($timeout ?? 'unbounded') => ['condition', [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval',
+                'timeout_seconds' => $timeout,
+            ]];
+            yield 'signal timeout ' . ($timeout ?? 'unbounded') => ['signal', [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'approval',
+                'timeout_seconds' => $timeout,
+            ]];
+        }
+    }
+
     #[DataProvider('timerResolutionOrdering')]
     public function testRecordedResultsBeforeTheRequestReplayNormally(bool $resultBeforeRequest): void
     {
         [$run, $task] = $this->newRun();
         $this->assertTrue($this->bridge->complete(
-            $task->id, [['type' => 'start_timer', 'delay_seconds' => 300]],
+            $task->id,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ]],
         )['completed']);
         if (! $resultBeforeRequest) {
             $this->request($run);
         }
-        $timer = $run->timers()->sole();
-        $timer->forceFill(['status' => TimerStatus::Fired])->save();
+        $timer = $run->timers()
+            ->sole();
+        $timer->forceFill([
+            'status' => TimerStatus::Fired,
+        ])->save();
         WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
-            'sequence' => 1, 'timer_id' => $timer->id, 'delay_seconds' => 300,
+            'sequence' => 1,
+            'timer_id' => $timer->id,
+            'delay_seconds' => 300,
         ]);
         if ($resultBeforeRequest) {
             $this->request($run);
@@ -204,7 +289,10 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $result = $this->bridge->deliverCancellation(
             $task->id,
             $requestId === 'original' ? $run->cancellation_request_command_id : $requestId,
-            $sequence, $kind, $span, $operationSequence,
+            $sequence,
+            $kind,
+            $span,
+            $operationSequence,
         );
         $this->assertFalse($result['delivered']);
         $this->assertSame(0, $this->deliveryCount($run));
@@ -229,7 +317,10 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         [$run, $task] = $this->newRun();
         $this->request($run);
-        $task->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $task->forceFill([
+            'lease_expires_at' => now()
+                ->subSecond(),
+        ])->save();
         $result = $this->deliver($run, $task);
         $this->assertFalse($result['delivered']);
         $this->assertSame('lease_expired', $result['reason']);
@@ -253,7 +344,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(0, $this->deliveryCount($run));
         $this->assertSame(1, $run->historyEvents()
             ->where('event_type', HistoryEventType::WorkflowCancelled->value)
-            ->where('workflow_command_id', $run->cancellation_request_command_id)->count());
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
     }
 
     #[DataProvider('cleanupTerminalCommands')]
@@ -272,14 +364,22 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $run->workflow_instance_id)->count());
         $this->assertSame(1, $run->historyEvents()
             ->where('event_type', HistoryEventType::WorkflowCancelled->value)
-            ->where('workflow_command_id', $run->cancellation_request_command_id)->count());
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
     }
 
     public static function cleanupTerminalCommands(): iterable
     {
-        yield 'return' => [['type' => 'complete_workflow']];
-        yield 'throw' => [['type' => 'fail_workflow', 'message' => 'cleanup failed']];
-        yield 'continue' => [['type' => 'continue_as_new']];
+        yield 'return' => [[
+            'type' => 'complete_workflow',
+        ]];
+        yield 'throw' => [[
+            'type' => 'fail_workflow',
+            'message' => 'cleanup failed',
+        ]];
+        yield 'continue' => [[
+            'type' => 'continue_as_new',
+        ]];
     }
 
     public function testTerminationRevokesCleanupAndCannotBeReplacedByCancellation(): void
@@ -289,9 +389,15 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertTrue($this->deliver($run, $task)['delivered']);
         $this->assertTrue(WorkflowStub::load($run->workflow_instance_id)->terminate('stop cleanup')->accepted());
         $this->assertFalse($this->deliver($run, $task)['delivered']);
-        $this->assertFalse($this->bridge->complete($task->id, [['type' => 'complete_workflow']])['completed']);
+        $this->assertFalse($this->bridge->complete($task->id, [[
+            'type' => 'complete_workflow',
+        ]])['completed']);
         $this->assertSame(RunStatus::Terminated, $run->refresh()->status);
-        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::WorkflowCancelled->value)->count());
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowCancelled->value)->count()
+        );
         $this->assertSame(1, $this->deliveryCount($run));
     }
 
@@ -303,26 +409,76 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             $commands[] = [
                 'type' => 'start_timer',
                 'delay_seconds' => 300,
-                ...ParallelChildGroup::itemMetadata(1, 2, $index, 'call'),
+                ...ParallelChildGroup::itemMetadata(1, 2, $index, 'timer'),
             ];
         }
         $this->assertTrue($this->bridge->complete($task->id, $commands)['completed']);
         $this->request($run);
         $result = $this->deliver($run, $this->leaseReadyTask($run), 3, 'selection_handle', 1, 1);
         $this->assertTrue($result['delivered']);
-        $timers = $run->timers()->orderBy('sequence')->get();
+        $timers = $run->timers()
+            ->orderBy('sequence')
+            ->get();
         $this->assertSame(TimerStatus::Cancelled, $timers[0]->status);
         $this->assertSame(TimerStatus::Pending, $timers[1]->status);
     }
 
-    /** @return array{WorkflowRun, WorkflowTask} */
+    #[DataProvider('parallelDeliveryCalls')]
+    public function testRecordedParallelRangeIsCancelledAsOneAuthoredCall(bool $selectionHandle): void
+    {
+        [$run, $task] = $this->newRun();
+        $commands = [];
+        for ($index = 0; $index < 2; ++$index) {
+            $commands[] = [
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+                ...ParallelChildGroup::itemMetadata(1, 2, $index, 'timer'),
+            ];
+        }
+        $this->assertTrue($this->bridge->complete($task->id, $commands)['completed']);
+        $this->request($run);
+        $resume = $this->leaseReadyTask($run);
+        $delivery = $selectionHandle
+            ? $this->bridge->deliverCancellation(
+                $resume->id,
+                $run->cancellation_request_command_id,
+                3,
+                'selection_handle',
+                1,
+                1,
+                2,
+            )
+            : $this->deliver($run, $resume, 1, 'parallel', 2);
+        $this->assertTrue($delivery['delivered']);
+        $this->assertSame(2, $run->timers()->where('status', TimerStatus::Cancelled->value)->count());
+        $this->assertSame(2, $run->tasks()->where('task_type', TaskType::Timer->value)
+            ->where('status', TaskStatus::Cancelled->value)->count());
+        $this->assertTrue($this->bridge->complete($resume->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 10,
+        ]])['completed']);
+        $this->assertSame($selectionHandle ? 4 : 3, $run->timers()
+            ->where('status', TimerStatus::Pending->value)->sole()->sequence);
+        $this->assertSame(1, $this->deliveryCount($run));
+    }
+
+    public static function parallelDeliveryCalls(): iterable
+    {
+        yield 'parallel barrier' => [false];
+        yield 'selection member range' => [true];
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask}
+     */
     private function newRun(): array
     {
         $instance = WorkflowInstance::query()->create([
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
         $run = WorkflowRun::query()->create([
             'workflow_instance_id' => $instance->id,
@@ -334,16 +490,21 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             'connection' => 'database',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return [$run, $this->newLease($run)];
     }
 
     private function request(WorkflowRun $run): void
     {
-        $this->assertTrue(WorkflowStub::load($run->workflow_instance_id)->requestCancellation('maintenance', 60)->accepted());
+        $this->assertTrue(
+            WorkflowStub::load($run->workflow_instance_id)->requestCancellation('maintenance', 60)->accepted()
+        );
         $run->refresh();
     }
 
@@ -358,18 +519,21 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'portable-worker',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
     }
 
     private function leaseReadyTask(WorkflowRun $run): WorkflowTask
     {
-        $task = $run->tasks()->where('task_type', TaskType::Workflow->value)
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)->sole();
         $task->forceFill([
             'status' => TaskStatus::Leased,
             'lease_owner' => 'portable-worker',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ])->save();
 
         return $task;
@@ -384,12 +548,18 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         ?int $operationSequence = null,
     ): array {
         return $this->bridge->deliverCancellation(
-            $task->id, $run->cancellation_request_command_id, $sequence, $kind, $span, $operationSequence,
+            $task->id,
+            $run->cancellation_request_command_id,
+            $sequence,
+            $kind,
+            $span,
+            $operationSequence,
         );
     }
 
     private function deliveryCount(WorkflowRun $run): int
     {
-        return $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)->count();
+        return $run->historyEvents()
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)->count();
     }
 }

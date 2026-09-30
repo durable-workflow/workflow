@@ -962,6 +962,44 @@ exit(0);
         self.assertEqual(1, counts["base"])
         self.assertEqual(2, counts["current"])
 
+    def test_cooperative_delivery_ranges_have_distinct_replay_identity(self) -> None:
+        base = self.replay_fixture("cooperative-delivery-base")
+        base["history"].append({
+            "event_type": "CooperativeCancellationDelivered",
+            "payload": {"sequence": 1},
+        })
+        self.write_json("tests/Fixtures/V2/ReplayRegression/base.json", base)
+        self.commit_current_as_base()
+        extended = json.loads(json.dumps(base))
+        extended["id"] = "cooperative-delivery-parallel"
+        extended["history"][1]["payload"]["sequence_span"] = 2
+        self.write_json("tests/Fixtures/V2/ReplayRegression/extended.json", extended)
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        counts = json.loads(result.stdout)["counts"]["replay"]
+        self.assertEqual(1, counts["base"])
+        self.assertEqual(2, counts["current"])
+
+    def test_default_cooperative_delivery_span_cannot_manufacture_growth(self) -> None:
+        base = self.replay_fixture("cooperative-delivery-base")
+        base["history"].append({
+            "event_type": "CooperativeCancellationDelivered",
+            "payload": {"sequence": 1},
+        })
+        self.write_json("tests/Fixtures/V2/ReplayRegression/base.json", base)
+        self.commit_current_as_base()
+        duplicate = json.loads(json.dumps(base))
+        duplicate["id"] = "cooperative-delivery-explicit-default"
+        duplicate["history"][1]["payload"]["sequence_span"] = 1
+        self.write_json("tests/Fixtures/V2/ReplayRegression/duplicate.json", duplicate)
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+
     def test_shadowed_event_namespace_cannot_manufacture_growth(self) -> None:
         base = self.official_history_replay_fixture()
         base["history"][0]["payload"]["namespace"] = "effective-namespace"

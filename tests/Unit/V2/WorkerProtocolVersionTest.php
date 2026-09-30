@@ -19,7 +19,7 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
 
     public function testVersionTracksServiceOperationCommandShape(): void
     {
-        $this->assertSame('1.19', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.20', WorkerProtocolVersion::VERSION);
         $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }

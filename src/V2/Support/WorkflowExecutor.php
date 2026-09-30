@@ -2240,8 +2240,8 @@ final class WorkflowExecutor
     }
 
     /**
-     * Revoke portable task authority when a cooperative cleanup deadline elapses.
-     * The caller holds the task and run locks, before renewal or command acceptance.
+     * Finish portable cleanup with the original cancellation outcome.
+     * The caller holds the task and run locks before accepting a terminal command.
      */
     public function finishPortableCooperativeCancellation(WorkflowRun $run, WorkflowTask $task): bool
     {
@@ -2334,6 +2334,42 @@ final class WorkflowExecutor
             $parentRun->unsetRelation('childLinks');
             $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
         }
+    }
+
+    public function deliverPortableCancellation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): WorkflowHistoryEvent {
+        $existing = CooperativeCancellationDelivery::recorded($run);
+        if ($existing instanceof WorkflowHistoryEvent) {
+            return $existing;
+        }
+        $run->loadMissing(['tasks', 'timers', 'activityExecutions']);
+        $targetSequence = $operationSequence ?? $sequence;
+        $targetSpan = $operationSequence === null ? $sequenceSpan : $operationSequenceSpan;
+        for ($offset = 0; $offset < $targetSpan; ++$offset) {
+            $targetKind = in_array($callKind, ['parallel', 'selection_handle'], true)
+                ? CooperativeCancellationDelivery::callKindAt($run, $targetSequence + $offset)
+                : $callKind;
+            if ($targetKind !== null) {
+                $this->cancelOpenWaitAtSequence($run, $task, $targetSequence + $offset, $targetKind);
+            }
+        }
+
+        return CooperativeCancellationDelivery::record(
+            $run,
+            $task,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+        );
     }
 
     private function scheduleActivity(
@@ -5407,36 +5443,6 @@ final class WorkflowExecutor
                 ?? $this->signalTimeoutFiredEvent($run, $sequence, $call->name),
             default => ChildRunHistory::resolutionEventForSequence($run, $sequence),
         };
-    }
-
-    public function deliverPortableCancellation(
-        WorkflowRun $run,
-        WorkflowTask $task,
-        int $sequence,
-        string $callKind,
-        int $sequenceSpan = 1,
-        ?int $operationSequence = null,
-        int $operationSequenceSpan = 1,
-    ): WorkflowHistoryEvent {
-        $existing = CooperativeCancellationDelivery::recorded($run);
-        if ($existing instanceof WorkflowHistoryEvent) {
-            return $existing;
-        }
-        $run->loadMissing(['tasks', 'timers', 'activityExecutions']);
-        $targetSequence = $operationSequence ?? $sequence;
-        $targetSpan = $operationSequence === null ? $sequenceSpan : $operationSequenceSpan;
-        for ($offset = 0; $offset < $targetSpan; ++$offset) {
-            $targetKind = in_array($callKind, ['parallel', 'selection_handle'], true)
-                ? CooperativeCancellationDelivery::callKindAt($run, $targetSequence + $offset)
-                : $callKind;
-            if ($targetKind !== null) {
-                $this->cancelOpenWaitAtSequence($run, $task, $targetSequence + $offset, $targetKind);
-            }
-        }
-
-        return CooperativeCancellationDelivery::record(
-            $run, $task, $sequence, $callKind, $sequenceSpan, $operationSequence, $operationSequenceSpan,
-        );
     }
 
     private function deliverCancellationAtCall(
