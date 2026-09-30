@@ -85,7 +85,9 @@ final class WorkflowStepHistory
      * Return the next identity in the workflow's yielded-command sequence.
      *
      * History rows and control-plane command snapshots have their own sequence
-     * domains. Only typed workflow-step history is authoritative here; events
+     * domains. Typed workflow-step history and cancellation delivery markers
+     * are authoritative here. A delivered cancellation consumes the interrupted
+     * call even when that call was never scheduled. Events
      * such as SignalReceived and RepairRequested must not move this cursor.
      */
     public static function nextDurableCommandSequence(WorkflowRun $run): int
@@ -99,6 +101,7 @@ final class WorkflowStepHistory
                 static fn (HistoryEventType $type): string => $type->value,
                 self::WORKFLOW_STEP_EVENT_TYPES,
             );
+            $stepTypes[] = HistoryEventType::CooperativeCancellationDelivered->value;
 
             return self::nextSequenceFromEvents(
                 $run->historyEvents()
@@ -246,7 +249,10 @@ final class WorkflowStepHistory
         $lastSequence = 0;
 
         foreach ($events as $event) {
-            if (! $event instanceof WorkflowHistoryEvent || ! self::isWorkflowStepEvent($event)) {
+            if (! $event instanceof WorkflowHistoryEvent || (
+                ! self::isWorkflowStepEvent($event)
+                && $event->event_type !== HistoryEventType::CooperativeCancellationDelivered
+            )) {
                 continue;
             }
 

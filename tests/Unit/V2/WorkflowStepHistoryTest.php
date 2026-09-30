@@ -16,6 +16,56 @@ use Workflow\V2\Support\WorkflowStepHistory;
 
 final class WorkflowStepHistoryTest extends TestCase
 {
+    public function testCancellationDeliveryReservesTheInterruptedDurableCallSequence(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::SideEffectRecorded, [
+                'sequence' => 1,
+            ]),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, [
+                'sequence' => 2,
+                'call_kind' => 'activity',
+            ]),
+        ]);
+
+        $this->assertSame(3, WorkflowStepHistory::nextDurableCommandSequence($run));
+    }
+
+    public function testCancellationRequestDoesNotConsumeADurableCallSequence(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::SideEffectRecorded, [
+                'sequence' => 1,
+            ]),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationRequested, [
+                'sequence' => 100,
+            ]),
+        ]);
+
+        $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
+    }
+
+    public function testCancellationDeliveryAndAnExistingWaitConsumeOnePosition(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::TimerScheduled, [
+                'sequence' => 2,
+            ]),
+            $this->historyEvent(HistoryEventType::TimerCancelled, [
+                'sequence' => 2,
+            ]),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, [
+                'sequence' => 2,
+                'call_kind' => 'timer',
+            ]),
+            $this->historyEvent(HistoryEventType::ActivityScheduled, [
+                'sequence' => 3,
+            ]),
+        ]);
+
+        $this->assertSame(4, WorkflowStepHistory::nextDurableCommandSequence($run));
+    }
+
     public function testActivityTypeDetailAcceptsCanonicalTypeAliasForYieldedClass(): void
     {
         $run = $this->runWithHistoryEvents([

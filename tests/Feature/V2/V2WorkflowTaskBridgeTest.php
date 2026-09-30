@@ -138,6 +138,32 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertInstanceOf(DefaultWorkflowTaskBridge::class, $bridge);
     }
 
+    public function testCleanupCommandFollowsCancellationDeliveryWithoutAnOpenedWait(): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
+            'workflow_command_id' => $run->cancellation_request_command_id,
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'call_kind' => 'activity',
+        ], $task, $run->cancellation_request_command_id);
+        $run->forceFill([
+            'cancellation_delivery_sequence' => 1,
+            'cancellation_delivered_at' => now(),
+        ])->save();
+
+        $result = $this->bridge->complete($task->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 10,
+        ]]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame(2, $run->timers()->sole()->sequence);
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)->count());
+    }
+
     public function testPollReturnsReadyWorkflowTasks(): void
     {
         $run = $this->createWaitingRun();

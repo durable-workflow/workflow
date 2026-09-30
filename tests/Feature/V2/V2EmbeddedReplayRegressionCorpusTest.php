@@ -39,6 +39,7 @@ use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStep;
+use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -105,6 +106,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'portable-cooperative-cleanup-deadline-cold-reload') {
                 $this->assertPortableCleanupDeadlineAfterColdReload($fixture);
+            }
+
+            if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
+                $run = $this->createRunFromFixture($fixture);
+                $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
             }
 
             $consumers = $fixture['consumers'] ?? ['workflow-fiber-runner'];
