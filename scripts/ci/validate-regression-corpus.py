@@ -918,6 +918,9 @@ def _consumer_event_payload(
 
     if event_type in FAILURE_EVENT_FALLBACK_MESSAGES:
         return {"exception": _consumer_failure_payload(event_type, payload)}
+    if event_type == "CooperativeCancellationDelivered":
+        span = _php_int_value(payload.get("sequence_span"))
+        return {"sequence_span": span if span is not None and span > 1 else 1}
     fields = REPLAY_EVENT_PAYLOAD_FIELDS.get(event_type, set())
     return {field: payload[field] for field in fields if field in payload}
 

@@ -24,6 +24,7 @@ use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\V2UpgradeStatusCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
@@ -95,6 +96,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
+        $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
 
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 

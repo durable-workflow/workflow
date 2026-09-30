@@ -193,6 +193,33 @@ list, command-kind map, generated identity prefixes, path rules, or structural
 size checks; compatible grammar evolution belongs in the Workflow package and
 is consumed through those methods.
 
+## Cooperative workflow-task bridge
+
+`Workflow\V2\Contracts\CooperativeWorkflowTaskBridge` extends
+`WorkflowTaskBridge` with `deliverCancellation()`. Adapters check whether their
+bound bridge implements this optional interface before using it. Existing
+`WorkflowTaskBridge` implementations do not acquire a new required method.
+
+Delivery names the original cancellation request, an eligible authored call
+sequence and its kind. It requires an active workflow-task lease and preserves
+that lease for cleanup. Repeated delivery returns the same persisted marker.
+Changing the request, kind, sequence or operation range is refused. Results
+recorded before the request replay normally. Cleanup completion, failure or
+continue-as-new ends the run with the original cancellation outcome.
+
+The engine adds optional range fields to `CooperativeCancellationDelivered`.
+`sequence_span` defaults to one and reserves
+the interrupted parallel call's durable positions. A selection handle uses
+`operation_sequence` and `operation_sequence_span` to identify its previously
+opened operation. The operation span defaults to one. These fields do not
+change existing scalar markers.
+
+The interface is an engine integration surface. The existing worker protocol
+does not expose its delivery operation. Service adapters must also provide
+request admission, observation, worker capability checks, compatible replay
+and a versioned wire specification before advertising cooperative cancellation
+to service workers.
+
 ## Workflow service operation caller API
 
 PHP workflow code can initiate a durable Nexus service operation from inside
@@ -450,6 +477,8 @@ class, source file path, or stack trace to replay or handle a failure.
 | `StartRejected` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `workflow_class`, `workflow_type`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `outcome`, `rejection_reason` | `HistoryTimeline`, `HistoryExport`, `RunCommandContract`, operator command projections |
 | `WorkflowStarted` | `workflow_class`, `workflow_type`, `workflow_instance_id`, `workflow_run_id`, `workflow_command_id`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `workflow_definition_fingerprint`, `declared_queries`, `declared_query_contracts`, `declared_signals`, `declared_signal_contracts`, `declared_updates`, `declared_update_contracts`, `declared_entry_method`, `declared_entry_mode`, `declared_entry_declaring_class`, `parent_workflow_instance_id`, `parent_workflow_run_id`, `parent_sequence`, `workflow_link_id`, `child_call_id`, `retry_policy`, `timeout_policy`, `continued_from_run_id`, `retry_attempt`, `retry_of_child_workflow_run_id` | `WorkflowDefinitionFingerprint`, `RunLineageView`, worker history payload consumers |
 | `WorkflowContinuedAsNew` | `sequence`, `continued_to_run_id`, `continued_to_run_number`, `workflow_link_id`, `closed_reason` | `WorkflowStepHistory`, `RunLineageView`, `HistoryTimeline`, operator detail projections |
+| `CooperativeCancellationRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `reason`, `cleanup_deadline_at` | workflow cancellation delivery, cleanup deadline enforcement, history export |
+| `CooperativeCancellationDelivered` | `workflow_command_id`, `workflow_run_id`, `sequence`, `call_kind`, `sequence_span`, `operation_sequence`, `operation_sequence_span` | `WorkflowFiberRunner`, `WorkflowStepHistory`, cooperative task bridges, history export |
 | `ActivityScheduled` | `activity_execution_id`, `activity_class`, `activity_type`, `sequence`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ActivityRecovery`, `ParallelChildGroup` |
 | `ActivityStarted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `execution_mode`, `local_activity`, `workflow_task_id`, `lease_expires_at`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunActivityView`, `ParallelChildGroup` |
 | `ActivityHeartbeatRecorded` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `heartbeat_at`, `lease_expires_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `progress` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunActivityView` |

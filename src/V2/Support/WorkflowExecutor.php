@@ -159,6 +159,9 @@ final class WorkflowExecutor
                     'selection_handle',
                     $handleResolution,
                     $workflowExecution,
+                    null,
+                    $current->baseSequence,
+                    $current->size,
                 )) {
                     if ($current->call instanceof AllCall) {
                         foreach ($current->call->leafDescriptors($current->baseSequence) as $descriptor) {
@@ -2237,9 +2240,24 @@ final class WorkflowExecutor
     }
 
     /**
-     * Revoke portable task authority when a cooperative cleanup deadline elapses.
-     * The caller holds the task and run locks, before renewal or command acceptance.
+     * Finish portable cleanup with the original cancellation outcome.
+     * The caller holds the task and run locks before accepting a terminal command.
      */
+    public function finishPortableCooperativeCancellation(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        if (! is_string($run->cancellation_request_command_id)) {
+            return false;
+        }
+        $run->load([
+            'instance', 'activityExecutions', 'timers', 'failures', 'tasks', 'commands',
+            'updates', 'historyEvents', 'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures', 'childLinks.childRun.historyEvents',
+        ]);
+        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
+
+        return true;
+    }
+
     public function cancelIfCleanupDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
     {
         if (
@@ -2316,6 +2334,42 @@ final class WorkflowExecutor
             $parentRun->unsetRelation('childLinks');
             $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
         }
+    }
+
+    public function deliverPortableCancellation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): WorkflowHistoryEvent {
+        $existing = CooperativeCancellationDelivery::recorded($run);
+        if ($existing instanceof WorkflowHistoryEvent) {
+            return $existing;
+        }
+        $run->loadMissing(['tasks', 'timers', 'activityExecutions']);
+        $targetSequence = $operationSequence ?? $sequence;
+        $targetSpan = $operationSequence === null ? $sequenceSpan : $operationSequenceSpan;
+        for ($offset = 0; $offset < $targetSpan; ++$offset) {
+            $targetKind = in_array($callKind, ['parallel', 'selection_handle'], true)
+                ? CooperativeCancellationDelivery::callKindAt($run, $targetSequence + $offset)
+                : $callKind;
+            if ($targetKind !== null) {
+                $this->cancelOpenWaitAtSequence($run, $task, $targetSequence + $offset, $targetKind);
+            }
+        }
+
+        return CooperativeCancellationDelivery::record(
+            $run,
+            $task,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+        );
     }
 
     private function scheduleActivity(
@@ -5399,6 +5453,8 @@ final class WorkflowExecutor
         ?WorkflowHistoryEvent $completionEvent,
         WorkflowExecution $workflowExecution,
         ?AllCall $parallelCall = null,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
     ): bool {
         if (! is_string($run->cancellation_request_command_id)) {
             return false;
@@ -5443,20 +5499,15 @@ final class WorkflowExecutor
             $this->cancelOpenWaitAtSequence($run, $task, $sequence, $callKind);
         }
 
-        $deliveredAt = now();
-        $run->forceFill([
-            'cancellation_delivery_sequence' => $sequence,
-            'cancellation_delivered_at' => $deliveredAt,
-            'last_progress_at' => $deliveredAt,
-        ])->save();
-
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
-            'workflow_command_id' => $run->cancellation_request_command_id,
-            'workflow_run_id' => $run->id,
-            'sequence' => $sequence,
-            'call_kind' => $callKind,
-        ], $task, $run->cancellation_request_command_id);
-        $run->historyEvents->push($event);
+        CooperativeCancellationDelivery::record(
+            $run,
+            $task,
+            $sequence,
+            $callKind,
+            $parallelCall instanceof AllCall ? count($parallelCall->leafDescriptors($sequence)) : 1,
+            $operationSequence,
+            $operationSequenceSpan,
+        );
 
         return true;
     }
@@ -5476,8 +5527,18 @@ final class WorkflowExecutor
                     'status' => TimerStatus::Cancelled,
                 ])->save();
                 TimerCancellation::record($run, $timer, $task, $run->cancellation_request_command_id);
+                foreach ($run->tasks as $timerTask) {
+                    if ($timerTask->task_type === TaskType::Timer
+                        && ($timerTask->payload['timer_id'] ?? null) === $timer->id
+                        && in_array($timerTask->status, [TaskStatus::Ready, TaskStatus::Leased], true)) {
+                        $timerTask->forceFill([
+                            'status' => TaskStatus::Cancelled,
+                            'lease_expires_at' => null,
+                        ])->save();
+                    }
+                }
             }
-        } elseif ($callKind === 'activity') {
+        } elseif (in_array($callKind, ['activity', 'local_activity'], true)) {
             /** @var ActivityExecution|null $execution */
             $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 

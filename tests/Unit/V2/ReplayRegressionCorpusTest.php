@@ -126,6 +126,13 @@ final class ReplayRegressionCorpusTest extends TestCase
             ));
             $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
         }
+        if ($fixture['id'] === 'cooperative-parallel-delivery-sequence-span') {
+            $run = new WorkflowRun();
+            $run->setRelation('historyEvents', collect($fixture['history'])->map(
+                static fn (array $event): WorkflowHistoryEvent => new WorkflowHistoryEvent($event),
+            ));
+            $this->assertSame(3, WorkflowStepHistory::nextDurableCommandSequence($run));
+        }
 
         if (in_array($fixture['id'] ?? null, [
             'parallel-child-group-final-sibling-release',
