@@ -13,9 +13,12 @@ use Tests\Fixtures\V2\TestReplayMapOrderWorkflow;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStep;
+use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Workflow;
 
 final class ReplayRegressionCorpusTest extends TestCase
@@ -115,6 +118,14 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         $this->assertStepMatches($fixture['expected'], $step, "{$fixture['id']} final outcome");
+
+        if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
+            $run = new WorkflowRun();
+            $run->setRelation('historyEvents', collect($fixture['history'])->map(
+                static fn (array $event): WorkflowHistoryEvent => new WorkflowHistoryEvent($event),
+            ));
+            $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
+        }
 
         if (in_array($fixture['id'] ?? null, [
             'parallel-child-group-final-sibling-release',

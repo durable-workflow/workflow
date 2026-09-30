@@ -19,7 +19,9 @@ final class WorkflowStepHistoryTest extends TestCase
     public function testCancellationDeliveryReservesTheInterruptedDurableCallSequence(): void
     {
         $run = $this->runWithHistoryEvents([
-            $this->historyEvent(HistoryEventType::SideEffectRecorded, ['sequence' => 1]),
+            $this->historyEvent(HistoryEventType::SideEffectRecorded, [
+                'sequence' => 1,
+            ]),
             $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, [
                 'sequence' => 2,
                 'call_kind' => 'activity',
@@ -32,8 +34,12 @@ final class WorkflowStepHistoryTest extends TestCase
     public function testCancellationRequestDoesNotConsumeADurableCallSequence(): void
     {
         $run = $this->runWithHistoryEvents([
-            $this->historyEvent(HistoryEventType::SideEffectRecorded, ['sequence' => 1]),
-            $this->historyEvent(HistoryEventType::CooperativeCancellationRequested, ['sequence' => 100]),
+            $this->historyEvent(HistoryEventType::SideEffectRecorded, [
+                'sequence' => 1,
+            ]),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationRequested, [
+                'sequence' => 100,
+            ]),
         ]);
 
         $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
@@ -42,13 +48,19 @@ final class WorkflowStepHistoryTest extends TestCase
     public function testCancellationDeliveryAndAnExistingWaitConsumeOnePosition(): void
     {
         $run = $this->runWithHistoryEvents([
-            $this->historyEvent(HistoryEventType::TimerScheduled, ['sequence' => 2]),
-            $this->historyEvent(HistoryEventType::TimerCancelled, ['sequence' => 2]),
+            $this->historyEvent(HistoryEventType::TimerScheduled, [
+                'sequence' => 2,
+            ]),
+            $this->historyEvent(HistoryEventType::TimerCancelled, [
+                'sequence' => 2,
+            ]),
             $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, [
                 'sequence' => 2,
                 'call_kind' => 'timer',
             ]),
-            $this->historyEvent(HistoryEventType::ActivityScheduled, ['sequence' => 3]),
+            $this->historyEvent(HistoryEventType::ActivityScheduled, [
+                'sequence' => 3,
+            ]),
         ]);
 
         $this->assertSame(4, WorkflowStepHistory::nextDurableCommandSequence($run));
