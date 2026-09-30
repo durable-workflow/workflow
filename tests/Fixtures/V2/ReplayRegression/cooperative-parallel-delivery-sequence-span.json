@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
   "fixture_schema": "durable-workflow.replay-regression/v1",
   "id": "cooperative-parallel-delivery-sequence-span",
-  "protocol_version": "1.20",
+  "protocol_version": "1.0",
   "bindings": ["php"],
   "workflow": {
     "type": "Tests\\Fixtures\\V2\\TestCooperativeParallelCleanupWorkflow",

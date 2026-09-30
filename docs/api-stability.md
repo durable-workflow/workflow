@@ -207,16 +207,18 @@ Changing the request, kind, sequence or operation range is refused. Results
 recorded before the request replay normally. Cleanup completion, failure or
 continue-as-new ends the run with the original cancellation outcome.
 
-Worker protocol 1.20 adds optional range fields to
-`CooperativeCancellationDelivered`. `sequence_span` defaults to one and reserves
+The engine adds optional range fields to `CooperativeCancellationDelivered`.
+`sequence_span` defaults to one and reserves
 the interrupted parallel call's durable positions. A selection handle uses
 `operation_sequence` and `operation_sequence_span` to identify its previously
 opened operation. The operation span defaults to one. These fields do not
 change existing scalar markers.
 
-The interface is an engine integration surface. Service adapters must also
-provide request admission, observation, worker capability checks and compatible
-replay before advertising cooperative cancellation to service workers.
+The interface is an engine integration surface. The existing worker protocol
+does not expose its delivery operation. Service adapters must also provide
+request admission, observation, worker capability checks, compatible replay
+and a versioned wire specification before advertising cooperative cancellation
+to service workers.
 
 ## Workflow service operation caller API
 
