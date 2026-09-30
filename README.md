@@ -104,6 +104,5 @@ and [Discord](https://discord.gg/xu5aDDpqVy).
 
 Durable Workflow is sustained by contributors and sponsors:
 
-- [Andriy Karpishyn](https://github.com/discovery-ukraine)
 - [Freispace Resource Scheduling](https://freispace.com)
 - [Translate a Book](https://translateabook.com)
