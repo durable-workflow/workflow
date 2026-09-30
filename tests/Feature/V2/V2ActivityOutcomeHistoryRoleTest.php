@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -24,9 +26,14 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\ActivityOutcomeProjectionContext;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\TaskDispatcher;
 
 /**
  * Pins every ActivityOutcomeRecorder::record exit that refreshes operator
@@ -60,6 +67,202 @@ use Workflow\V2\Support\ParallelChildGroup;
  */
 final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 {
+    public function testLongHistoryOutcomesRefreshAffectedMetadataWithoutReadingUnrelatedTimelineRows(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        foreach ([false, true] as $failed) {
+            [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+                instanceId: $failed ? 'bounded-activity-failure' : 'bounded-activity-success',
+            );
+            $this->addUnrelatedSignals($run);
+            // This legacy point references the activity task without carrying
+            // an activity ID. Its task fallback must be refreshed as well.
+            WorkflowHistoryEvent::record($run, HistoryEventType::RepairRequested, [
+                'task_type' => 'activity',
+            ], $task);
+            RunSummaryProjector::project($run->fresh());
+            $signalIds = WorkflowTimelineEntry::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('type', HistoryEventType::SignalReceived->value)
+                ->pluck('id')
+                ->all();
+            $execution->forceFill([
+                'last_heartbeat_at' => now(),
+            ])->save();
+            $task->forceFill([
+                'available_at' => now()
+                    ->addSecond(),
+            ])->save();
+
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $bridge = app(ActivityTaskBridge::class);
+            $outcome = $failed
+                ? $bridge->fail($attempt->id, new RuntimeException('bounded final failure'))
+                : $bridge->complete($attempt->id, 'bounded result');
+            $queries = DB::getQueryLog();
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+
+            $this->assertTrue($outcome['recorded']);
+            $this->assertNotNull($outcome['next_task_id']);
+            $timelineReads = array_filter($queries, static fn (array $query): bool =>
+                str_starts_with($query['query'], 'select ')
+                && str_contains($query['query'], 'workflow_run_timeline_entries'));
+            $this->assertLessThanOrEqual(2, count($timelineReads));
+            foreach ($timelineReads as $query) {
+                $this->assertSame([], array_intersect($signalIds, $query['bindings']));
+            }
+            $this->assertSame(
+                [
+                    'has_projection' => true,
+                    'has_canonical' => true,
+                    'missing' => false,
+                    'stale' => false,
+                ],
+                RunTimelineProjector::driftStatusForRun($run->fresh()),
+            );
+            $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+            $this->assertSame('workflow-task', $summary->wait_kind);
+            $this->assertSame($outcome['next_task_id'], $summary->next_task_id);
+            $this->assertSame($failed ? 1 : 0, $summary->exception_count);
+            $this->assertSame(254, $summary->history_event_count);
+            $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
+        }
+    }
+
+    public function testCustomRoleCanRefreshTheRunBeforeDelegatingActivityOutcomeProjection(): void
+    {
+        [$run, , , $attempt] = $this->scaffoldLeasedAttempt('bounded-activity-custom-refresh');
+        $this->addUnrelatedSignals($run);
+        RunSummaryProjector::project($run->fresh());
+        $role = $this->bindRecordingRole(freshen: true);
+
+        $outcome = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'custom result', null);
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertSame([['projectRun', $run->id]], $role->calls);
+        $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+        $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
+    }
+
+    public function testMissingOrOutOfDateSummaryUsesFullTimelineRebuild(): void
+    {
+        foreach (['missing', 'behind', 'old-schema'] as $state) {
+            [$run, , , $attempt] = $this->scaffoldLeasedAttempt(sprintf('activity-fallback-%s', $state));
+            $this->addUnrelatedSignals($run);
+            $summary = RunSummaryProjector::project($run->fresh());
+            WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)
+                ->where('type', HistoryEventType::SignalReceived->value)->firstOrFail()->delete();
+
+            if ($state === 'missing') {
+                $summary->delete();
+            } else {
+                $summary->forceFill($state === 'behind'
+                    ? [
+                        'history_event_count' => $summary->history_event_count - 1,
+                    ]
+                    : [
+                        'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION - 1,
+                    ])->save();
+            }
+
+            $outcome = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'fallback result', null);
+
+            $this->assertTrue($outcome['recorded']);
+            $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+            $this->assertSame(253, WorkflowRunSummary::query()->findOrFail($run->id)->history_event_count);
+            $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
+        }
+    }
+
+    public function testProjectionFailureRollsBackOutcomeAndCanBeRetriedAndRebuilt(): void
+    {
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt('bounded-activity-rollback');
+        $this->addUnrelatedSignals($run);
+        RunSummaryProjector::project($run->fresh());
+        $beforeCount = $run->historyEvents()
+            ->count();
+        $role = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->delegate->projectRun($run->fresh());
+
+                throw new RuntimeException('synthetic projection interruption');
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+        $this->app->instance(HistoryProjectionRole::class, $role);
+
+        try {
+            ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'retryable result', null);
+            $this->fail('Projection interruption must abort the outcome transaction.');
+        } catch (RuntimeException $error) {
+            $this->assertSame('synthetic projection interruption', $error->getMessage());
+        }
+        $this->assertSame($beforeCount, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)->count());
+        $this->assertNull(ActivityOutcomeProjectionContext::eventFor($run));
+
+        $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+        $outcome = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'retryable result', null);
+        $duplicate = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'duplicate', null);
+        $this->assertTrue($outcome['recorded']);
+        $this->assertFalse($duplicate['recorded']);
+        $this->assertSame($beforeCount + 1, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->where('task_type', TaskType::Workflow->value)->count());
+
+        WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)
+            ->where('type', HistoryEventType::SignalReceived->value)->firstOrFail()->delete();
+        $this->assertTrue(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+        RunSummaryProjector::project($run->fresh());
+        $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+    }
+
+    public function testDispatchPreservesAnotherLeasedWorkflowTaskAfterActivityCompletion(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        [$run, , , $attempt] = $this->scaffoldLeasedAttempt('bounded-activity-competing-task');
+        RunSummaryProjector::project($run->fresh());
+        $outcome = ActivityOutcomeRecorder::recordForAttempt($attempt->id, 'result', null);
+        $otherTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now(),
+            'leased_at' => now(),
+            'lease_expires_at' => now()
+                ->addMinute(),
+            'payload' => [],
+        ]);
+        RunSummaryProjector::project($run->fresh());
+        $this->assertSame($otherTask->id, WorkflowRunSummary::query()->findOrFail($run->id)->next_task_id);
+        $this->assertInstanceOf(WorkflowTask::class, $outcome['next_task']);
+
+        TaskDispatcher::dispatch($outcome['next_task'], boundedWorkflowTaskProjection: true);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $this->assertSame($otherTask->id, $summary->next_task_id);
+        $this->assertSame(TaskStatus::Leased->value, $summary->next_task_status);
+        $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+    }
+
     public function testCancelledRunPathUsesHistoryProjectionRoleBinding(): void
     {
         [$run, , $task, $attempt] = $this->scaffoldLeasedAttempt(instanceId: 'issue-678-history-role-cancelled');
@@ -585,12 +788,22 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
+    private function addUnrelatedSignals(WorkflowRun $run): void
+    {
+        for ($signal = 0; $signal < 250; $signal++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+                'signal_id' => sprintf('unrelated-%d', $signal),
+                'signal_name' => 'unrelated',
+            ]);
+        }
+    }
+
     /**
      * @return object{calls: array<int, array{0: string, 1: string}>}
      */
-    private function bindRecordingRole(): object
+    private function bindRecordingRole(bool $freshen = false): object
     {
-        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+        $customRole = new class(new DefaultHistoryProjectionRole(), $freshen) implements HistoryProjectionRole {
             /**
              * @var array<int, array{0: string, 1: string}>
              */
@@ -598,6 +811,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 
             public function __construct(
                 private readonly DefaultHistoryProjectionRole $delegate,
+                private readonly bool $freshen,
             ) {
             }
 
@@ -605,7 +819,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             {
                 $this->calls[] = ['projectRun', $run->id];
 
-                return $this->delegate->projectRun($run);
+                return $this->delegate->projectRun($this->freshen ? $run->fresh() : $run);
             }
 
             public function recordActivityStarted(

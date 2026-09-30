@@ -116,6 +116,23 @@ final class RunSummaryProjector
             return $fastSummary;
         }
 
+        $activityResolution = ActivityOutcomeProjectionContext::eventFor($run);
+        $activityExecutionId = $activityResolution instanceof WorkflowHistoryEvent
+            ? self::nonEmptyString($activityResolution->payload['activity_execution_id'] ?? null)
+            : null;
+        $summaryModel = self::summaryModel();
+        /** @var WorkflowRunSummary|null $previousSummary */
+        $previousSummary = $activityExecutionId === null ? null : $summaryModel::query()->find($run->id);
+        $scopeActivityTimeline = ! $run->status->isTerminal()
+            && $activityResolution?->workflow_run_id === $run->id
+            && in_array($activityResolution?->event_type, [
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+            ], true)
+            && $previousSummary instanceof WorkflowRunSummary
+            && $previousSummary->projection_schema_version === self::SCHEMA_VERSION
+            && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence;
+
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
         $currentRun = $run->instance === null
@@ -465,7 +482,13 @@ final class RunSummaryProjector
         );
 
         RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers));
-        RunTimelineProjector::project($run, collectRows: false);
+        RunTimelineProjector::project(
+            $run,
+            $scopeActivityTimeline
+                ? HistoryTimeline::iterateFromHistory($run, $activityExecutionId)
+                : null,
+            collectRows: false,
+        );
         RunTimerProjector::project($run, $timers);
         RunLineageProjector::project($run);
 
@@ -474,6 +497,23 @@ final class RunSummaryProjector
 
     public static function projectRepairedWorkflowTask(WorkflowRun $run, WorkflowTask $task): WorkflowRunSummary
     {
+        if (($task->payload['workflow_wait_kind'] ?? null) === 'activity') {
+            $summaryModel = self::summaryModel();
+            /** @var WorkflowRunSummary|null $summary */
+            $summary = $summaryModel::query()->find($run->id);
+
+            // Another task or wait can take precedence after a concurrent
+            // outcome. Retain full selection/derivation for those cases.
+            if (
+                ! $summary instanceof WorkflowRunSummary
+                || $summary->projection_schema_version !== self::SCHEMA_VERSION
+                || $summary->next_task_id !== $task->id
+                || $summary->wait_kind !== 'workflow-task'
+            ) {
+                return self::project($run);
+            }
+        }
+
         // Redispatch changes task availability, not history. Rebuild the open
         // task's operator view without scanning or rewriting the run timeline.
         return self::projectOpenWorkflowTask($run, $task, []);

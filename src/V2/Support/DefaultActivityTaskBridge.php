@@ -626,7 +626,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         $nextTask = $outcome['next_task'];
 
         if ($nextTask instanceof WorkflowTask) {
-            TaskDispatcher::dispatch($nextTask);
+            TaskDispatcher::dispatch($nextTask, boundedWorkflowTaskProjection: true);
         }
 
         return [
