@@ -414,7 +414,10 @@ final class ActivityOutcomeRecorder
                 'compatibility' => $run->compatibility,
             ]);
 
-            self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            self::projectRun(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']),
+                $parallelMetadataPath === [] ? $resolutionEvent : null,
+            );
 
             return self::recorded($resumeTask);
         });
@@ -731,9 +734,19 @@ final class ActivityOutcomeRecorder
         return CodecRegistry::defaultCodec();
     }
 
-    private static function projectRun(WorkflowRun $run): void
+    private static function projectRun(WorkflowRun $run, ?WorkflowHistoryEvent $activityResolution = null): void
     {
-        self::historyProjectionRole()->projectRun($run);
+        if (! $activityResolution instanceof WorkflowHistoryEvent) {
+            self::historyProjectionRole()->projectRun($run);
+
+            return;
+        }
+
+        ActivityOutcomeProjectionContext::run(
+            $run,
+            $activityResolution,
+            static fn () => self::historyProjectionRole()->projectRun($run),
+        );
     }
 
     private static function historyProjectionRole(): HistoryProjectionRole

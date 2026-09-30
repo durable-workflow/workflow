@@ -36,11 +36,13 @@ final class HistoryTimeline
     /**
      * Map each event when the consumer is ready for it. Full projection can
      * then persist one page at a time without retaining a second array of the
-     * run's entire mapped history.
+     * run's entire mapped history. An activity scope maps only points that can
+     * depend on that execution or one of its tasks; it does not make the
+     * authoritative summary's growing history relation bounded.
      *
      * @return \Generator<int, array<string, mixed>>
      */
-    public static function iterateFromHistory(WorkflowRun $run): \Generator
+    public static function iterateFromHistory(WorkflowRun $run, ?string $activityExecutionId = null): \Generator
     {
         $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers', 'failures']);
 
@@ -58,6 +60,22 @@ final class HistoryTimeline
             ->keyBy('id');
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if ($activityExecutionId !== null) {
+                $payload = is_array($event->payload) ? $event->payload : [];
+                $activitySnapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+                $task = $tasks->get((string) $event->workflow_task_id);
+                $eventActivityId = $payload['activity_execution_id'] ?? $activitySnapshot['id'] ?? null;
+                $taskActivityId = $task instanceof WorkflowTask
+                    ? ($task->payload['activity_execution_id'] ?? null)
+                    : null;
+
+                // Older points can use current execution or task metadata as
+                // a fallback. Refresh those points along with the new outcome.
+                if ($eventActivityId !== $activityExecutionId && $taskActivityId !== $activityExecutionId) {
+                    continue;
+                }
+            }
+
             yield self::mapEvent($event, $commands, $tasks, $activities, $timers, $failures);
         }
     }
