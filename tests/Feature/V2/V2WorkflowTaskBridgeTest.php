@@ -3675,6 +3675,110 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('task_not_active', $result['reason']);
     }
 
+    #[DataProvider('expiredCooperativeCleanupOffsets')]
+    public function testPortableCompletionRejectsExpiredCooperativeCleanup(int $secondsAfterDeadline): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+
+        try {
+            Carbon::setTestNow($deadline->copy()->addSeconds($secondsAfterDeadline));
+            $result = $this->bridge->complete($task->id, [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('late result'),
+            ]]);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('run_cancelled', $result['reason']);
+        $this->assertSame('cancelled', $result['run_status']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertNull($run->output);
+        $this->assertSame(TaskStatus::Cancelled, $task->refresh()->status);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+        ]);
+
+        $duplicate = $this->bridge->complete($task->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize('duplicate late result'),
+        ]]);
+        $this->assertFalse($duplicate['completed']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->count());
+    }
+
+    #[DataProvider('expiredCooperativeCleanupOffsets')]
+    public function testPortableHeartbeatRejectsExpiredCooperativeCleanup(int $secondsAfterDeadline): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+
+        try {
+            Carbon::setTestNow($deadline->copy()->addSeconds($secondsAfterDeadline));
+            $result = $this->bridge->heartbeat($task->id);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertFalse($result['renewed']);
+        $this->assertSame('run_closed', $result['reason']);
+        $this->assertSame('cancelled', $result['run_status']);
+        $this->assertSame('cancelled', $result['run_closed_reason']);
+        $this->assertSame('cancelled', $result['task_status']);
+        $this->assertNotNull($result['run_closed_at']);
+        $this->assertNull($result['lease_expires_at']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame(TaskStatus::Cancelled, $task->refresh()->status);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->where('workflow_command_id', $run->cancellation_request_command_id)
+            ->count());
+    }
+
+    public function testPortableHeartbeatRetainsCooperativeCleanupBeforeDeadline(): void
+    {
+        [$run, $task] = $this->createLeasedCooperativeCleanupRun();
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+
+        try {
+            Carbon::setTestNow($deadline->copy()->subSecond());
+            $result = $this->bridge->heartbeat($task->id);
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertTrue($result['renewed']);
+        $this->assertNull($result['reason']);
+        $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::WorkflowCancelled->value,
+        ]);
+    }
+
+    public static function expiredCooperativeCleanupOffsets(): iterable
+    {
+        yield 'at deadline' => [0];
+        yield 'after deadline' => [1];
+    }
+
     public function testHeartbeatExtendsLease(): void
     {
         $run = $this->createWaitingRun();
@@ -12583,6 +12687,34 @@ SQL);
         );
 
         return $instance;
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask}
+     */
+    private function createLeasedCooperativeCleanupRun(): array
+    {
+        Queue::fake();
+        $run = $this->createWaitingRun();
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'cleanup-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+        $request = WorkflowStub::load($run->workflow_instance_id)->requestCancellation('maintenance', 60);
+        $this->assertTrue($request->accepted());
+
+        return [$run->refresh(), $task];
     }
 
     private function createWaitingRun(?string $namespace = null): WorkflowRun
