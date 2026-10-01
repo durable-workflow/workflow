@@ -195,17 +195,13 @@ final class RunTimerTask implements ShouldQueue
                 'lease_expires_at' => null,
             ])->save();
 
+            $operationKind = match (true) {
+                $conditionWaitId !== null => 'condition',
+                $signalWaitId !== null => 'signal',
+                default => 'timer',
+            };
             if ($parallelMetadataPath !== []) {
-                ParallelChildGroup::claimSelectionWinner(
-                    $run,
-                    $parallelMetadataPath,
-                    match (true) {
-                        $conditionWaitId !== null => 'condition',
-                        $signalWaitId !== null => 'signal',
-                        default => 'timer',
-                    },
-                    $firedEvent,
-                );
+                ParallelChildGroup::claimSelectionWinner($run, $parallelMetadataPath, $operationKind, $firedEvent);
             }
 
             if (
@@ -214,6 +210,7 @@ final class RunTimerTask implements ShouldQueue
                     $run,
                     $parallelMetadataPath,
                     TimerStatus::Fired,
+                    $operationKind,
                 )
             ) {
                 $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);

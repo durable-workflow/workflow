@@ -1053,7 +1053,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 ];
             }
 
-            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence)) {
+            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
                 return [
                     'completed' => false,
                     'task_id' => $taskId,
@@ -1065,7 +1065,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             }
 
             $this->recordAppliedSignalForSignalResume($run, $task);
-            $this->recordSatisfiedConditionWaitForSignalResume($run, $task);
+            $conditionSelectionResolution = $this->recordSatisfiedConditionWaitForSignalResume(
+                $run,
+                $task,
+                $parsed['non_terminal'],
+            );
 
             foreach ($parsed['non_terminal'] as $command) {
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
@@ -1082,7 +1086,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                     $this->applyWorkflowFailure($run, $task, $terminal);
                 }
             } else {
-                $this->markRunWaiting($run, $task, $parsed['non_terminal'], $createdTaskIds);
+                $this->markRunWaiting(
+                    $run,
+                    $task,
+                    $parsed['non_terminal'],
+                    $createdTaskIds,
+                    $conditionSelectionResolution,
+                );
             }
 
             return [
@@ -1292,6 +1302,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         WorkflowTask $task,
         array $nonTerminalCommands,
         array &$createdTaskIds,
+        ?WorkflowHistoryEvent $conditionSelectionResolution = null,
     ): void {
         $run->forceFill([
             'status' => RunStatus::Waiting,
@@ -1311,6 +1322,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
 
         if ($nextMessageTask instanceof WorkflowTask) {
             $createdTaskIds[] = $nextMessageTask->id;
+        }
+
+        if ($conditionSelectionResolution !== null
+            && ! WorkflowTask::query()->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists()) {
+            $replayTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forConditionResolution($conditionSelectionResolution),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+            $createdTaskIds[] = $replayTask->id;
         }
 
         if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
@@ -2059,19 +2089,24 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      * either re-opening the wait or advancing to the next command. When a signal
      * resume advances, make that resolution explicit in history for replay and
      * Waterline instead of leaving only SignalReceived as an implicit cue.
+     *
+     * @param list<array{type: string, ...}> $commands
      */
-    private function recordSatisfiedConditionWaitForSignalResume(WorkflowRun $run, WorkflowTask $task): void
-    {
+    private function recordSatisfiedConditionWaitForSignalResume(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $commands
+    ): ?WorkflowHistoryEvent {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
 
         if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
-            return;
+            return null;
         }
 
         $wait = $this->latestOpenConditionWait($run);
 
         if ($wait === null) {
-            return;
+            return null;
         }
 
         $this->markConditionWaitSignalConsumed($run, $task, $wait);
@@ -2100,9 +2135,21 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'signal_wait_id' => self::nonEmptyString($taskPayload['signal_wait_id'] ?? null),
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null), $task);
-        ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $satisfiedEvent);
+        $occurrenceId = $wait['condition_wait_occurrence_id'];
+        $reopened = false;
+        foreach ($commands as $command) {
+            if ($occurrenceId !== null && $command['type'] === 'open_condition_wait'
+                && ($command['condition_wait_occurrence_id'] ?? null) === $occurrenceId) {
+                $reopened = true;
+                break;
+            }
+        }
+        $selectionResolved = ! $reopened
+            && ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $satisfiedEvent);
 
         $this->cancelOpenConditionTimer($run, $task, $wait);
+
+        return $selectionResolved ? $satisfiedEvent : null;
     }
 
     /**
@@ -5495,16 +5542,27 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
     /**
      * @param list<array{type: string, ...}> $commands
      */
-    private static function parallelCommandsMatchSequences(array $commands, int $baseSequence): bool
+    private static function parallelCommandsMatchSequences(array $commands, int $baseSequence, WorkflowRun $run): bool
     {
         $commandsBySequence = [];
+        $reopenedOccurrences = [];
         $sequence = $baseSequence;
         foreach ($commands as $command) {
             if (($command['type'] ?? null) === 'cancel_selection_operation') {
                 continue;
             }
-            $commandsBySequence[$sequence] = $command;
             $path = $command['parallel_group_path'] ?? null;
+            if (is_array($path) && ($command['type'] ?? null) === 'open_condition_wait'
+                && self::recordedGroupedConditionReopenMatches($run, $command)) {
+                $occurrenceId = (string) $command['condition_wait_occurrence_id'];
+                if (isset($reopenedOccurrences[$occurrenceId])) {
+                    return false;
+                }
+                $reopenedOccurrences[$occurrenceId] = true;
+                ++$sequence;
+                continue;
+            }
+            $commandsBySequence[$sequence] = $command;
             if (is_array($path)) {
                 foreach ($path as $entry) {
                     if (! is_array($entry)
@@ -5576,6 +5634,58 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         }
 
         return true;
+    }
+
+    /**
+     * A physical reopen keeps the original authored group/member path. Only
+     * existing, unresolved condition history can authorize that exception to
+     * the complete new-group batch and sequence checks.
+     *
+     * @param array<string, mixed> $command
+     */
+    private static function recordedGroupedConditionReopenMatches(WorkflowRun $run, array $command): bool
+    {
+        $occurrenceId = self::nonEmptyString($command['condition_wait_occurrence_id'] ?? null);
+        if ($occurrenceId === null) {
+            return false;
+        }
+        $opens = $run->historyEvents->filter(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ConditionWaitOpened
+                && ($event->payload['condition_wait_occurrence_id'] ?? null) === $occurrenceId,
+        );
+        $original = $opens->first();
+        $latest = $opens->last();
+        if (! $original instanceof WorkflowHistoryEvent || ! $latest instanceof WorkflowHistoryEvent) {
+            return false;
+        }
+        $path = ParallelChildGroup::metadataPathFromPayload($command);
+        if ($path === []
+            || $path !== ParallelChildGroup::metadataPathFromPayload($original->payload)
+            || $path !== ParallelChildGroup::metadataPathFromPayload($latest->payload)) {
+            return false;
+        }
+        foreach (['condition_key', 'condition_definition_fingerprint', 'timeout_seconds'] as $field) {
+            if (($command[$field] ?? null) !== ($original->payload[$field] ?? null)
+                || ($command[$field] ?? null) !== ($latest->payload[$field] ?? null)) {
+                return false;
+            }
+        }
+        foreach ($path as $entry) {
+            if ($entry['parallel_group_base_sequence'] + $entry['parallel_group_index']
+                !== ($original->payload['sequence'] ?? null)) {
+                return false;
+            }
+        }
+
+        return ! $run->historyEvents->contains(
+            static fn (WorkflowHistoryEvent $event): bool => $event->sequence > $latest->sequence
+                && in_array(
+                    $event->event_type,
+                    [HistoryEventType::ConditionWaitSatisfied, HistoryEventType::ConditionWaitTimedOut],
+                    true
+                )
+                && ($event->payload['condition_wait_occurrence_id'] ?? null) === $occurrenceId,
+        );
     }
 
     /**

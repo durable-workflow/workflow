@@ -289,13 +289,16 @@ final class ParallelChildGroup
     public static function shouldWakeParentOnTimerClosure(
         WorkflowRun $parentRun,
         array $metadata,
-        TimerStatus $closedTimerStatus
+        TimerStatus $closedTimerStatus,
+        string $operationKind = 'timer',
     ): bool {
         return self::shouldWakeParentOnClosure(
             $parentRun,
             self::normalizedPath($metadata),
             'timer',
             $closedTimerStatus,
+            false,
+            $operationKind,
         );
     }
 
@@ -477,9 +480,7 @@ final class ParallelChildGroup
                 $event->id === $resolutionId);
             if (! $resolution instanceof WorkflowHistoryEvent
                 || $resolution->event_type->value !== $resolutionType
-                || ! is_int($resolution->payload['sequence'] ?? null)
-                || $resolution->payload['sequence'] < $memberBase
-                || $resolution->payload['sequence'] >= $memberBase + $memberSize) {
+                || ! is_int($resolution->payload['sequence'] ?? null)) {
                 self::throwSelectionMismatch(
                     $memberBase,
                     'Winner resolution_event_id/type does not identify a terminal event for the authored member.',
@@ -635,6 +636,7 @@ final class ParallelChildGroup
         string $closedKind,
         ActivityStatus|RunStatus|TimerStatus $closedStatus,
         bool $lockHistoryForUpdate = false,
+        ?string $closedOperationKind = null,
     ): bool {
         $successful = ! (
             ($closedKind === 'activity' && $closedStatus !== ActivityStatus::Completed)
@@ -656,7 +658,7 @@ final class ParallelChildGroup
                     $metadata,
                     $closedKind,
                     $closedStatus,
-                    $nestedMember ? 'group' : $closedKind,
+                    $nestedMember ? 'group' : ($closedOperationKind ?? $closedKind),
                     $lockHistoryForUpdate,
                 );
             }
@@ -1060,11 +1062,40 @@ final class ParallelChildGroup
                 HistoryEventType::ConditionWaitTimedOut,
             ];
 
+        $memberSequences = [];
+        $conditionResolutions = [];
+        for ($sequence = $baseSequence; $sequence < $baseSequence + $size; ++$sequence) {
+            $opening = self::conditionOpeningForAuthoredSequence($run, $sequence);
+            $physicalSequence = $opening?->payload['sequence'] ?? $sequence;
+            $memberSequences[$physicalSequence] = $opening;
+            if ($opening instanceof WorkflowHistoryEvent) {
+                $conditionResolutions[$physicalSequence] = $run->historyEvents->sortBy('sequence')->first(
+                    static fn (WorkflowHistoryEvent $event): bool => self::conditionResolutionMatchesOpening(
+                        $event,
+                        $opening
+                    )
+                );
+            }
+        }
+
         $events = $run->historyEvents
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, $types, true)
-                && is_int($event->payload['sequence'] ?? null)
-                && $event->payload['sequence'] >= $baseSequence
-                && $event->payload['sequence'] < $baseSequence + $size)
+            ->filter(static function (WorkflowHistoryEvent $event) use (
+                $types,
+                $memberSequences,
+                $conditionResolutions
+            ): bool {
+                $sequence = $event->payload['sequence'] ?? null;
+                if (! in_array($event->event_type, $types, true)
+                    || ! is_int($sequence)
+                    || ! array_key_exists($sequence, $memberSequences)) {
+                    return false;
+                }
+
+                $opening = $memberSequences[$sequence];
+
+                return ! $opening instanceof WorkflowHistoryEvent
+                    || ($conditionResolutions[$sequence]?->id ?? null) === $event->id;
+            })
             ->sortBy(static fn (WorkflowHistoryEvent $event): int => $event->sequence);
 
         return $outcome === 'failed' ? $events->first() : $events->last();
@@ -1146,11 +1177,89 @@ final class ParallelChildGroup
     {
         $terminalTypes = $kind === 'signal'
             ? [HistoryEventType::SignalApplied, HistoryEventType::TimerFired]
-            : [HistoryEventType::ConditionWaitSatisfied, HistoryEventType::ConditionWaitTimedOut];
+            : [
+                HistoryEventType::ConditionWaitSatisfied,
+                HistoryEventType::ConditionWaitTimedOut,
+                HistoryEventType::TimerFired,
+            ];
+
+        $opening = $kind === 'condition' ? self::conditionOpeningForAuthoredSequence($run, $sequence) : null;
+        $sequence = $opening?->payload['sequence'] ?? $sequence;
 
         return $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
             ($event->payload['sequence'] ?? null) === $sequence
-            && in_array($event->event_type, $terminalTypes, true));
+            && in_array($event->event_type, $terminalTypes, true)
+            && (! $opening instanceof WorkflowHistoryEvent || self::conditionResolutionMatchesOpening(
+                $event,
+                $opening
+            )));
+    }
+
+    private static function conditionOpeningForAuthoredSequence(
+        WorkflowRun $run,
+        int $sequence,
+    ): ?WorkflowHistoryEvent {
+        $events = $run->historyEvents->sortBy('sequence');
+        /** @var WorkflowHistoryEvent|null $original */
+        $original = $events->first(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::ConditionWaitOpened
+            && ($event->payload['sequence'] ?? null) === $sequence);
+        $occurrence = self::stringValue($original?->payload['condition_wait_occurrence_id'] ?? null);
+        $path = self::metadataPathFromPayload($original?->payload ?? []);
+        if (! $original instanceof WorkflowHistoryEvent || $occurrence === null || $path === []) {
+            return $original;
+        }
+
+        $latest = $original;
+        $satisfied = false;
+        $timedOut = false;
+        foreach ($events as $event) {
+            if (self::conditionResolutionMatchesOpening($event, $latest)) {
+                $satisfied = $satisfied || $event->event_type === HistoryEventType::ConditionWaitSatisfied;
+                $timedOut = $timedOut || $event->event_type !== HistoryEventType::ConditionWaitSatisfied;
+            }
+            if ($event->event_type !== HistoryEventType::ConditionWaitOpened
+                || $event->sequence <= $original->sequence
+                || ($event->payload['condition_wait_occurrence_id'] ?? null) !== $occurrence) {
+                continue;
+            }
+
+            $matches = is_int($event->payload['sequence'] ?? null)
+                && $event->payload['sequence'] > $latest->payload['sequence']
+                && self::metadataPathFromPayload($event->payload) === $path;
+            foreach (['condition_key', 'condition_definition_fingerprint', 'timeout_seconds'] as $field) {
+                $matches = $matches && ($event->payload[$field] ?? null) === ($original->payload[$field] ?? null);
+            }
+            if (! $matches || ! $satisfied || $timedOut) {
+                self::throwSelectionMismatch(
+                    $sequence,
+                    'Reopened condition does not match its satisfied authored predecessor.'
+                );
+            }
+            $latest = $event;
+            $satisfied = false;
+            $timedOut = false;
+        }
+
+        return $latest;
+    }
+
+    private static function conditionResolutionMatchesOpening(
+        WorkflowHistoryEvent $resolution,
+        WorkflowHistoryEvent $opening,
+    ): bool {
+        $terminal = in_array($resolution->event_type, [
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut,
+        ], true) || ($resolution->event_type === HistoryEventType::TimerFired
+            && ($resolution->payload['timer_kind'] ?? null) === 'condition_timeout');
+
+        return $terminal
+            && $resolution->sequence > $opening->sequence
+            && ($resolution->payload['sequence'] ?? null) === ($opening->payload['sequence'] ?? null)
+            && ($resolution->payload['condition_wait_id'] ?? null) === ($opening->payload['condition_wait_id'] ?? null)
+            && ($resolution->payload['condition_wait_occurrence_id'] ?? null)
+                === ($opening->payload['condition_wait_occurrence_id'] ?? null);
     }
 
     private static function intValue(mixed $value): ?int

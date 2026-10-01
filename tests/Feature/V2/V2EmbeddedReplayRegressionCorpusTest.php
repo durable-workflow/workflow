@@ -84,6 +84,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertSignalResumedMixedGroupCommandSequenceFixture($fixture);
             }
 
+            if (($fixture['id'] ?? null) === 'service-grouped-condition-physical-reopen') {
+                $this->assertServiceGroupedConditionPhysicalReopen($fixture);
+            }
+
             if (($fixture['id'] ?? null) === 'signal-applied-envelope-cold-replay') {
                 $this->assertSignalAppliedEnvelopeColdReplay($fixture);
             }
@@ -1062,6 +1066,70 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
 
         $this->assertStepMatches($fixture['expected'], $step, "{$fixture['id']} final outcome");
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertServiceGroupedConditionPhysicalReopen(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $workflow = $fixture['workflow'];
+        $stub = WorkflowStub::make(
+            $workflow['type'],
+            sprintf('regression-corpus-condition-reopen-%d', ++$this->workflowNumber),
+        );
+        $stub->start(...$workflow['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $runner = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $stub->id(),
+            $run->id,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+        );
+        $commands = $runner->step()
+->commands;
+        foreach ($commands as &$command) {
+            if ($command['type'] === 'open_condition_wait') {
+                // Service Workers supply the authored identity across physical
+                // reopens, as in the published Rust reproduction for #601.
+                $command['condition_wait_occurrence_id'] = 'rust:condition-wait:0';
+            }
+        }
+        unset($command);
+        $condition = collect($commands)
+            ->firstWhere('type', 'open_condition_wait');
+        $this->assertIsArray($condition);
+
+        for ($wake = 0; $wake < 3; ++$wake) {
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+            $this->assertTrue($bridge->claimStatus($task->id, 'corpus-condition-worker')['claimed']);
+            $outcome = $bridge->complete($task->id, $wake === 0 ? $commands : [$condition]);
+            $this->assertTrue($outcome['completed'], json_encode($outcome, JSON_THROW_ON_ERROR));
+            $this->assertSame('waiting', $outcome['run_status']);
+            $opens = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+                ->orderBy('sequence')
+                ->get();
+            $this->assertCount($wake + 1, $opens);
+            $this->assertSame(
+                [$condition['condition_wait_occurrence_id']],
+                $opens->pluck('payload.condition_wait_occurrence_id')
+                    ->unique()
+                    ->values()
+                    ->all(),
+            );
+            if ($wake < 2) {
+                $this->assertTrue($stub->signal('vote', 'insufficient')->accepted());
+            }
+        }
     }
 
     /**

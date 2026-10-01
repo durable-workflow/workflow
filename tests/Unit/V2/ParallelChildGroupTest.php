@@ -295,6 +295,90 @@ final class ParallelChildGroupTest extends TestCase
         $this->assertSame($failure, ParallelChildGroup::memberFailureResolution($failedRun, 20, 1));
     }
 
+    public function testReopenedConditionSelectionBindsItsLatestPhysicalResolution(): void
+    {
+        foreach ([
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut,
+            HistoryEventType::TimerFired,
+        ] as $type) {
+            [$events, $select, $marker] = $this->reopenedConditionSelectionHistory($type);
+            $run = $this->runWithHistoryEvents($events);
+            $validated = ParallelChildGroup::validatedSelectionResolution($run, $select, 10, $marker);
+            $this->assertSame(12, $validated['_resolution_sequence']);
+            $this->assertSame('condition-11', $validated['operation_identity']);
+            $this->assertTrue(ParallelChildGroup::selectionMemberIsTerminal($run, 11, 1, 'condition'));
+        }
+    }
+
+    public function testReopenedConditionFalseWakeDoesNotCompleteItsLogicalMemberOrBarrier(): void
+    {
+        [$events] = $this->reopenedConditionSelectionHistory(HistoryEventType::ConditionWaitSatisfied);
+        $run = $this->runWithHistoryEvents(array_slice($events, 0, 3));
+        $this->assertFalse(ParallelChildGroup::selectionMemberIsTerminal($run, 11, 1, 'condition'));
+        $persisted = $this->createRun();
+        foreach (array_slice($events, 0, 3) as $event) {
+            $this->record($persisted, $event->event_type, $event->payload);
+        }
+        $this->assertFalse(ParallelChildGroup::selectionMemberIsTerminal($persisted, 11, 1, 'group'));
+    }
+
+    public function testReopenedConditionTimeoutTransportKeepsItsCanonicalResolutionAfterAcknowledgement(): void
+    {
+        [$events, $select, $marker] = $this->reopenedConditionSelectionHistory(HistoryEventType::TimerFired);
+        $events[] = $this->historyEvent(HistoryEventType::ConditionWaitTimedOut, 6, $events[2]->payload);
+        $run = $this->runWithHistoryEvents($events);
+        $validated = ParallelChildGroup::validatedSelectionResolution($run, $select, 10, $marker);
+        $this->assertSame('condition-resolution', $validated['resolution_event_id']);
+        $persisted = $this->createRun();
+        foreach ($events as $event) {
+            $this->record($persisted, $event->event_type, $event->payload);
+        }
+        $this->assertTrue(ParallelChildGroup::selectionMemberIsTerminal($persisted, 11, 1, 'group'));
+    }
+
+    public function testReopenedConditionResolutionRejectsChangedOrUnsettledPredecessors(): void
+    {
+        foreach ([
+            'condition_key',
+            'condition_definition_fingerprint',
+            'timeout_seconds',
+            'path',
+            'unsettled',
+            'timed_out',
+            'late',
+        ] as $change) {
+            [$events, $select, $marker] = $this->reopenedConditionSelectionHistory(
+                HistoryEventType::ConditionWaitSatisfied
+            );
+            $payload = $events[2]->payload;
+            if ($change === 'path') {
+                $payload['parallel_group_path'][0]['selection_member_key'] = 'different';
+                $events[2]->payload = $payload;
+            } elseif ($change === 'unsettled') {
+                unset($events[1]);
+            } elseif ($change === 'timed_out') {
+                $events[1]->event_type = HistoryEventType::ConditionWaitTimedOut;
+            } elseif ($change === 'late') {
+                $events[1]->sequence = 6;
+            } else {
+                $payload[$change] = $change === 'timeout_seconds' ? 31 : 'different';
+                $events[2]->payload = $payload;
+            }
+            try {
+                ParallelChildGroup::validatedSelectionResolution(
+                    $this->runWithHistoryEvents(array_values($events)),
+                    $select,
+                    10,
+                    $marker,
+                );
+                $this->fail("Accepted {$change} predecessor.");
+            } catch (HistoryEventShapeMismatchException $error) {
+                $this->assertStringContainsString('satisfied authored predecessor', $error->getMessage());
+            }
+        }
+    }
+
     public function testMalformedRecordedSelectionWinnerMetadataIsRejected(): void
     {
         $opening = $this->historyEvent(HistoryEventType::TimerScheduled, 1, [
@@ -892,6 +976,66 @@ final class ParallelChildGroupTest extends TestCase
             'timer',
             $missingIdentityResolution,
         );
+    }
+
+    /**
+     * @return array{list<WorkflowHistoryEvent>, SelectCall, WorkflowHistoryEvent}
+     */
+    private function reopenedConditionSelectionHistory(HistoryEventType $resolutionType): array
+    {
+        $identity = [
+            'condition_wait_occurrence_id' => 'condition-occurrence',
+            'condition_key' => 'ready',
+            'condition_definition_fingerprint' => 'ready-v1',
+            'timeout_seconds' => 30,
+            ...ParallelChildGroup::payloadForPath([
+                ParallelChildGroup::groupEntry(10, 2, 1, 'mixed', 'select', 'winner', 1, 11, 1, 'condition'),
+            ]),
+        ];
+        $initial = [
+            ...$identity,
+            'sequence' => 11,
+            'condition_wait_id' => 'condition-11',
+        ];
+        $reopened = [
+            ...$identity,
+            'sequence' => 12,
+            'condition_wait_id' => 'condition-12',
+        ];
+        $resolutionPayload = $reopened;
+        if ($resolutionType === HistoryEventType::TimerFired) {
+            unset($resolutionPayload['timeout_seconds']);
+            $resolutionPayload += [
+                'timer_kind' => 'condition_timeout',
+                'timer_id' => 'condition-timeout-12',
+            ];
+        }
+        $resolution = $this->historyEvent($resolutionType, 4, $resolutionPayload, 'condition-resolution');
+        $marker = $this->historyEvent(HistoryEventType::SelectionResolved, 5, [
+            'selection_group_id' => 'select-calls:10:2',
+            'selection_group_base_sequence' => 10,
+            'selection_group_size' => 2,
+            'member_key' => 'winner',
+            'member_index' => 1,
+            'member_base_sequence' => 11,
+            'member_size' => 1,
+            'operation_kind' => 'condition',
+            'operation_identity' => 'condition-11',
+            'outcome' => 'completed',
+            'resolution_event_id' => $resolution->id,
+            'resolution_event_type' => $resolutionType->value,
+        ], 'condition-marker');
+
+        return [[
+            $this->historyEvent(HistoryEventType::ConditionWaitOpened, 1, $initial),
+            $this->historyEvent(HistoryEventType::ConditionWaitSatisfied, 2, $initial),
+            $this->historyEvent(HistoryEventType::ConditionWaitOpened, 3, $reopened),
+            $resolution,
+            $marker,
+        ], new SelectCall([
+            'skipped' => new TimerCall(300),
+            'winner' => new AwaitCall(static fn (): bool => true, 'ready'),
+        ]), $marker];
     }
 
     private function createRun(): WorkflowRun

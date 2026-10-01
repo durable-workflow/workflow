@@ -7889,6 +7889,238 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
+    #[DataProvider('groupedConditionModes')]
+    public function testRecordedGroupedConditionCanReopenWithoutChoosingASelectionWinner(string $mode): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands($mode);
+        $opened = $this->bridge->complete($this->createLeasedTask($run)->id, $commands);
+        $this->assertTrue($opened['completed']);
+
+        for ($wake = 0; $wake < 2; ++$wake) {
+            $task = $this->groupedConditionSignalTask($run);
+            $outcome = $this->bridge->complete($task->id, [$condition]);
+            $this->assertTrue($outcome['completed'], (string) ($outcome['reason'] ?? ''));
+            $this->assertSame('waiting', $outcome['run_status']);
+            $events = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('sequence')
+                ->get();
+            $opens = $events->where('event_type', HistoryEventType::ConditionWaitOpened);
+            $this->assertCount($wake + 2, $opens);
+            $this->assertCount($wake + 1, $events->where('event_type', HistoryEventType::ConditionWaitSatisfied));
+            $this->assertCount(0, $events->where('event_type', HistoryEventType::SelectionResolved));
+            foreach ($opens as $open) {
+                $this->assertSame('rust:condition-wait:0', $open->payload['condition_wait_occurrence_id']);
+                $this->assertSame('two-votes', $open->payload['condition_key']);
+                $this->assertSame('sha256:two-votes-v1', $open->payload['condition_definition_fingerprint']);
+                $this->assertSame(
+                    ParallelChildGroup::metadataPathFromPayload($condition),
+                    ParallelChildGroup::metadataPathFromPayload($open->payload),
+                );
+            }
+        }
+
+        if ($mode === 'select') {
+            $outcome = $this->bridge->complete($this->groupedConditionSignalTask($run)->id, [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('approved'),
+            ]]);
+            $this->assertTrue($outcome['completed']);
+            $this->assertSame('completed', $outcome['run_status']);
+            $winner = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::SelectionResolved->value)
+                ->sole();
+            $this->assertSame('votes', $winner->payload['member_key'] ?? null);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function groupedConditionModes(): array
+    {
+        return [
+            'parallel' => ['all'],
+            'nested parallel' => ['nested'],
+            'selection' => ['select'],
+        ];
+    }
+
+    public function testResolvedReopenedConditionSelectionSchedulesItsCanonicalReplay(): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('select');
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        $this->assertTrue(
+            $this->bridge->complete($this->groupedConditionSignalTask($run)->id, [$condition])['completed']
+        );
+
+        $outcome = $this->bridge->complete($this->groupedConditionSignalTask($run)->id, []);
+        $this->assertTrue($outcome['completed']);
+        $this->assertSame('waiting', $outcome['run_status']);
+        $this->assertCount(1, $outcome['created_task_ids']);
+        $replayTask = WorkflowTask::query()->findOrFail($outcome['created_task_ids'][0]);
+        $this->assertSame(TaskType::Workflow, $replayTask->task_type);
+        $this->assertSame(TaskStatus::Ready, $replayTask->status);
+        $this->assertSame('condition_resolution', $replayTask->payload['resume_source_kind']);
+        $this->assertSame('ConditionWaitSatisfied', $replayTask->payload['workflow_event_type']);
+        $this->assertSame('rust:condition-wait:0', $replayTask->payload['condition_wait_occurrence_id']);
+    }
+
+    #[DataProvider('delayedSelectionWaitDeadlines')]
+    public function testDelayedWaitDeadlineWakesItsAuthoredSelection(string $kind, bool $reopen): void
+    {
+        Queue::fake();
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('select');
+        $condition['timeout_seconds'] = 1;
+        if ($kind === 'signal') {
+            $path = $condition['parallel_group_path'];
+            $path[0]['selection_member_kind'] = 'signal';
+            $condition = [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'approval',
+                'timeout_seconds' => 1,
+                'parallel_group_path' => $path,
+            ];
+            $condition += $path[array_key_last($path)];
+        }
+        $commands[1] = $condition;
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        if ($reopen) {
+            $this->assertTrue(
+                $this->bridge->complete($this->groupedConditionSignalTask($run)->id, [$condition])['completed']
+            );
+        }
+        $timerTask = WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)->where('status', TaskStatus::Ready->value)->get()
+            ->first(static fn (WorkflowTask $task): bool => isset($task->payload[$kind . '_wait_id']));
+        $this->assertInstanceOf(WorkflowTask::class, $timerTask);
+        Carbon::setTestNow(now()->addSeconds(2));
+
+        (new RunTimerTask($timerTask->id))->handle();
+
+        $this->assertSame(TaskStatus::Completed, $timerTask->refresh()->status);
+        $winner = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SelectionResolved->value)->sole();
+        $this->assertSame($kind, $winner->payload['operation_kind']);
+        $this->assertSame('TimerFired', $winner->payload['resolution_event_type']);
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->count());
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function delayedSelectionWaitDeadlines(): array
+    {
+        return [
+            'condition' => ['condition', false],
+            'reopened condition' => ['condition', true],
+            'signal' => ['signal', false],
+        ];
+    }
+
+    #[DataProvider('changedGroupedConditions')]
+    public function testGroupedConditionReopenRejectsChangedRecordedIdentity(string $mode, string $change): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands($mode);
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        $task = $this->groupedConditionSignalTask($run);
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+        match ($change) {
+            'occurrence' => $condition['condition_wait_occurrence_id'] = 'changed',
+            'key' => $condition['condition_key'] = 'changed',
+            'predicate' => $condition['condition_definition_fingerprint'] = 'changed',
+            'timeout' => $condition['timeout_seconds'] = 30,
+            'group' => $condition['parallel_group_path'][0]['parallel_group_id'] = 'changed',
+            'index' => $condition['parallel_group_path'][0]['parallel_group_index'] = 0,
+            'size' => $condition['parallel_group_path'][0]['parallel_group_size'] = 1,
+            'member' => $condition['parallel_group_path'][0]['selection_member_key'] = 'changed',
+            'nesting' => array_pop($condition['parallel_group_path']),
+        };
+        $outcome = $this->bridge->complete($task->id, [$condition]);
+        $this->assertFalse($outcome['completed']);
+        $this->assertSame('invalid_commands', $outcome['reason']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function changedGroupedConditions(): array
+    {
+        $cases = [];
+        foreach (['all', 'nested', 'select'] as $mode) {
+            foreach (['occurrence', 'key', 'predicate', 'timeout', 'group', 'index', 'size'] as $change) {
+                $cases[$mode . ':' . $change] = [$mode, $change];
+            }
+        }
+        $cases['selection member'] = ['select', 'member'];
+        $cases['nested group path'] = ['nested', 'nesting'];
+
+        return $cases;
+    }
+
+    public function testGroupedConditionDoesNotAdmitAnUnprovenPartialNewGroup(): void
+    {
+        $run = $this->createWaitingRun();
+        [, $condition] = $this->groupedConditionCommands('nested');
+        $outcome = $this->bridge->complete($this->createLeasedTask($run)->id, [$condition]);
+        $this->assertFalse($outcome['completed']);
+        $this->assertSame('invalid_commands', $outcome['reason']);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testGroupedConditionDoesNotAcceptTwoReopensOfOneOccurrence(): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('nested');
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        $task = $this->groupedConditionSignalTask($run);
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+        $outcome = $this->bridge->complete($task->id, [$condition, $condition]);
+        $this->assertFalse($outcome['completed']);
+        $this->assertSame('invalid_commands', $outcome['reason']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    #[DataProvider('resolvedGroupedConditions')]
+    public function testGroupedConditionDoesNotReopenAfterItsRecordedResolution(HistoryEventType $resolution): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('all');
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->sole();
+        $task = $this->groupedConditionSignalTask($run);
+        $resolutionPayload = $opened->payload;
+        unset($resolutionPayload['task']);
+        WorkflowHistoryEvent::record($run, $resolution, $resolutionPayload, $task);
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+        $outcome = $this->bridge->complete($task->id, [$condition]);
+        $this->assertFalse($outcome['completed']);
+        $this->assertSame('invalid_commands', $outcome['reason']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    /**
+     * @return array<string, array{HistoryEventType}>
+     */
+    public static function resolvedGroupedConditions(): array
+    {
+        return [
+            'satisfied' => [HistoryEventType::ConditionWaitSatisfied],
+            'timed out' => [HistoryEventType::ConditionWaitTimedOut],
+        ];
+    }
+
     public function testCompleteOpenConditionWaitWithoutTimeoutRecordsEventAndMarksWaiting(): void
     {
         $run = $this->createWaitingRun();
@@ -11934,6 +12166,91 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             [['projectRun', $run->id], ['projectRun', $link->child_workflow_run_id]],
             $customRole->calls,
         );
+    }
+
+    /**
+     * @return array{list<array<string, mixed>>, array<string, mixed>}
+     */
+    private function groupedConditionCommands(string $mode): array
+    {
+        $size = $mode === 'nested' ? 3 : 2;
+        $path = static function (int $index, string $kind) use ($mode, $size): array {
+            $entry = [
+                'parallel_group_id' => ($mode === 'select' ? 'select-calls:1:' : 'parallel-calls:1:') . $size,
+                'parallel_group_kind' => 'mixed',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => $size,
+                'parallel_group_index' => $index,
+            ];
+            if ($mode === 'select') {
+                $entry += [
+                    'parallel_group_mode' => 'select',
+                    'selection_member_key' => $kind === 'condition' ? 'votes' : 'timer',
+                    'selection_member_index' => $index,
+                    'selection_member_base_sequence' => $index + 1,
+                    'selection_member_size' => 1,
+                    'selection_member_kind' => $kind,
+                ];
+            }
+            $result = [$entry];
+            if ($mode === 'nested' && $index > 0) {
+                $result[] = [
+                    'parallel_group_id' => 'parallel-calls:2:2',
+                    'parallel_group_kind' => 'mixed',
+                    'parallel_group_base_sequence' => 2,
+                    'parallel_group_size' => 2,
+                    'parallel_group_index' => $index - 1,
+                ];
+            }
+
+            return $result;
+        };
+        $commands = [[
+            'type' => 'start_timer',
+            'delay_seconds' => 300,
+            'parallel_group_path' => $path(0, 'timer'),
+        ]];
+        if ($mode === 'nested') {
+            $commands[] = [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'never',
+                'parallel_group_path' => $path(1, 'signal'),
+            ];
+        }
+        $condition = [
+            'type' => 'open_condition_wait',
+            'condition_wait_occurrence_id' => 'rust:condition-wait:0',
+            'condition_key' => 'two-votes',
+            'condition_definition_fingerprint' => 'sha256:two-votes-v1',
+            'parallel_group_path' => $path($size - 1, 'condition'),
+        ];
+        $condition += $condition['parallel_group_path'][array_key_last($condition['parallel_group_path'])];
+        $commands[] = $condition;
+        foreach ($commands as &$command) {
+            $command += $command['parallel_group_path'][array_key_last($command['parallel_group_path'])];
+        }
+        unset($command);
+
+        return [$commands, $condition];
+    }
+
+    private function groupedConditionSignalTask(WorkflowRun $run): WorkflowTask
+    {
+        $signal = $this->recordReceivedSignal($run, 'vote', (string) Str::ulid());
+        $task = $this->createLeasedTask($run);
+        $task->forceFill([
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'resume_source_kind' => 'workflow_signal',
+                'resume_source_id' => $signal->id,
+                'workflow_signal_id' => $signal->id,
+                'signal_name' => $signal->signal_name,
+                'signal_wait_id' => $signal->signal_wait_id,
+                'workflow_command_id' => $signal->workflow_command_id,
+            ],
+        ])->save();
+
+        return $task;
     }
 
     /**

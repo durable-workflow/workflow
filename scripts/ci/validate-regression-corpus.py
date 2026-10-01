@@ -160,6 +160,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestParallelChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestSequentialChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestServiceResponseReplayWorkflow.php",
+        "tests/Fixtures/V2/TestServiceGroupedConditionReopenWorkflow.php",
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
     ),
