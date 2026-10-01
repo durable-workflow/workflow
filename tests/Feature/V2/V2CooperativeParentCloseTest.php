@@ -70,10 +70,10 @@ final class V2CooperativeParentCloseTest extends TestCase
         $entry = collect(RunLineageView::continuedWorkflowsForRun($parent->run()->fresh()))
             ->firstWhere('child_workflow_run_id', $child->runId());
         $this->assertNotNull($entry);
-        $this->assertSame($context->toArray(), $entry['parent_close_cancellation']);
+        $this->assertSameJsonObject($context->toArray(), $entry['parent_close_cancellation']);
         $point = collect(HistoryTimeline::forRun($parent->run()->fresh()))
             ->firstWhere('type', HistoryEventType::ParentClosePolicyApplied->value);
-        $this->assertSame($context->toArray(), $point['parent_close']['cancellation']);
+        $this->assertSameJsonObject($context->toArray(), $point['parent_close']['cancellation']);
 
         $this->runTask($child, TaskType::Workflow);
         $this->assertSame([], $child->refresh()->memo());
