@@ -57,6 +57,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\ParentCloseCancellation;
 use Workflow\V2\Support\ParentClosePolicyEnforcer;
 use Workflow\V2\Support\PendingMessageTask;
 use Workflow\V2\Support\PendingUpdateCloser;
@@ -1940,15 +1941,17 @@ final class WorkflowStub
                 $parentCommand = $parent instanceof WorkflowRun && is_string($parent->cancellation_request_command_id)
                     ? WorkflowCommand::query()->find($parent->cancellation_request_command_id) : null;
                 $parentContext = $parentCommand instanceof WorkflowCommand
-                    ? (new CommandResult($parentCommand))->cancellationContext() : null;
+                    ? (new CommandResult($parentCommand))->cancellationContext()
+                    : ($parent instanceof WorkflowRun && $parent->cancellation_request_command_id === null
+                        ? ParentCloseCancellation::context($parent) : null);
                 $parentEntry = $parentContext !== null ? $parentContext->lineage[count(
                     $parentContext->lineage
                 ) - 1] : null;
                 $failure = ! $linked ? 'cancellation_parent_not_linked'
                     : ($parentContext === null ? 'cancellation_parent_context_unavailable'
-                        : ($parentCommand->status !== CommandStatus::Accepted
+                        : (($parentCommand !== null && ($parentCommand->status !== CommandStatus::Accepted
                             || $parentCommand->command_type !== CommandType::RequestCancellation
-                            || $parentContext->requestId !== $parentCommand->id
+                            || $parentContext->requestId !== $parentCommand->id))
                             || $parentEntry['workflow_run_id'] !== $parent->id
                             || $parentEntry['workflow_instance_id'] !== $parent->workflow_instance_id
                                 ? 'cancellation_parent_context_mismatch'

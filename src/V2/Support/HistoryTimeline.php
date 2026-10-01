@@ -265,6 +265,24 @@ final class HistoryTimeline
             'activity' => $activityMetadata,
             'timer' => $timerMetadata,
             'child' => $childMetadata,
+            ...(in_array($event->event_type, [
+                HistoryEventType::ParentCloseCancellationRequested,
+                HistoryEventType::ParentClosePolicyApplied,
+                HistoryEventType::ParentClosePolicyFailed,
+            ], true) ? [
+                'parent_close' => [
+                    'policy' => self::stringValue($payload['policy'] ?? null),
+                    'child_instance_id' => self::stringValue($payload['child_instance_id'] ?? null),
+                    'child_run_id' => self::stringValue($payload['child_run_id'] ?? null),
+                    'request_id' => self::stringValue($payload['request_id'] ?? null),
+                    'cancellation' => $payload['cancellation'] ?? null,
+                    'error' => self::stringValue($payload['error'] ?? null),
+                    'request_diagnostics' => $payload['request_diagnostics'] ?? null,
+                    'parent_terminal_history_event_id' => self::stringValue(
+                        $payload['parent_terminal_history_event_id'] ?? null,
+                    ),
+                ],
+            ] : []),
             'failure' => $failureMetadata,
         ];
     }
@@ -528,6 +546,10 @@ final class HistoryTimeline
             HistoryEventType::ChildCancellationResolved => sprintf(
                 'Child cancellation resolved with durable outcome %s.',
                 self::stringValue($payload['child_status'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ParentCloseCancellationRequested => sprintf(
+                'Parent-close policy requested cooperative child cleanup, deadline %s.',
+                self::stringValue($payload['cancellation']['cleanup_deadline_at'] ?? null) ?? 'unknown',
             ),
             HistoryEventType::ParentClosePolicyApplied => sprintf(
                 'Applied parent-close policy %s to child %s.',

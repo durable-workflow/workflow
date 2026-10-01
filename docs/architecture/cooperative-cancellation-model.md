@@ -24,9 +24,9 @@ external side effect.
 
 Existing `ParentClosePolicy::RequestCancel` snapshots use `request_cancel` and
 currently issue terminal cancellation. Preserve that recorded contract during
-replay. Introduce an explicit cooperative parent-close policy rather than
-silently reinterpreting old child histories. Mark the historical terminal
-policy clearly in the authoring API and migration guidance.
+replay. The candidate `ParentClosePolicy::RequestCancellation` uses
+`request_cancellation` for cooperative cleanup. The enum marks the historical
+terminal policy clearly and retains its old meaning.
 
 Parent-close policy and per-operation cancellation policy answer different
 questions. The former controls a child after its parent closes. The latter
@@ -82,8 +82,25 @@ Unlinked parents, ancestor cycles and legacy parents without the context
 capability receive explicit diagnostics. Transaction retries clear their
 by-reference results before retrying.
 
+Cooperative parent-close enforcement uses that same primitive. It does not
+mark the child call cancelled before canonical child completion. If the parent
+already accepted cancellation, every child inherits that original root and
+deadline, including a deadline that has expired. A child with an independently
+accepted root keeps it and produces a recorded `cancellation_root_conflict`.
+The parent history and lineage view expose the request and rejection details.
+
+A parent that closes without accepting cancellation records one policy-owned
+`ParentCloseCancellationRequested` origin. This event leaves the parent's
+completed, failed, cancelled or terminated outcome intact. Its original request
+time is the canonical closing event's recorded time. Its default cleanup budget
+is 600 seconds from that event, shared by all affected children. Enforcement
+after a delay cannot grant another 600 seconds. Repeated enforcement preserves
+the origin and each accepted child request without appending duplicate applied
+receipts. A mutable terminal status without canonical closing history cannot
+create this budget. The parent run lock serializes origin creation and receipts.
+
 The candidate child-operation policy now propagates from cancellation delivery.
-Cooperative parent-close policy, activity policies, simultaneous-root
+Portable parent-close authoring, activity policies, simultaneous-root
 qualification, continuation behavior and portable SDK exposure remain to be
 implemented and qualified before the model is published.
 

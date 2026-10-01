@@ -1095,6 +1095,71 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
+    public function testCooperativeChildPoliciesSurviveNormalizationAtTheirProtocolFloor(): void
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            $command = [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'parent_close_policy' => 'request_cancellation',
+                'cancellation_policy' => $policy,
+            ];
+            $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command], '1.20'));
+        }
+    }
+
+    public function testCooperativeChildPoliciesRejectOldAndWrongMajorProtocols(): void
+    {
+        foreach (['1.19', '2.20', 'invalid'] as $version) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'Child',
+                    'parent_close_policy' => 'request_cancellation',
+                    'cancellation_policy' => 'wait_cancellation_completed',
+                ]], $version);
+                $this->fail('Unsupported protocol accepted cooperative child policies.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.parent_close_policy', $exception->errors());
+                $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+            }
+        }
+    }
+
+    public function testExplicitAbandonKeepsLegacyNormalization(): void
+    {
+        $command = [
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'Child',
+            'parent_close_policy' => 'request_cancel',
+            'cancellation_policy' => 'abandon',
+        ];
+        $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command], '1.19'));
+    }
+
+    public function testInvalidAndMisplacedChildCancellationPoliciesAreRejected(): void
+    {
+        foreach ([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'cancellation_policy' => 'unknown',
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'cancellation_policy' => [],
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 1,
+                'cancellation_policy' => 'try_cancel',
+            ],
+        ] as $command) {
+            $this->assertArrayHasKey('commands.0.cancellation_policy', $this->normalizeAndCaptureErrors([$command]));
+        }
+    }
+
     public function testStartChildWorkflowPreservesRetryPolicyAndTimeouts(): void
     {
         $out = WorkflowCommandNormalizer::normalize([

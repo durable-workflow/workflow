@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\Log;
+use LogicException;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
@@ -32,6 +34,22 @@ final class ParentClosePolicyEnforcer
      * @return list<string> Instance IDs of children that had policy applied
      */
     public static function enforce(WorkflowRun $run): array
+    {
+        return $run->getConnection()
+            ->transaction(static function () use ($run): array {
+                /** @var WorkflowRun $lockedRun */
+                $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->findOrFail($run->id);
+
+                return self::enforceLocked($lockedRun);
+            }, 3);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function enforceLocked(WorkflowRun $run): array
     {
         $appliedTo = [];
 
@@ -77,6 +95,49 @@ final class ParentClosePolicyEnforcer
 
             try {
                 $stub = WorkflowStub::load($childInstanceId);
+                $cancellation = [];
+
+                if ($policy === ParentClosePolicy::RequestCancellation) {
+                    // A previously accepted request is already durable. Replaying
+                    // enforcement must not append another receipt or grant time.
+                    if ($run->historyEvents()
+                        ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+                        ->where('payload->child_run_id', $childRun->id)
+                        ->where('payload->policy', $policy->value)
+                        ->exists()) {
+                        continue;
+                    }
+                    ParentCloseCancellation::ensureOrigin($run, $reason);
+                    $result = $stub->withCommandContext(CommandContext::workflow(
+                        $run->workflow_instance_id,
+                        $run->id,
+                        $link->sequence ?? 0,
+                        $link->id,
+                    ))
+                        ->attemptRequestCancellationFromParent($run->id);
+                    $cancellation = [
+                        'request_id' => $result->commandId(),
+                        'cancellation' => $result->cancellationContext()?->toArray(),
+                    ];
+                    if (! $result->accepted()) {
+                        WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, array_merge([
+                            'child_instance_id' => $childInstanceId,
+                            'child_run_id' => $childRun->id,
+                            'policy' => $policy->value,
+                            'reason' => $reason,
+                            'error' => $result->rejectionReason() ?? 'cancellation_request_rejected',
+                            'request_diagnostics' => $result->payloadValues([
+                                'existing_request_id', 'existing_root_request_id', 'existing_cleanup_deadline_at',
+                                'incoming_root_request_id', 'incoming_cleanup_deadline_at',
+                            ]),
+                        ], $cancellation));
+
+                        continue;
+                    }
+                    if ($result->cancellationContext() === null) {
+                        throw new LogicException('cancellation_child_context_unavailable');
+                    }
+                }
 
                 match ($policy) {
                     ParentClosePolicy::RequestCancel => $stub->attemptCancel($reason),
@@ -86,12 +147,12 @@ final class ParentClosePolicyEnforcer
 
                 self::markChildCallForPolicy($run, $link, $policy);
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, [
+                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, array_merge([
                     'child_instance_id' => $childInstanceId,
                     'child_run_id' => $childRun->id,
                     'policy' => $policy->value,
                     'reason' => $reason,
-                ]);
+                ], $cancellation));
 
                 $appliedTo[] = $childInstanceId;
             } catch (\Throwable $throwable) {

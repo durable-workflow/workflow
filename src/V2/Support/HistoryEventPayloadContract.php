@@ -889,8 +889,16 @@ final class HistoryEventPayloadContract
             'child_request_id', 'child_root_request_id', 'child_cleanup_deadline_at',
             'child_terminal_history_event_id', 'child_terminal_event_type', 'reason',
         ],
-        'ParentClosePolicyApplied' => ['child_instance_id', 'child_run_id', 'policy', 'reason'],
-        'ParentClosePolicyFailed' => ['child_instance_id', 'child_run_id', 'policy', 'reason', 'error'],
+        'ParentCloseCancellationRequested' => [
+            'parent_terminal_history_event_id', 'parent_terminal_event_type', 'cancellation',
+        ],
+        'ParentClosePolicyApplied' => [
+            'child_instance_id', 'child_run_id', 'policy', 'reason', 'request_id', 'cancellation',
+        ],
+        'ParentClosePolicyFailed' => [
+            'child_instance_id', 'child_run_id', 'policy', 'reason', 'error', 'request_id', 'cancellation',
+            'request_diagnostics',
+        ],
         'MessageCursorAdvanced' => ['stream_key', 'previous_position', 'new_position'],
         'ScheduleCreated' => ['spec', 'action', 'overlap_policy', 'next_fire_at', 'command_context'],
         'SchedulePaused' => ['reason', 'paused_at', 'command_context'],

@@ -9,6 +9,7 @@ use function Workflow\V2\all;
 use function Workflow\V2\cancellationShield;
 use function Workflow\V2\child;
 use Workflow\V2\Enums\CancellationPolicy;
+use Workflow\V2\Enums\ParentClosePolicy;
 use function Workflow\V2\select;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use function Workflow\V2\timer;
@@ -17,12 +18,19 @@ use Workflow\V2\Workflow;
 
 final class TestParentChildPolicyWorkflow extends Workflow
 {
-    public function handle(string $policy, bool $parallel = false, bool $selection = false): void
-    {
+    public function handle(
+        string $policy,
+        bool $parallel = false,
+        bool $selection = false,
+        string $parentClosePolicy = 'abandon',
+    ): void {
         try {
             $child = static fn () => child(
                 TestChildPolicyCleanupWorkflow::class,
-                new ChildWorkflowOptions(cancellationPolicy: CancellationPolicy::from($policy)),
+                new ChildWorkflowOptions(
+                    parentClosePolicy: ParentClosePolicy::from($parentClosePolicy),
+                    cancellationPolicy: CancellationPolicy::from($policy),
+                ),
             );
             if ($selection) {
                 $selected = select([

@@ -208,7 +208,10 @@ class ChildCallService
         foreach ($openChildren as $childCall) {
             match ($childCall->parent_close_policy) {
                 ParentClosePolicy::Abandon => $this->handleAbandon($childCall, $stats),
-                ParentClosePolicy::RequestCancel => $this->handleRequestCancel($childCall, $stats),
+                ParentClosePolicy::RequestCancel, ParentClosePolicy::RequestCancellation => $this->handleRequestCancel(
+                    $childCall,
+                    $stats,
+                ),
                 ParentClosePolicy::Terminate => $this->handleTerminate($childCall, $stats),
             };
         }

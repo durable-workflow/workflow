@@ -146,6 +146,10 @@ final class WorkflowCommandNormalizer
             'allowed' => ['start_child_workflow'],
             'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
         ],
+        'cancellation_policy' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'cancellation_policy declares how an awaiting workflow handles child cancellation and only applies to a start_child_workflow command.',
+        ],
         'delay_seconds' => [
             'allowed' => ['start_timer'],
             'guidance' => 'delay_seconds is the timer delay and only applies to a start_timer command.',
@@ -692,19 +696,44 @@ final class WorkflowCommandNormalizer
                 }
 
                 $parentClosePolicy = self::optionalCommandString($command, 'parent_close_policy', $index, $errors);
+                $cancellationPolicy = self::optionalCommandString($command, 'cancellation_policy', $index, $errors);
                 $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Child workflow');
                 $parallelMetadata = self::optionalParallelMetadataForCommand($command, $type, $index, $errors);
 
                 if ($parentClosePolicy !== null && ! in_array(
                     $parentClosePolicy,
-                    ['abandon', 'request_cancel', 'terminate'],
+                    ['abandon', 'request_cancel', 'request_cancellation', 'terminate'],
                     true
                 )) {
                     $errors["commands.{$index}.parent_close_policy"] = [
-                        'The parent_close_policy must be one of: abandon, request_cancel, terminate.',
+                        'The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate.',
                     ];
 
                     continue;
+                }
+
+                if ($cancellationPolicy !== null && ! in_array(
+                    $cancellationPolicy,
+                    ['try_cancel', 'wait_cancellation_completed', 'abandon'],
+                    true,
+                )) {
+                    $errors["commands.{$index}.cancellation_policy"] = [
+                        'The cancellation_policy must be one of: try_cancel, wait_cancellation_completed, abandon.',
+                    ];
+
+                    continue;
+                }
+                if (! WorkerProtocolVersion::supportsChildCancellationPolicies($protocolVersion)) {
+                    if ($parentClosePolicy === 'request_cancellation') {
+                        $errors["commands.{$index}.parent_close_policy"] = [
+                            'Cooperative parent-close cancellation requires worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
+                    if (in_array($cancellationPolicy, ['try_cancel', 'wait_cancellation_completed'], true)) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'Cooperative child cancellation policies require worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
                 }
 
                 $executionTimeout = self::optionalPositiveInt($command, 'execution_timeout_seconds', $index, $errors);
@@ -729,6 +758,7 @@ final class WorkflowCommandNormalizer
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
+                    'cancellation_policy' => $cancellationPolicy,
                     'retry_policy' => $retryPolicy,
                     'execution_timeout_seconds' => $executionTimeout,
                     'run_timeout_seconds' => $runTimeout,

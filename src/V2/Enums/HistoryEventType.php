@@ -64,6 +64,7 @@ enum HistoryEventType: string
     case WorkflowFailed = 'WorkflowFailed';
     case ParentClosePolicyApplied = 'ParentClosePolicyApplied';
     case ParentClosePolicyFailed = 'ParentClosePolicyFailed';
+    case ParentCloseCancellationRequested = 'ParentCloseCancellationRequested';
     case MessageCursorAdvanced = 'MessageCursorAdvanced';
     case ScheduleCreated = 'ScheduleCreated';
     case SchedulePaused = 'SchedulePaused';

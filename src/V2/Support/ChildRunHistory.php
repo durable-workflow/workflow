@@ -157,7 +157,7 @@ final class ChildRunHistory
             match ($policy) {
                 ParentClosePolicy::RequestCancel => $childCall->markCancelled(),
                 ParentClosePolicy::Terminate => $childCall->markTerminated(),
-                ParentClosePolicy::Abandon => null,
+                ParentClosePolicy::Abandon, ParentClosePolicy::RequestCancellation => null,
             };
         });
     }
