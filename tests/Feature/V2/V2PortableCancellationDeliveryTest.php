@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2PortableCancellationDeliveryTest extends TestCase
@@ -176,6 +177,91 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             ->where('task_type', TaskType::Timer->value)->sole()->status);
         $this->assertSame(1, $run->historyEvents()
             ->where('event_type', HistoryEventType::TimerCancelled->value)->count());
+    }
+
+    #[DataProvider('workflowLeaseStates')]
+    public function testWorkflowLeaseRecoveryPreservesAnOlderRunningActivity(bool $expired): void
+    {
+        $startedAt = now();
+        Carbon::setTestNow($startedAt);
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 10);
+
+        try {
+            [$run, $task] = $this->newRun();
+            $scheduled = $this->bridge->complete($task->id, [[
+                'type' => 'schedule_activity',
+                'activity_type' => TestGreetingActivity::class,
+                'arguments' => Serializer::serialize(['Taylor']),
+            ]]);
+            $this->assertTrue($scheduled['completed']);
+            Carbon::setTestNow($startedAt->copy()->addSecond());
+            $activityBridge = $this->app->make(ActivityTaskBridge::class);
+            $activityClaim = $activityBridge->claimStatus($scheduled['created_task_ids'][0], 'activity-owner');
+            $this->assertTrue($activityClaim['claimed'], $activityClaim['reason'] ?? '');
+            $activityTask = WorkflowTask::query()->findOrFail($scheduled['created_task_ids'][0]);
+            $execution = $run->activityExecutions()
+                ->sole();
+            $attempt = $execution->attempts()
+                ->sole();
+            $activityTaskBefore = $activityTask->getAttributes();
+            $executionBefore = $execution->getAttributes();
+            $attemptBefore = $attempt->getAttributes();
+            $activityHistoryBefore = $run->historyEvents()
+                ->where('event_type', 'like', 'Activity%')
+                ->get()
+                ->toArray();
+
+            Carbon::setTestNow($startedAt->copy()->addSeconds(2));
+            $this->request($run);
+            $resume = $run->tasks()
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)->sole();
+            $claim = $this->bridge->claimStatus($resume->id, 'lost-workflow-owner');
+            $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
+            $resume->refresh();
+            $oldAttempt = $resume->attempt_count;
+            Carbon::setTestNow($startedAt->copy()->addSeconds($expired ? 13 : 5));
+
+            $summary = RunSummaryProjector::project($run->fresh());
+            if ($expired) {
+                $this->assertSame($resume->id, $summary->next_task_id);
+                $this->assertSame('repair_needed', $summary->liveness_state);
+            }
+            $repair = WorkflowStub::loadRun($run->id)->attemptRepair();
+            $this->assertSame($expired ? 'repair_dispatched' : 'repair_not_needed', $repair->outcome());
+            $this->assertSame(2, $run->tasks()->where('task_type', TaskType::Workflow->value)->count());
+            $resume->refresh();
+            $this->assertSame($expired ? TaskStatus::Ready : TaskStatus::Leased, $resume->status);
+            $this->assertSame($expired ? null : 'lost-workflow-owner', $resume->lease_owner);
+            $this->assertSame($oldAttempt, $resume->attempt_count);
+
+            if ($expired) {
+                $replacement = $this->bridge->claimStatus($resume->id, 'replacement-workflow-owner');
+                $this->assertTrue($replacement['claimed'], $replacement['reason'] ?? '');
+                $this->assertSame($oldAttempt + 1, $resume->refresh()->attempt_count);
+                $this->assertSame('replacement-workflow-owner', $resume->lease_owner);
+            }
+            $this->assertSame($activityTaskBefore, $activityTask->refresh()->getAttributes());
+            $this->assertSame($executionBefore, $execution->refresh()->getAttributes());
+            $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+            $this->assertSame(
+                $activityHistoryBefore,
+                $run->historyEvents()
+                    ->where('event_type', 'like', 'Activity%')
+                    ->get()
+                    ->toArray(),
+            );
+            $this->assertSame(0, $this->deliveryCount($run));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public static function workflowLeaseStates(): iterable
+    {
+        yield 'expired workflow lease' => [true];
+        yield 'fresh workflow lease' => [false];
     }
 
     public function testARecordedCallCannotBeRelabelledAsADifferentOperation(): void

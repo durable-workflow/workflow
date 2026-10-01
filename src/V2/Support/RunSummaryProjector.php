@@ -1381,6 +1381,15 @@ final class RunSummaryProjector
                 true,
             ))
             ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
+                // Another in-flight task must not hide an expired lease from
+                // the run-level repair decision.
+                $leftExpired = TaskRepairPolicy::leaseExpired($left) ? 0 : 1;
+                $rightExpired = TaskRepairPolicy::leaseExpired($right) ? 0 : 1;
+
+                if ($leftExpired !== $rightExpired) {
+                    return $leftExpired <=> $rightExpired;
+                }
+
                 $leftStatus = $left->status === TaskStatus::Leased ? 0 : 1;
                 $rightStatus = $right->status === TaskStatus::Leased ? 0 : 1;
 
