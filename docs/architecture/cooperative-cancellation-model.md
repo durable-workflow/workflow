@@ -43,10 +43,16 @@ Keep reason, requester, source, original requested-at and root cleanup deadline
 in canonical history. A descendant receives the remaining budget. Propagation,
 retry, continue-as-new and worker replacement must never grant a fresh budget.
 
-An already accepted request from a different root needs an explicit conflict
-rule. Resolve this before implementation. Do not silently replace its identity
-or extend its deadline. Independent cancellation and ancestor propagation must
-have reproducible concurrent-request tests.
+The first accepted request on a run owns its local identity, root, delivery
+route and deadline. A later direct request returns that original request.
+Propagation from the same root also returns the original local request, even
+when another recorded parent supplies a different route. Propagation from a
+different root returns `cancellation_root_conflict` with the existing and
+incoming identities and deadlines. It does not replace either request or
+extend the accepted budget. This conflict does not mean the two independent
+cascades became one tree. Awaiting-operation policies must report the conflict
+and remain bounded by their original budget. Reproducible simultaneous-request
+database tests remain required before publication.
 
 Workflow code receives an immutable cancellation context. Its `deadline()` and
 `remaining()` helpers use deterministic workflow time. Worker control checks
@@ -63,9 +69,23 @@ restricted to caller type, ID and label.
 
 `remaining()` reads deterministic workflow time and refuses calls outside a
 workflow Fiber. Older histories that lack this snapshot keep their existing
-delivery behavior and expose a null context. Descendant propagation, concurrent
-roots and portable SDK exposure remain to be implemented and qualified before
-the model is published.
+delivery behavior and expose a null context.
+
+The candidate Native request primitive
+`attemptRequestCancellationFromParent()` reads its parent's accepted context
+from storage and requires a recorded direct child link to the selected current
+run. It assigns a distinct local request ID, appends lineage, and inherits the
+root identity, requester, reason, original requested-at and deadline. It does
+not immediately terminate the child. A late propagation retains an already
+expired deadline so repair can close it without granting another budget.
+Unlinked parents, ancestor cycles and legacy parents without the context
+capability receive explicit diagnostics. Transaction retries clear their
+by-reference results before retrying.
+
+Automatic propagation from cancellation delivery and parent-close policy,
+operation policies, simultaneous-root qualification, continuation behavior and
+portable SDK exposure remain to be implemented and qualified before the model
+is published. The internal request primitive alone does not complete a cascade.
 
 ## Operation policies
 

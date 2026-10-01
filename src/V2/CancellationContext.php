@@ -69,7 +69,8 @@ final class CancellationContext
         $rootRunId = self::text($snapshot, 'root_workflow_run_id');
         $parentRequestId = $snapshot['parent_request_id'] ?? null;
         $reason = $snapshot['reason'] ?? null;
-        if (count(array_unique(array_column($normalizedLineage, 'request_id'))) !== count($normalizedLineage)) {
+        if (count(array_unique(array_column($normalizedLineage, 'request_id'))) !== count($normalizedLineage)
+            || count(array_unique(array_column($normalizedLineage, 'workflow_run_id'))) !== count($normalizedLineage)) {
             throw new InvalidArgumentException('Cancellation lineage cannot contain a cycle.');
         }
         if (($parentRequestId !== null && (! is_string($parentRequestId) || $parentRequestId === ''))
@@ -115,6 +116,23 @@ final class CancellationContext
     public function deadline(): CarbonImmutable
     {
         return $this->cleanupDeadline;
+    }
+
+    /**
+     * Derive a local delivery identity without granting another cleanup budget.
+     */
+    public function forDescendant(string $requestId, string $workflowInstanceId, string $workflowRunId): self
+    {
+        $snapshot = $this->toArray();
+        $snapshot['request_id'] = $requestId;
+        $snapshot['parent_request_id'] = $this->requestId;
+        $snapshot['lineage'][] = [
+            'request_id' => $requestId,
+            'workflow_instance_id' => $workflowInstanceId,
+            'workflow_run_id' => $workflowRunId,
+        ];
+
+        return self::fromArray($snapshot);
     }
 
     /**
