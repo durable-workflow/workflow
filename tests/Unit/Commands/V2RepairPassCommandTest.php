@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Commands;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -12,12 +13,14 @@ use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -25,6 +28,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\TaskWatchdog;
+use Workflow\V2\WorkflowStub;
 
 final class V2RepairPassCommandTest extends TestCase
 {
@@ -66,6 +70,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -131,6 +136,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -248,6 +254,7 @@ final class V2RepairPassCommandTest extends TestCase
                     'missing_run_failures' => [],
                     'deadline_expired_candidates' => 0,
                     'deadline_expired_tasks_created' => 0,
+                    'cancellation_deadlines_enforced' => 0,
                     'deadline_expired_failures' => [],
                     'activity_timeout_candidates' => 0,
                     'activity_timeouts_enforced' => 0,
@@ -275,6 +282,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -326,6 +334,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -381,6 +390,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -453,6 +463,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -551,6 +562,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -624,6 +636,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 1,
             'deadline_expired_tasks_created' => 1,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -647,6 +660,54 @@ final class V2RepairPassCommandTest extends TestCase
             ->where('task_type', TaskType::Workflow->value)
             ->count());
         Queue::assertPushed(RunWorkflowTask::class, 1);
+    }
+
+    public function testCleanupDeadlineClosesForeignRunsWithNoWorkerWithinRequestedQueue(): void
+    {
+        Queue::fake();
+
+        foreach ([TaskStatus::Completed, TaskStatus::Ready, TaskStatus::Leased] as $status) {
+            $run = $this->createWaitingRun('cleanup-deadline-' . $status->value, queue: 'critical');
+            $request = WorkflowStub::loadRun($run->id)->requestCancellation('worker unavailable', 60);
+            $run->refresh()
+                ->forceFill([
+                    'compatibility' => 'foreign-sdk-cleanup',
+                ])->save();
+            $deadline = $run->cancellation_deadline_at;
+            $this->assertNotNull($deadline);
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Workflow->value)->sole();
+            $task->forceFill([
+                'status' => $status,
+                'compatibility' => 'foreign-sdk-cleanup',
+                'lease_owner' => $status === TaskStatus::Leased ? 'departed-worker' : null,
+                'lease_expires_at' => $status === TaskStatus::Leased ? $deadline->copy()->addMinutes(5) : null,
+            ])->save();
+            $other = $this->createWaitingRun('cleanup-other-queue-' . $status->value, queue: 'default');
+            WorkflowStub::loadRun($other->id)->requestCancellation('different queue', 60);
+
+            try {
+                Carbon::setTestNow($deadline->copy()->addSecond());
+                $report = TaskWatchdog::runPass(connection: 'redis', queue: 'critical');
+                $this->assertSame(1, $report['cancellation_deadlines_enforced']);
+                $this->assertSame(0, $report['deadline_expired_tasks_created']);
+                $this->assertSame([], $report['deadline_expired_failures']);
+                $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+                $this->assertSame(RunStatus::Waiting, $other->refresh()->status);
+                $this->assertSame(0, $run->tasks()->whereIn('status', [
+                    TaskStatus::Ready->value,
+                    TaskStatus::Leased->value,
+                ])->count());
+                $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+                    ->where('event_type', HistoryEventType::WorkflowCancelled->value)->sole();
+                $this->assertSame($request->commandId(), $terminal->workflow_command_id);
+                $this->assertSame('Cooperative cancellation cleanup deadline expired.', $terminal->payload['reason']);
+                $again = TaskWatchdog::runPass(connection: 'redis', queue: 'critical');
+                $this->assertSame(0, $again['cancellation_deadlines_enforced']);
+            } finally {
+                Carbon::setTestNow();
+            }
+        }
     }
 
     public function testConnectionAndQueueScopeEnforcesOnlyMatchingActivityTimeouts(): void
@@ -682,6 +743,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 1,
             'activity_timeouts_enforced' => 1,
@@ -741,6 +803,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -764,6 +827,7 @@ final class V2RepairPassCommandTest extends TestCase
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,

@@ -799,14 +799,68 @@ final class V2FinallyCleanupTest extends TestCase
             Carbon::setTestNow($workflow->run()?->cancellation_deadline_at?->copy()->addSecond());
             $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$runId]);
             $this->assertSame(1, $report['deadline_expired_candidates']);
-            $this->assertSame(1, $report['deadline_expired_tasks_created']);
-            $this->runReadyTask($runId, TaskType::Workflow);
+            $this->assertSame(0, $report['deadline_expired_tasks_created']);
+            $this->assertSame(1, $report['cancellation_deadlines_enforced']);
         } finally {
             Carbon::setTestNow();
         }
 
         $this->assertTrue($workflow->refresh()->cancelled());
         $this->assertSame([], $workflow->memo());
+    }
+
+    public function testWatchdogClosesExpiredCleanupWithoutACompatibleWorker(): void
+    {
+        Queue::fake();
+
+        foreach ([TaskStatus::Ready, TaskStatus::Leased] as $status) {
+            $workflow = WorkflowStub::make(TestFinallyCleanupWorkflow::class);
+            $workflow->start(false, 3600);
+            $runId = $workflow->runId();
+            $this->assertIsString($runId);
+            $this->runReadyTask($runId, TaskType::Workflow);
+            $request = $workflow->requestCancellation('stop unavailable worker', 60);
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $run->forceFill([
+                'compatibility' => 'foreign-sdk-cleanup',
+            ])->save();
+            $task = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)->sole();
+            $task->forceFill([
+                'status' => $status,
+                'compatibility' => 'foreign-sdk-cleanup',
+                'lease_owner' => $status === TaskStatus::Leased ? 'departed-sdk-worker' : null,
+                'lease_expires_at' => $status === TaskStatus::Leased
+                    ? $run->cancellation_deadline_at->copy()
+                        ->addMinutes(5) : null,
+            ])->save();
+
+            $before = TaskWatchdog::runPass(respectThrottle: false, runIds: [$runId]);
+            $this->assertSame(0, $before['cancellation_deadlines_enforced']);
+            $this->assertFalse($workflow->refresh()->cancelled());
+
+            try {
+                Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
+                $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$runId]);
+                $this->assertSame(1, $report['cancellation_deadlines_enforced']);
+                $this->assertSame([], $report['deadline_expired_failures']);
+                $this->assertTrue($workflow->refresh()->cancelled());
+                $this->assertSame(TaskStatus::Cancelled, $task->fresh()->status);
+                $this->assertNull($task->fresh()->lease_expires_at);
+                $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                    ->where('event_type', HistoryEventType::WorkflowCancelled->value)->sole();
+                $this->assertSame($request->commandId(), $terminal->workflow_command_id);
+                $this->assertSame('Cooperative cancellation cleanup deadline expired.', $terminal->payload['reason']);
+                $this->assertSame([], $workflow->memo());
+                $again = TaskWatchdog::runPass(respectThrottle: false, runIds: [$runId]);
+                $this->assertSame(0, $again['cancellation_deadlines_enforced']);
+                $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                    ->where('event_type', HistoryEventType::WorkflowCancelled->value)->count());
+            } finally {
+                Carbon::setTestNow();
+            }
+        }
     }
 
     private function runReadyTask(string $runId, TaskType $type): void
