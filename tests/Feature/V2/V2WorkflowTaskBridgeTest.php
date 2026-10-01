@@ -7969,6 +7969,60 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('rust:condition-wait:0', $replayTask->payload['condition_wait_occurrence_id']);
     }
 
+    #[DataProvider('delayedSelectionWaitDeadlines')]
+    public function testDelayedWaitDeadlineWakesItsAuthoredSelection(string $kind, bool $reopen): void
+    {
+        Queue::fake();
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('select');
+        $condition['timeout_seconds'] = 1;
+        if ($kind === 'signal') {
+            $path = $condition['parallel_group_path'];
+            $path[0]['selection_member_kind'] = 'signal';
+            $condition = [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'approval',
+                'timeout_seconds' => 1,
+                'parallel_group_path' => $path,
+            ];
+            $condition += $path[array_key_last($path)];
+        }
+        $commands[1] = $condition;
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        if ($reopen) {
+            $this->assertTrue(
+                $this->bridge->complete($this->groupedConditionSignalTask($run)->id, [$condition])['completed']
+            );
+        }
+        $timerTask = WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)->where('status', TaskStatus::Ready->value)->get()
+            ->first(static fn (WorkflowTask $task): bool => isset($task->payload[$kind . '_wait_id']));
+        $this->assertInstanceOf(WorkflowTask::class, $timerTask);
+        Carbon::setTestNow(now()->addSeconds(2));
+
+        (new RunTimerTask($timerTask->id))->handle();
+
+        $this->assertSame(TaskStatus::Completed, $timerTask->refresh()->status);
+        $winner = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SelectionResolved->value)->sole();
+        $this->assertSame($kind, $winner->payload['operation_kind']);
+        $this->assertSame('TimerFired', $winner->payload['resolution_event_type']);
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->count());
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function delayedSelectionWaitDeadlines(): array
+    {
+        return [
+            'condition' => ['condition', false],
+            'reopened condition' => ['condition', true],
+            'signal' => ['signal', false],
+        ];
+    }
+
     #[DataProvider('changedGroupedConditions')]
     public function testGroupedConditionReopenRejectsChangedRecordedIdentity(string $mode, string $change): void
     {

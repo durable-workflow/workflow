@@ -289,13 +289,16 @@ final class ParallelChildGroup
     public static function shouldWakeParentOnTimerClosure(
         WorkflowRun $parentRun,
         array $metadata,
-        TimerStatus $closedTimerStatus
+        TimerStatus $closedTimerStatus,
+        string $operationKind = 'timer',
     ): bool {
         return self::shouldWakeParentOnClosure(
             $parentRun,
             self::normalizedPath($metadata),
             'timer',
             $closedTimerStatus,
+            false,
+            $operationKind,
         );
     }
 
@@ -633,6 +636,7 @@ final class ParallelChildGroup
         string $closedKind,
         ActivityStatus|RunStatus|TimerStatus $closedStatus,
         bool $lockHistoryForUpdate = false,
+        ?string $closedOperationKind = null,
     ): bool {
         $successful = ! (
             ($closedKind === 'activity' && $closedStatus !== ActivityStatus::Completed)
@@ -654,7 +658,7 @@ final class ParallelChildGroup
                     $metadata,
                     $closedKind,
                     $closedStatus,
-                    $nestedMember ? 'group' : $closedKind,
+                    $nestedMember ? 'group' : ($closedOperationKind ?? $closedKind),
                     $lockHistoryForUpdate,
                 );
             }
