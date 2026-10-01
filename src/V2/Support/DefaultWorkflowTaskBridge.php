@@ -720,6 +720,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 'operation_sequence' => $event?->payload['operation_sequence'] ?? null,
                 'operation_sequence_span' => $event === null ? null : ($event->payload['operation_sequence_span'] ?? 1),
                 'reason' => $reason,
+                ...($reason === 'cancellation_waiting_for_child' ? [
+                    'claim_released' => true,
+                ] : []),
             ];
             if ($task === null || $task->task_type !== TaskType::Workflow) {
                 return $response($task === null ? 'task_not_found' : 'task_not_workflow');

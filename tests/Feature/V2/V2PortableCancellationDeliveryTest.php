@@ -51,7 +51,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
     }
 
-    public function testPortableChildWaitPreservesLeaseUntilCanonicalChildCancellationCompletes(): void
+    public function testPortableChildWaitReleasesItsClaimUntilCanonicalChildCancellationCompletes(): void
     {
         [$run, $task] = $this->newRun();
         $scheduled = $this->bridge->complete($task->id, [[
@@ -67,17 +67,20 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertInstanceOf(WorkflowRun::class, $child);
         $this->request($run);
         $resume = $this->leaseReadyTask($run);
-        $lease = $resume->lease_expires_at->toISOString();
         $deadline = $run->cancellation_deadline_at->toISOString();
 
-        for ($retry = 0; $retry < 2; ++$retry) {
-            $waiting = $this->deliver($run, $resume, 1, 'child');
-            $this->assertFalse($waiting['delivered']);
-            $this->assertSame('cancellation_waiting_for_child', $waiting['reason']);
-            $this->assertSame(TaskStatus::Leased, $resume->refresh()->status);
-            $this->assertSame($lease, $resume->lease_expires_at->toISOString());
-            $this->assertSame(0, $this->deliveryCount($run));
-        }
+        $waiting = $this->deliver($run, $resume, 1, 'child');
+        $this->assertFalse($waiting['delivered']);
+        $this->assertTrue($waiting['claim_released']);
+        $this->assertSame('cancellation_waiting_for_child', $waiting['reason']);
+        $this->assertSame(TaskStatus::Completed, $resume->refresh()->status);
+        $this->assertNull($resume->lease_expires_at);
+        $this->assertSame(0, $this->deliveryCount($run));
+        $this->assertSame('task_not_leased', $this->deliver($run, $resume, 1, 'child')['reason']);
+        $openTasks = $run->tasks()
+            ->where('task_type', TaskType::Workflow);
+        $openTasks->whereIn('status', [TaskStatus::Ready, TaskStatus::Leased]);
+        $this->assertSame(0, $openTasks->count());
         $this->assertSame($deadline, $child->refresh()->cancellation_deadline_at->toISOString());
         $this->assertSame(
             1,
@@ -92,11 +95,12 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         ]])['completed']);
         $this->assertSame(RunStatus::Cancelled, $child->refresh()->status);
 
-        $delivery = $this->deliver($run, $resume, 1, 'child');
+        $replacement = $this->leaseReadyTask($run);
+        $delivery = $this->deliver($run, $replacement, 1, 'child');
         $this->assertTrue($delivery['delivered']);
         $this->assertSame($run->cancellation_request_command_id, $delivery['request_id']);
         $this->assertSame(1, $this->deliveryCount($run));
-        $this->assertTrue($this->bridge->complete($resume->id, [[
+        $this->assertTrue($this->bridge->complete($replacement->id, [[
             'type' => 'complete_workflow',
             'output' => Serializer::serialize('parent cleanup complete'),
         ]])['completed']);

@@ -124,9 +124,13 @@ callback stopped.
 
 The portable command bridge accepts the same child policy and returns
 `delivered: false` with `cancellation_waiting_for_child` while acknowledgement is
-pending. First-party SDKs must handle this pending state, heartbeat their claim
-and retry delivery before this option is advertised or published. Their current
-source gates do not yet qualify this new policy.
+pending. It parks the parent and completes the current task claim atomically,
+returning `claim_released: true`. The SDK leaves that claim without publishing
+completion or failure. This frees a single worker to execute the child rather
+than occupying it with a blocking wait. Child terminal history wakes the parent
+for a new claim, which replays the same authored cancellation boundary.
+First-party SDKs must handle this pending state before this option is advertised
+or published. Their current source gates do not yet qualify this new policy.
 
 An expired lease proves loss of authority to commit a durable result. It does
 not prove that a remote process stopped or that an external system performed

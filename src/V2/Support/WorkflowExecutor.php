@@ -2388,6 +2388,8 @@ final class WorkflowExecutor
             }
         }
         if ($waiting) {
+            $this->waitForNextResumeSource($run, $task);
+
             return null;
         }
 
