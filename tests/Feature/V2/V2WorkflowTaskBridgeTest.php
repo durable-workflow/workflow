@@ -7948,6 +7948,27 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ];
     }
 
+    public function testResolvedReopenedConditionSelectionSchedulesItsCanonicalReplay(): void
+    {
+        $run = $this->createWaitingRun();
+        [$commands, $condition] = $this->groupedConditionCommands('select');
+        $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, $commands)['completed']);
+        $this->assertTrue(
+            $this->bridge->complete($this->groupedConditionSignalTask($run)->id, [$condition])['completed']
+        );
+
+        $outcome = $this->bridge->complete($this->groupedConditionSignalTask($run)->id, []);
+        $this->assertTrue($outcome['completed']);
+        $this->assertSame('waiting', $outcome['run_status']);
+        $this->assertCount(1, $outcome['created_task_ids']);
+        $replayTask = WorkflowTask::query()->findOrFail($outcome['created_task_ids'][0]);
+        $this->assertSame(TaskType::Workflow, $replayTask->task_type);
+        $this->assertSame(TaskStatus::Ready, $replayTask->status);
+        $this->assertSame('condition_resolution', $replayTask->payload['resume_source_kind']);
+        $this->assertSame('ConditionWaitSatisfied', $replayTask->payload['workflow_event_type']);
+        $this->assertSame('rust:condition-wait:0', $replayTask->payload['condition_wait_occurrence_id']);
+    }
+
     #[DataProvider('changedGroupedConditions')]
     public function testGroupedConditionReopenRejectsChangedRecordedIdentity(string $mode, string $change): void
     {

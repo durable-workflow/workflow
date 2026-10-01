@@ -101,6 +101,26 @@ final class WorkflowTaskPayload
     /**
      * @return array<string, mixed>
      */
+    public static function forConditionResolution(WorkflowHistoryEvent $event): array
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $waitId = self::nonEmptyString($payload['condition_wait_id'] ?? null);
+
+        return array_filter([
+            'workflow_wait_kind' => 'condition',
+            'open_wait_id' => $waitId,
+            'resume_source_kind' => 'condition_resolution',
+            'resume_source_id' => $event->id,
+            'condition_wait_id' => $waitId,
+            'condition_wait_occurrence_id' => self::nonEmptyString($payload['condition_wait_occurrence_id'] ?? null),
+            'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
+            'workflow_event_type' => $event->event_type?->value,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public static function forTimerResolution(WorkflowHistoryEvent $event): array
     {
         $payload = is_array($event->payload) ? $event->payload : [];

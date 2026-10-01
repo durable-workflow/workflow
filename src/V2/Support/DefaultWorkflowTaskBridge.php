@@ -1065,7 +1065,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             }
 
             $this->recordAppliedSignalForSignalResume($run, $task);
-            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+            $conditionSelectionResolution = $this->recordSatisfiedConditionWaitForSignalResume(
+                $run,
+                $task,
+                $parsed['non_terminal'],
+            );
 
             foreach ($parsed['non_terminal'] as $command) {
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
@@ -1082,7 +1086,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                     $this->applyWorkflowFailure($run, $task, $terminal);
                 }
             } else {
-                $this->markRunWaiting($run, $task, $parsed['non_terminal'], $createdTaskIds);
+                $this->markRunWaiting(
+                    $run,
+                    $task,
+                    $parsed['non_terminal'],
+                    $createdTaskIds,
+                    $conditionSelectionResolution,
+                );
             }
 
             return [
@@ -1292,6 +1302,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         WorkflowTask $task,
         array $nonTerminalCommands,
         array &$createdTaskIds,
+        ?WorkflowHistoryEvent $conditionSelectionResolution = null,
     ): void {
         $run->forceFill([
             'status' => RunStatus::Waiting,
@@ -1311,6 +1322,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
 
         if ($nextMessageTask instanceof WorkflowTask) {
             $createdTaskIds[] = $nextMessageTask->id;
+        }
+
+        if ($conditionSelectionResolution !== null
+            && ! WorkflowTask::query()->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists()) {
+            $replayTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forConditionResolution($conditionSelectionResolution),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+            $createdTaskIds[] = $replayTask->id;
         }
 
         if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
@@ -2066,17 +2096,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         WorkflowRun $run,
         WorkflowTask $task,
         array $commands
-    ): void {
+    ): ?WorkflowHistoryEvent {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
 
         if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
-            return;
+            return null;
         }
 
         $wait = $this->latestOpenConditionWait($run);
 
         if ($wait === null) {
-            return;
+            return null;
         }
 
         $this->markConditionWaitSignalConsumed($run, $task, $wait);
@@ -2114,11 +2144,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 break;
             }
         }
-        if (! $reopened) {
-            ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $satisfiedEvent);
-        }
+        $selectionResolved = ! $reopened
+            && ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'condition', $satisfiedEvent);
 
         $this->cancelOpenConditionTimer($run, $task, $wait);
+
+        return $selectionResolved ? $satisfiedEvent : null;
     }
 
     /**
