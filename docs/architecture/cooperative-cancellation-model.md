@@ -85,6 +85,49 @@ the unsupported worker or SDK and the required capability.
 
 ## Evidence required
 
+### Required mixed-language cascade before closure
+
+One isolated stack must execute this complete scenario using exact published
+Native, Server and PHP/Python/Rust artifacts:
+
+```text
+Parent PHP workflow
+  ├── Python child workflow
+  │     └── Rust remote activity
+  └── PHP local activity
+```
+
+Request cancellation once with a cleanup deadline 30 seconds after the
+original request. Require all of the following in the same run:
+
+1. Parent, child and activities expose one root cancellation identity and the
+   original deadline. Local delivery and attempt identities remain distinct.
+2. The Python child receives a genuine cooperative request and enters its
+   authored cleanup. Parent propagation must not immediately close the child.
+3. Both activity callbacks stop without application heartbeats. Capture actual
+   callback-stop observations and SDK/runtime acknowledgements separately from
+   durable fencing. A stale activity attempt cannot publish a result.
+4. SIGKILL a workflow worker during cleanup. A fresh replacement worker replays
+   the same canonical delivery boundary and resumes cleanup. Use supported
+   published lease and recovery settings, without editing lease rows or
+   substituting a virtual clock.
+5. Repeat the cancellation request before and after recovery. Each duplicate
+   returns the original identity and deadline, without granting a new budget.
+6. Cleanup completes and all workflow runs converge to `Cancelled` before the
+   original deadline. Deadline expiry cannot substitute for successful cleanup
+   and recovery in this scenario.
+7. One API/UI view explains the cascade: root request, original deadline,
+   lineage, activity stops and fences, worker loss and replacement, cleanup
+   progress, and final outcomes.
+
+Retain raw observations, canonical histories, commands, package versions,
+image digests and the inspection response. Independently passing language
+tests or source-only qualification cannot substitute for this published
+end-to-end result. Shared issue 136 remains open until this gate and its
+competitive-strength decision are satisfied.
+
+### Broader contract qualification
+
 Qualify the exact published Native, Server and PHP/Python/Rust artifacts. Cover
 request-before-claim, in-flight local and remote work without application
 heartbeats, every operation policy, nested shielding, parent/child propagation,
