@@ -410,7 +410,8 @@ final class TaskWatchdog
         ?string $connection = null,
         ?string $queue = null,
     ): array {
-        $now = now()->format('Y-m-d H:i:s.u');
+        $now = now()
+            ->format('Y-m-d H:i:s.u');
 
         $query = WorkflowRun::query()
             ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value])
