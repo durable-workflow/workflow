@@ -1,0 +1,10 @@
+[package]
+name = "workflow-601-published-repro"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+durable-workflow = "=2.1.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
