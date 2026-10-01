@@ -21,6 +21,7 @@ use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\FailureCategory;
@@ -765,7 +766,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             );
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return $response(null, $run, $event);
+            return $response($event === null ? 'cancellation_waiting_for_child' : null, $run, $event);
         });
     }
 
@@ -3452,6 +3453,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      *     connection?: string|null,
      *     queue?: string|null,
      *     parent_close_policy?: string|null,
+     *     cancellation_policy?: string,
      *     retry_policy?: array<string, mixed>,
      *     execution_timeout_seconds?: int,
      *     run_timeout_seconds?: int
@@ -3538,6 +3540,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $childCallId = (string) Str::ulid();
 
         $parentClosePolicy = $command['parent_close_policy'] ?? ParentClosePolicy::Abandon->value;
+        $cancellationPolicy = CancellationPolicy::from(
+            $command['cancellation_policy'] ?? CancellationPolicy::Abandon->value
+        );
 
         ChildRunHistory::recordChildCallStarted([
             'parent_workflow_run_id' => $run->id,
@@ -3551,7 +3556,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'compatibility' => $childRun->compatibility,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
-            'cancellation_propagation' => false,
+            'cancellation_propagation' => $cancellationPolicy !== CancellationPolicy::Abandon,
             'status' => ChildCallStatus::Started,
             'scheduled_at' => $now,
             'started_at' => $now,
@@ -3561,6 +3566,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'metadata' => [
                 'child_call_id' => $childCallId,
                 'attempt_count' => 1,
+                'cancellation_policy' => $cancellationPolicy->value,
             ],
             'resolved_child_instance_id' => $childInstance->id,
             'resolved_child_run_id' => $childRun->id,
@@ -3589,6 +3595,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'child_workflow_class' => $workflowType,
             'child_workflow_type' => $workflowType,
             'parent_close_policy' => $parentClosePolicy,
+            'cancellation_policy' => $cancellationPolicy->value,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
             ...self::parallelMetadataForCommand($command),
@@ -3604,6 +3611,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'child_workflow_type' => $workflowType,
             'child_run_number' => 1,
             'parent_close_policy' => $parentClosePolicy,
+            'cancellation_policy' => $cancellationPolicy->value,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,
@@ -5351,6 +5359,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      *     connection?: string|null,
      *     queue?: string|null,
      *     parent_close_policy?: string|null,
+     *     cancellation_policy?: string,
      *     retry_policy?: array<string, mixed>,
      *     execution_timeout_seconds?: int,
      *     run_timeout_seconds?: int
@@ -5363,6 +5372,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
         $runTimeoutSeconds = self::normalizePositiveInt($command['run_timeout_seconds'] ?? null);
         $arguments = self::normalizeCommandPayloadString($command, 'arguments');
+        $cancellationPolicy = $command['cancellation_policy'] ?? null;
+        if ($cancellationPolicy !== null && (! is_string($cancellationPolicy) || CancellationPolicy::tryFrom(
+            $cancellationPolicy
+        ) === null)) {
+            return null;
+        }
 
         if ($workflowType === null) {
             return null;
@@ -5400,6 +5415,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
+            'cancellation_policy' => $cancellationPolicy,
             'retry_policy' => $retryPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,
             'run_timeout_seconds' => $runTimeoutSeconds,

@@ -16,6 +16,7 @@ use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -48,6 +49,103 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testOptionalCooperativeBridgeUsesTheExistingBinding(): void
     {
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
+    }
+
+    public function testPortableChildWaitPreservesLeaseUntilCanonicalChildCancellationCompletes(): void
+    {
+        [$run, $task] = $this->newRun();
+        $scheduled = $this->bridge->complete($task->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'portable-cleanup-child',
+            'arguments' => Serializer::serialize([]),
+            'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted->value,
+        ]]);
+        $this->assertTrue($scheduled['completed']);
+        $child = $run->childLinks()
+            ->sole()
+->childRun;
+        $this->assertInstanceOf(WorkflowRun::class, $child);
+        $this->request($run);
+        $resume = $this->leaseReadyTask($run);
+        $lease = $resume->lease_expires_at->toISOString();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+
+        for ($retry = 0; $retry < 2; ++$retry) {
+            $waiting = $this->deliver($run, $resume, 1, 'child');
+            $this->assertFalse($waiting['delivered']);
+            $this->assertSame('cancellation_waiting_for_child', $waiting['reason']);
+            $this->assertSame(TaskStatus::Leased, $resume->refresh()->status);
+            $this->assertSame($lease, $resume->lease_expires_at->toISOString());
+            $this->assertSame(0, $this->deliveryCount($run));
+        }
+        $this->assertSame($deadline, $child->refresh()->cancellation_deadline_at->toISOString());
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+        );
+        $childTask = $this->leaseReadyTask($child);
+        $this->assertTrue($this->deliver($child, $childTask, 1, 'timer')['delivered']);
+        $this->assertTrue($this->bridge->complete($childTask->id, [[
+            'type' => 'complete_workflow',
+            'output' => Serializer::serialize('cleanup complete'),
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $child->refresh()->status);
+
+        $delivery = $this->deliver($run, $resume, 1, 'child');
+        $this->assertTrue($delivery['delivered']);
+        $this->assertSame($run->cancellation_request_command_id, $delivery['request_id']);
+        $this->assertSame(1, $this->deliveryCount($run));
+        $this->assertTrue($this->bridge->complete($resume->id, [[
+            'type' => 'complete_workflow',
+            'output' => Serializer::serialize('parent cleanup complete'),
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame($deadline, $run->cancellation_deadline_at->toISOString());
+    }
+
+    public function testPortableWaitDoesNotTreatATerminalProjectionAsCanonicalAcknowledgement(): void
+    {
+        [$run, $task] = $this->newRun();
+        $this->assertTrue($this->bridge->complete($task->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'portable-cleanup-child',
+            'arguments' => Serializer::serialize([]),
+            'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted->value,
+        ]])['completed']);
+        $child = $run->childLinks()
+            ->sole()
+->childRun;
+        $child->forceFill([
+            'status' => RunStatus::Cancelled,
+        ])->save();
+        $this->request($run);
+        $resume = $this->leaseReadyTask($run);
+
+        $result = $this->deliver($run, $resume, 1, 'child');
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_waiting_for_child', $result['reason']);
+        $this->assertSame(0, $this->deliveryCount($run));
+        $this->assertSame(
+            0,
+            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
+        );
+    }
+
+    public function testPortableChildPolicyRejectsInvalidValuesBeforeCreatingAnyChild(): void
+    {
+        [$run, $task] = $this->newRun();
+        foreach (['unknown', false, 1, []] as $invalid) {
+            $result = $this->bridge->complete($task->id, [[
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'portable-cleanup-child',
+                'arguments' => Serializer::serialize([]),
+                'cancellation_policy' => $invalid,
+            ]]);
+            $this->assertFalse($result['completed']);
+            $this->assertSame('invalid_commands', $result['reason']);
+            $this->assertSame(0, $run->childLinks()->count());
+            $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+        }
     }
 
     public function testExistingCustomBridgeDoesNotAcquireCooperativeCapability(): void

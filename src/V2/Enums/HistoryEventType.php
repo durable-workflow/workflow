@@ -11,6 +11,8 @@ enum HistoryEventType: string
     case WorkflowStarted = 'WorkflowStarted';
     case WorkflowContinuedAsNew = 'WorkflowContinuedAsNew';
     case ChildWorkflowScheduled = 'ChildWorkflowScheduled';
+    case ChildCancellationRequested = 'ChildCancellationRequested';
+    case ChildCancellationResolved = 'ChildCancellationResolved';
     case ChildRunStarted = 'ChildRunStarted';
     case ChildRunCompleted = 'ChildRunCompleted';
     case ChildRunFailed = 'ChildRunFailed';

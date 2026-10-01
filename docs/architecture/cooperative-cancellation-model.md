@@ -82,10 +82,10 @@ Unlinked parents, ancestor cycles and legacy parents without the context
 capability receive explicit diagnostics. Transaction retries clear their
 by-reference results before retrying.
 
-Automatic propagation from cancellation delivery and parent-close policy,
-operation policies, simultaneous-root qualification, continuation behavior and
-portable SDK exposure remain to be implemented and qualified before the model
-is published. The internal request primitive alone does not complete a cascade.
+The candidate child-operation policy now propagates from cancellation delivery.
+Cooperative parent-close policy, activity policies, simultaneous-root
+qualification, continuation behavior and portable SDK exposure remain to be
+implemented and qualified before the model is published.
 
 ## Operation policies
 
@@ -100,6 +100,33 @@ Activities and children need three explicit choices:
 Define defaults, child propagation, retry behavior and recorded policy identity
 before adding SDK options. Changing a policy on replay must not reinterpret an
 operation already recorded under another policy.
+
+The candidate Native child API exposes `CancellationPolicy::TryCancel`,
+`WaitCancellationCompleted` and `Abandon` through
+`ChildWorkflowOptions::cancellationPolicy`. The default is `Abandon`, preserving
+the existing behavior. Each new child schedule records the selected policy.
+Replay reads that history, including an `Abandon` fallback for older schedules
+that have no policy field.
+
+`TryCancel` durably requests child cooperation before delivering cancellation
+to parent code. `WaitCancellationCompleted` additionally parks the parent until
+the child has canonical terminal history. Mixed parallel waits and selected
+child handles apply the same rule. A terminal child projection without terminal
+history does not acknowledge completion. Waiting cannot extend the parent's
+original deadline. An independently cancelling child keeps its own accepted
+root and deadline, and the propagation conflict remains visible.
+
+Canonical `ChildCancellationRequested` and `ChildCancellationResolved` events
+record the policy, parent and child identities, original budgets, conflicts and
+terminal history reference. The run timeline exposes these details with the
+child outcome. This is a durable workflow outcome, not proof that every external
+callback stopped.
+
+The portable command bridge accepts the same child policy and returns
+`delivered: false` with `cancellation_waiting_for_child` while acknowledgement is
+pending. First-party SDKs must handle this pending state, heartbeat their claim
+and retry delivery before this option is advertised or published. Their current
+source gates do not yet qualify this new policy.
 
 An expired lease proves loss of authority to commit a durable result. It does
 not prove that a remote process stopped or that an external system performed

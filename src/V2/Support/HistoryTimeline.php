@@ -291,6 +291,8 @@ final class HistoryTimeline
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
+            HistoryEventType::ChildCancellationRequested,
+            HistoryEventType::ChildCancellationResolved,
             HistoryEventType::ChildRunTerminated => 'child',
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
@@ -516,6 +518,17 @@ final class HistoryTimeline
                 'signal_timeout' => 'Signal timeout cancelled.',
                 default => 'Timer cancelled.',
             },
+            HistoryEventType::ChildCancellationRequested => sprintf(
+                'Child cancellation %s under policy %s%s.',
+                self::stringValue($payload['request_outcome'] ?? null) ?? 'requested',
+                self::stringValue($payload['policy'] ?? null) ?? 'unknown',
+                self::stringValue($payload['rejection_reason'] ?? null) !== null
+                    ? ': ' . $payload['rejection_reason'] : '',
+            ),
+            HistoryEventType::ChildCancellationResolved => sprintf(
+                'Child cancellation resolved with durable outcome %s.',
+                self::stringValue($payload['child_status'] ?? null) ?? 'unknown',
+            ),
             HistoryEventType::ParentClosePolicyApplied => sprintf(
                 'Applied parent-close policy %s to child %s.',
                 self::stringValue($payload['policy'] ?? null) ?? 'unknown',
@@ -616,6 +629,26 @@ final class HistoryTimeline
                 },
             'run_number' => self::intValue($payload['child_run_number'] ?? null),
             'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
+            ...(in_array($event->event_type, [
+                HistoryEventType::ChildCancellationRequested,
+                HistoryEventType::ChildCancellationResolved,
+            ], true) ? [
+                'cancellation' => [
+                    'policy' => self::stringValue($payload['policy'] ?? null),
+                    'parent_request_id' => self::stringValue($payload['parent_request_id'] ?? null),
+                    'root_request_id' => self::stringValue($payload['root_request_id'] ?? null),
+                    'cleanup_deadline_at' => self::timestamp($payload['cleanup_deadline_at'] ?? null),
+                    'child_request_id' => self::stringValue($payload['child_request_id'] ?? null),
+                    'child_root_request_id' => self::stringValue($payload['child_root_request_id'] ?? null),
+                    'child_cleanup_deadline_at' => self::timestamp($payload['child_cleanup_deadline_at'] ?? null),
+                    'request_outcome' => self::stringValue($payload['request_outcome'] ?? null),
+                    'rejection_reason' => self::stringValue($payload['rejection_reason'] ?? null),
+                    'terminal_history_event_id' => self::stringValue(
+                        $payload['child_terminal_history_event_id'] ?? null
+                    ),
+                    'terminal_event_type' => self::stringValue($payload['child_terminal_event_type'] ?? null),
+                ],
+            ] : []),
         ];
     }
 
