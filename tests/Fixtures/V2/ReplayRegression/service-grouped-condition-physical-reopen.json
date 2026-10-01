@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-grouped-condition-physical-reopen",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestServiceGroupedConditionReopenWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "command_sequence": [
+    {
+      "completed": false,
+      "result": null,
+      "commands": [
+        {"type": "start_timer", "delay_seconds": 300},
+        {"type": "open_signal_wait", "signal_name": "never"},
+        {"type": "open_condition_wait", "condition_key": "two-votes"}
+      ]
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_timer", "delay_seconds": 300},
+      {"type": "open_signal_wait", "signal_name": "never"},
+      {"type": "open_condition_wait", "condition_key": "two-votes"}
+    ]
+  }
+}
