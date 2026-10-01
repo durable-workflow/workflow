@@ -87,7 +87,10 @@ final class V2ChildCancellationPolicyTest extends TestCase
         $points = collect(HistoryTimeline::forRun($parent->run()->fresh()))
             ->whereIn(
                 'type',
-                [HistoryEventType::ChildCancellationRequested->value, HistoryEventType::ChildCancellationResolved->value]
+                [
+                    HistoryEventType::ChildCancellationRequested->value,
+                    HistoryEventType::ChildCancellationResolved->value,
+                ]
             );
         $this->assertCount(2, $points);
         foreach ($points as $point) {
@@ -218,8 +221,11 @@ final class V2ChildCancellationPolicyTest extends TestCase
         $this->runTask($parent, TaskType::Workflow);
         $this->assertTrue($parent->refresh()->cancelled());
         $this->assertSame(
-            $parentRoot->deadline()->toISOString(),
-            $parent->run()->fresh()->cancellation_deadline_at->toISOString()
+            $parentRoot->deadline()
+                ->toISOString(),
+            $parent->run()
+                ->fresh()
+                ->cancellation_deadline_at->toISOString()
         );
     }
 
@@ -236,8 +242,11 @@ final class V2ChildCancellationPolicyTest extends TestCase
             $this->assertTrue($workflow->refresh()->cancelled());
             $this->assertSame([], $workflow->memo());
             $this->assertSame(
-                $root->deadline()->toISOString(),
-                $workflow->run()->fresh()->cancellation_deadline_at->toISOString()
+                $root->deadline()
+                    ->toISOString(),
+                $workflow->run()
+                    ->fresh()
+                    ->cancellation_deadline_at->toISOString()
             );
         }
         $this->assertSame(0, $this->eventCount($parent, HistoryEventType::CooperativeCancellationDelivered));
@@ -289,6 +298,7 @@ final class V2ChildCancellationPolicyTest extends TestCase
     private function eventCount(WorkflowStub $workflow, HistoryEventType $type): int
     {
         return WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
-            ->where('event_type', $type->value)->count();
+            ->where('event_type', $type->value)
+            ->count();
     }
 }

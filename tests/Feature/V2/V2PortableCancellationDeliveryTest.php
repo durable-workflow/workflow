@@ -81,7 +81,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame($deadline, $child->refresh()->cancellation_deadline_at->toISOString());
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
         );
         $childTask = $this->leaseReadyTask($child);
         $this->assertTrue($this->deliver($child, $childTask, 1, 'timer')['delivered']);
@@ -127,7 +128,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(0, $this->deliveryCount($run));
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
         );
     }
 
