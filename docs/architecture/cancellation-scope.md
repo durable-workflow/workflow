@@ -157,8 +157,12 @@ try {
 The cleanup activity uses ordinary durable retries and can itself wait on a
 timer. A successful cleanup closes the run as cancelled. An unhandled cleanup
 failure leaves a failed run rather than claiming cleanup succeeded. If the
-deadline expires, the watchdog requests an immediate terminal cancel, even
-if cleanup is still waiting. `terminate()` remains immediate and can stop a
+deadline expires, the runtime's next repair pass closes the run as cancelled
+and revokes outstanding task authority, even when cleanup is waiting or no
+compatible workflow worker is running. The repair pass does not execute the
+workflow definition to enforce expiry. Its JSON report includes
+`cancellation_deadlines_enforced` for these closures.
+`terminate()` remains immediate and can stop a
 run during cleanup; it does not wait for `finally` to finish. The shield is
 not a permanent opt-out from cancellation or a protection against process
 termination.

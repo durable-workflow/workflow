@@ -72,6 +72,7 @@ final class TaskWatchdog
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
+     *     cancellation_deadlines_enforced: int,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_candidates: int,
      *     activity_timeouts_enforced: int,
@@ -164,6 +165,10 @@ final class TaskWatchdog
             if ($result['task'] instanceof WorkflowTask) {
                 $report['deadline_expired_tasks_created']++;
                 $report['dispatched_tasks']++;
+            }
+
+            if ($result['cancellation_enforced']) {
+                $report['cancellation_deadlines_enforced']++;
             }
 
             if ($result['error'] !== null) {
@@ -353,6 +358,7 @@ final class TaskWatchdog
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
+     *     cancellation_deadlines_enforced: int,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_candidates: int,
      *     activity_timeouts_enforced: int,
@@ -384,6 +390,7 @@ final class TaskWatchdog
             'missing_run_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
+            'cancellation_deadlines_enforced' => 0,
             'deadline_expired_failures' => [],
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
@@ -392,8 +399,8 @@ final class TaskWatchdog
     }
 
     /**
-     * Find non-terminal runs with expired execution or run deadlines
-     * that have no open workflow task to detect the timeout.
+     * Find expired cleanup deadlines regardless of worker availability,
+     * and other expired deadlines without an open workflow task.
      *
      * @return list<string>
      */
@@ -403,7 +410,8 @@ final class TaskWatchdog
         ?string $connection = null,
         ?string $queue = null,
     ): array {
-        $now = now();
+        $now = now()
+            ->format('Y-m-d H:i:s.u');
 
         $query = WorkflowRun::query()
             ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value])
@@ -420,9 +428,15 @@ final class TaskWatchdog
                         ->where('cancellation_deadline_at', '<=', $now);
                 });
             })
-            ->whereDoesntHave('tasks', static function ($task): void {
-                $task->where('task_type', TaskType::Workflow->value)
-                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+            ->where(static function ($available) use ($now): void {
+                $available->whereDoesntHave('tasks', static function ($task): void {
+                    $task->where('task_type', TaskType::Workflow->value)
+                        ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+                })->orWhere(static function ($cancellation) use ($now): void {
+                    $cancellation->whereNotNull('cancellation_request_command_id')
+                        ->whereNotNull('cancellation_deadline_at')
+                        ->where('cancellation_deadline_at', '<=', $now);
+                });
             });
 
         if ($runIds !== []) {
@@ -462,12 +476,24 @@ final class TaskWatchdog
     }
 
     /**
-     * @return array{task: WorkflowTask|null, error: string|null}
+     * @return array{task: WorkflowTask|null, error: string|null, cancellation_enforced: bool}
      */
     private static function createDeadlineExpiredTask(string $runId): array
     {
+        $cancellationEnforced = false;
+
         try {
-            $task = DB::transaction(static function () use ($runId): ?WorkflowTask {
+            $task = DB::transaction(static function () use ($runId, &$cancellationEnforced): ?WorkflowTask {
+                $cancellationEnforced = false;
+
+                // Worker protocol mutations lock the task before the run.
+                $existingWorkflowTask = WorkflowTask::query()
+                    ->where('workflow_run_id', $runId)
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                    ->lockForUpdate()
+                    ->first();
+
                 /** @var WorkflowRun|null $run */
                 $run = WorkflowRun::query()
                     ->lockForUpdate()
@@ -490,11 +516,30 @@ final class TaskWatchdog
                     return null;
                 }
 
-                $existingWorkflowTask = WorkflowTask::query()
-                    ->where('workflow_run_id', $run->id)
-                    ->where('task_type', TaskType::Workflow->value)
-                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-                    ->first();
+                if (is_string($run->cancellation_request_command_id)
+                    && $run->cancellation_deadline_at !== null
+                    && $now->gte($run->cancellation_deadline_at)) {
+                    // Expiry is runtime authority. A foreign workflow definition
+                    // or an absent SDK worker must not keep the run open.
+                    $controlTask = $existingWorkflowTask ?? WorkflowTask::query()->create([
+                        'workflow_run_id' => $run->id,
+                        'namespace' => $run->namespace,
+                        'task_type' => TaskType::Workflow->value,
+                        'status' => TaskStatus::Ready->value,
+                        'available_at' => $now,
+                        'payload' => [
+                            'reason' => 'cleanup_deadline_expired',
+                        ],
+                        'connection' => $run->connection,
+                        'queue' => $run->queue,
+                        'compatibility' => $run->compatibility,
+                        'repair_count' => 1,
+                    ]);
+                    $cancellationEnforced = app(WorkflowExecutor::class)
+                        ->cancelIfCleanupDeadlineExpired($run, $controlTask);
+
+                    return null;
+                }
 
                 if ($existingWorkflowTask !== null) {
                     return null;
@@ -521,7 +566,7 @@ final class TaskWatchdog
                 );
 
                 return $task;
-            });
+            }, 3);
 
             if ($task instanceof WorkflowTask) {
                 TaskDispatcher::dispatch($task);
@@ -532,12 +577,14 @@ final class TaskWatchdog
             return [
                 'task' => null,
                 'error' => $throwable->getMessage(),
+                'cancellation_enforced' => false,
             ];
         }
 
         return [
             'task' => $task,
             'error' => null,
+            'cancellation_enforced' => $cancellationEnforced,
         ];
     }
 

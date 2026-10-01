@@ -3804,6 +3804,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             Carbon::setTestNow($deadline);
             $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
             $this->assertSame(0, $report['deadline_expired_tasks_created']);
+            $this->assertSame(1, $report['cancellation_deadlines_enforced']);
             $result = $boundary === 'heartbeat'
                 ? $this->bridge->heartbeat($task->id)
                 : $this->bridge->complete($task->id, [[
@@ -3857,9 +3858,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             Carbon::setTestNow($deadline);
             $report = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
             $this->assertSame(1, $report['repaired_existing_tasks']);
-            $this->assertSame(TaskStatus::Ready, $task->refresh()->status);
+            $this->assertSame(1, $report['cancellation_deadlines_enforced']);
+            $this->assertSame(TaskStatus::Cancelled, $task->refresh()->status);
             $claimed = $this->bridge->claimStatus($task->id, 'replacement-cleanup-worker');
-            $this->assertTrue($claimed['claimed']);
+            $this->assertFalse($claimed['claimed']);
             $result = $this->bridge->complete($task->id, [[
                 'type' => 'complete_workflow',
                 'result' => Serializer::serialize('late replacement result'),
@@ -3869,7 +3871,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         }
 
         $this->assertFalse($result['completed']);
-        $this->assertSame('run_cancelled', $result['reason']);
+        $this->assertSame('task_not_leased', $result['reason']);
         $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
         $this->assertNull($run->output);
         $this->assertSame(1, $run->historyEvents()
