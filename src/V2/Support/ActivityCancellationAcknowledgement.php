@@ -24,13 +24,9 @@ final class ActivityCancellationAcknowledgement
      *
      * @return array{acknowledged: bool, duplicate: bool, reason: ?string, history_event_id: ?string}
      */
-    public static function recordStopped(
-        string $attemptId,
-        string $leaseOwner,
-        string $workerAttemptId,
-        string $requestId,
-    ): array {
-        return DB::transaction(static function () use ($attemptId, $leaseOwner, $workerAttemptId, $requestId): array {
+    public static function recordStopped(string $attemptId, string $leaseOwner, string $requestId): array
+    {
+        return DB::transaction(static function () use ($attemptId, $leaseOwner, $requestId): array {
             $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
             $attempt = $rows['attempt'];
             $execution = $rows['execution'];
@@ -51,12 +47,11 @@ final class ActivityCancellationAcknowledgement
             if (! $run instanceof WorkflowRun || ! $task instanceof WorkflowTask) {
                 return self::refused('activity_claim_not_found');
             }
-            if ($leaseOwner === '' || $workerAttemptId === '' || $requestId === ''
+            if ($leaseOwner === '' || $requestId === ''
                 || $execution->current_attempt_id !== $attemptId
                 || $execution->workflow_run_id !== $run->id
                 || $task->workflow_run_id !== $run->id
                 || $attempt->lease_owner !== $leaseOwner
-                || $attempt->worker_attempt_id !== $workerAttemptId
                 || $task->lease_owner !== $leaseOwner) {
                 return self::refused('activity_cancellation_acknowledgement_fence_mismatch');
             }
@@ -84,7 +79,6 @@ final class ActivityCancellationAcknowledgement
                 || ($snapshot['id'] ?? null) !== $attemptId
                 || ($snapshot['status'] ?? null) !== ActivityAttemptStatus::Cancelled->value
                 || ($snapshot['lease_owner'] ?? null) !== $leaseOwner
-                || ($snapshot['worker_attempt_id'] ?? null) !== $workerAttemptId
                 || ($snapshot['task_id'] ?? null) !== $task->id
                 || ($snapshot['activity_execution_id'] ?? null) !== $execution->id) {
                 return self::refused('activity_cancellation_snapshot_mismatch');
@@ -116,7 +110,6 @@ final class ActivityCancellationAcknowledgement
                 'sequence' => $execution->sequence,
                 'activity_execution_id' => $execution->id,
                 'activity_attempt_id' => $attemptId,
-                'worker_attempt_id' => $workerAttemptId,
                 'lease_owner' => $leaseOwner,
                 'cancellation_history_event_id' => $cancelled->id,
                 'request_id' => $requestId,

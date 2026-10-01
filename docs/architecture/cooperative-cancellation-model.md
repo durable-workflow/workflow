@@ -167,10 +167,12 @@ callback. `ActivityCancellationAcknowledged` names that worker report and the
 server's receipt time, with `evidence_source: activity_worker`. It does not
 describe reversal of external effects.
 
-The report requires the original activity attempt, lease owner, worker attempt
-identity and local cancellation request. Current rows and the canonical
+The report requires the original Server-issued activity attempt, lease owner
+and local cancellation request. Remote claims use that attempt identity and
+do not require the separate worker attempt ID used by local activities.
+Current rows and the canonical
 cancellation snapshot must match every fence. Mutable cancelled rows without
-that history, a legacy snapshot without the worker attempt, another owner or a
+that history, a snapshot without its attempt identity, another owner or a
 replacement attempt cannot authorize the report. The run lock serializes
 duplicates, which return the original acknowledgement event. No report renews
 a lease, restores result authority or grants a new cleanup budget.

@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
@@ -379,7 +380,6 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $accepted = ActivityCancellationAcknowledgement::recordStopped(
             $attempt->id,
             'activity-owner',
-            'callback-attempt',
             $run->cancellation_request_command_id,
         );
         $this->assertTrue($accepted['acknowledged']);
@@ -396,7 +396,6 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $repeated = ActivityCancellationAcknowledgement::recordStopped(
             $attempt->id,
             'activity-owner',
-            'callback-attempt',
             $run->cancellation_request_command_id,
         );
         $this->assertTrue($repeated['acknowledged']);
@@ -415,8 +414,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testRemoteStopReceiptRejectsAnotherOwnerAttemptOrRequest(string $field): void
     {
         [$run, , $attempt] = $this->cancelledRemoteAttempt();
-        $arguments = [$attempt->id, 'activity-owner', 'callback-attempt', $run->cancellation_request_command_id];
-        $index = array_search($field, ['attempt', 'owner', 'worker_attempt', 'request'], true);
+        $arguments = [$attempt->id, 'activity-owner', $run->cancellation_request_command_id];
+        $index = array_search($field, ['attempt', 'owner', 'request'], true);
         $arguments[$index] = 'another-identity';
         $reply = ActivityCancellationAcknowledgement::recordStopped(...$arguments);
         $this->assertFalse($reply['acknowledged']);
@@ -427,7 +426,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
 
     public static function stopAcknowledgementFences(): iterable
     {
-        foreach (['attempt', 'owner', 'worker_attempt', 'request'] as $field) {
+        foreach (['attempt', 'owner', 'request'] as $field) {
             yield $field => [$field];
         }
     }
@@ -449,7 +448,6 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $reply = ActivityCancellationAcknowledgement::recordStopped(
             $attempt->id,
             'activity-owner',
-            'callback-attempt',
             $run->cancellation_request_command_id,
         );
         $this->assertFalse($reply['acknowledged']);
@@ -464,7 +462,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $event = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityCancelled)->sole();
         $payload = $event->payload;
-        unset($payload['activity_attempt']['worker_attempt_id']);
+        unset($payload['activity_attempt']['id']);
         if ($malformed) {
             $payload['activity_attempt'] = 'not-an-attempt-snapshot';
         }
@@ -474,7 +472,6 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $reply = ActivityCancellationAcknowledgement::recordStopped(
             $attempt->id,
             'activity-owner',
-            'callback-attempt',
             $run->cancellation_request_command_id,
         );
         $this->assertFalse($reply['acknowledged']);
@@ -484,7 +481,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
 
     public static function invalidStopSnapshots(): iterable
     {
-        yield 'legacy attempt without worker identity' => [false];
+        yield 'attempt snapshot without identity' => [false];
         yield 'malformed attempt snapshot' => [true];
     }
 
@@ -497,7 +494,6 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             $reply = ActivityCancellationAcknowledgement::recordStopped(
                 $attempt->id,
                 'activity-owner',
-                'callback-attempt',
                 $run->cancellation_request_command_id,
             );
             $this->assertTrue($reply['acknowledged']);
@@ -512,6 +508,24 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function testRemoteStopReceiptCannotAuthorizeALocalActivityCallback(): void
+    {
+        [$run, , $attempt] = $this->cancelledRemoteAttempt();
+        $attempt->execution->forceFill([
+            'activity_options' => [
+                'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
+            ],
+        ])->save();
+        $reply = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'activity-owner',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('local_cancellation_acknowledgement_requires_workflow_claim', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
     }
 
     public function testARecordedCallCannotBeRelabelledAsADifferentOperation(): void
@@ -822,9 +836,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             ->sole()
             ->attempts()
             ->sole();
-        $attempt->forceFill([
-            'worker_attempt_id' => 'callback-attempt',
-        ])->save();
+        $this->assertNull($attempt->worker_attempt_id);
         $this->request($run);
         if ($deliver) {
             $this->assertTrue($this->deliver($run, $this->leaseReadyTask($run), 1, 'activity')['delivered']);
