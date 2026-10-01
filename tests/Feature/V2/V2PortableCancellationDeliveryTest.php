@@ -26,6 +26,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -368,6 +369,151 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         yield 'fresh workflow lease' => [false];
     }
 
+    public function testRemoteCallbackStopReceiptIsSeparateFromFencingAndKeepsTheOriginalBudget(): void
+    {
+        [$run, $activityTask, $attempt] = $this->cancelledRemoteAttempt();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $taskBefore = $activityTask->getAttributes();
+        $attemptBefore = $attempt->getAttributes();
+        $this->assertSame(0, $this->stopReceiptCount($run));
+        $accepted = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'activity-owner',
+            'callback-attempt',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertTrue($accepted['acknowledged']);
+        $this->assertFalse($accepted['duplicate']);
+        $event = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->sole();
+        $this->assertSame($event->id, $accepted['history_event_id']);
+        $this->assertSame($run->cancellation_request_command_id, $event->workflow_command_id);
+        $this->assertSame($run->cancellation_request_command_id, $event->payload['root_request_id']);
+        $this->assertSame($deadline, $event->payload['cleanup_deadline_at']);
+        $this->assertSame('stopped', $event->payload['callback_state']);
+        $this->assertSame('activity_worker', $event->payload['evidence_source']);
+        $this->assertFalse($event->payload['received_after_deadline']);
+        $repeated = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'activity-owner',
+            'callback-attempt',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertTrue($repeated['acknowledged']);
+        $this->assertTrue($repeated['duplicate']);
+        $this->assertSame($accepted['history_event_id'], $repeated['history_event_id']);
+        $this->assertSame(1, $this->stopReceiptCount($run));
+        $this->assertSame($taskBefore, $activityTask->refresh()->getAttributes());
+        $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+        $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        $this->assertFalse(
+            $this->app->make(ActivityTaskBridge::class)->complete($attempt->id, 'late result')['recorded']
+        );
+    }
+
+    #[DataProvider('stopAcknowledgementFences')]
+    public function testRemoteStopReceiptRejectsAnotherOwnerAttemptOrRequest(string $field): void
+    {
+        [$run, , $attempt] = $this->cancelledRemoteAttempt();
+        $arguments = [$attempt->id, 'activity-owner', 'callback-attempt', $run->cancellation_request_command_id];
+        $index = array_search($field, ['attempt', 'owner', 'worker_attempt', 'request'], true);
+        $arguments[$index] = 'another-identity';
+        $reply = ActivityCancellationAcknowledgement::recordStopped(...$arguments);
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertFalse($reply['duplicate']);
+        $this->assertNotNull($reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    public static function stopAcknowledgementFences(): iterable
+    {
+        foreach (['attempt', 'owner', 'worker_attempt', 'request'] as $field) {
+            yield $field => [$field];
+        }
+    }
+
+    public function testMutableCancelledRowsCannotSubstituteForCanonicalCancellationHistory(): void
+    {
+        [$run, $task, $attempt] = $this->cancelledRemoteAttempt(deliver: false);
+        $task->forceFill([
+            'status' => TaskStatus::Cancelled,
+            'lease_expires_at' => null,
+        ])->save();
+        $attempt->forceFill([
+            'status' => ActivityAttemptStatus::Cancelled,
+            'lease_expires_at' => null,
+        ])->save();
+        $attempt->execution->forceFill([
+            'status' => ActivityStatus::Cancelled,
+        ])->save();
+        $reply = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'activity-owner',
+            'callback-attempt',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('activity_cancellation_not_recorded', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    #[DataProvider('invalidStopSnapshots')]
+    public function testLegacyOrMalformedCancellationSnapshotCannotAuthorizeAWorkerStopReceipt(bool $malformed): void
+    {
+        [$run, , $attempt] = $this->cancelledRemoteAttempt();
+        $event = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCancelled)->sole();
+        $payload = $event->payload;
+        unset($payload['activity_attempt']['worker_attempt_id']);
+        if ($malformed) {
+            $payload['activity_attempt'] = 'not-an-attempt-snapshot';
+        }
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $reply = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'activity-owner',
+            'callback-attempt',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('activity_cancellation_snapshot_mismatch', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    public static function invalidStopSnapshots(): iterable
+    {
+        yield 'legacy attempt without worker identity' => [false];
+        yield 'malformed attempt snapshot' => [true];
+    }
+
+    public function testLateStopReportRemainsLateAndCannotGrantAnotherCleanupBudget(): void
+    {
+        [$run, $task, $attempt] = $this->cancelledRemoteAttempt();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
+        try {
+            $reply = ActivityCancellationAcknowledgement::recordStopped(
+                $attempt->id,
+                'activity-owner',
+                'callback-attempt',
+                $run->cancellation_request_command_id,
+            );
+            $this->assertTrue($reply['acknowledged']);
+            $event = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->sole();
+            $this->assertTrue($event->payload['received_after_deadline']);
+            $this->assertSame($deadline, $event->payload['cleanup_deadline_at']);
+            $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+            $this->assertNull($task->refresh()->lease_expires_at);
+            $this->assertNull($attempt->refresh()->lease_expires_at);
+            $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testARecordedCallCannotBeRelabelledAsADifferentOperation(): void
     {
         [$run, $task] = $this->newRun();
@@ -656,6 +802,41 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         yield 'parallel barrier' => [false];
         yield 'selection member range' => [true];
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask, \Workflow\V2\Models\ActivityAttempt}
+     */
+    private function cancelledRemoteAttempt(bool $deliver = true): array
+    {
+        [$run, $task] = $this->newRun();
+        $scheduled = $this->bridge->complete($task->id, [[
+            'type' => 'schedule_activity',
+            'activity_type' => TestGreetingActivity::class,
+            'arguments' => Serializer::serialize(['Taylor']),
+        ]]);
+        $activityTask = WorkflowTask::query()->findOrFail($scheduled['created_task_ids'][0]);
+        $claim = $this->app->make(ActivityTaskBridge::class)->claimStatus($activityTask->id, 'activity-owner');
+        $this->assertTrue($claim['claimed']);
+        $attempt = $run->activityExecutions()
+            ->sole()
+            ->attempts()
+            ->sole();
+        $attempt->forceFill([
+            'worker_attempt_id' => 'callback-attempt',
+        ])->save();
+        $this->request($run);
+        if ($deliver) {
+            $this->assertTrue($this->deliver($run, $this->leaseReadyTask($run), 1, 'activity')['delivered']);
+        }
+
+        return [$run, $activityTask->refresh(), $attempt->refresh()];
+    }
+
+    private function stopReceiptCount(WorkflowRun $run): int
+    {
+        return $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count();
     }
 
     /**

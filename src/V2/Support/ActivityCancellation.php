@@ -118,6 +118,7 @@ final class ActivityCancellation
 
         return array_filter([
             'id' => $attempt->id,
+            'worker_attempt_id' => $attempt->worker_attempt_id,
             'activity_execution_id' => $attempt->activity_execution_id,
             'task_id' => $attempt->workflow_task_id,
             'attempt_number' => $attempt->attempt_number,

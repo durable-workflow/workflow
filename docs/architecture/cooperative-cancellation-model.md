@@ -100,9 +100,12 @@ receipts. A mutable terminal status without canonical closing history cannot
 create this budget. The parent run lock serializes origin creation and receipts.
 
 The candidate child-operation policy now propagates from cancellation delivery.
-Portable parent-close authoring, activity policies, simultaneous-root
-qualification, continuation behavior and portable SDK exposure remain to be
-implemented and qualified before the model is published.
+PHP, Python and Rust source drafts expose both child policies and preserve their
+identity through cold replay. Connected PHP qualification uses one workflow
+worker for parent and child, including a replacement after a released child
+wait. Activity policies, simultaneous-root qualification, continuation behavior
+and the complete published cascade remain required before this model is
+published.
 
 ## Operation policies
 
@@ -146,13 +149,48 @@ returning `claim_released: true`. The SDK leaves that claim without publishing
 completion or failure. This frees a single worker to execute the child rather
 than occupying it with a blocking wait. Child terminal history wakes the parent
 for a new claim, which replays the same authored cancellation boundary.
-First-party SDKs must handle this pending state before this option is advertised
-or published. Their current source gates do not yet qualify this new policy.
+First-party SDK drafts handle this pending state. Their source checks and the
+connected single-worker PHP test do not qualify a published child-policy tuple.
 
 An expired lease proves loss of authority to commit a durable result. It does
 not prove that a remote process stopped or that an external system performed
 an undo. Waiting must distinguish callback acknowledgement, durable fencing and
 external reconciliation.
+
+### Remote callback-stop acknowledgement
+
+The candidate internal `ActivityCancellationAcknowledgement::recordStopped()`
+records a remote owner's callback-stop report separately from `ActivityCancelled`.
+The latter fences durable publication. It does not establish that a callback
+has stopped. An SDK may send the new report only after stopping and joining its
+callback. `ActivityCancellationAcknowledged` names that worker report and the
+server's receipt time, with `evidence_source: activity_worker`. It does not
+describe reversal of external effects.
+
+The report requires the original activity attempt, lease owner, worker attempt
+identity and local cancellation request. Current rows and the canonical
+cancellation snapshot must match every fence. Mutable cancelled rows without
+that history, a legacy snapshot without the worker attempt, another owner or a
+replacement attempt cannot authorize the report. The run lock serializes
+duplicates, which return the original acknowledgement event. No report renews
+a lease, restores result authority or grants a new cleanup budget.
+
+The receipt preserves the original root identity and deadline. A late report
+has `received_after_deadline: true`, so an expired budget cannot appear to have
+completed on time. Local callback acknowledgements need the workflow task's
+distinct authority and are explicitly refused by this remote primitive. The
+Server route, SDK emission, local acknowledgement and activity waiting policies
+still need implementation and connected qualification.
+
+Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
+or a prior canonical completion. Lease expiry alone leaves stop state unknown.
+An `Abandon` activity must remain independently tracked and capable of finishing
+after the awaiting scope is cancelled. Implement its retention and terminal-run
+behavior deliberately rather than routing it through the normal terminal
+activity fence. These operation semantics match the supported policy choices
+in [Temporal's activity cancellation contract](https://docs.temporal.io/develop/typescript/workflows/cancellation).
+DW's independent cancellation observation and original bounded cascade remain
+the advantages to qualify.
 
 ## Lifecycle and diagnostics
 
