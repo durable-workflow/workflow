@@ -1059,14 +1059,27 @@ final class ParallelChildGroup
             ];
 
         $memberSequences = [];
+        $conditionResolutions = [];
         for ($sequence = $baseSequence; $sequence < $baseSequence + $size; ++$sequence) {
             $opening = self::conditionOpeningForAuthoredSequence($run, $sequence);
             $physicalSequence = $opening?->payload['sequence'] ?? $sequence;
             $memberSequences[$physicalSequence] = $opening;
+            if ($opening instanceof WorkflowHistoryEvent) {
+                $conditionResolutions[$physicalSequence] = $run->historyEvents->sortBy('sequence')->first(
+                    static fn (WorkflowHistoryEvent $event): bool => self::conditionResolutionMatchesOpening(
+                        $event,
+                        $opening
+                    )
+                );
+            }
         }
 
         $events = $run->historyEvents
-            ->filter(static function (WorkflowHistoryEvent $event) use ($types, $memberSequences): bool {
+            ->filter(static function (WorkflowHistoryEvent $event) use (
+                $types,
+                $memberSequences,
+                $conditionResolutions
+            ): bool {
                 $sequence = $event->payload['sequence'] ?? null;
                 if (! in_array($event->event_type, $types, true)
                     || ! is_int($sequence)
@@ -1077,7 +1090,7 @@ final class ParallelChildGroup
                 $opening = $memberSequences[$sequence];
 
                 return ! $opening instanceof WorkflowHistoryEvent
-                    || self::conditionResolutionMatchesOpening($event, $opening);
+                    || ($conditionResolutions[$sequence]?->id ?? null) === $event->id;
             })
             ->sortBy(static fn (WorkflowHistoryEvent $event): int => $event->sequence);
 
@@ -1160,7 +1173,11 @@ final class ParallelChildGroup
     {
         $terminalTypes = $kind === 'signal'
             ? [HistoryEventType::SignalApplied, HistoryEventType::TimerFired]
-            : [HistoryEventType::ConditionWaitSatisfied, HistoryEventType::ConditionWaitTimedOut];
+            : [
+                HistoryEventType::ConditionWaitSatisfied,
+                HistoryEventType::ConditionWaitTimedOut,
+                HistoryEventType::TimerFired,
+            ];
 
         $opening = $kind === 'condition' ? self::conditionOpeningForAuthoredSequence($run, $sequence) : null;
         $sequence = $opening?->payload['sequence'] ?? $sequence;
@@ -1195,7 +1212,7 @@ final class ParallelChildGroup
         foreach ($events as $event) {
             if (self::conditionResolutionMatchesOpening($event, $latest)) {
                 $satisfied = $satisfied || $event->event_type === HistoryEventType::ConditionWaitSatisfied;
-                $timedOut = $timedOut || $event->event_type === HistoryEventType::ConditionWaitTimedOut;
+                $timedOut = $timedOut || $event->event_type !== HistoryEventType::ConditionWaitSatisfied;
             }
             if ($event->event_type !== HistoryEventType::ConditionWaitOpened
                 || $event->sequence <= $original->sequence
@@ -1227,10 +1244,13 @@ final class ParallelChildGroup
         WorkflowHistoryEvent $resolution,
         WorkflowHistoryEvent $opening,
     ): bool {
-        return in_array($resolution->event_type, [
+        $terminal = in_array($resolution->event_type, [
             HistoryEventType::ConditionWaitSatisfied,
             HistoryEventType::ConditionWaitTimedOut,
-        ], true)
+        ], true) || ($resolution->event_type === HistoryEventType::TimerFired
+            && ($resolution->payload['timer_kind'] ?? null) === 'condition_timeout');
+
+        return $terminal
             && $resolution->sequence > $opening->sequence
             && ($resolution->payload['sequence'] ?? null) === ($opening->payload['sequence'] ?? null)
             && ($resolution->payload['condition_wait_id'] ?? null) === ($opening->payload['condition_wait_id'] ?? null)

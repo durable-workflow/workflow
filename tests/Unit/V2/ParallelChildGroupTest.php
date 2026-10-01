@@ -297,7 +297,11 @@ final class ParallelChildGroupTest extends TestCase
 
     public function testReopenedConditionSelectionBindsItsLatestPhysicalResolution(): void
     {
-        foreach ([HistoryEventType::ConditionWaitSatisfied, HistoryEventType::ConditionWaitTimedOut] as $type) {
+        foreach ([
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut,
+            HistoryEventType::TimerFired,
+        ] as $type) {
             [$events, $select, $marker] = $this->reopenedConditionSelectionHistory($type);
             $run = $this->runWithHistoryEvents($events);
             $validated = ParallelChildGroup::validatedSelectionResolution($run, $select, 10, $marker);
@@ -312,7 +316,25 @@ final class ParallelChildGroupTest extends TestCase
         [$events] = $this->reopenedConditionSelectionHistory(HistoryEventType::ConditionWaitSatisfied);
         $run = $this->runWithHistoryEvents(array_slice($events, 0, 3));
         $this->assertFalse(ParallelChildGroup::selectionMemberIsTerminal($run, 11, 1, 'condition'));
-        $this->assertFalse(ParallelChildGroup::selectionMemberIsTerminal($run, 11, 1, 'group'));
+        $persisted = $this->createRun();
+        foreach (array_slice($events, 0, 3) as $event) {
+            $this->record($persisted, $event->event_type, $event->payload);
+        }
+        $this->assertFalse(ParallelChildGroup::selectionMemberIsTerminal($persisted, 11, 1, 'group'));
+    }
+
+    public function testReopenedConditionTimeoutTransportKeepsItsCanonicalResolutionAfterAcknowledgement(): void
+    {
+        [$events, $select, $marker] = $this->reopenedConditionSelectionHistory(HistoryEventType::TimerFired);
+        $events[] = $this->historyEvent(HistoryEventType::ConditionWaitTimedOut, 6, $events[2]->payload);
+        $run = $this->runWithHistoryEvents($events);
+        $validated = ParallelChildGroup::validatedSelectionResolution($run, $select, 10, $marker);
+        $this->assertSame('condition-resolution', $validated['resolution_event_id']);
+        $persisted = $this->createRun();
+        foreach ($events as $event) {
+            $this->record($persisted, $event->event_type, $event->payload);
+        }
+        $this->assertTrue(ParallelChildGroup::selectionMemberIsTerminal($persisted, 11, 1, 'group'));
     }
 
     public function testReopenedConditionResolutionRejectsChangedOrUnsettledPredecessors(): void
@@ -980,7 +1002,15 @@ final class ParallelChildGroupTest extends TestCase
             'sequence' => 12,
             'condition_wait_id' => 'condition-12',
         ];
-        $resolution = $this->historyEvent($resolutionType, 4, $reopened, 'condition-resolution');
+        $resolutionPayload = $reopened;
+        if ($resolutionType === HistoryEventType::TimerFired) {
+            unset($resolutionPayload['timeout_seconds']);
+            $resolutionPayload += [
+                'timer_kind' => 'condition_timeout',
+                'timer_id' => 'condition-timeout-12',
+            ];
+        }
+        $resolution = $this->historyEvent($resolutionType, 4, $resolutionPayload, 'condition-resolution');
         $marker = $this->historyEvent(HistoryEventType::SelectionResolved, 5, [
             'selection_group_id' => 'select-calls:10:2',
             'selection_group_base_sequence' => 10,
