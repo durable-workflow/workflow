@@ -53,6 +53,20 @@ Workflow code receives an immutable cancellation context. Its `deadline()` and
 use runtime authority and wall-clock deadlines. A replay must not take a
 different authored branch because the host clock advanced.
 
+The candidate Native implementation records a versioned `cancellation` snapshot
+in the accepted command and canonical request history. A root request's local
+and root IDs are equal. `CommandResult::cancellationContext()` exposes this
+snapshot to the caller, and `WorkflowCancellationRequestedException::cancellation`
+exposes it to workflow cleanup. The object contains reason, requester, source,
+original requested-at, immutable deadline and lineage. Requester metadata is
+restricted to caller type, ID and label.
+
+`remaining()` reads deterministic workflow time and refuses calls outside a
+workflow Fiber. Older histories that lack this snapshot keep their existing
+delivery behavior and expose a null context. Descendant propagation, concurrent
+roots and portable SDK exposure remain to be implemented and qualified before
+the model is published.
+
 ## Operation policies
 
 Activities and children need three explicit choices:

@@ -188,7 +188,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -335,7 +337,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -496,7 +500,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -861,7 +867,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -977,7 +985,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -1229,7 +1239,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {
@@ -1422,7 +1434,9 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                         $current = $workflowExecution->throw(
-                            new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                            new WorkflowCancellationRequestedException(
+                                cancellation: CooperativeCancellationDelivery::context($run),
+                            ),
                             $run->cancellation_delivered_at,
                         );
                     } catch (Throwable $throwable) {

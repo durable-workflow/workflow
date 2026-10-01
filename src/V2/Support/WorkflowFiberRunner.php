@@ -12,6 +12,7 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Contracts\YieldedCommand;
 use Workflow\V2\Exceptions\DurableOperationCancelledException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
@@ -90,7 +91,7 @@ final class WorkflowFiberRunner
     private array $recordedSignalOutcomes = [];
 
     /**
-     * @var array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     * @var array<int, array{call_kind: string, recorded_at: CarbonInterface|null, context: CancellationContext|null}>
      */
     private array $recordedCancellationDeliveries = [];
 
@@ -321,7 +322,7 @@ final class WorkflowFiberRunner
 
                 $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
                 $this->execution->throw(
-                    new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                    new WorkflowCancellationRequestedException(cancellation: $cancellation['context']),
                     $cancellation['recorded_at'],
                 );
 
@@ -1778,11 +1779,26 @@ final class WorkflowFiberRunner
 
     /**
      * @param list<array<string, mixed>> $historyEvents
-     * @return array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     * @return array<int, array{call_kind: string, recorded_at: CarbonInterface|null, context: CancellationContext|null}>
      */
     private static function indexRecordedCancellationDeliveries(array $historyEvents): array
     {
         $deliveries = [];
+        $contexts = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'CooperativeCancellationRequested') {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            if (is_array($payload['cancellation'] ?? null)) {
+                $context = CancellationContext::fromArray($payload['cancellation']);
+                if ($context->requestId !== ($payload['workflow_command_id'] ?? null)) {
+                    throw new RuntimeException('Cancellation context changes its canonical request identity.');
+                }
+                $contexts[$context->requestId] = $context;
+            }
+        }
 
         foreach ($historyEvents as $event) {
             if (self::eventType($event) !== 'CooperativeCancellationDelivered') {
@@ -1797,6 +1813,7 @@ final class WorkflowFiberRunner
                 $deliveries[$sequence] = [
                     'call_kind' => $callKind,
                     'recorded_at' => self::eventRecordedAt($event, $payload),
+                    'context' => $contexts[$payload['workflow_command_id'] ?? ''] ?? null,
                 ];
             }
         }

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cancellation-context-original-budget-cold-replay",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestCancellationContextWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-10-01T00:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "CooperativeCancellationRequested",
+      "payload": {
+        "workflow_command_id": "root-1",
+        "workflow_instance_id": "root-instance",
+        "workflow_run_id": "root-run",
+        "command_type": "request_cancellation",
+        "reason": "maintenance",
+        "cleanup_deadline_at": "2026-10-01T00:00:32.000000Z",
+        "cancellation": {
+          "schema": "durable-workflow.cancellation-context/v1",
+          "request_id": "root-1",
+          "root_request_id": "root-1",
+          "root_workflow_instance_id": "root-instance",
+          "root_workflow_run_id": "root-run",
+          "parent_request_id": null,
+          "reason": "maintenance",
+          "requester": {"type": "operator", "id": "operator-1"},
+          "source": "control_plane",
+          "requested_at": "2026-10-01T00:00:02.000000Z",
+          "cleanup_deadline_at": "2026-10-01T00:00:32.000000Z",
+          "lineage": [{"request_id": "root-1", "workflow_instance_id": "root-instance", "workflow_run_id": "root-run"}]
+        }
+      },
+      "recorded_at": "2026-10-01T00:00:02Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerCancelled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-10-01T00:00:05Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "CooperativeCancellationDelivered",
+      "payload": {"workflow_command_id": "root-1", "workflow_run_id": "root-run", "sequence": 1, "call_kind": "timer"},
+      "recorded_at": "2026-10-01T00:00:05Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [{"type": "upsert_memo"}, {"type": "start_timer", "delay_seconds": 1}]
+  }
+}

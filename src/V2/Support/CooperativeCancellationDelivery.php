@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -151,6 +152,19 @@ final class CooperativeCancellationDelivery
         );
     }
 
+    public static function context(WorkflowRun $run): ?CancellationContext
+    {
+        $run->loadMissing('historyEvents');
+        $request = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type
+                === HistoryEventType::CooperativeCancellationRequested
+                && $event->workflow_command_id === $run->cancellation_request_command_id,
+        );
+        $snapshot = $request?->payload['cancellation'] ?? null;
+
+        return is_array($snapshot) ? CancellationContext::fromArray($snapshot) : null;
+    }
+
     public static function record(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -177,6 +191,10 @@ final class CooperativeCancellationDelivery
             'sequence' => $sequence,
             'call_kind' => $callKind,
         ];
+        $context = self::context($run);
+        if ($context !== null) {
+            $payload['cancellation'] = $context->toArray();
+        }
         if ($sequenceSpan !== 1) {
             $payload['sequence_span'] = $sequenceSpan;
         }

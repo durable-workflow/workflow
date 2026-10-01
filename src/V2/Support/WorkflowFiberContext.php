@@ -128,6 +128,16 @@ final class WorkflowFiberContext
         return now();
     }
 
+    public static function getRecordedTime(): CarbonInterface
+    {
+        $fiber = Fiber::getCurrent();
+        if (! self::active() || ! $fiber instanceof Fiber || ! isset(self::$workflowTime[spl_object_id($fiber)])) {
+            throw new LogicException('Cancellation remaining() requires recorded workflow time.');
+        }
+
+        return self::$workflowTime[spl_object_id($fiber)]->copy();
+    }
+
     public static function suspend(mixed $call): mixed
     {
         if (! self::active()) {

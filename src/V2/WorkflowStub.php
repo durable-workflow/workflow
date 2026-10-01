@@ -1769,8 +1769,33 @@ final class WorkflowStub
             $requestedAt = now();
             $deadline = $requestedAt->copy()
                 ->addSeconds($cleanupTimeoutSeconds);
+            $requestId = (string) Str::ulid();
+            $caller = $this->resolvedCommandContext()
+                ->attributes();
+            $context = CancellationContext::fromArray([
+                'schema' => 'durable-workflow.cancellation-context/v1',
+                'request_id' => $requestId,
+                'root_request_id' => $requestId,
+                'root_workflow_instance_id' => $instance->id,
+                'root_workflow_run_id' => $run->id,
+                'parent_request_id' => null,
+                'reason' => $reason,
+                'requester' => array_intersect_key(
+                    $caller['context']['principal'] ?? $caller['context']['caller'],
+                    array_flip(['type', 'id', 'label']),
+                ),
+                'source' => $caller['source'],
+                'requested_at' => $requestedAt->toISOString(),
+                'cleanup_deadline_at' => $deadline->toISOString(),
+                'lineage' => [[
+                    'request_id' => $requestId,
+                    'workflow_instance_id' => $instance->id,
+                    'workflow_run_id' => $run->id,
+                ]],
+            ])->toArray();
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                'id' => $requestId,
                 'command_type' => CommandType::RequestCancellation->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -1781,6 +1806,7 @@ final class WorkflowStub
                     [
                         'reason' => $reason,
                         'cleanup_deadline_at' => $deadline->toISOString(),
+                        'cancellation' => $context,
                     ],
                 ),
                 'accepted_at' => $requestedAt,
@@ -1801,6 +1827,7 @@ final class WorkflowStub
                 'command_type' => CommandType::RequestCancellation->value,
                 'reason' => $reason,
                 'cleanup_deadline_at' => $deadline->toISOString(),
+                'cancellation' => $context,
             ], static fn (mixed $value): bool => $value !== null), null, $command);
 
             if (! $this->hasOpenWorkflowTask($run->id)) {

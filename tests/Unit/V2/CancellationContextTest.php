@@ -1,0 +1,155 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Carbon\CarbonImmutable;
+use Fiber;
+use InvalidArgumentException;
+use LogicException;
+use PHPUnit\Framework\TestCase;
+use Workflow\V2\CancellationContext;
+use Workflow\V2\Support\WorkflowFiberContext;
+
+final class CancellationContextTest extends TestCase
+{
+    public function testSnapshotAndDeadlineRemainImmutableWhenTheCallerChangesItsCopies(): void
+    {
+        $snapshot = $this->snapshot();
+        $context = CancellationContext::fromArray($snapshot);
+        $snapshot['reason'] = 'changed';
+        $snapshot['requester']['id'] = 'changed';
+        $snapshot['lineage'][0]['request_id'] = 'changed';
+        $context->deadline()
+            ->addHour();
+        $context->requestedAt()
+            ->addDay();
+
+        $this->assertSame('maintenance', $context->reason);
+        $this->assertSame('operator-1', $context->requester['id']);
+        $this->assertSame('root-1', $context->lineage[0]['request_id']);
+        $this->assertSame($this->snapshot(), $context->toArray());
+        $this->assertSame($context->toArray(), CancellationContext::fromArray($context->toArray())->toArray());
+    }
+
+    public function testRemainingUsesRecordedWorkflowTimeDespiteAChangedHostClock(): void
+    {
+        $context = CancellationContext::fromArray($this->snapshot());
+        CarbonImmutable::setTestNow('2040-01-01T00:00:00Z');
+        try {
+            $fiber = new Fiber(function () use ($context): void {
+                WorkflowFiberContext::enter();
+                try {
+                    WorkflowFiberContext::setTime(CarbonImmutable::parse('2026-10-01T00:00:03.500000Z'));
+                    $this->assertSame(26.5, $context->remaining());
+                    WorkflowFiberContext::setTime(CarbonImmutable::parse('2026-10-01T00:00:31Z'));
+                    $this->assertSame(0.0, $context->remaining());
+                } finally {
+                    WorkflowFiberContext::leave();
+                }
+            });
+            $fiber->start();
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    public function testRemainingOutsideAWorkflowRefusesWallClockArithmetic(): void
+    {
+        $this->expectException(LogicException::class);
+        CancellationContext::fromArray($this->snapshot())->remaining();
+    }
+
+    public function testRemainingInAnUnseededFiberRefusesWallClockArithmetic(): void
+    {
+        $context = CancellationContext::fromArray($this->snapshot());
+        $fiber = new Fiber(static function () use ($context): void {
+            WorkflowFiberContext::enter();
+            try {
+                $context->remaining();
+            } finally {
+                WorkflowFiberContext::leave();
+            }
+        });
+        $this->expectException(LogicException::class);
+        $fiber->start();
+    }
+
+    public function testDescendantKeepsTheRootBudgetAndImmediateParentIdentity(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['request_id'] = 'child-1';
+        $snapshot['parent_request_id'] = 'root-1';
+        $snapshot['lineage'][] = [
+            'request_id' => 'child-1',
+            'workflow_instance_id' => 'child-instance',
+            'workflow_run_id' => 'child-run',
+        ];
+        $context = CancellationContext::fromArray($snapshot);
+        $this->assertSame('root-1', $context->rootRequestId);
+        $this->assertSame('root-1', $context->parentRequestId);
+        $this->assertSame($snapshot, $context->toArray());
+    }
+
+    public function testRequesterCannotCarryUnrelatedRequestOrAuthenticationMetadata(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['requester']['headers'] = 'unexpected';
+        $this->expectException(InvalidArgumentException::class);
+        CancellationContext::fromArray($snapshot);
+    }
+
+    public function testMismatchedLineageIsRefused(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['root_request_id'] = 'different-root';
+        $this->expectException(InvalidArgumentException::class);
+        CancellationContext::fromArray($snapshot);
+    }
+
+    public function testCyclicLineageIsRefused(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['parent_request_id'] = 'root-1';
+        $snapshot['lineage'][] = $snapshot['lineage'][0];
+        $this->expectException(InvalidArgumentException::class);
+        CancellationContext::fromArray($snapshot);
+    }
+
+    public function testMalformedCalendarTimestampIsRefused(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['requested_at'] = '2026-02-30T00:00:00Z';
+        $this->expectException(InvalidArgumentException::class);
+        CancellationContext::fromArray($snapshot);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function snapshot(): array
+    {
+        return [
+            'schema' => 'durable-workflow.cancellation-context/v1',
+            'request_id' => 'root-1',
+            'root_request_id' => 'root-1',
+            'root_workflow_instance_id' => 'root-instance',
+            'root_workflow_run_id' => 'root-run',
+            'parent_request_id' => null,
+            'reason' => 'maintenance',
+            'requester' => [
+                'type' => 'operator',
+                'id' => 'operator-1',
+            ],
+            'source' => 'control_plane',
+            'requested_at' => '2026-10-01T00:00:00.000000Z',
+            'cleanup_deadline_at' => '2026-10-01T00:00:30.000000Z',
+            'lineage' => [[
+                'request_id' => 'root-1',
+                'workflow_instance_id' => 'root-instance',
+                'workflow_run_id' => 'root-run',
+            ]],
+        ];
+    }
+}
