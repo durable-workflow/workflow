@@ -154,6 +154,7 @@ final class HistoryEventPayloadContract
             'progress',
         ],
         'ActivityRetryScheduled' => [
+            'local_outcome',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',
@@ -188,6 +189,7 @@ final class HistoryEventPayloadContract
             'parallel_group_path',
         ],
         'ActivityCompleted' => [
+            'local_outcome',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',
@@ -213,6 +215,7 @@ final class HistoryEventPayloadContract
             'parallel_group_path',
         ],
         'ActivityFailed' => [
+            'local_outcome',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',
@@ -279,6 +282,7 @@ final class HistoryEventPayloadContract
             'received_after_deadline',
         ],
         'ActivityTimedOut' => [
+            'local_outcome',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',

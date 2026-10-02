@@ -219,11 +219,23 @@ post-cancellation preparation cannot authorize a stop report. Local history and
 timeline retain the original workflow claim rather than inventing an ordinary
 activity queue task.
 
-Prepared outcomes, retries and cold replay still need integration. Server
-admission and SDK physical local supervisors must connect these primitives,
-dispatch checkpoint-created work and qualify response loss, cancellation and
-worker replacement together. A portable SDK must not reconstruct already
-prepared local rows from a posthoc completion report.
+`recordPortableOutcome()` commits results against that prepared attempt. It
+preserves encoded Avro bytes and reuses the existing local failure, retry and
+timeout recorders. A repeated report returns its original canonical receipt
+after claim takeover, expiry or later cancellation. Changed reports cannot
+replace an outcome. A retry creates one durable workflow task and releases the
+hosting claim. It preserves the original total activity deadline.
+
+An accepted cancellation can fence the original local attempt without changing
+a replacement workflow claim. This refuses result publication. It does not
+acknowledge physical callback stop. The original owner must separately report
+that its supervisor has stopped and joined the callback.
+
+Retry preparation and cold recovery still need integration. Server admission
+and SDK physical local supervisors must connect these primitives, dispatch
+created work and qualify response loss, cancellation and worker replacement
+together. A portable SDK must not reconstruct already prepared local rows from
+a posthoc completion report.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.

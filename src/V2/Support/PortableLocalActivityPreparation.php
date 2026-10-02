@@ -268,6 +268,56 @@ final class PortableLocalActivityPreparation
     }
 
     /**
+     * @internal Read the original immutable preparation authority. The caller
+     * holds attempt/execution/run locks. Current task ownership is separate.
+     */
+    public static function originalStart(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+    ): ?WorkflowHistoryEvent {
+        if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
+            || $attempt->workflow_run_id !== $run->id || $attempt->activity_execution_id !== $execution->id
+            || $attempt->lease_owner !== $leaseOwner || $workflowTaskAttempt < 1) {
+            return null;
+        }
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)
+            ->where('payload->activity_attempt_id', $attempt->id)
+            ->first();
+        if (! $started instanceof WorkflowHistoryEvent
+            || $started->workflow_task_id !== $attempt->workflow_task_id
+            || ($started->payload['activity_execution_id'] ?? null) !== $execution->id
+            || ($started->payload['activity_type'] ?? null) !== $execution->activity_type
+            || ($started->payload['activity_class'] ?? null) !== $execution->activity_class
+            || ($started->payload['sequence'] ?? null) !== $execution->sequence
+            || ($started->payload['workflow_task_id'] ?? null) !== $attempt->workflow_task_id
+            || ($started->payload['local_activity'] ?? null) !== true
+            || ($started->payload['execution_mode'] ?? null) !== LocalActivityRuntime::EXECUTION_MODE
+            || ($started->payload['local_preparation']['version'] ?? null) !== 1
+            || ! is_string($started->payload['local_preparation']['descriptor_fingerprint'] ?? null)
+            || ($started->payload['local_preparation']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id
+            || ($started->payload['local_preparation']['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+            || ($started->payload['task']['id'] ?? null) !== $attempt->workflow_task_id
+            || ($started->payload['task']['type'] ?? null) !== TaskType::Workflow->value
+            || ($started->payload['task']['status'] ?? null) !== TaskStatus::Leased->value
+            || ($started->payload['task']['attempt_count'] ?? null) !== $workflowTaskAttempt
+            || ($started->payload['task']['lease_owner'] ?? null) !== $leaseOwner
+            || ($started->payload['activity_attempt']['id'] ?? null) !== $attempt->id
+            || ($started->payload['activity_attempt']['activity_execution_id'] ?? null) !== $execution->id
+            || ($started->payload['activity_attempt']['task_id'] ?? null) !== $attempt->workflow_task_id
+            || ($started->payload['activity_attempt']['attempt_number'] ?? null) !== $attempt->attempt_number
+            || ($started->payload['activity_attempt']['lease_owner'] ?? null) !== $leaseOwner
+            || ($started->payload['activity_attempt']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id) {
+            return null;
+        }
+
+        return $started;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function duplicate(
@@ -284,24 +334,9 @@ final class PortableLocalActivityPreparation
             || $attempt->worker_attempt_id !== $workerAttemptId || $attempt->status !== ActivityAttemptStatus::Running) {
             return self::response('local_activity_preparation_mismatch');
         }
-        $started = $run->historyEvents()
-            ->where('event_type', HistoryEventType::ActivityStarted)
-            ->where('payload->activity_attempt_id', $attempt->id)
-            ->first();
+        $started = self::originalStart($run, $execution, $attempt, $task->lease_owner, $task->attempt_count);
         if (! $started instanceof WorkflowHistoryEvent
-            || $started->workflow_task_id !== $task->id
-            || ($started->payload['activity_execution_id'] ?? null) !== $execution->id
-            || ($started->payload['workflow_task_id'] ?? null) !== $task->id
-            || ($started->payload['local_activity'] ?? null) !== true
-            || ($started->payload['execution_mode'] ?? null) !== LocalActivityRuntime::EXECUTION_MODE
-            || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint
-            || ($started->payload['local_preparation']['worker_attempt_id'] ?? null) !== $workerAttemptId
-            || ($started->payload['local_preparation']['workflow_task_attempt'] ?? null) !== $task->attempt_count
-            || ($started->payload['task']['id'] ?? null) !== $task->id
-            || ($started->payload['task']['type'] ?? null) !== TaskType::Workflow->value
-            || ($started->payload['task']['status'] ?? null) !== TaskStatus::Leased->value
-            || ($started->payload['task']['attempt_count'] ?? null) !== $task->attempt_count
-            || ($started->payload['task']['lease_owner'] ?? null) !== $task->lease_owner) {
+            || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
             return self::response('local_activity_preparation_mismatch');
         }
         foreach ([
