@@ -147,8 +147,8 @@ final class WorkflowCommandNormalizer
             'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
         ],
         'cancellation_policy' => [
-            'allowed' => ['start_child_workflow'],
-            'guidance' => 'cancellation_policy declares how an awaiting workflow handles child cancellation and only applies to a start_child_workflow command.',
+            'allowed' => ['start_child_workflow', 'schedule_activity'],
+            'guidance' => 'cancellation_policy declares how an awaiting workflow handles child or remote activity cancellation. Explicit activity policies require protocol 1.20 and remote abandon requires a finite schedule_to_close_timeout.',
         ],
         'delay_seconds' => [
             'allowed' => ['start_timer'],
@@ -519,9 +519,32 @@ final class WorkflowCommandNormalizer
                 $scheduleToClose = self::optionalPositiveInt($command, 'schedule_to_close_timeout', $index, $errors);
                 $heartbeat = self::optionalPositiveInt($command, 'heartbeat_timeout', $index, $errors);
                 $workerSession = self::optionalWorkerSession($command, $index, $errors);
+                $cancellationPolicy = self::optionalCommandString($command, 'cancellation_policy', $index, $errors);
                 $parallelMetadata = self::optionalParallelMetadataForCommand($command, $type, $index, $errors);
 
                 self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
+
+                if ($cancellationPolicy !== null) {
+                    if (! in_array(
+                        $cancellationPolicy,
+                        ['try_cancel', 'wait_cancellation_completed', 'abandon'],
+                        true
+                    )) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'The cancellation_policy must be one of: try_cancel, wait_cancellation_completed, abandon.',
+                        ];
+                    }
+                    if (! WorkerProtocolVersion::supportsActivityCancellationPolicies($protocolVersion)) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'Explicit activity cancellation policies require worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
+                    if ($cancellationPolicy === 'abandon' && $scheduleToClose === null) {
+                        $errors["commands.{$index}.schedule_to_close_timeout"] = [
+                            'An abandoned remote activity requires a finite schedule_to_close_timeout.',
+                        ];
+                    }
+                }
 
                 $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
                 $payloadCodec = self::payloadCodecForResolvedPayload(
@@ -545,6 +568,7 @@ final class WorkflowCommandNormalizer
                     'schedule_to_close_timeout' => $scheduleToClose,
                     'heartbeat_timeout' => $heartbeat,
                     'worker_session' => $workerSession,
+                    'cancellation_policy' => $cancellationPolicy,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 

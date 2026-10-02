@@ -483,11 +483,11 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
-    - name: Run internal activity cancellation policy cases
+    - name: Run activity cancellation policy and portable admission cases
       run: >-
         vendor/bin/phpunit tests/Feature/V2/V2PortableCancellationDeliveryTest.php
         --testsuite feature
-        --filter '/testInternal.*(ActivityWait|ActivityAbandon)/'
+        --filter '/testInternal.*(ActivityWait|ActivityAbandon)|testPortableRemoteActivityPolicy/'
         --fail-on-warning --log-junit build/test-results/pr-smoke-activity-cancellation-wait.xml
       env:
         DB_CONNECTION: mysql

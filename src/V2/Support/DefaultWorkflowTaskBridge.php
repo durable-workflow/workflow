@@ -691,6 +691,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         });
     }
 
+    /**
+     * @internal Portable remote policy admission marker for an installed bridge.
+     */
+    public function supportsRemoteActivityCancellationPolicies(): bool
+    {
+        return true;
+    }
+
     public function deliverCancellation(
         string $taskId,
         string $requestId,
@@ -3153,7 +3161,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'connection' => $connection,
             'queue' => $queue,
             'retry_policy' => $retryPolicy,
-            'activity_options' => $options?->toSnapshot(),
+            'activity_options' => isset($command['cancellation_policy'])
+                ? [
+                    ...($options?->toSnapshot() ?? []),
+                    'cancellation_policy' => $command['cancellation_policy'],
+                ]
+                : $options?->toSnapshot(),
             'schedule_deadline_at' => $scheduleDeadlineAt,
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
@@ -5666,6 +5679,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      *     schedule_to_start_timeout?: int,
      *     schedule_to_close_timeout?: int,
      *     heartbeat_timeout?: int,
+     *     cancellation_policy?: string,
      *     worker_session?: array<string, mixed>
      * }|null
      */
@@ -5677,6 +5691,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $scheduleToStartTimeout = self::normalizePositiveInt($command['schedule_to_start_timeout'] ?? null);
         $scheduleToCloseTimeout = self::normalizePositiveInt($command['schedule_to_close_timeout'] ?? null);
         $heartbeatTimeout = self::normalizePositiveInt($command['heartbeat_timeout'] ?? null);
+        $cancellationPolicy = self::normalizeOptionalString($command['cancellation_policy'] ?? null);
         $arguments = self::normalizeCommandPayloadString($command, 'arguments');
 
         if ($activityType === null) {
@@ -5688,6 +5703,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        if (($command['cancellation_policy'] ?? null) !== null
+            && ($cancellationPolicy === null || CancellationPolicy::tryFrom($cancellationPolicy) === null
+                || ($cancellationPolicy === CancellationPolicy::Abandon->value && $scheduleToCloseTimeout === null))) {
             return null;
         }
 
@@ -5721,6 +5742,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'schedule_to_start_timeout' => $scheduleToStartTimeout,
             'schedule_to_close_timeout' => $scheduleToCloseTimeout,
             'heartbeat_timeout' => $heartbeatTimeout,
+            'cancellation_policy' => $cancellationPolicy,
             'worker_session' => self::normalizeWorkerSessionCommand($command['worker_session'] ?? null),
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null);

@@ -41,6 +41,7 @@ use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
@@ -63,6 +64,118 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testOptionalCooperativeBridgeUsesTheExistingBinding(): void
     {
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
+    }
+
+    #[DataProvider('portableRemoteActivityPolicies')]
+    public function testPortableRemoteActivityPolicySurvivesAdmissionAndControlsCancellation(?string $policy): void
+    {
+        [$run, $initial] = $this->newRun();
+        $command = [
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.portable-remote',
+            'arguments' => Serializer::serialize(['Taylor']),
+            'schedule_to_close_timeout' => 180,
+        ];
+        if ($policy !== null) {
+            $command['cancellation_policy'] = $policy;
+        }
+        $commands = WorkflowCommandNormalizer::normalize([$command], '1.20');
+        $this->assertTrue($this->bridge->complete($initial->id, $commands)['completed']);
+        $execution = $run->activityExecutions()
+            ->sole();
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
+        $this->assertSame($policy, $scheduled->payload['activity']['cancellation_policy'] ?? null);
+        $this->assertSame($policy, $execution->activity_options['cancellation_policy'] ?? null);
+        $originalActivityDeadline = $execution->schedule_to_close_deadline_at->toISOString();
+        if ($policy === 'abandon') {
+            $this->assertSame(
+                $originalActivityDeadline,
+                $scheduled->payload['activity']['schedule_to_close_deadline_at']
+            );
+        }
+        $activityTask = $run->tasks()
+            ->where('task_type', TaskType::Activity)->sole();
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'remote-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->request($run);
+        $originalCleanupDeadline = $run->cancellation_deadline_at->toISOString();
+        $resume = $this->leaseReadyTask($run);
+        $delivery = $this->deliver($run, $resume);
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertFalse($delivery['delivered']);
+            $this->assertTrue($delivery['claim_released']);
+            $this->assertSame('cancellation_waiting_for_activity', $delivery['reason']);
+            $this->assertSame(0, $this->deliveryCount($run));
+            $receipt = ActivityCancellationAcknowledgement::recordStopped(
+                $attempt->id,
+                'remote-owner',
+                $run->cancellation_request_command_id,
+            );
+            $this->assertTrue($receipt['acknowledged']);
+            $resume = $this->leaseReadyTask($run);
+            $delivery = $this->deliver($run, $resume);
+        }
+        $this->assertTrue($delivery['delivered']);
+        $this->assertSame(1, $this->deliveryCount($run));
+        $this->assertSame($originalCleanupDeadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        $this->assertTrue($this->bridge->complete($resume->id, [[
+            'type' => 'complete_workflow',
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame(
+            $originalActivityDeadline,
+            $execution->refresh()
+                ->schedule_to_close_deadline_at->toISOString()
+        );
+        $completion = $activities->complete($attempt->id, 'late callback result');
+        $this->assertSame($policy === 'abandon', $completion['recorded']);
+        $this->assertSame(
+            $policy === 'abandon' ? ActivityStatus::Completed : ActivityStatus::Cancelled,
+            $execution->refresh()
+->status
+        );
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame(
+            0,
+            $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->count()
+        );
+    }
+
+    public static function portableRemoteActivityPolicies(): iterable
+    {
+        yield 'historical default' => [null];
+        yield 'request and continue' => ['try_cancel'];
+        yield 'wait for original callback stop' => ['wait_cancellation_completed'];
+        yield 'bounded independent remote work' => ['abandon'];
+    }
+
+    #[DataProvider('invalidPortableRemoteActivityPolicies')]
+    public function testPortableRemoteActivityPolicyRefusesInvalidBridgeInputBeforeScheduling(mixed $policy): void
+    {
+        [$run, $initial] = $this->newRun();
+        $historyBefore = $run->historyEvents()
+            ->count();
+        $outcome = $this->bridge->complete($initial->id, [[
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.portable-remote',
+            'cancellation_policy' => $policy,
+        ]]);
+        $this->assertFalse($outcome['completed']);
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        $this->assertSame($historyBefore, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $initial->refresh()->status);
+    }
+
+    public static function invalidPortableRemoteActivityPolicies(): iterable
+    {
+        yield 'unknown policy' => ['unknown'];
+        yield 'non-string policy' => [[]];
+        yield 'unbounded abandon' => ['abandon'];
     }
 
     public function testInternalActivityAbandonCompletesAfterParentClosureWithoutReopeningIt(): void

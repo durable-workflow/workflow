@@ -15,6 +15,69 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
 {
+    public function testExplicitRemoteActivityPoliciesPreserveTheirAuthoredPolicyOnlyOnTheSourceProtocol(): void
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            $command = [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote',
+                'cancellation_policy' => $policy,
+                'schedule_to_close_timeout' => 30,
+            ];
+            $normalized = WorkflowCommandNormalizer::normalize([$command], '1.20')[0];
+            $this->assertSame($policy, $normalized['cancellation_policy']);
+            $this->assertSame(30, $normalized['schedule_to_close_timeout']);
+            foreach (['1.19', '2.0'] as $protocol) {
+                try {
+                    WorkflowCommandNormalizer::normalize([$command], $protocol);
+                    $this->fail('Explicit remote policies require the cooperative Source protocol.');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+                }
+            }
+        }
+        $historical = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote',
+            ],
+        ], '1.19')[0];
+        $this->assertArrayNotHasKey('cancellation_policy', $historical);
+    }
+
+    public function testRemoteAbandonRefusesAnAbsentInvalidOrUnlimitedTotalLifetime(): void
+    {
+        foreach ([null, 0, -1, '30', [], 1.5] as $timeout) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'remote',
+                    'cancellation_policy' => 'abandon',
+                    'schedule_to_close_timeout' => $timeout,
+                ]], '1.20');
+                $this->fail('Remote Abandon must have a finite positive integer total timeout.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.schedule_to_close_timeout', $exception->errors());
+            }
+        }
+    }
+
+    public function testRemoteActivityPolicyRefusesUnknownAndNonStringValues(): void
+    {
+        foreach (['unknown', [], 1, true] as $policy) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'remote',
+                    'cancellation_policy' => $policy,
+                ]], '1.20');
+                $this->fail('Remote activity policy must be a known policy string.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+            }
+        }
+    }
+
     public function testPayloadEnvelopeFieldContractNamesCodecBearingCommandPayloads(): void
     {
         $this->assertSame([

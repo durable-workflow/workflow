@@ -292,6 +292,11 @@ final class WorkerProtocolVersion
         return self::supportsFeatureVersion($protocolVersion, '1.20');
     }
 
+    public static function supportsActivityCancellationPolicies(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, '1.20');
+    }
+
     public static function supportsMessageStreams(string $protocolVersion): bool
     {
         return self::supportsFeatureVersion($protocolVersion, self::MESSAGE_STREAMS_MINIMUM_PROTOCOL_VERSION);
