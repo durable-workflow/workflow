@@ -3898,7 +3898,9 @@ final class WorkflowExecutor
         // The caller holds the run lock; acquiring the instance lock here would invert command lock order.
         $preservedActivityIds = $run->activityExecutions
             ->filter(static fn (ActivityExecution $execution): bool => in_array(
-                $execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true
+                $execution->status,
+                [ActivityStatus::Pending, ActivityStatus::Running],
+                true
             ) && ActivityAbandonment::allows($run, $execution))
             ->pluck('id')
             ->all();
