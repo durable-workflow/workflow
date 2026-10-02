@@ -330,7 +330,8 @@ final class V2PortableLocalActivityControlTest extends TestCase
         $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
         );
     }
 
