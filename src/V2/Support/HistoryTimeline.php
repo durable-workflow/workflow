@@ -322,6 +322,10 @@ final class HistoryTimeline
                     ),
                 ],
             ] : []),
+            ...($event->event_type === HistoryEventType::WorkflowCancelled
+                && is_array($payload['cancellation_cleanup'] ?? null) ? [
+                    'cancellation_cleanup' => $payload['cancellation_cleanup'],
+                ] : []),
             'failure' => $failureMetadata,
         ];
     }
@@ -508,7 +512,13 @@ final class HistoryTimeline
             HistoryEventType::CancelRequested => 'Cancel requested.',
             HistoryEventType::CooperativeCancellationRequested => 'Cooperative cancellation requested.',
             HistoryEventType::CooperativeCancellationDelivered => 'Cancellation delivered to workflow code.',
-            HistoryEventType::WorkflowCancelled => 'Workflow cancelled.',
+            HistoryEventType::WorkflowCancelled => match ($payload['cancellation_cleanup']['outcome'] ?? null) {
+                'completed' => 'Workflow cancelled after cleanup completed.',
+                'deadline_expired' => 'Workflow cancelled at the cleanup deadline.',
+                'not_delivered' => 'Workflow cancelled without cancellation delivery to workflow code.',
+                'unavailable' => 'Workflow cancelled. Cleanup delivery evidence is unavailable.',
+                default => 'Workflow cancelled.',
+            },
             HistoryEventType::TerminateRequested => 'Terminate requested.',
             HistoryEventType::WorkflowTerminated => 'Workflow terminated.',
             HistoryEventType::ArchiveRequested => match ($outcome) {

@@ -847,6 +847,7 @@ final class HistoryEventPayloadContract
             'exception_class',
             'message',
             'reason',
+            'cancellation_cleanup',
         ],
         'TerminateRequested' => [
             'workflow_command_id',

@@ -71,6 +71,29 @@ restricted to caller type, ID and label.
 workflow Fiber. Older histories that lack this snapshot keep their existing
 delivery behavior and expose a null context.
 
+### Cleanup outcome
+
+The candidate cooperative `WorkflowCancelled` terminal event includes an
+optional `cancellation_cleanup` object. It retains the local `request_id`,
+original `cleanup_deadline_at`, `finished_at` and, when the canonical delivery
+matches that request and authored sequence, `delivery_history_event_id` and
+`delivery_sequence`. Duplicate requests leave this terminal record intact.
+Legacy terminal cancellation and historical events can omit the object.
+
+| Outcome | Meaning |
+| --- | --- |
+| `completed` | Workflow cleanup reached a terminal boundary after the matching canonical cancellation delivery and before the original deadline. |
+| `deadline_expired` | The original cleanup deadline was reached. This applies whether or not cancellation had been delivered to workflow code. |
+| `not_delivered` | The run closed before the deadline without a recorded cancellation delivery. Ordinary shielded cleanup can still have run. |
+| `unavailable` | Delivery history and its run projection disagree. The terminal record does not claim cleanup completion. |
+
+These outcomes describe workflow cleanup. Per-operation policies and callback
+stop receipts separately establish whether activities stopped or were
+abandoned. A completed workflow cleanup does not establish reversal of external
+effects. Termination remains a distinct run outcome. Losing a worker lease
+describes that attempt's authority and does not establish that its process
+stopped or that the replacement cleanup failed.
+
 The candidate Native request primitive
 `attemptRequestCancellationFromParent()` reads its parent's accepted context
 from storage and requires a recorded direct child link to the selected current

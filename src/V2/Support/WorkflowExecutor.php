@@ -3948,6 +3948,20 @@ final class WorkflowExecutor
         }
 
         $closedAt = now();
+        $delivery = CooperativeCancellationDelivery::recorded($run);
+        $deadlineExpired = $run->cancellation_deadline_at !== null
+            && $closedAt->gte($run->cancellation_deadline_at);
+        if ($deadlineExpired) {
+            $reason = 'Cooperative cancellation cleanup deadline expired.';
+        }
+        $deliveryMatches = $delivery !== null
+            && $delivery->workflow_command_id === $commandId
+            && ($delivery->payload['workflow_command_id'] ?? null) === $commandId
+            && is_int($delivery->payload['sequence'] ?? null)
+            && $run->cancellation_delivery_sequence === $delivery->payload['sequence'];
+        $cleanupOutcome = $deadlineExpired ? 'deadline_expired'
+            : ($deliveryMatches ? 'completed'
+                : ($delivery === null && $run->cancellation_delivery_sequence === null ? 'not_delivered' : 'unavailable'));
         $message = sprintf('Workflow cancelled: %s', $reason);
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([
@@ -3981,6 +3995,14 @@ final class WorkflowExecutor
             'exception_class' => $failure->exception_class,
             'message' => $message,
             'reason' => $reason,
+            'cancellation_cleanup' => [
+                'request_id' => $commandId,
+                'outcome' => $cleanupOutcome,
+                'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                'delivery_history_event_id' => $deliveryMatches ? $delivery->id : null,
+                'delivery_sequence' => $deliveryMatches ? $delivery->payload['sequence'] : null,
+                'finished_at' => $closedAt->toISOString(),
+            ],
         ], $task, $commandId);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Carbon;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Workflow\V2\Enums\HistoryEventType;
@@ -14,6 +15,46 @@ use Workflow\V2\Support\HistoryTimeline;
 
 final class CancellationHistoryTimelineTest extends TestCase
 {
+    #[DataProvider('cleanupOutcomes')]
+    public function testCleanupOutcomeRetainsTheOriginalBudgetWhenInspectedLater(string $outcome, string $summary): void
+    {
+        $cleanup = [
+            'request_id' => 'request-1',
+            'outcome' => $outcome,
+            'cleanup_deadline_at' => '2026-10-02T00:00:30.000000Z',
+            'delivery_history_event_id' => in_array($outcome, ['not_delivered', 'unavailable'], true)
+                ? null : 'delivery-1',
+            'delivery_sequence' => in_array($outcome, ['not_delivered', 'unavailable'], true) ? null : 4,
+            'finished_at' => $outcome === 'deadline_expired'
+                ? '2026-10-02T00:00:30.000000Z' : '2026-10-02T00:00:20.000000Z',
+        ];
+        Carbon::setTestNow('2026-12-01T00:00:00Z');
+        try {
+            $entry = $this->entry(HistoryEventType::WorkflowCancelled, [
+                'cancellation_cleanup' => $cleanup,
+            ]);
+
+            $this->assertSame($cleanup, $entry['cancellation_cleanup']);
+            $this->assertSame($summary, $entry['summary']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function cleanupOutcomes(): iterable
+    {
+        yield 'completed' => ['completed', 'Workflow cancelled after cleanup completed.'];
+        yield 'expired' => ['deadline_expired', 'Workflow cancelled at the cleanup deadline.'];
+        yield 'not delivered' => [
+            'not_delivered',
+            'Workflow cancelled without cancellation delivery to workflow code.',
+        ];
+        yield 'unavailable' => ['unavailable', 'Workflow cancelled. Cleanup delivery evidence is unavailable.'];
+    }
+
     #[DataProvider('historyEventTypes')]
     public function testEverySupportedHistoryEventCanBeInspectedWithSparseMetadata(HistoryEventType $type): void
     {
