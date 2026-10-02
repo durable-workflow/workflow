@@ -274,7 +274,10 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
      */
     private function assertSameCheckpointReceipt(array $first, array $reply): void
     {
-        $expected = [...$first, 'duplicate' => true];
+        $expected = [
+            ...$first,
+            'duplicate' => true,
+        ];
         // MySQL normalizes JSON object key order. Values and types must
         // remain identical, while object member order has no authority.
         ksort($expected);
@@ -282,7 +285,9 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         $this->assertSame($expected, $reply);
     }
 
-    /** @return list<array{type: string, ...}> */
+    /**
+     * @return list<array{type: string, ...}>
+     */
     private function prefix(): array
     {
         return [
