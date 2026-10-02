@@ -86,6 +86,7 @@ final class ActivitySnapshot
             'sequence' => self::intValue($payload['sequence'] ?? null),
             'type' => self::stringValue($payload['activity_type'] ?? null),
             'class' => self::stringValue($payload['activity_class'] ?? null),
+            'attempt_count' => self::intValue($payload['attempt_number'] ?? null),
             'execution_mode' => self::stringValue($payload['execution_mode'] ?? null),
             'local_activity' => ($payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
                 || ($payload['local_activity'] ?? null) === true,
@@ -155,8 +156,13 @@ final class ActivitySnapshot
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
             'execution_mode' => self::stringValue($snapshot['execution_mode'] ?? null),
-            'local_activity' => ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
-                || ($snapshot['local_activity'] ?? null) === true,
+            'local_activity' => array_key_exists('execution_mode', $snapshot) || array_key_exists(
+                'local_activity',
+                $snapshot
+            )
+                ? (($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                    || ($snapshot['local_activity'] ?? null) === true)
+                : null,
             'parallel_group_kind' => self::stringValue($snapshot['parallel_group_kind'] ?? null),
             'parallel_group_id' => self::stringValue($snapshot['parallel_group_id'] ?? null),
             'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),
@@ -208,7 +214,12 @@ final class ActivitySnapshot
         array $snapshot,
         array $taskSnapshot,
     ): int {
-        $taskAttemptCount = in_array($eventType, [
+        // A local callback attempt and its hosting workflow claim have
+        // independent retry counters. The workflow counter is not an
+        // activity attempt, including on a repaired workflow claim.
+        $local = ($snapshot['local_activity'] ?? null) === true
+            || ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE;
+        $taskAttemptCount = ! $local && in_array($eventType, [
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityRetryScheduled,

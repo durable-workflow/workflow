@@ -131,6 +131,47 @@ final class CancellationHistoryTimelineTest extends TestCase
         }
     }
 
+    #[DataProvider('localActivityEvents')]
+    public function testARepairedWorkflowClaimCannotChangeTheLocalActivityAttemptCount(HistoryEventType $type): void
+    {
+        $expected = $type === HistoryEventType::ActivityScheduled ? 0 : 2;
+        $entry = $this->entry($type, [
+            'activity_execution_id' => 'local-activity-1',
+            'execution_mode' => 'local',
+            'activity' => [
+                'id' => 'local-activity-1',
+                'attempt_count' => $expected,
+            ],
+            'task' => [
+                'id' => 'task-1',
+                'type' => 'workflow',
+                'status' => 'leased',
+                'attempt_count' => 5,
+            ],
+        ]);
+
+        $this->assertSame($expected, $entry['activity']['attempt_count']);
+        $this->assertSame(5, $entry['task']['attempt_count']);
+    }
+
+    public function testSparseLocalHistoryUsesTheActivityAttemptNumberInsteadOfTheWorkflowClaimCount(): void
+    {
+        $entry = $this->entry(HistoryEventType::ActivityStarted, [
+            'activity_execution_id' => 'local-activity-1',
+            'local_activity' => true,
+            'attempt_number' => 3,
+            'task' => [
+                'id' => 'task-1',
+                'type' => 'workflow',
+                'status' => 'leased',
+                'attempt_count' => 7,
+            ],
+        ]);
+
+        $this->assertSame(3, $entry['activity']['attempt_count']);
+        $this->assertSame(7, $entry['task']['attempt_count']);
+    }
+
     /** @param array<string, mixed> $payload
      * @return array<string, mixed>
      */

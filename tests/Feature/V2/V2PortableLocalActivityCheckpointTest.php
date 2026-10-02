@@ -49,9 +49,11 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         $this->assertFalse($reply['duplicate']);
         $this->assertSame(4, $reply['next_sequence']);
         $this->assertSame(4, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
+        $memos = $run->fresh()
+            ->typedMemos();
         $this->assertSame([
             'stage' => 'before-local',
-        ], $run->fresh() ->typedMemos());
+        ], $memos);
         $this->assertSame(1, WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count());
         $this->assertCount(1, $reply['created_task_ids']);
         $after = $task->refresh()
@@ -77,10 +79,7 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         Carbon::setTestNow(now()->addSecond());
         try {
             $second = $this->checkpoint($task, $this->prefix());
-            $this->assertSame([
-                ...$first,
-                'duplicate' => true,
-            ], $second);
+            $this->assertSameCheckpointReceipt($first, $second);
             $this->assertSame($count, WorkflowHistoryEvent::query()->count());
             $this->assertSame(1, WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count());
             $this->assertSame($before, $task->refresh()->getAttributes());
@@ -160,10 +159,7 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         $deadline = $run->refresh()
             ->cancellation_deadline_at->toISOString();
         $count = WorkflowHistoryEvent::query()->count();
-        $this->assertSame([
-            ...$first,
-            'duplicate' => true,
-        ], $this->checkpoint($task, $this->prefix()));
+        $this->assertSameCheckpointReceipt($first, $this->checkpoint($task, $this->prefix()));
         $this->assertSame('cancellation_requested', $this->checkpoint($task, [], 4, 'new-checkpoint')['reason']);
         $this->assertSame('cancellation_requested', $this->prepare($task, 4)['reason']);
         $this->assertSame($count, WorkflowHistoryEvent::query()->count());
@@ -273,9 +269,20 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         $this->assertSame(0, WorkflowHistoryEvent::query()->count());
     }
 
-    /**
-     * @return list<array{type: string, ...}>
+    /** @param array<string, mixed> $first
+     * @param array<string, mixed> $reply
      */
+    private function assertSameCheckpointReceipt(array $first, array $reply): void
+    {
+        $expected = [...$first, 'duplicate' => true];
+        // MySQL normalizes JSON object key order. Values and types must
+        // remain identical, while object member order has no authority.
+        ksort($expected);
+        ksort($reply);
+        $this->assertSame($expected, $reply);
+    }
+
+    /** @return list<array{type: string, ...}> */
     private function prefix(): array
     {
         return [
