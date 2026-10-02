@@ -265,6 +265,30 @@ final class HistoryTimeline
             'activity' => $activityMetadata,
             'timer' => $timerMetadata,
             'child' => $childMetadata,
+            ...(is_array($payload['local_recovery'] ?? null) ? [
+                'local_recovery' => [
+                    'original_workflow_task_id' => self::stringValue(
+                        $payload['local_recovery']['original_workflow_task_id'] ?? null
+                    ),
+                    'original_workflow_task_attempt' => self::intValue(
+                        $payload['local_recovery']['original_workflow_task_attempt'] ?? null
+                    ),
+                    'original_lease_owner' => self::stringValue(
+                        $payload['local_recovery']['original_lease_owner'] ?? null
+                    ),
+                    'original_lease_expires_at' => self::timestamp(
+                        $payload['local_recovery']['original_lease_expires_at'] ?? null
+                    ),
+                    'workflow_task_id' => self::stringValue($payload['local_recovery']['workflow_task_id'] ?? null),
+                    'workflow_task_attempt' => self::intValue(
+                        $payload['local_recovery']['workflow_task_attempt'] ?? null
+                    ),
+                    'lease_owner' => self::stringValue($payload['local_recovery']['lease_owner'] ?? null),
+                    'callback_stop_state' => self::stringValue(
+                        $payload['local_recovery']['callback_stop_state'] ?? null
+                    ),
+                ],
+            ] : []),
             ...($event->event_type === HistoryEventType::ActivityCancellationAcknowledged ? [
                 'cancellation_acknowledgement' => [
                     'activity_attempt_id' => self::stringValue($payload['activity_attempt_id'] ?? null),
@@ -377,7 +401,7 @@ final class HistoryTimeline
         $timerKind = self::stringValue($payload['timer_kind'] ?? null);
         $childLabel = self::displayLabel($child['type'] ?? $child['class'] ?? $child['run_id'] ?? 'child workflow');
 
-        return match ($event->event_type) {
+        $summary = match ($event->event_type) {
             HistoryEventType::StartAccepted => $outcome === null
                 ? 'Start accepted.'
                 : sprintf('Start accepted as %s.', $outcome),
@@ -629,6 +653,10 @@ final class HistoryTimeline
                 self::stringValue($payload['reason'] ?? null) ?? 'unknown reason',
             ),
         };
+
+        return ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
+            ? $summary . ' The previous attempt lost authority. Callback stop is unknown.'
+            : $summary;
     }
 
     /**

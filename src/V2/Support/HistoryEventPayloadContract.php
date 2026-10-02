@@ -155,6 +155,7 @@ final class HistoryEventPayloadContract
         ],
         'ActivityRetryScheduled' => [
             'local_outcome',
+            'local_recovery',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',
@@ -216,6 +217,7 @@ final class HistoryEventPayloadContract
         ],
         'ActivityFailed' => [
             'local_outcome',
+            'local_recovery',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',
@@ -283,6 +285,7 @@ final class HistoryEventPayloadContract
         ],
         'ActivityTimedOut' => [
             'local_outcome',
+            'local_recovery',
             'activity_execution_id',
             'activity_attempt_id',
             'worker_attempt_id',

@@ -320,6 +320,51 @@ final class LocalActivityExecutor
         return $outcome['event'];
     }
 
+    /**
+     * @internal The caller holds canonical locks, has validated original start
+     * history and has proved loss of the previous claim. Lease expiry fences
+     * publication. It does not establish physical callback stop.
+     * @param array<string, mixed> $recovery
+     * @return array{event: WorkflowHistoryEvent, next_task: WorkflowTask|null}
+     */
+    public function recoverPortableAttempt(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        array $recovery,
+    ): array {
+        $metadata = [
+            'worker_attempt_id' => $attempt->worker_attempt_id,
+            'local_recovery' => $recovery,
+        ];
+        self::closeAttempt($attempt, ActivityAttemptStatus::Expired);
+        $timeoutKind = self::timeoutKind($execution);
+        $outcome = $timeoutKind === null
+            ? $this->recordInterruptedAttempt($run, $task, $execution, $metadata)
+            : $this->recordTimeoutOutcome($run, $task, $execution, $timeoutKind, $metadata);
+        if ($outcome['next_task'] instanceof WorkflowTask) {
+            $task->forceFill([
+                'status' => TaskStatus::Completed,
+                'lease_expires_at' => null,
+            ])->save();
+            self::projectRun($run);
+        }
+        $event = $outcome['event'] ?? $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+            ->where('payload->activity_attempt_id', $attempt->id)
+            ->orderByDesc('sequence')
+            ->first();
+        if (! $event instanceof WorkflowHistoryEvent) {
+            throw new RuntimeException('Portable local recovery did not record its canonical receipt.');
+        }
+
+        return [
+            'event' => $event,
+            'next_task' => $outcome['next_task'],
+        ];
+    }
+
     /** @param array<string, mixed> $report
      * @return array<string, mixed>
      */
@@ -830,7 +875,7 @@ final class LocalActivityExecutor
         $exceptionPayload = FailureFactory::payload($throwable);
         $runCodec = is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : null;
 
-        if ($attempt instanceof ActivityAttempt) {
+        if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
             self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
         }
 
@@ -890,6 +935,10 @@ final class LocalActivityExecutor
                 'exception' => $exceptionPayload,
                 'workflow_task_id' => $task->id,
                 'activity' => ActivitySnapshot::fromExecution($execution),
+                ...($historyMetadata !== [] && $attempt instanceof ActivityAttempt
+                    ? [
+                        'activity_attempt' => self::attemptSnapshot($attempt),
+                    ] : []),
                 ...$historyMetadata,
             ]),
             $task
@@ -940,7 +989,7 @@ final class LocalActivityExecutor
             'heartbeat_deadline_at' => null,
         ])->save();
 
-        if ($attempt instanceof ActivityAttempt) {
+        if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
             self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
         }
 
@@ -1028,7 +1077,7 @@ final class LocalActivityExecutor
             ];
         }
 
-        if ($attempt instanceof ActivityAttempt) {
+        if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
             self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
         }
 
@@ -1121,6 +1170,7 @@ final class LocalActivityExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         ActivityExecution $execution,
+        array $historyMetadata = [],
     ): array {
         $attempt = self::currentAttempt($execution);
         $attemptNumber = max(1, (int) ($attempt?->attempt_number ?? $execution->attempt_count));
@@ -1130,13 +1180,18 @@ final class LocalActivityExecutor
         }
 
         $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
-        $throwable = new RuntimeException(
-            'Local activity attempt was interrupted before a terminal event and will be replayed from durable history.'
-        );
+        $throwable = new RuntimeException('Local activity attempt was interrupted before a terminal event.');
 
         if ($attemptNumber >= $maxAttempts) {
             return [
-                'event' => $this->recordTerminalFailure($run, $task, $execution, $attempt, $throwable),
+                'event' => $this->recordTerminalFailure(
+                    $run,
+                    $task,
+                    $execution,
+                    $attempt,
+                    $throwable,
+                    $historyMetadata
+                ),
                 'next_task' => null,
             ];
         }
@@ -1150,6 +1205,7 @@ final class LocalActivityExecutor
                 $attempt,
                 $throwable,
                 LocalActivityRuntime::RETRY_REASON_COLD_REPLAY,
+                historyMetadata: $historyMetadata,
             ),
         ];
     }

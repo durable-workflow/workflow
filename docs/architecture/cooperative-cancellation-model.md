@@ -240,11 +240,25 @@ history. An expired total budget records a terminal timeout without admitting
 another callback. A renewed workflow claim cannot readmit an expired local
 attempt.
 
-Cold recovery still needs integration. Server admission and SDK physical local
-supervisors must connect these primitives, dispatch created work and qualify
-response loss, cancellation and worker replacement together. A portable SDK
-must not reconstruct already prepared local rows from a posthoc completion
-report.
+`recover()` records an interrupted prepared attempt under a valid replacement
+claim. It requires the original Started authority, an expired attempt lease
+and loss of the original workflow claim. It records that attempt as Expired and
+uses the existing retry or terminal recorder. Timeout and retry exhaustion
+remain authoritative. Recovery never admits a callback or grants a new total
+deadline. A scheduled retry releases the replacement claim for polling, while
+a terminal outcome retains it for replay. Response loss returns the original
+recovery receipt after takeover or later cancellation.
+
+The recovery receipt and timeline retain the original and replacement claims
+and explicitly report callback stop as unknown. Lease expiry fences publication
+and does not establish physical stop. An accepted cancellation fences the
+prepared attempt immediately without waiting for expiry, changing the
+replacement claim or fabricating an acknowledgement.
+
+Server admission and SDK physical local supervisors must connect these
+primitives, dispatch created work and qualify response loss, cancellation and
+worker replacement together. A portable SDK must not reconstruct already
+prepared local rows from a posthoc completion report.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.

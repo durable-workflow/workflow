@@ -204,6 +204,206 @@ final class PortableLocalActivityPreparation
         }, 5);
     }
 
+    /**
+     * @internal Recover an interrupted prepared call. This never admits an
+     * application callback. A scheduled retry releases this claim, and the SDK
+     * returns to polling. A terminal outcome is replayed on the retained claim.
+     * @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    public static function recover(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        $refused = static fn (string $reason): array => [
+            'recovered' => false,
+            'duplicate' => false,
+            'reason' => $reason,
+            'claim_released' => false,
+            'created_task_ids' => [],
+        ];
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, self::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return $refused('local_activity_recovery_requires_protocol_1_20');
+        }
+        if ($workflowTaskAttempt < 1 || $sequence < 1 || $leaseOwner === '') {
+            return $refused('invalid_local_activity_recovery');
+        }
+        try {
+            $fingerprint = hash('sha256', json_encode(self::normalizeDescriptor($descriptor), JSON_THROW_ON_ERROR));
+        } catch (ValidationException|JsonException) {
+            return $refused('invalid_local_activity_recovery');
+        }
+        /** @var WorkflowTask|null $snapshotTask */
+        $snapshotTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        /** @var ActivityExecution|null $snapshotExecution */
+        $snapshotExecution = $snapshotTask === null ? null : ActivityExecution::query()
+            ->where('workflow_run_id', $snapshotTask->workflow_run_id)
+            ->where('sequence', $sequence)
+            ->first();
+        if ($snapshotTask === null || $snapshotExecution === null
+            || ! is_string($snapshotExecution->current_attempt_id)) {
+            return $refused('local_activity_preparation_not_found');
+        }
+        return DB::transaction(static function () use (
+            $snapshotTask,
+            $snapshotExecution,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $fingerprint,
+            $refused,
+        ): array {
+            $rows = ActivityRowLockOrder::lockForAttempt($snapshotExecution->current_attempt_id);
+            $execution = $rows['execution'];
+            $attempt = $rows['attempt'];
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($snapshotTask->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+            if (! $execution instanceof ActivityExecution || ! $attempt instanceof ActivityAttempt
+                || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
+                || $run === null || $execution->workflow_run_id !== $run->id
+                || $task === null || $task->workflow_run_id !== $run->id) {
+                return $refused('local_activity_preparation_not_found');
+            }
+            $receipt = $run->historyEvents()
+                ->whereIn('event_type', [HistoryEventType::ActivityRetryScheduled, HistoryEventType::ActivityFailed,
+                    HistoryEventType::ActivityTimedOut])
+                ->where('payload->sequence', $sequence)
+                ->where('payload->local_recovery->workflow_task_id', $taskId)
+                ->where('payload->local_recovery->workflow_task_attempt', $workflowTaskAttempt)
+                ->where('payload->local_recovery->lease_owner', $leaseOwner)
+                ->orderBy('sequence')
+                ->first();
+            if ($receipt instanceof WorkflowHistoryEvent) {
+                if (($receipt->payload['local_recovery']['version'] ?? null) !== 1
+                    || ($receipt->payload['local_recovery']['descriptor_fingerprint'] ?? null) !== $fingerprint
+                    || ($receipt->payload['activity_execution_id'] ?? null) !== $execution->id
+                    || $receipt->workflow_task_id !== $taskId
+                    || ($receipt->payload['task']['id'] ?? null) !== $taskId
+                    || ($receipt->payload['task']['lease_owner'] ?? null) !== $leaseOwner
+                    || ($receipt->payload['task']['attempt_count'] ?? null) !== $workflowTaskAttempt
+                    || ($receipt->payload['local_recovery']['callback_stop_state'] ?? null) !== 'unknown') {
+                    return $refused('local_activity_recovery_mismatch');
+                }
+                return self::recoveryReceipt($receipt, true);
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return $refused('workflow_claim_mismatch');
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return $refused('workflow_claim_expired');
+            }
+            $started = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)
+                ->where('payload->activity_attempt_id', $attempt->id)
+                ->first();
+            $originalTaskAttempt = $started?->payload['local_preparation']['workflow_task_attempt'] ?? null;
+            if (! is_int($originalTaskAttempt)
+                || self::originalStart($run, $execution, $attempt, $attempt->lease_owner, $originalTaskAttempt) === null
+                || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint
+                || $execution->current_attempt_id !== $attempt->id || $execution->attempt_count !== $attempt->attempt_number) {
+                return $refused('local_activity_preparation_mismatch');
+            }
+            // Accepted cancellation may fence immediately, without waiting for
+            // lease expiry. The replacement claim and root budget stay intact.
+            if ($run->cancellation_request_command_id !== null) {
+                $cancelled = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancelled)
+                    ->where('payload->activity_attempt_id', $attempt->id)
+                    ->where('payload->workflow_command_id', $run->cancellation_request_command_id)
+                    ->first();
+                if (! $cancelled instanceof WorkflowHistoryEvent) {
+                    if ($execution->status !== ActivityStatus::Running || $attempt->status !== ActivityAttemptStatus::Running) {
+                        return $refused('stale_activity_attempt');
+                    }
+                    $cancelled = ActivityCancellation::record(
+                        $run,
+                        $execution,
+                        command: $run->cancellation_request_command_id
+                    );
+                }
+                return [
+                    ...$refused('cancellation_requested'),
+                    'fenced' => true,
+                    'cancellation_history_event_id' => $cancelled?->id,
+                ];
+            }
+            if ($run->status->isTerminal()) {
+                return $refused('run_closed');
+            }
+            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                return $refused('run_deadline_expired');
+            }
+            if ($execution->status !== ActivityStatus::Running || $attempt->status !== ActivityAttemptStatus::Running) {
+                return $refused('local_activity_previous_attempt_unresolved');
+            }
+            if ($attempt->lease_expires_at === null || now()->lt($attempt->lease_expires_at)) {
+                return $refused('local_activity_previous_attempt_live');
+            }
+            /** @var WorkflowTask|null $originalTask */
+            $originalTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($attempt->workflow_task_id);
+            if ($originalTask === null || $originalTask->workflow_run_id !== $run->id
+                || $originalTask->task_type !== TaskType::Workflow) {
+                return $refused('original_workflow_claim_not_found');
+            }
+            if ($originalTask->id === $task->id) {
+                if ($task->attempt_count <= $originalTaskAttempt) {
+                    return $refused('local_activity_original_claim_not_reclaimed');
+                }
+            } elseif ($originalTask->status === TaskStatus::Leased && $originalTask->lease_expires_at !== null
+                && now()
+                    ->lt($originalTask->lease_expires_at)) {
+                return $refused('local_activity_original_claim_live');
+            }
+            $recovery = [
+                'version' => 1,
+                'descriptor_fingerprint' => $fingerprint,
+                'workflow_task_id' => $task->id,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'lease_owner' => $leaseOwner,
+                'original_workflow_task_id' => $originalTask->id,
+                'original_workflow_task_attempt' => $originalTaskAttempt,
+                'original_lease_owner' => $attempt->lease_owner,
+                'original_lease_expires_at' => $attempt->lease_expires_at->toISOString(),
+                'callback_stop_state' => 'unknown',
+            ];
+            if ($originalTask->id !== $task->id && in_array(
+                $originalTask->status,
+                [TaskStatus::Ready, TaskStatus::Leased],
+                true
+            )) {
+                $originalTask->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+            }
+            $outcome = app(LocalActivityExecutor::class)->recoverPortableAttempt(
+                $run,
+                $task,
+                $execution,
+                $attempt,
+                $recovery
+            );
+
+            return self::recoveryReceipt($outcome['event'], false);
+        }, 5);
+    }
+
     /** @param array<string, mixed> $descriptor
      * @return array<string, mixed>
      */
@@ -307,7 +507,8 @@ final class PortableLocalActivityPreparation
             ->first();
         $originalTaskAttempt = $started?->payload['local_preparation']['workflow_task_attempt'] ?? null;
         if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
-            || $previous->status !== ActivityAttemptStatus::Failed || $previous->closed_at === null
+            || ! in_array($previous->status, [ActivityAttemptStatus::Failed, ActivityAttemptStatus::Expired], true)
+            || $previous->closed_at === null
             || $execution->attempt_count !== $previous->attempt_number
             || ! is_int($originalTaskAttempt)
             || self::originalStart($run, $execution, $previous, $previous->lease_owner, $originalTaskAttempt) === null
@@ -319,17 +520,13 @@ final class PortableLocalActivityPreparation
             ->where('payload->activity_attempt_id', $previous->id)
             ->first();
         if (! $retry instanceof WorkflowHistoryEvent || $retry->sequence <= $started->sequence
-            || $retry->workflow_task_id !== $previous->workflow_task_id
             || ($retry->payload['activity_execution_id'] ?? null) !== $execution->id
             || ($retry->payload['retry_task_id'] ?? null) !== $task->id
-            || ($retry->payload['retry_of_task_id'] ?? null) !== $previous->workflow_task_id
+            || ($retry->payload['retry_of_task_id'] ?? null) !== $retry->workflow_task_id
             || ($retry->payload['retry_after_attempt_id'] ?? null) !== $previous->id
             || ($retry->payload['retry_after_attempt'] ?? null) !== $previous->attempt_number
             || ($retry->payload['retry_policy'] ?? null) !== $execution->retry_policy
-            || ($retry->payload['local_outcome']['version'] ?? null) !== 1
-            || ($retry->payload['local_outcome']['workflow_task_attempt'] ?? null) !== $originalTaskAttempt
-            || ($retry->payload['task']['lease_owner'] ?? null) !== $previous->lease_owner
-            || ($retry->payload['task']['attempt_count'] ?? null) !== $originalTaskAttempt
+            || ! self::retryAuthorityMatches($retry, $previous, $originalTaskAttempt, $fingerprint)
             || ! is_string($retry->payload['retry_available_at'] ?? null)
             || $execution->attempt_count >= ActivityRetryPolicy::maxAttemptsFromSnapshot($execution)) {
             return self::response('local_activity_retry_preparation_mismatch');
@@ -360,6 +557,39 @@ final class PortableLocalActivityPreparation
         ]);
 
         return self::response(null, $execution, $attempt, task: $task);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function retryAuthorityMatches(
+        WorkflowHistoryEvent $retry,
+        ActivityAttempt $previous,
+        int $originalTaskAttempt,
+        string $fingerprint,
+    ): bool {
+        $payload = $retry->payload;
+        if (($payload['local_outcome']['version'] ?? null) === 1) {
+            return $previous->status === ActivityAttemptStatus::Failed
+                && $retry->workflow_task_id === $previous->workflow_task_id
+                && ($payload['local_outcome']['workflow_task_attempt'] ?? null) === $originalTaskAttempt
+                && ($payload['task']['lease_owner'] ?? null) === $previous->lease_owner
+                && ($payload['task']['attempt_count'] ?? null) === $originalTaskAttempt;
+        }
+        $recovery = $payload['local_recovery'] ?? [];
+        return $previous->status === ActivityAttemptStatus::Expired
+            && ($recovery['version'] ?? null) === 1
+            && ($recovery['descriptor_fingerprint'] ?? null) === $fingerprint
+            && ($recovery['original_workflow_task_id'] ?? null) === $previous->workflow_task_id
+            && ($recovery['original_workflow_task_attempt'] ?? null) === $originalTaskAttempt
+            && ($recovery['original_lease_owner'] ?? null) === $previous->lease_owner
+            && ($recovery['callback_stop_state'] ?? null) === 'unknown'
+            && ($recovery['workflow_task_id'] ?? null) === $retry->workflow_task_id
+            && ($payload['task']['id'] ?? null) === $retry->workflow_task_id
+            && is_int($recovery['workflow_task_attempt'] ?? null)
+            && ($payload['task']['attempt_count'] ?? null) === $recovery['workflow_task_attempt']
+            && is_string($recovery['lease_owner'] ?? null)
+            && ($payload['task']['lease_owner'] ?? null) === $recovery['lease_owner'];
     }
 
     /**
@@ -398,6 +628,29 @@ final class PortableLocalActivityPreparation
         }
 
         return self::response(null, $execution, $attempt, true, $task);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function recoveryReceipt(WorkflowHistoryEvent $event, bool $duplicate): array
+    {
+        $retryTaskId = $event->payload['retry_task_id'] ?? null;
+
+        return [
+            'recovered' => true,
+            'duplicate' => $duplicate,
+            'reason' => null,
+            'event_id' => $event->id,
+            'event_type' => $event->event_type->value,
+            'activity_execution_id' => $event->payload['activity_execution_id'],
+            'activity_attempt_id' => $event->payload['activity_attempt_id'],
+            'workflow_task_id' => $event->workflow_task_id,
+            'recorded_at' => $event->recorded_at->toISOString(),
+            'callback_stop_state' => 'unknown',
+            'claim_released' => $event->event_type === HistoryEventType::ActivityRetryScheduled,
+            'created_task_ids' => is_string($retryTaskId) ? [$retryTaskId] : [],
+        ];
     }
 
     /**
