@@ -339,7 +339,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertNull($execution->current_attempt_id);
         $scheduled = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
-        $this->assertSame($commands[1]['parallel_group_path'], $scheduled->payload['parallel_group_path']);
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $scheduled->payload['parallel_group_path']);
         $this->assertSame(1, $scheduled->payload['local_group_admission']['version']);
         $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityStarted)->count());
         $prepared = $this->prepareGroupMember($task, $commands[1], 2);
@@ -347,7 +347,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame($execution->id, $prepared['activity_execution_id']);
         $started = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityStarted)->sole();
-        $this->assertSame($commands[1]['parallel_group_path'], $started->payload['parallel_group_path']);
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $started->payload['parallel_group_path']);
         $this->assertSame($task->id, $started->workflow_task_id);
     }
 
@@ -467,7 +467,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertFalse($reply['claim_released']);
         $event = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityCompleted)->sole();
-        $this->assertSame($commands[1]['parallel_group_path'], $event->payload['parallel_group_path']);
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $event->payload['parallel_group_path']);
         $this->assertSame($task->id, $event->payload['task']['id']);
         $this->assertSame($prepared['activity_attempt_id'], $event->payload['activity_attempt_id']);
     }
@@ -613,7 +613,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             $started = $run->historyEvents()
                 ->where('event_type', HistoryEventType::ActivityStarted)
                 ->where('payload->activity_attempt_id', $prepared['activity_attempt_id'])->sole();
-            $this->assertSame($commands[$index]['parallel_group_path'], $started->payload['parallel_group_path']);
+            $this->assertGroupPath($commands[$index]['parallel_group_path'], $started->payload['parallel_group_path']);
         }
     }
 
@@ -653,6 +653,22 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->count());
         $this->assertSame(0, ActivityExecution::query()->count());
         $this->assertSame(0, $run->historyEvents()->count());
+    }
+
+    /** @param list<array<string, mixed>> $expected
+     * @param list<array<string, mixed>> $actual
+     */
+    private function assertGroupPath(array $expected, array $actual): void
+    {
+        foreach ($expected as &$entry) {
+            ksort($entry);
+        }
+        unset($entry);
+        foreach ($actual as &$entry) {
+            ksort($entry);
+        }
+        unset($entry);
+        $this->assertSame($expected, $actual);
     }
 
     /**
