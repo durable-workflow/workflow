@@ -908,7 +908,11 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         Carbon::setTestNow(now()->addSecond());
         try {
             foreach ($prepared as $index => $admission) {
-                $progress = ['details' => ['phase' => $index === 0 ? 'first' : 'second']];
+                $progress = [
+                    'details' => [
+                        'phase' => $index === 0 ? 'first' : 'second',
+                    ],
+                ];
                 $reply = app(PreparedLocalActivityTaskBridge::class)->heartbeatLocalActivity(
                     $admission['activity_attempt_id'],
                     'portable-worker',
@@ -919,18 +923,29 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
                 $this->assertTrue($reply['active'], $reply['reason'] ?? '');
                 $this->assertTrue($reply['heartbeat_recorded']);
                 $this->assertFalse($reply['renewed']);
-                foreach (['lease_expires_at', 'start_to_close_deadline_at', 'schedule_to_close_deadline_at'] as $field) {
+                foreach ([
+                    'lease_expires_at',
+                    'start_to_close_deadline_at',
+                    'schedule_to_close_deadline_at',
+                ] as $field) {
                     $this->assertSame($admission[$field], $reply[$field]);
                 }
                 $this->assertNotSame($admission['heartbeat_deadline_at'], $reply['heartbeat_deadline_at']);
-                $event = $run->historyEvents()->findOrFail($reply['heartbeat_history_event_id']);
+                $event = $run->historyEvents()
+                    ->findOrFail($reply['heartbeat_history_event_id']);
                 $this->assertSame(HistoryEventType::ActivityHeartbeatRecorded, $event->event_type);
                 $this->assertSame($admission['activity_attempt_id'], $event->payload['activity_attempt_id']);
                 $this->assertSame($index + 1, $event->payload['sequence']);
                 $this->assertSame($progress, $event->payload['progress']);
-                $this->assertGroupPath($commands[$index]['parallel_group_path'], $event->payload['parallel_group_path']);
+                $this->assertGroupPath(
+                    $commands[$index]['parallel_group_path'],
+                    $event->payload['parallel_group_path']
+                );
             }
-            $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+            $this->assertSame(
+                2,
+                $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+            );
         } finally {
             Carbon::setTestNow();
         }
