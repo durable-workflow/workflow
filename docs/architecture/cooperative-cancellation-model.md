@@ -94,6 +94,42 @@ effects. Termination remains a distinct run outcome. Losing a worker lease
 describes that attempt's authority and does not establish that its process
 stopped or that the replacement cleanup failed.
 
+### Cascade inspection
+
+The Source `CancellationCascadeView::forRun()` candidate resolves the exact
+selected run and its original root. It provides one request budget, related
+run nodes and child or continuation edges. It scopes each run and instance
+to the selected namespace before loading history. An unavailable relation has
+no target ID or target metadata in the response. Selecting a historical run
+does not follow its instance's current-run pointer.
+
+Each node reports the canonical terminal event separately from projected run
+status. It retains local request identity, the original root budget, authored
+delivery range, cleanup outcome, child propagation, activity fences, matching
+worker stop reports and cleanup attempt recovery. An independent child request
+keeps its own identity and budget, with the parent's canonical propagation
+conflict visible. A parent-close origin preserves the parent's ordinary
+terminal outcome while explaining its children's shared cancellation budget.
+
+The lifecycle describes requested, delivered, cleaning up, cancelled,
+deadline expired or a distinct completed, failed, timed out or terminated run.
+Cleaning up requires a canonical activity or timer command after the recorded
+cancellation boundary. Lease expiry alone does not establish this phase.
+Callback reports are labelled `reported_stopped`. A fence without a matching
+receipt has unknown callback stop state. Recovery retains that unknown state
+without inventing a process-kill cause.
+
+The response uses `durable-workflow.cancellation-cascade/v1`. Its initial limits
+are 20 runs, 100 relations, 128 recent relevant history events per run and 512
+recent events overall. Original requests are also resolved separately, with
+at most two request rows per lookup, so the original budget can survive an
+exceeded recent-history window. Request text is capped at 8192 bytes per field.
+Missing, conflicting, inaccessible or truncated evidence sets
+`inspection_complete: false` and supplies a named finding with an explanation.
+`inspection_complete` describes the evidence inventory, not successful cleanup
+or agreement between independently cancelling roots. Server, CLI, Waterline
+parity and published qualification remain separate gates for this candidate.
+
 The candidate Native request primitive
 `attemptRequestCancellationFromParent()` reads its parent's accepted context
 from storage and requires a recorded direct child link to the selected current
