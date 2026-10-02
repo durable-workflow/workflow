@@ -447,13 +447,21 @@ final class PortableLocalActivityPreparation
     {
         $allowed = ['type', 'activity_type', 'arguments', 'payload_codec', 'retry_policy',
             'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode',
-            'cancellation_cleanup', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
+            'cancellation_cleanup', 'cancellation_policy', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
             'parallel_group_base_sequence', 'parallel_group_size', 'parallel_group_index', 'parallel_group_path'];
         if (($descriptor['type'] ?? null) !== 'record_local_activity'
             || array_diff(array_keys($descriptor), $allowed) !== []
             || (isset($descriptor['execution_mode']) && $descriptor['execution_mode'] !== LocalActivityRuntime::EXECUTION_MODE)) {
             throw ValidationException::withMessages([
                 'local_activity' => ['Expected a local activity preparation descriptor.'],
+            ]);
+        }
+        if (array_key_exists('cancellation_policy', $descriptor)
+            && ! in_array($descriptor['cancellation_policy'], ['try_cancel', 'wait_cancellation_completed'], true)) {
+            throw ValidationException::withMessages([
+                'local_activity.cancellation_policy' => [
+                    'Prepared local activities support try_cancel and wait_cancellation_completed. Abandon requires an independent callback lifetime.',
+                ],
             ]);
         }
         // Common activity input/retry/timeout validation does not need a
@@ -591,6 +599,9 @@ final class PortableLocalActivityPreparation
                 'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
                 'queue_bypassed' => true,
                 'routing' => 'workflow_worker_process',
+                ...(isset($normalized['cancellation_policy']) ? [
+                    'cancellation_policy' => $normalized['cancellation_policy'],
+                ] : []),
                 ...($cleanup === null ? [] : [
                     'cancellation_cleanup' => $cleanup,
                 ]),

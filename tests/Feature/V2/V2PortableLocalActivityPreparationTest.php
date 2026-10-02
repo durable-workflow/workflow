@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -114,6 +115,83 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             $this->assertSame($taskBefore, $task->refresh()->getAttributes());
         } finally {
             Carbon::setTestNow();
+        }
+    }
+
+    #[DataProvider('preparedLocalCancellationPolicies')]
+    public function testPreparedLocalPolicyIsPersistedBeforeInvocationAndRetainedOnResponseLoss(?string $policy): void
+    {
+        [$run, $task] = $this->newClaim();
+        $descriptor = $policy === null ? [] : [
+            'cancellation_policy' => $policy,
+        ];
+        $first = $this->prepare($task, $descriptor);
+        $this->assertTrue($first['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($first['activity_execution_id']);
+        $this->assertSame($policy, $execution->activity_options['cancellation_policy'] ?? null);
+        foreach ($run->historyEvents()->orderBy('sequence')->get() as $event) {
+            $this->assertSame($policy, $event->payload['activity']['cancellation_policy'] ?? null);
+        }
+        $duplicate = $this->prepare($task, $descriptor);
+        $this->assertTrue($duplicate['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['activity_attempt_id'], $duplicate['activity_attempt_id']);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+    }
+
+    public static function preparedLocalCancellationPolicies(): iterable
+    {
+        yield 'historical default' => [null];
+        yield 'try cancellation' => ['try_cancel'];
+        yield 'wait for stop receipt' => ['wait_cancellation_completed'];
+    }
+
+    public function testAChangedLocalPolicyCannotRelabelAnAdmittedAttempt(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $this->assertTrue($this->prepare($task, [
+            'cancellation_policy' => 'try_cancel',
+        ])['prepared']);
+        $before = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $changed = $this->prepare($task, [
+            'cancellation_policy' => 'wait_cancellation_completed',
+        ]);
+        $this->assertFalse($changed['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $changed['reason']);
+        $this->assertSame($before, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+    }
+
+    #[DataProvider('unsupportedLocalCancellationPolicies')]
+    public function testUnsupportedLocalPolicyIsRefusedBeforeCallbackAdmission(mixed $policy): void
+    {
+        [$run, $task] = $this->newClaim();
+        $before = $task->getAttributes();
+        $change = [
+            'cancellation_policy' => $policy,
+            'schedule_to_close_timeout' => 60,
+        ];
+        try {
+            PortableLocalActivityPreparation::normalizeDescriptor([...$this->descriptor(), ...$change]);
+            $this->fail('An unsupported local policy must refuse before admission.');
+        } catch (ValidationException $error) {
+            $this->assertArrayHasKey('local_activity.cancellation_policy', $error->errors());
+        }
+        $reply = $this->prepare($task, $change);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('invalid_local_activity_preparation', $reply['reason']);
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame($before, $task->refresh()->getAttributes());
+    }
+
+    public static function unsupportedLocalCancellationPolicies(): iterable
+    {
+        foreach (['abandon', 'unknown', null, false, 1, []] as $policy) {
+            yield [$policy];
         }
     }
 

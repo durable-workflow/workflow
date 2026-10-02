@@ -422,9 +422,10 @@ its hosting claim while the callback stops. The completed claim retains the
 original requested delivery boundary, root and deadline. All required receipts
 must be present before one fresh workflow claim resumes that boundary. Receipts
 arriving after the original deadline remain late evidence and do not create a
-fresh cleanup claim or budget. The public SDK activity-policy admission API and
-the complete detached `Abandon` lifetime are still under development. Internal
-kernel tests do not qualify those consumer APIs or physical SDK supervision.
+fresh cleanup claim or budget. Remote SDK policy admission and detached
+`Abandon` have separate connected Source qualification. Prepared-local policy
+admission and its consumers remain separate gates. Internal kernel tests do
+not qualify consumer APIs or physical SDK supervision.
 
 An `Abandon` activity must remain independently tracked and capable of finishing
 after the awaiting scope is cancelled. Implement its retention and terminal-run
@@ -453,10 +454,34 @@ return an explicit unsupported-backend diagnostic until a compatible backend
 is restored. Legacy terminal cancellation and termination retain their authority
 revocation contracts.
 
-This kernel does not expose SDK policy admission or qualify physical SDK callback
-supervision. Local `Abandon` remains refused because its callback needs an
-independent lifetime after the hosting workflow claim closes. Complete that
-lifetime and scope behavior before exposing the full operation-policy API.
+### Prepared-local policy admission
+
+The Source preparation descriptor accepts explicit `try_cancel` and
+`wait_cancellation_completed`. It persists the selected policy before callback
+admission and retains it in canonical Scheduled/Started snapshots and the
+descriptor fingerprint. A response-loss retry cannot change that policy.
+Omission preserves the historical TryCancel behavior.
+
+TryCancel fences publication and releases the durable await without claiming
+physical callback settlement. WaitCancellationCompleted releases the hosting
+claim while the matching original-owner stop receipt is missing. That receipt
+resumes one successor workflow claim at the same authored delivery boundary,
+retaining the original root identity and deadline. Expired authority or a
+wrong-owner receipt cannot substitute for callback-stop evidence.
+
+`DefaultWorkflowTaskBridge::supportedLocalActivityCancellationPolicies()`
+reports the policies supported by the actual installed prepared-local bridge.
+A custom implementation of the older optional role does not acquire this
+policy admission capability from an alias. Server discovery/admission and
+PHP/Python/Rust authoring, replay and physical supervision require separate
+qualification before the candidate can be published.
+
+Local `Abandon` is refused before callback admission, including with a finite
+timeout. The callback currently depends on its hosting workflow claim. It
+cannot acquire an independent lifetime by changing the policy field. Use a
+remote Activity for independently tracked work. No local-to-remote conversion
+is implicit. A full local Abandon lifetime and independently cancellable
+subtree scopes remain separate model work.
 
 ## Lifecycle and diagnostics
 

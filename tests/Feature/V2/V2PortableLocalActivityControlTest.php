@@ -12,6 +12,7 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -213,6 +214,124 @@ final class V2PortableLocalActivityControlTest extends TestCase
         $this->assertSame($request->rootRequestId, $receipt->payload['root_request_id']);
         $this->assertSame($request->deadline()->toISOString(), $receipt->payload['cleanup_deadline_at']);
         $this->assertFalse($receipt->payload['received_after_deadline']);
+    }
+
+    #[DataProvider('localCancellationPolicies')]
+    public function testLocalPolicyDistinguishesImmediateDeliveryFromJoinedCallbackWaiting(?string $policy): void
+    {
+        [$run, $task, $attempt] = $this->prepared($policy === null ? [] : [
+            'cancellation_policy' => $policy,
+        ]);
+        $context = WorkflowStub::loadRun($run->id)->requestCancellation('stop local work', 30)->cancellationContext();
+        $workflowBridge = app(CooperativeWorkflowTaskBridge::class);
+        $reply = $workflowBridge->deliverCancellation($task->id, $context->requestId, 1, 'local_activity');
+        $this->assertSame(ActivityAttemptStatus::Cancelled, $attempt->refresh()->status);
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+        );
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertFalse($reply['delivered']);
+            $this->assertTrue($reply['claim_released']);
+            $this->assertSame('cancellation_waiting_for_activity', $reply['reason']);
+            $this->assertSame(TaskStatus::Completed, $task->refresh()->status);
+            $this->assertSame(
+                0,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+            );
+            $wrong = $this->bridge()
+                ->acknowledgeLocalActivityCancellation($attempt->id, 'another-worker', $context->requestId, 7, '1.20');
+            $this->assertFalse($wrong['acknowledged']);
+            $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
+            Carbon::setTestNow(now()->addSecond());
+            $stopped = $this->bridge()
+                ->acknowledgeLocalActivityCancellation($attempt->id, 'original-worker', $context->requestId, 7, '1.20');
+            $this->assertTrue($stopped['acknowledged']);
+            $receipt = WorkflowHistoryEvent::query()->findOrFail($stopped['history_event_id']);
+            $this->assertSame($context->rootRequestId, $receipt->payload['root_request_id']);
+            $this->assertSame($context->deadline()->toISOString(), $receipt->payload['cleanup_deadline_at']);
+            $successor = $run->tasks()
+                ->where('status', TaskStatus::Ready)->sole();
+            $successor->forceFill([
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'replacement-worker',
+                'attempt_count' => 1,
+                'lease_expires_at' => now()
+                    ->addSeconds(5),
+            ])->save();
+            $wrongBoundary = $workflowBridge->deliverCancellation(
+                $successor->id,
+                $context->requestId,
+                2,
+                'local_activity'
+            );
+            $this->assertFalse($wrongBoundary['delivered']);
+            $reply = $workflowBridge->deliverCancellation($successor->id, $context->requestId, 1, 'local_activity');
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+            );
+        }
+        $this->assertTrue($reply['delivered']);
+        $this->assertSame(1, $reply['sequence']);
+        $this->assertSame('local_activity', $reply['call_kind']);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+        );
+        $this->assertSame(
+            $context->toArray(),
+            WorkflowStub::loadRun($run->id)->requestCancellation('duplicate', 300)->cancellationContext()->toArray()
+        );
+        $this->assertSame(
+            $context->deadline()
+                ->toISOString(),
+            $run->refresh()
+                ->cancellation_deadline_at->toISOString()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+        );
+    }
+
+    public static function localCancellationPolicies(): iterable
+    {
+        yield 'historical default' => [null];
+        yield 'try cancellation' => ['try_cancel'];
+        yield 'wait for stop receipt' => ['wait_cancellation_completed'];
+    }
+
+    public function testLocalPolicyLateStopReceiptCannotResumeCleanupAfterTheOriginalDeadline(): void
+    {
+        [$run, $task, $attempt] = $this->prepared([
+            'cancellation_policy' => 'wait_cancellation_completed',
+        ]);
+        $context = WorkflowStub::loadRun($run->id)->requestCancellation(
+            'bounded local wait',
+            30
+        )->cancellationContext();
+        $delivery = app(CooperativeWorkflowTaskBridge::class)
+            ->deliverCancellation($task->id, $context->requestId, 1, 'local_activity');
+        $this->assertFalse($delivery['delivered']);
+        $this->assertTrue($delivery['claim_released']);
+        Carbon::setTestNow($context->deadline());
+        $stopped = $this->bridge()
+            ->acknowledgeLocalActivityCancellation($attempt->id, 'original-worker', $context->requestId, 7, '1.20');
+        $this->assertTrue($stopped['acknowledged']);
+        $receipt = WorkflowHistoryEvent::query()->findOrFail($stopped['history_event_id']);
+        $this->assertTrue($receipt->payload['received_after_deadline']);
+        $this->assertSame($context->deadline()->toISOString(), $receipt->payload['cleanup_deadline_at']);
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
+        $this->assertSame(
+            0,
+            $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+        );
     }
 
     public function testADescendantCallbackStartedAfterTheRootRequestStillStopsOnLocalPropagation(): void

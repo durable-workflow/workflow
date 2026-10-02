@@ -699,6 +699,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         return true;
     }
 
+    /**
+     * @internal Policy admission supported by this installed prepared-local bridge.
+     * @return list<string>
+     */
+    public function supportedLocalActivityCancellationPolicies(): array
+    {
+        return [CancellationPolicy::TryCancel->value, CancellationPolicy::WaitCancellationCompleted->value];
+    }
+
     public function deliverCancellation(
         string $taskId,
         string $requestId,
