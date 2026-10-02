@@ -330,6 +330,11 @@ jobs:
           vendor/bin/phpunit --testdox \
           --log-junit build/test-results/pr-unit-contracts.xml
 
+    - name: Run cancellation timeline unit cases
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php
+        --fail-on-warning --log-junit build/test-results/pr-cancellation-timeline.xml
+
   pr-feature-mysql:
     needs: preflight
     if: ${{ github.event_name == 'pull_request' }}
