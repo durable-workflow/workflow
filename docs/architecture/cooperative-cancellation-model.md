@@ -255,6 +255,13 @@ and does not establish physical stop. An accepted cancellation fences the
 prepared attempt immediately without waiting for expiry, changing the
 replacement claim or fabricating an acknowledgement.
 
+The optional `PreparedLocalActivityTaskBridge` exposes checkpoint, preparation,
+outcome, recovery and stop-receipt persistence through the existing workflow
+bridge binding. Consumers must check the actual bound instance. An existing
+custom workflow or cooperative bridge does not acquire this role from an alias.
+The published protocol default still refuses these candidate operations. This
+role does not qualify physical SDK supervision or its lease-control loop.
+
 Server admission and SDK physical local supervisors must connect these
 primitives, dispatch created work and qualify response loss, cancellation and
 worker replacement together. A portable SDK must not reconstruct already

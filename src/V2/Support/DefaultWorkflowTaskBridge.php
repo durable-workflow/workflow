@@ -18,6 +18,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -52,7 +53,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -917,6 +918,88 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'attempt_count' => $attemptCount,
             'reason' => null,
         ];
+    }
+
+    /**
+     * @internal Candidate prepared local callback admission.
+     * @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    public function prepareLocalActivity(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $workerAttemptId,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityPreparation::prepare(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $workerAttemptId,
+            $descriptor,
+            $protocolVersion
+        );
+    }
+
+    public function recordLocalActivityOutcome(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $report,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return app(LocalActivityExecutor::class)->recordPortableOutcome(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $report,
+            $protocolVersion
+        );
+    }
+
+    public function recoverLocalActivity(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityPreparation::recover(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $descriptor,
+            $protocolVersion
+        );
+    }
+
+    public function acknowledgeLocalActivityCancellation(
+        string $attemptId,
+        string $leaseOwner,
+        string $requestId,
+        int $workflowTaskAttempt,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return [
+                'acknowledged' => false,
+                'duplicate' => false,
+                'reason' => 'local_activity_stop_receipt_requires_protocol_1_20',
+            ];
+        }
+        return ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attemptId,
+            $leaseOwner,
+            $requestId,
+            $workflowTaskAttempt
+        );
     }
 
     /**

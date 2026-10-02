@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -21,7 +24,6 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalActivityCall;
 use Workflow\V2\Support\LocalActivityExecutor;
@@ -103,13 +105,8 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertSame(1, $second['workflow_task_attempt']);
         $this->assertNotSame($first['activity_attempt_id'], $second['activity_attempt_id']);
         $this->assertSame($first['schedule_to_close_deadline_at'], $second['schedule_to_close_deadline_at']);
-        $result = app(LocalActivityExecutor::class)->recordPortableOutcome(
-            $second['activity_attempt_id'],
-            'next-worker',
-            1,
-            $this->success(),
-            '1.20'
-        );
+        $result = $this->bridge()
+            ->recordLocalActivityOutcome($second['activity_attempt_id'], 'next-worker', 1, $this->success(), '1.20');
         $this->assertTrue($result['recorded']);
         $replayed = app(LocalActivityExecutor::class)->execute(
             $run->fresh(),
@@ -331,12 +328,14 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
             $run->historyEvents()
                 ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
         );
-        $acknowledgement = ActivityCancellationAcknowledgement::recordLocalStopped(
-            $first['activity_attempt_id'],
-            'original-worker',
-            $request->commandId(),
-            7
-        );
+        $acknowledgement = $this->bridge()
+            ->acknowledgeLocalActivityCancellation(
+                $first['activity_attempt_id'],
+                'original-worker',
+                $request->commandId(),
+                7,
+                '1.20'
+            );
         $this->assertTrue($acknowledgement['acknowledged']);
         $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
         $this->assertSame($before, $task->refresh()->getAttributes());
@@ -371,12 +370,47 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertSame(2, $run->historyEvents()->count());
     }
 
+    public function testPreparedLocalRoleUsesTheExistingWorkflowBindingWithoutExpandingCustomBridges(): void
+    {
+        $this->assertSame(app(WorkflowTaskBridge::class), $this->bridge());
+        foreach ([WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class] as $contract) {
+            $custom = \Mockery::mock($contract);
+            $this->app->instance(WorkflowTaskBridge::class, $custom);
+            $resolved = $this->app->make(PreparedLocalActivityTaskBridge::class);
+            $this->assertSame($custom, $resolved);
+            $this->assertNotInstanceOf(PreparedLocalActivityTaskBridge::class, $resolved);
+        }
+    }
+
+    public function testLocalStopAdmissionRequiresTheCandidateProtocolThroughTheOptionalRole(): void
+    {
+        [$run, , $first] = $this->reclaimedCall();
+        $before = $run->historyEvents()
+            ->count();
+        $reply = $this->bridge()
+            ->acknowledgeLocalActivityCancellation(
+                $first['activity_attempt_id'],
+                'original-worker',
+                'not-a-recorded-request',
+                7
+            );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('local_activity_stop_receipt_requires_protocol_1_20', $reply['reason']);
+        $this->assertSame($before, $run->historyEvents()->count());
+    }
+
+    private function bridge(): PreparedLocalActivityTaskBridge
+    {
+        return $this->app->make(PreparedLocalActivityTaskBridge::class);
+    }
+
     /** @param array<string, mixed> $descriptor
      * @return array<string, mixed>
      */
     private function recover(WorkflowTask $task, array $descriptor): array
     {
-        return PortableLocalActivityPreparation::recover($task->id, 'replacement-worker', 8, 1, $descriptor, '1.20');
+        return $this->bridge()
+            ->recoverLocalActivity($task->id, 'replacement-worker', 8, 1, $descriptor, '1.20');
     }
 
     /** @param array<string, mixed> $descriptor
@@ -384,15 +418,8 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
      */
     private function prepareRetry(WorkflowTask $task, array $descriptor): array
     {
-        return PortableLocalActivityPreparation::prepare(
-            $task->id,
-            'next-worker',
-            1,
-            1,
-            'new-local-attempt',
-            $descriptor,
-            '1.20'
-        );
+        return $this->bridge()
+            ->prepareLocalActivity($task->id, 'next-worker', 1, 1, 'new-local-attempt', $descriptor, '1.20');
     }
 
     /** @param array<string, mixed> $first
@@ -400,13 +427,8 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
      */
     private function lateResult(array $first): array
     {
-        return app(LocalActivityExecutor::class)->recordPortableOutcome(
-            $first['activity_attempt_id'],
-            'original-worker',
-            7,
-            $this->success(),
-            '1.20'
-        );
+        return $this->bridge()
+            ->recordLocalActivityOutcome($first['activity_attempt_id'], 'original-worker', 7, $this->success(), '1.20');
     }
 
     /**
@@ -480,15 +502,8 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
                 'backoff_seconds' => [2],
             ],
         ];
-        $first = PortableLocalActivityPreparation::prepare(
-            $task->id,
-            'original-worker',
-            7,
-            1,
-            'original-local-attempt',
-            $descriptor,
-            '1.20'
-        );
+        $first = $this->bridge()
+            ->prepareLocalActivity($task->id, 'original-worker', 7, 1, 'original-local-attempt', $descriptor, '1.20');
         $this->assertTrue($first['prepared']);
         Carbon::setTestNow(now()->addSeconds($elapsed));
         if ($reclaim) {
