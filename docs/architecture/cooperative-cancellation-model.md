@@ -213,6 +213,26 @@ After delivery, the retained claim can checkpoint cleanup commands before the
 original deadline. A checkpoint receipt alone never admits a callback.
 The SDK must replay committed history before submitting later commands.
 
+The separate optional `PreparedLocalActivityGroupTaskBridge` adds an unfrozen
+Source `checkpointLocalActivityGroup()` operation for complete `all` groups.
+Its bounded batch uses `prepare_local_activity` descriptors without fabricated
+results. The transaction commits every sibling and local Scheduled event,
+retains the original workflow claim and stores the receipt before returning.
+Local members are pending with no callback attempt. Their total budget starts
+at admission, and the canonical `local_group_admission` records descriptor and
+batch fingerprints, the checkpoint identity and original claim epoch.
+
+Preparation separately validates that durable admission before starting a local
+attempt. Replacement before preparation creates its own first attempt without
+inventing recovery or a stop receipt. A lost group response cannot create another
+child or extend a deadline. Partial groups, changed descriptors, wrong claims
+and unqualified cleanup proofs refuse without creating siblings. Nested `all`
+paths are retained through Started and outcome history. Selection groups remain
+refused until their policy and physical-stop behavior are qualified. Existing
+custom prepared bridges do not acquire the optional group role from an alias.
+Server admission, SDK group consumers and connected mixed-language qualification
+remain required before advertising or publishing this Source extension.
+
 A shielded cleanup descriptor explicitly supplies `cancellation_cleanup` with
 `request_id` and `delivery_history_event_id`. Admission validates that request
 and canonical delivery on this run and requires a later authored command

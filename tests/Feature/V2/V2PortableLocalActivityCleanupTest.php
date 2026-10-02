@@ -458,6 +458,43 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         );
     }
 
+    public function testCleanupGroupAdmitsPendingMembersUnderTheOriginalRootDeadline(): void
+    {
+        [$run, $task, $descriptor] = $this->cleanupClaim();
+        $deadline = $run->cancellation_deadline_at;
+        $commands = [];
+        for ($index = 0; $index < 2; ++$index) {
+            $commands[] = [
+                ...$descriptor,
+                'type' => 'prepare_local_activity',
+                ...\Workflow\V2\Support\ParallelChildGroup::itemMetadata(2, 2, $index, 'activity'),
+            ];
+        }
+        $reply = app(\Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge::class)
+            ->checkpointLocalActivityGroup($task->id, 'owner', 7, 'cleanup-group', 2, $commands, '1.20');
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $this->assertCount(2, $reply['local_activities']);
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        Carbon::setTestNow(now()->addSeconds(5));
+        foreach ($commands as $index => $command) {
+            $prepared = $this->prepare($task, [
+                ...$command,
+                'type' => 'record_local_activity',
+            ], sequence: $index + 2);
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $this->assertEquals($deadline, Carbon::parse($prepared['schedule_to_close_deadline_at']));
+            $this->assertSame($run->cancellation_request_command_id, $prepared['cancellation_cleanup']['request_id']);
+            $outcome = $this->outcome($prepared['activity_attempt_id']);
+            $this->assertTrue($outcome['recorded'], $outcome['reason'] ?? '');
+        }
+        $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+        );
+    }
+
     private function assertCleanupSnapshot(array $expected, array $actual): void
     {
         ksort($expected);

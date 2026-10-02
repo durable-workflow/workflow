@@ -18,7 +18,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
-use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -53,7 +53,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -1054,165 +1054,37 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        $refused = static fn (string $reason): array => [
-            'checkpointed' => false,
-            'duplicate' => false,
-            'task_id' => $taskId,
-            'reason' => $reason,
-        ];
-        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
-            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
-            return $refused('local_activity_checkpoint_requires_protocol_1_20');
-        }
-        if ($startSequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
-            || trim($checkpointId) === '' || strlen($checkpointId) > 255
-            || preg_match('//u', $checkpointId) !== 1 || ! array_is_list($commands)
-            || count($commands) > 100) {
-            return $refused('invalid_local_activity_checkpoint');
-        }
-        $parsed = $commands === [] ? [
-            'non_terminal' => [],
-            'terminal' => null,
-        ] : self::parseCommands($commands);
-        if ($parsed === null || $parsed['terminal'] !== null) {
-            return $refused('invalid_local_activity_checkpoint_commands');
-        }
-        foreach ($parsed['non_terminal'] as $command) {
-            // A wait closes a turn, a local report reconstructs an executed
-            // callback, and selection cancellation requires activity fencing.
-            // None belongs in this retained-claim preparation prefix.
-            if (in_array($command['type'], ['record_local_activity', 'open_condition_wait',
-                'open_signal_wait', 'cancel_selection_operation'], true)) {
-                return $refused('invalid_local_activity_checkpoint_commands');
-            }
-        }
-        try {
-            $fingerprint = hash('sha256', json_encode($parsed['non_terminal'], JSON_THROW_ON_ERROR));
-        } catch (JsonException) {
-            return $refused('invalid_local_activity_checkpoint_commands');
-        }
-        /** @var WorkflowTask|null $snapshot */
-        $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
-        if ($snapshot === null) {
-            return $refused('task_not_found');
-        }
-
-        return DB::transaction(function () use (
-            $snapshot,
+        return $this->checkpointLocalActivities(
             $taskId,
             $leaseOwner,
             $workflowTaskAttempt,
             $checkpointId,
             $startSequence,
-            $parsed,
-            $fingerprint,
-            $refused,
-        ): array {
-            /** @var WorkflowRun|null $run */
-            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($snapshot->workflow_run_id);
-            /** @var WorkflowTask|null $task */
-            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
-            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
-                return $refused('workflow_claim_not_found');
-            }
-            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
-                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
-                return $refused('workflow_claim_mismatch');
-            }
-            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
-                return $refused('workflow_claim_expired');
-            }
-            if ($run->status->isTerminal()) {
-                return $refused('run_closed');
-            }
-            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
-                return $refused('run_deadline_expired');
-            }
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $receipt = $payload['portable_local_checkpoint'] ?? null;
-            if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
-                if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
-                    || ($receipt['lease_owner'] ?? null) !== $leaseOwner
-                    || ($receipt['start_sequence'] ?? null) !== $startSequence
-                    || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
-                    return $refused('local_activity_checkpoint_mismatch');
-                }
-                // This receipt proves prefix commit, not permission to start
-                // application code. Preparation still checks cancellation.
-                return [
-                    ...$receipt,
-                    'checkpointed' => true,
-                    'duplicate' => true,
-                    'reason' => null,
-                ];
-            }
-            if ($run->cancellation_request_command_id !== null) {
-                $delivery = $run->historyEvents()
-                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
-                    ->where('workflow_command_id', $run->cancellation_request_command_id)
-                    ->first();
-                $cleanup = PortableLocalActivityCleanup::snapshot($run, [
-                    'request_id' => $run->cancellation_request_command_id,
-                    'delivery_history_event_id' => $delivery?->id,
-                ], $startSequence);
-                if ($cleanup === null) {
-                    return $refused('cancellation_requested');
-                }
-                if (now()->gte($run->cancellation_deadline_at)) {
-                    return $refused('cancellation_deadline_expired');
-                }
-            }
-            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
-            if ($sequence !== $startSequence) {
-                return $refused('local_activity_checkpoint_sequence_mismatch');
-            }
-            $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
-            if ($invalidUpdate !== null) {
-                return $refused($invalidUpdate);
-            }
-            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
-                return $refused('invalid_local_activity_checkpoint_commands');
-            }
-            $this->recordAppliedSignalForSignalResume($run, $task);
-            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
-            $createdTaskIds = [];
-            foreach ($parsed['non_terminal'] as $command) {
-                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
-            }
-            // Command application can update task payload (for example signal
-            // consumption). Preserve that state rather than the old snapshot.
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $receipt = [
-                'checkpoint_id' => $checkpointId,
-                'task_id' => $taskId,
-                'workflow_run_id' => $run->id,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'lease_owner' => $leaseOwner,
-                'lease_expires_at' => $task->lease_expires_at->toISOString(),
-                'start_sequence' => $startSequence,
-                'next_sequence' => $sequence,
-                'fingerprint' => $fingerprint,
-                'created_task_ids' => $createdTaskIds,
-                'recorded_at' => now()
-                    ->toISOString(),
-            ];
-            $task->forceFill([
-                'payload' => [
-                    ...$payload,
-                    'portable_local_checkpoint' => $receipt,
-                ],
-            ])->save();
+            $commands,
+            $protocolVersion,
+            false
+        );
+    }
 
-            return [
-                ...$receipt,
-                'checkpointed' => true,
-                'duplicate' => false,
-                'reason' => null,
-            ];
-        }, 5);
+    public function checkpointLocalActivityGroup(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->checkpointLocalActivities(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $commands,
+            $protocolVersion,
+            true
+        );
     }
 
     public function complete(string $taskId, array $commands): array
@@ -1405,6 +1277,290 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'reason' => null,
             ];
         });
+    }
+
+    /** @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    private function checkpointLocalActivities(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion,
+        bool $group,
+    ): array {
+        $refused = static fn (string $reason): array => [
+            'checkpointed' => false,
+            'duplicate' => false,
+            'task_id' => $taskId,
+            'reason' => $reason,
+        ];
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return $refused('local_activity_checkpoint_requires_protocol_1_20');
+        }
+        if ($startSequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
+            || trim($checkpointId) === '' || strlen($checkpointId) > 255
+            || preg_match('//u', $checkpointId) !== 1 || ! array_is_list($commands)
+            || count($commands) > 100) {
+            return $refused('invalid_local_activity_checkpoint');
+        }
+        $parsed = $group ? self::parsePreparedLocalGroupCommands($commands) : ($commands === [] ? [
+            'non_terminal' => [],
+            'terminal' => null,
+        ] : self::parseCommands($commands));
+        if ($parsed === null || $parsed['terminal'] !== null) {
+            return $refused('invalid_local_activity_checkpoint_commands');
+        }
+        foreach ($parsed['non_terminal'] as $command) {
+            // A wait closes a turn, a local report reconstructs an executed
+            // callback, and selection cancellation requires activity fencing.
+            // None belongs in this retained-claim preparation prefix.
+            if (in_array($command['type'], ['record_local_activity', 'open_condition_wait',
+                'open_signal_wait', 'cancel_selection_operation'], true)) {
+                return $refused('invalid_local_activity_checkpoint_commands');
+            }
+        }
+        try {
+            $fingerprint = hash('sha256', json_encode($parsed['non_terminal'], JSON_THROW_ON_ERROR));
+        } catch (JsonException) {
+            return $refused('invalid_local_activity_checkpoint_commands');
+        }
+        /** @var WorkflowTask|null $snapshot */
+        $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        if ($snapshot === null) {
+            return $refused('task_not_found');
+        }
+
+        return DB::transaction(function () use (
+            $snapshot,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $parsed,
+            $fingerprint,
+            $refused,
+            $group,
+        ): array {
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($snapshot->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
+            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                return $refused('workflow_claim_not_found');
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return $refused('workflow_claim_mismatch');
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return $refused('workflow_claim_expired');
+            }
+            if ($run->status->isTerminal()) {
+                return $refused('run_closed');
+            }
+            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                return $refused('run_deadline_expired');
+            }
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receiptKey = $group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint';
+            $receipt = $payload[$receiptKey] ?? null;
+            if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
+                if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+                    || ($receipt['lease_owner'] ?? null) !== $leaseOwner
+                    || ($receipt['start_sequence'] ?? null) !== $startSequence
+                    || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
+                    return $refused('local_activity_checkpoint_mismatch');
+                }
+                // This receipt proves prefix commit, not permission to start
+                // application code. Preparation still checks cancellation.
+                return [
+                    ...$receipt,
+                    'checkpointed' => true,
+                    'duplicate' => true,
+                    'reason' => null,
+                ];
+            }
+            if ($run->cancellation_request_command_id !== null) {
+                $delivery = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
+                    ->where('workflow_command_id', $run->cancellation_request_command_id)
+                    ->first();
+                $cleanup = PortableLocalActivityCleanup::snapshot($run, [
+                    'request_id' => $run->cancellation_request_command_id,
+                    'delivery_history_event_id' => $delivery?->id,
+                ], $startSequence);
+                if ($cleanup === null) {
+                    return $refused('cancellation_requested');
+                }
+                if (now()->gte($run->cancellation_deadline_at)) {
+                    return $refused('cancellation_deadline_expired');
+                }
+            }
+            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+            if ($sequence !== $startSequence) {
+                return $refused('local_activity_checkpoint_sequence_mismatch');
+            }
+            $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+            if ($invalidUpdate !== null) {
+                return $refused($invalidUpdate);
+            }
+            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
+                return $refused('invalid_local_activity_checkpoint_commands');
+            }
+            // Validate every local cleanup member before creating any sibling.
+            foreach ($parsed['non_terminal'] as $offset => $command) {
+                if ($command['type'] !== 'prepare_local_activity') {
+                    continue;
+                }
+                $cleanup = PortableLocalActivityCleanup::snapshot(
+                    $run,
+                    $command['cancellation_cleanup'] ?? null,
+                    $sequence + $offset
+                );
+                if (($run->cancellation_request_command_id !== null && $cleanup === null)
+                    || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']))) {
+                    return $refused('local_activity_cleanup_authority_mismatch');
+                }
+            }
+            $this->recordAppliedSignalForSignalResume($run, $task);
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+            $createdTaskIds = [];
+            $localActivities = [];
+            foreach ($parsed['non_terminal'] as $command) {
+                if ($command['type'] === 'prepare_local_activity') {
+                    $execution = PortableLocalActivityPreparation::admitGroupMember(
+                        $run,
+                        $task,
+                        $sequence,
+                        [
+                            ...$command,
+                            'type' => 'record_local_activity',
+                        ],
+                        $checkpointId,
+                        $fingerprint
+                    );
+                    $localActivities[] = [
+                        'sequence' => $sequence,
+                        'activity_execution_id' => $execution->id,
+                    ];
+                    ++$sequence;
+                    continue;
+                }
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+            }
+            // Command application can update task payload (for example signal
+            // consumption). Preserve that state rather than the old snapshot.
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receipt = [
+                'checkpoint_id' => $checkpointId,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'lease_owner' => $leaseOwner,
+                'lease_expires_at' => $task->lease_expires_at->toISOString(),
+                'start_sequence' => $startSequence,
+                'next_sequence' => $sequence,
+                'fingerprint' => $fingerprint,
+                'created_task_ids' => $createdTaskIds,
+                'recorded_at' => now()
+                    ->toISOString(),
+                ...($group ? [
+                    'local_activities' => $localActivities,
+                ] : []),
+            ];
+            $task->forceFill([
+                'payload' => [
+                    ...$payload,
+                    $receiptKey => $receipt,
+                ],
+            ])->save();
+
+            return [
+                ...$receipt,
+                'checkpointed' => true,
+                'duplicate' => false,
+                'reason' => null,
+            ];
+        }, 5);
+    }
+
+    /**
+     * Local descriptors have no fabricated outcomes. Validate their common
+     * activity grammar with a scheduling shadow, then restore admission-only
+     * descriptors. Ordinary task completion does not recognize this command.
+     * Selection groups remain refused until their stop-policy path is qualified.
+     * @param list<array{type: string, ...}> $commands
+     * @return array{non_terminal: list<array{type: string, ...}>, terminal: null}|null
+     */
+    private static function parsePreparedLocalGroupCommands(array $commands): ?array
+    {
+        $shadows = [];
+        $locals = [];
+        try {
+            foreach ($commands as $offset => $command) {
+                if (! is_array($command)) {
+                    return null;
+                }
+                if (($command['type'] ?? null) === 'prepare_local_activity') {
+                    $local = PortableLocalActivityPreparation::normalizeDescriptor([
+                        ...$command,
+                        'type' => 'record_local_activity',
+                    ]);
+                    if (($local['parallel_group_path'] ?? []) === []) {
+                        return null;
+                    }
+                    foreach ($local['parallel_group_path'] as $entry) {
+                        if (($entry['parallel_group_mode'] ?? 'all') !== 'all') {
+                            return null;
+                        }
+                    }
+                    $locals[$offset] = [
+                        ...$local,
+                        'type' => 'prepare_local_activity',
+                    ];
+                    unset($local['execution_mode'], $local['cancellation_cleanup']);
+                    $command = [
+                        ...$local,
+                        'type' => 'schedule_activity',
+                    ];
+                }
+                $shadows[] = $command;
+            }
+            if ($locals === []) {
+                return null;
+            }
+            $normalized = WorkflowCommandNormalizer::normalize(
+                $shadows,
+                PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION
+            );
+            foreach ($normalized as $command) {
+                foreach ($command['parallel_group_path'] ?? [] as $entry) {
+                    if (($entry['parallel_group_mode'] ?? 'all') !== 'all') {
+                        return null;
+                    }
+                }
+            }
+        } catch (ValidationException|InvalidArgumentException) {
+            return null;
+        }
+        $parsed = self::parseCommands($normalized);
+        if ($parsed === null || $parsed['terminal'] !== null
+            || count($parsed['non_terminal']) !== count($commands)) {
+            return null;
+        }
+        foreach ($locals as $offset => $local) {
+            $parsed['non_terminal'][$offset] = $local;
+        }
+        return $parsed;
     }
 
     /**

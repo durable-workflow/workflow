@@ -131,9 +131,22 @@ final class PortableLocalActivityPreparation
             $execution = $rows['execution'] ?? null;
             $attempt = $rows['attempt'] ?? null;
             if ($snapshotExecution !== null) {
-                if (! $execution instanceof ActivityExecution || ! $attempt instanceof ActivityAttempt
+                if (! $execution instanceof ActivityExecution
                     || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
                     || $execution->current_attempt_id !== ($rows['snapshot_attempt_id'] ?? null)) {
+                    return self::response('local_activity_previous_attempt_unresolved');
+                }
+                if ($attempt === null) {
+                    return self::prepareAdmittedMember(
+                        $run,
+                        $task,
+                        $execution,
+                        $normalized,
+                        $workerAttemptId,
+                        $fingerprint
+                    );
+                }
+                if (! $attempt instanceof ActivityAttempt) {
                     return self::response('local_activity_previous_attempt_unresolved');
                 }
                 if ($execution->status === ActivityStatus::Pending) {
@@ -150,49 +163,9 @@ final class PortableLocalActivityPreparation
             if (WorkflowStepHistory::nextDurableCommandSequence($run) !== $sequence) {
                 return self::response('local_activity_command_prefix_not_recorded');
             }
-            StructuralLimits::guardPendingActivities($run);
-            $codec = $normalized['payload_codec'];
-            $arguments = ExternalPayloads::externalizeForNamespace(
-                $normalized['arguments'],
-                $codec,
-                is_string($run->namespace) ? $run->namespace : null,
-            );
-            StructuralLimits::guardPayloadSize($arguments);
-            $now = now();
-            $options = new ActivityOptions(
-                startToCloseTimeout: $normalized['start_to_close_timeout'] ?? null,
-                scheduleToCloseTimeout: $normalized['schedule_to_close_timeout'] ?? null,
-                heartbeatTimeout: $normalized['heartbeat_timeout'] ?? null,
-            );
-            /** @var ActivityExecution $execution */
-            $execution = ActivityExecution::query()->create([
-                'workflow_run_id' => $run->id,
-                'sequence' => $sequence,
-                'activity_class' => $normalized['activity_type'],
-                'activity_type' => $normalized['activity_type'],
-                'status' => ActivityStatus::Pending,
-                'attempt_count' => 0,
-                'payload_codec' => $codec,
-                'arguments' => $arguments,
-                'connection' => $run->connection,
-                'queue' => $run->queue,
-                'retry_policy' => ActivityRetryPolicy::snapshotExternal($normalized['retry_policy'] ?? null, $options),
-                'activity_options' => [
-                    'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
-                    'queue_bypassed' => true,
-                    'routing' => 'workflow_worker_process',
-                    ...($cleanup === null ? [] : [
-                        'cancellation_cleanup' => $cleanup,
-                    ]),
-                ],
-                'schedule_to_close_deadline_at' => $cleanup === null ? ($options->scheduleToCloseTimeout === null
-                    ? null : $now->copy()
-                        ->addSeconds($options->scheduleToCloseTimeout))
-                    : ($options->scheduleToCloseTimeout === null ? $run->cancellation_deadline_at
-                        : $now->copy()
-                            ->addSeconds($options->scheduleToCloseTimeout)
-                            ->min($run->cancellation_deadline_at)),
-            ]);
+            if (($normalized['parallel_group_path'] ?? []) !== []) {
+                return self::response('local_activity_group_not_admitted');
+            }
             $preparation = [
                 'version' => 1,
                 'descriptor_fingerprint' => $fingerprint,
@@ -202,18 +175,16 @@ final class PortableLocalActivityPreparation
                     'cancellation_cleanup' => $cleanup,
                 ]),
             ];
-            $base = LocalActivityRuntime::eventPayload([
-                'activity_execution_id' => $execution->id,
-                'activity_class' => $execution->activity_class,
-                'activity_type' => $execution->activity_type,
-                'sequence' => $sequence,
-                'workflow_task_id' => $task->id,
-                'local_preparation' => $preparation,
-            ]);
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
-                ...$base,
-                'activity' => ActivitySnapshot::fromExecution($execution),
-            ], $task);
+            $execution = self::createExecution(
+                $run,
+                $task,
+                $sequence,
+                $normalized,
+                $cleanup,
+                [
+                    'local_preparation' => $preparation,
+                ]
+            );
             $attempt = app(LocalActivityExecutor::class)->startPortableAttempt(
                 $run,
                 $task,
@@ -224,6 +195,45 @@ final class PortableLocalActivityPreparation
 
             return self::response(null, $execution, $attempt, task: $task);
         }, 5);
+    }
+
+    /**
+     * @internal The complete group was validated and the caller holds run/task
+     * locks inside its atomic checkpoint transaction. This creates no attempt.
+     * @param array<string, mixed> $descriptor
+     */
+    public static function admitGroupMember(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        array $descriptor,
+        string $checkpointId,
+        string $batchFingerprint
+    ): ActivityExecution {
+        $normalized = self::normalizeDescriptor($descriptor);
+        if (DB::transactionLevel() < 1 || ($normalized['parallel_group_path'] ?? []) === []) {
+            throw ValidationException::withMessages([
+                'local_activity' => ['Expected an atomic group transaction.'],
+            ]);
+        }
+        $cleanup = PortableLocalActivityCleanup::snapshot($run, $normalized['cancellation_cleanup'] ?? null, $sequence);
+        $admission = [
+            'version' => 1,
+            'descriptor_fingerprint' => hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR)),
+            'checkpoint_id' => $checkpointId,
+            'batch_fingerprint' => $batchFingerprint,
+            'workflow_task_attempt' => $task->attempt_count,
+        ];
+        return self::createExecution(
+            $run,
+            $task,
+            $sequence,
+            $normalized,
+            $cleanup,
+            [
+                'local_group_admission' => $admission,
+            ]
+        );
     }
 
     /**
@@ -437,7 +447,8 @@ final class PortableLocalActivityPreparation
     {
         $allowed = ['type', 'activity_type', 'arguments', 'payload_codec', 'retry_policy',
             'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode',
-            'cancellation_cleanup'];
+            'cancellation_cleanup', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
+            'parallel_group_base_sequence', 'parallel_group_size', 'parallel_group_index', 'parallel_group_path'];
         if (($descriptor['type'] ?? null) !== 'record_local_activity'
             || array_diff(array_keys($descriptor), $allowed) !== []
             || (isset($descriptor['execution_mode']) && $descriptor['execution_mode'] !== LocalActivityRuntime::EXECUTION_MODE)) {
@@ -534,6 +545,179 @@ final class PortableLocalActivityPreparation
         }
 
         return $started;
+    }
+
+    /** @param array<string, mixed> $normalized
+     * @param array<string, mixed>|null $cleanup
+     * @param array<string, mixed> $opening
+     */
+    private static function createExecution(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        array $normalized,
+        ?array $cleanup,
+        array $opening
+    ): ActivityExecution {
+        StructuralLimits::guardPendingActivities($run);
+        $codec = $normalized['payload_codec'];
+        $arguments = ExternalPayloads::externalizeForNamespace(
+            $normalized['arguments'],
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null
+        );
+        StructuralLimits::guardPayloadSize($arguments);
+        $now = now();
+        $options = new ActivityOptions(
+            startToCloseTimeout: $normalized['start_to_close_timeout'] ?? null,
+            scheduleToCloseTimeout: $normalized['schedule_to_close_timeout'] ?? null,
+            heartbeatTimeout: $normalized['heartbeat_timeout'] ?? null,
+        );
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => $normalized['activity_type'],
+            'activity_type' => $normalized['activity_type'],
+            'status' => ActivityStatus::Pending,
+            'attempt_count' => 0,
+            'payload_codec' => $codec,
+            'arguments' => $arguments,
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'parallel_group_path' => $normalized['parallel_group_path'] ?? null,
+            'retry_policy' => ActivityRetryPolicy::snapshotExternal($normalized['retry_policy'] ?? null, $options),
+            'activity_options' => [
+                'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
+                'queue_bypassed' => true,
+                'routing' => 'workflow_worker_process',
+                ...($cleanup === null ? [] : [
+                    'cancellation_cleanup' => $cleanup,
+                ]),
+            ],
+            'schedule_to_close_deadline_at' => $cleanup === null ? ($options->scheduleToCloseTimeout === null
+                ? null : $now->copy()
+                    ->addSeconds($options->scheduleToCloseTimeout))
+                : ($options->scheduleToCloseTimeout === null ? $run->cancellation_deadline_at
+                    : $now->copy()
+                        ->addSeconds($options->scheduleToCloseTimeout)
+                        ->min($run->cancellation_deadline_at)),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, LocalActivityRuntime::eventPayload([
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $sequence,
+            'workflow_task_id' => $task->id,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+            ...$opening,
+        ]), $task);
+        return $execution;
+    }
+
+    /** @param array<string, mixed> $normalized
+     * @return array<string, mixed>
+     */
+    private static function prepareAdmittedMember(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        array $normalized,
+        string $workerAttemptId,
+        string $fingerprint
+    ): array {
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)
+            ->where('payload->activity_execution_id', $execution->id)
+            ->first();
+        $admission = $scheduled?->payload['local_group_admission'] ?? [];
+        $originalTask = $scheduled === null ? null
+            : ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($scheduled->workflow_task_id);
+        $receipt = $originalTask?->payload['portable_local_group_checkpoint'] ?? [];
+        $members = $receipt['local_activities'] ?? [];
+        $memberMatches = false;
+        foreach ($members as $member) {
+            if (is_array($member) && ($member['sequence'] ?? null) === $execution->sequence
+                && ($member['activity_execution_id'] ?? null) === $execution->id) {
+                $memberMatches = true;
+            }
+        }
+        $path = $normalized['parallel_group_path'] ?? [];
+        $cleanup = PortableLocalActivityCleanup::snapshot(
+            $run,
+            $normalized['cancellation_cleanup'] ?? null,
+            $execution->sequence
+        );
+        $storedCleanup = $execution->activity_options['cancellation_cleanup'] ?? null;
+        if (is_array($cleanup)) {
+            ksort($cleanup);
+        }
+        if (is_array($storedCleanup)) {
+            ksort($storedCleanup);
+        }
+        if (! LocalActivityRuntime::isExecution($execution) || $execution->status !== ActivityStatus::Pending
+            || $execution->attempt_count !== 0 || $execution->current_attempt_id !== null
+            || ! $scheduled instanceof WorkflowHistoryEvent || ($admission['version'] ?? null) !== 1
+            || ($admission['descriptor_fingerprint'] ?? null) !== $fingerprint
+            || ($admission['checkpoint_id'] ?? null) !== ($receipt['checkpoint_id'] ?? null)
+            || ($admission['batch_fingerprint'] ?? null) !== ($receipt['fingerprint'] ?? null)
+            || ($admission['workflow_task_attempt'] ?? null) !== ($receipt['workflow_task_attempt'] ?? null)
+            || ($scheduled->payload['task']['attempt_count'] ?? null) !== ($receipt['workflow_task_attempt'] ?? null)
+            || ($scheduled->payload['task']['lease_owner'] ?? null) !== ($receipt['lease_owner'] ?? null)
+            || ($receipt['task_id'] ?? null) !== $scheduled->workflow_task_id
+            || ($receipt['workflow_run_id'] ?? null) !== $run->id
+            || ! $memberMatches
+            || ($scheduled->payload['sequence'] ?? null) !== $execution->sequence
+            || ($scheduled->payload['local_activity'] ?? null) !== true
+            || $storedCleanup !== $cleanup
+            || $path === [] || ! self::sameGroupPath($execution->parallel_group_path, $path)
+            || ! self::sameGroupPath($scheduled->payload['parallel_group_path'] ?? null, $path)) {
+            return self::response('local_activity_group_admission_mismatch');
+        }
+        if ($execution->schedule_to_close_deadline_at !== null && now()->gte(
+            $execution->schedule_to_close_deadline_at
+        )) {
+            $event = app(LocalActivityExecutor::class)->expirePortableRetry($run, $task, $execution);
+            return [
+                ...self::response('local_activity_deadline_expired'),
+                'event_id' => $event->id,
+                'event_type' => $event->event_type->value,
+            ];
+        }
+        $attempt = app(LocalActivityExecutor::class)->startPortableAttempt($run, $task, $execution, $workerAttemptId, [
+            'version' => 1,
+            'descriptor_fingerprint' => $fingerprint,
+            'worker_attempt_id' => $workerAttemptId,
+            'workflow_task_attempt' => $task->attempt_count,
+            ...(isset($execution->activity_options['cancellation_cleanup'])
+                ? [
+                    'cancellation_cleanup' => $execution->activity_options['cancellation_cleanup'],
+                ] : []),
+        ]);
+        return self::response(null, $execution, $attempt, task: $task);
+    }
+
+    /** Object member order can change in database JSON. List order, values and
+     * scalar types retain authority and must match exactly.
+     * @param list<array<string, mixed>> $expected
+     */
+    private static function sameGroupPath(mixed $actual, array $expected): bool
+    {
+        if (! is_array($actual) || ! array_is_list($actual) || count($actual) !== count($expected)) {
+            return false;
+        }
+        foreach ($actual as $offset => $entry) {
+            if (! is_array($entry)) {
+                return false;
+            }
+            ksort($entry);
+            $other = $expected[$offset];
+            ksort($other);
+            if ($entry !== $other) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

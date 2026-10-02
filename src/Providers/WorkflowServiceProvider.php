@@ -30,6 +30,7 @@ use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\RuntimeSignalControlPlane;
 use Workflow\V2\Contracts\SchedulerRole;
@@ -99,6 +100,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
+        $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);
 
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 

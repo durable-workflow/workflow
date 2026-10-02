@@ -106,6 +106,7 @@ final class HistoryEventPayloadContract
             'local_activity',
             'workflow_task_id',
             'local_preparation',
+            'local_group_admission',
             'activity',
             'parallel_group_id',
             'parallel_group_kind',
