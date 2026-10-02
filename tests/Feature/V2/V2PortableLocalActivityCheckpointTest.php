@@ -131,7 +131,8 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
             'lease_expires_at' => now()
                 ->subSecond(),
         ])->save();
-        $before = $task->getAttributes();
+        $before = $task->refresh()
+            ->getAttributes();
         $this->assertSame('workflow_claim_expired', $this->checkpoint($task, $this->prefix())['reason']);
         $this->assertSame($before, $task->refresh()->getAttributes());
         $this->assertSame(0, WorkflowHistoryEvent::query()->count());
