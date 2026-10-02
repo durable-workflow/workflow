@@ -565,7 +565,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         try {
             [$run, $original] = $this->newClaim();
             $original->forceFill([
-                'lease_expires_at' => now()->addSeconds(10),
+                'lease_expires_at' => now()
+                    ->addSeconds(10),
             ])->save();
             $commands = [];
             foreach ([0, 1] as $index) {
@@ -666,7 +667,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
                     'payload' => $payload,
                 ])->save();
                 $claim->forceFill([
-                    'available_at' => now()->subMinute(),
+                    'available_at' => now()
+                        ->subMinute(),
                 ])->save();
             }
             $before = $claim->refresh()
@@ -701,7 +703,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             $this->assertSame($before, $claim->refresh()->getAttributes());
             $this->assertSame(
                 0,
-                $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
             );
         } finally {
             Carbon::setTestNow();
