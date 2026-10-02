@@ -313,6 +313,9 @@ cancellation deadline. Expired authority cannot be revived by polling.
 `heartbeatLocalActivity()` records an actual application heartbeat using the
 same prepared authority checks and bounded progress format as other activities.
 It updates heartbeat time and timeout and records canonical heartbeat history.
+Prepared group heartbeats retain the complete authored membership path, including
+nested groups. SDK heartbeat details use the existing `progress.details` format
+and survive in canonical history.
 It does not renew either lease or move start-to-close, total or root deadlines.
 Cleanup heartbeat timeouts and supervisor lease renewals stay bounded by the
 original cleanup deadline. Neither path revives expired authority. SDKs must

@@ -872,6 +872,70 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         }
     }
 
+    public function testNestedMixedGroupHeartbeatsPreserveMembershipProgressAndFixedBudgets(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = [];
+        foreach ([0, 1] as $index) {
+            $path = [ParallelChildGroup::groupEntry(1, 3, $index, 'mixed')];
+            if ($index === 1) {
+                $path[] = ParallelChildGroup::groupEntry(2, 2, 0, 'mixed');
+            }
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'heartbeat_timeout' => 3,
+                'start_to_close_timeout' => 8,
+                'schedule_to_close_timeout' => 12,
+                ...ParallelChildGroup::payloadForPath($path),
+            ];
+        }
+        $commands[] = [
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+            ...ParallelChildGroup::payloadForPath([
+                ParallelChildGroup::groupEntry(1, 3, 2, 'mixed'),
+                ParallelChildGroup::groupEntry(2, 2, 1, 'mixed'),
+            ]),
+        ];
+        $checkpoint = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($checkpoint['checkpointed'], $checkpoint['reason'] ?? '');
+        $prepared = [];
+        foreach ([0, 1] as $index) {
+            $prepared[$index] = $this->prepareGroupMember($task, $commands[$index], $index + 1);
+            $this->assertTrue($prepared[$index]['prepared'], $prepared[$index]['reason'] ?? '');
+        }
+        Carbon::setTestNow(now()->addSecond());
+        try {
+            foreach ($prepared as $index => $admission) {
+                $progress = ['details' => ['phase' => $index === 0 ? 'first' : 'second']];
+                $reply = app(PreparedLocalActivityTaskBridge::class)->heartbeatLocalActivity(
+                    $admission['activity_attempt_id'],
+                    'portable-worker',
+                    1,
+                    $progress,
+                    '1.20'
+                );
+                $this->assertTrue($reply['active'], $reply['reason'] ?? '');
+                $this->assertTrue($reply['heartbeat_recorded']);
+                $this->assertFalse($reply['renewed']);
+                foreach (['lease_expires_at', 'start_to_close_deadline_at', 'schedule_to_close_deadline_at'] as $field) {
+                    $this->assertSame($admission[$field], $reply[$field]);
+                }
+                $this->assertNotSame($admission['heartbeat_deadline_at'], $reply['heartbeat_deadline_at']);
+                $event = $run->historyEvents()->findOrFail($reply['heartbeat_history_event_id']);
+                $this->assertSame(HistoryEventType::ActivityHeartbeatRecorded, $event->event_type);
+                $this->assertSame($admission['activity_attempt_id'], $event->payload['activity_attempt_id']);
+                $this->assertSame($index + 1, $event->payload['sequence']);
+                $this->assertSame($progress, $event->payload['progress']);
+                $this->assertGroupPath($commands[$index]['parallel_group_path'], $event->payload['parallel_group_path']);
+            }
+            $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testLocalFirstGroupStillCommitsTheChildBeforeReturningAdmission(): void
     {
         [$run, $task] = $this->newClaim();

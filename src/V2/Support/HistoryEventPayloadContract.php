@@ -153,6 +153,12 @@ final class HistoryEventPayloadContract
             'activity',
             'activity_attempt',
             'progress',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'parallel_group_path',
         ],
         'ActivityRetryScheduled' => [
             'local_outcome',
