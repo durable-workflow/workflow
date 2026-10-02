@@ -265,6 +265,21 @@ final class HistoryTimeline
             'activity' => $activityMetadata,
             'timer' => $timerMetadata,
             'child' => $childMetadata,
+            ...($event->event_type === HistoryEventType::ActivityCancellationAcknowledged ? [
+                'cancellation_acknowledgement' => [
+                    'activity_attempt_id' => self::stringValue($payload['activity_attempt_id'] ?? null),
+                    'cancellation_history_event_id' => self::stringValue(
+                        $payload['cancellation_history_event_id'] ?? null
+                    ),
+                    'request_id' => self::stringValue($payload['request_id'] ?? null),
+                    'root_request_id' => self::stringValue($payload['root_request_id'] ?? null),
+                    'cleanup_deadline_at' => self::timestamp($payload['cleanup_deadline_at'] ?? null),
+                    'callback_state' => self::stringValue($payload['callback_state'] ?? null),
+                    'evidence_source' => self::stringValue($payload['evidence_source'] ?? null),
+                    'acknowledged_at' => self::timestamp($payload['acknowledged_at'] ?? null),
+                    'received_after_deadline' => $payload['received_after_deadline'] ?? null,
+                ],
+            ] : []),
             ...(in_array($event->event_type, [
                 HistoryEventType::ParentCloseCancellationRequested,
                 HistoryEventType::ParentClosePolicyApplied,
@@ -326,6 +341,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::FailureHandled => 'failure',
             HistoryEventType::SideEffectRecorded => 'side_effect',
@@ -490,6 +506,11 @@ final class HistoryTimeline
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::ActivityCancelled => sprintf('Cancelled %s.', $activityLabel),
+            HistoryEventType::ActivityCancellationAcknowledged => sprintf(
+                'Worker reported stopped callback for %s%s.',
+                $activityLabel,
+                ($payload['received_after_deadline'] ?? false) === true ? ' after the cleanup deadline' : '',
+            ),
             HistoryEventType::ActivityTimedOut => $message === null
                 ? sprintf('Timed out %s.', $activityLabel)
                 : sprintf('Timed out %s: %s.', $activityLabel, $message),
@@ -894,6 +915,8 @@ final class HistoryTimeline
                 ?? self::stringValue($payload['activity_class'] ?? null),
             'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null)
+                ?? ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+                    ? self::stringValue($payload['activity_attempt_id'] ?? null) : null)
                 ?? ($event->event_type === HistoryEventType::ActivityScheduled
                     ? null
                     : self::stringValue($activity?->current_attempt_id)),
@@ -906,7 +929,8 @@ final class HistoryTimeline
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
                     HistoryEventType::ActivityTimedOut => 'failed',
-                    HistoryEventType::ActivityCancelled => 'cancelled',
+                    HistoryEventType::ActivityCancelled,
+                    HistoryEventType::ActivityCancellationAcknowledged => 'cancelled',
                     default => $activity?->status?->value,
                 },
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null)
@@ -1113,6 +1137,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity_execution',
             HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
@@ -1225,6 +1250,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
@@ -1240,7 +1266,8 @@ final class HistoryTimeline
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded => 'leased',
-            HistoryEventType::ActivityCancelled => 'cancelled',
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged => 'cancelled',
             HistoryEventType::WorkflowFailed => 'failed',
             HistoryEventType::WorkflowTimedOut => 'completed',
             default => 'completed',

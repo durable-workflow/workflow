@@ -1,0 +1,101 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Illuminate\Database\Eloquent\Collection;
+use Orchestra\Testbench\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\HistoryTimeline;
+
+final class CancellationHistoryTimelineTest extends TestCase
+{
+    #[DataProvider('historyEventTypes')]
+    public function testEverySupportedHistoryEventCanBeInspectedWithSparseMetadata(HistoryEventType $type): void
+    {
+        $entry = $this->entry($type, []);
+
+        $this->assertSame($type->value, $entry['type']);
+        $this->assertNotSame('', $entry['summary']);
+    }
+
+    /**
+     * @return iterable<string, array{HistoryEventType}>
+     */
+    public static function historyEventTypes(): iterable
+    {
+        foreach (HistoryEventType::cases() as $type) {
+            yield $type->value => [$type];
+        }
+    }
+
+    #[DataProvider('receiptTiming')]
+    public function testStopReceiptExplainsTheOriginalAttemptAndBudgetWithoutGrantingAuthority(bool $late): void
+    {
+        $payload = [
+            'sequence' => 4,
+            'activity_execution_id' => 'activity-1',
+            'activity_attempt_id' => 'original-attempt',
+            'cancellation_history_event_id' => 'cancel-event',
+            'request_id' => 'child-request',
+            'root_request_id' => 'root-request',
+            'cleanup_deadline_at' => '2026-10-02T00:00:30.000000Z',
+            'callback_state' => 'stopped',
+            'evidence_source' => 'activity_worker',
+            'acknowledged_at' => $late ? '2026-10-02T00:00:31.000000Z' : '2026-10-02T00:00:10.000000Z',
+            'received_after_deadline' => $late,
+        ];
+        $entry = $this->entry(HistoryEventType::ActivityCancellationAcknowledged, $payload);
+
+        $this->assertSame('activity', $entry['kind']);
+        $this->assertSame('activity_execution', $entry['source_kind']);
+        $this->assertSame('activity-1', $entry['source_id']);
+        $this->assertSame('original-attempt', $entry['activity']['attempt_id']);
+        $this->assertSame('cancelled', $entry['activity_status']);
+        $this->assertSame('activity', $entry['task']['type']);
+        $this->assertSame('cancelled', $entry['task']['status']);
+        $this->assertSame(array_diff_key($payload, [
+            'sequence' => true,
+            'activity_execution_id' => true,
+        ]), $entry['cancellation_acknowledgement']);
+        $this->assertSame(
+            'Worker reported stopped callback for activity' . ($late ? ' after the cleanup deadline' : '') . '.',
+            $entry['summary'],
+        );
+    }
+
+    /**
+     * @return iterable<string, array{bool}>
+     */
+    public static function receiptTiming(): iterable
+    {
+        yield 'before original deadline' => [false];
+        yield 'after original deadline' => [true];
+    }
+
+    /** @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function entry(HistoryEventType $type, array $payload): array
+    {
+        $run = new WorkflowRun();
+        foreach (['commands', 'tasks', 'activityExecutions', 'timers', 'failures'] as $relation) {
+            $run->setRelation($relation, new Collection());
+        }
+        $event = new WorkflowHistoryEvent();
+        $event->forceFill([
+            'id' => 'event-1',
+            'sequence' => 1,
+            'workflow_task_id' => 'task-1',
+            'event_type' => $type,
+            'payload' => $payload,
+        ]);
+        $run->setRelation('historyEvents', new Collection([$event]));
+
+        return HistoryTimeline::fromHistory($run)[0];
+    }
+}

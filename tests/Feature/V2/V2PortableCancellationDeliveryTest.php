@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -404,6 +405,20 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(1, $this->stopReceiptCount($run));
         $this->assertSame($taskBefore, $activityTask->refresh()->getAttributes());
         $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+        $summary = RunSummaryProjector::project($run->fresh());
+        $this->assertSame($run->historyEvents()->count(), $summary->history_event_count);
+        $receipt = collect(HistoryTimeline::forRun($run->fresh()))->firstWhere(
+            'type',
+            'ActivityCancellationAcknowledged'
+        );
+        $this->assertSame($event->id, $receipt['id']);
+        $this->assertSame($attempt->id, $receipt['activity']['attempt_id']);
+        $this->assertSame('cancelled', $receipt['activity_status']);
+        $this->assertSame($deadline, $receipt['cancellation_acknowledgement']['cleanup_deadline_at']);
+        $this->assertSame(
+            $event->payload['root_request_id'],
+            $receipt['cancellation_acknowledgement']['root_request_id']
+        );
         $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
         $this->assertFalse(
             $this->app->make(ActivityTaskBridge::class)->complete($attempt->id, 'late result')['recorded']

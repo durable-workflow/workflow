@@ -179,10 +179,16 @@ a lease, restores result authority or grants a new cleanup budget.
 
 The receipt preserves the original root identity and deadline. A late report
 has `received_after_deadline: true`, so an expired budget cannot appear to have
-completed on time. Local callback acknowledgements need the workflow task's
+completed on time. The timeline identifies the original activity attempt and
+explains the worker's stop report. Its `cancellation_acknowledgement` metadata
+retains the local and root request IDs, original deadline, cancellation event,
+receipt time and whether the receipt was late. Projection of this diagnostic
+event must remain safe during cleanup, repair and stale publication refusal.
+Local callback acknowledgements need the workflow task's
 distinct authority and are explicitly refused by this remote primitive. The
-Server route, SDK emission, local acknowledgement and activity waiting policies
-still need implementation and connected qualification.
+Server route and PHP/Rust emission are implemented in source drafts. Connected
+qualification remains required. Python callback supervision, local
+acknowledgement and activity waiting policies still need implementation.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.
