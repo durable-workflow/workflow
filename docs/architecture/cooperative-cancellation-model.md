@@ -184,11 +184,46 @@ explains the worker's stop report. Its `cancellation_acknowledgement` metadata
 retains the local and root request IDs, original deadline, cancellation event,
 receipt time and whether the receipt was late. Projection of this diagnostic
 event must remain safe during cleanup, repair and stale publication refusal.
-Local callback acknowledgements need the workflow task's
-distinct authority and are explicitly refused by this remote primitive. The
-Server route and PHP/Rust emission are implemented in source drafts. Connected
-qualification remains required. Python callback supervision, local
-acknowledgement and activity waiting policies still need implementation.
+Local callback acknowledgements need the workflow task's distinct authority
+and are explicitly refused by this remote primitive. The Server remote route
+and PHP, Python and Rust stop/join emission have connected source qualification.
+Python uses a separate callback process supervised independently of application
+progress. The complete published cascade and activity waiting policies remain
+required.
+
+### Portable local callback authority
+
+The candidate `PortableLocalActivityPreparation` kernel records local Scheduled
+and Started history before callback admission. It preserves encoded inputs,
+the original workflow task and attempt, a Server-issued activity attempt ID,
+the SDK attempt ID and the original deadlines. A same-claim retry after response
+loss returns that preparation. Changed descriptors, a reclaimed claim,
+cancellation or expiry refuse invocation. This is an internal protocol 1.20
+primitive. Published protocol 1.19 keeps its existing local execution path.
+
+Before preparation, `checkpointLocalActivityPrefix()` can atomically commit
+earlier nonterminal commands while retaining the workflow claim. Each batch is
+bounded to 100 commands. Its latest receipt is stored on that claim, including
+the normalized command fingerprint and authored sequence range. A lost response
+can be retried before sending a subsequent checkpoint. Changed contents or
+ownership cannot relabel a receipt or repeat child creation, side effects or
+memo updates. Checkpointing does not renew the lease or admit application code.
+An accepted cancellation refuses new prefix work, and callback preparation
+still refuses invocation even when a prior checkpoint receipt is readable.
+The SDK must replay committed history before submitting later commands.
+
+The candidate local stop receipt uses the saved Started snapshot and the
+canonical cancellation fence. The original workflow owner can report stop after
+task takeover without changing the replacement claim. A missing or
+post-cancellation preparation cannot authorize a stop report. Local history and
+timeline retain the original workflow claim rather than inventing an ordinary
+activity queue task.
+
+Prepared outcomes, retries and cold replay still need integration. Server
+admission and SDK physical local supervisors must connect these primitives,
+dispatch checkpoint-created work and qualify response loss, cancellation and
+worker replacement together. A portable SDK must not reconstruct already
+prepared local rows from a posthoc completion report.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.

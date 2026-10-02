@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use JsonException;
 use LogicException;
 use RuntimeException;
 use Throwable;
@@ -916,6 +917,174 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'attempt_count' => $attemptCount,
             'reason' => null,
         ];
+    }
+
+    /**
+     * @internal Candidate local callback prefix checkpoint. This retains the
+     * claim and is not callback admission. Preparation must follow separately.
+     * The SDK must replay committed history before submitting later commands.
+     *
+     * Only the latest sequential checkpoint receipt is retained on the claim.
+     * An SDK must acknowledge it before sending a subsequent checkpoint.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    public function checkpointLocalActivityPrefix(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        $refused = static fn (string $reason): array => [
+            'checkpointed' => false,
+            'duplicate' => false,
+            'task_id' => $taskId,
+            'reason' => $reason,
+        ];
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return $refused('local_activity_checkpoint_requires_protocol_1_20');
+        }
+        if ($startSequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
+            || trim($checkpointId) === '' || strlen($checkpointId) > 255
+            || preg_match('//u', $checkpointId) !== 1 || ! array_is_list($commands)
+            || count($commands) > 100) {
+            return $refused('invalid_local_activity_checkpoint');
+        }
+        $parsed = $commands === [] ? [
+            'non_terminal' => [],
+            'terminal' => null,
+        ] : self::parseCommands($commands);
+        if ($parsed === null || $parsed['terminal'] !== null) {
+            return $refused('invalid_local_activity_checkpoint_commands');
+        }
+        foreach ($parsed['non_terminal'] as $command) {
+            // A wait closes a turn, a local report reconstructs an executed
+            // callback, and selection cancellation requires activity fencing.
+            // None belongs in this retained-claim preparation prefix.
+            if (in_array($command['type'], ['record_local_activity', 'open_condition_wait',
+                'open_signal_wait', 'cancel_selection_operation'], true)) {
+                return $refused('invalid_local_activity_checkpoint_commands');
+            }
+        }
+        try {
+            $fingerprint = hash('sha256', json_encode($parsed['non_terminal'], JSON_THROW_ON_ERROR));
+        } catch (JsonException) {
+            return $refused('invalid_local_activity_checkpoint_commands');
+        }
+        /** @var WorkflowTask|null $snapshot */
+        $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        if ($snapshot === null) {
+            return $refused('task_not_found');
+        }
+
+        return DB::transaction(function () use (
+            $snapshot,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $parsed,
+            $fingerprint,
+            $refused,
+        ): array {
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($snapshot->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
+            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                return $refused('workflow_claim_not_found');
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return $refused('workflow_claim_mismatch');
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return $refused('workflow_claim_expired');
+            }
+            if ($run->status->isTerminal()) {
+                return $refused('run_closed');
+            }
+            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                return $refused('run_deadline_expired');
+            }
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receipt = $payload['portable_local_checkpoint'] ?? null;
+            if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
+                if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+                    || ($receipt['lease_owner'] ?? null) !== $leaseOwner
+                    || ($receipt['start_sequence'] ?? null) !== $startSequence
+                    || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
+                    return $refused('local_activity_checkpoint_mismatch');
+                }
+                // This receipt proves prefix commit, not permission to start
+                // application code. Preparation still checks cancellation.
+                return [
+                    ...$receipt,
+                    'checkpointed' => true,
+                    'duplicate' => true,
+                    'reason' => null,
+                ];
+            }
+            if ($run->cancellation_request_command_id !== null) {
+                return $refused('cancellation_requested');
+            }
+            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+            if ($sequence !== $startSequence) {
+                return $refused('local_activity_checkpoint_sequence_mismatch');
+            }
+            $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+            if ($invalidUpdate !== null) {
+                return $refused($invalidUpdate);
+            }
+            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
+                return $refused('invalid_local_activity_checkpoint_commands');
+            }
+            $this->recordAppliedSignalForSignalResume($run, $task);
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+            $createdTaskIds = [];
+            foreach ($parsed['non_terminal'] as $command) {
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+            }
+            // Command application can update task payload (for example signal
+            // consumption). Preserve that state rather than the old snapshot.
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receipt = [
+                'checkpoint_id' => $checkpointId,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'lease_owner' => $leaseOwner,
+                'lease_expires_at' => $task->lease_expires_at->toISOString(),
+                'start_sequence' => $startSequence,
+                'next_sequence' => $sequence,
+                'fingerprint' => $fingerprint,
+                'created_task_ids' => $createdTaskIds,
+                'recorded_at' => now()
+                    ->toISOString(),
+            ];
+            $task->forceFill([
+                'payload' => [
+                    ...$payload,
+                    'portable_local_checkpoint' => $receipt,
+                ],
+            ])->save();
+
+            return [
+                ...$receipt,
+                'checkpointed' => true,
+                'duplicate' => false,
+                'reason' => null,
+            ];
+        }, 5);
     }
 
     public function complete(string $taskId, array $commands): array
