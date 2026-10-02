@@ -67,6 +67,11 @@ exposes it to workflow cleanup. The object contains reason, requester, source,
 original requested-at, immutable deadline and lineage. Requester metadata is
 restricted to caller type, ID and label.
 
+`remaining()` is bound to the Fiber that received canonical delivery. Detached
+metadata, ended replays and other workflow Fibers cannot borrow its clock. The
+binding retains neither context metadata nor the Fiber and leaves portable
+serialization and value equality unchanged.
+
 `remaining()` reads the consumed blocking-boundary clock. It starts at recorded
 delivery and advances through awaited cleanup outcomes. Synchronous side effects,
 version markers, memo updates and search-attribute updates preserve it because

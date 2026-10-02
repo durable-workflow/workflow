@@ -5,13 +5,21 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Carbon\CarbonImmutable;
+use Fiber;
 use InvalidArgumentException;
 use LogicException;
+use WeakMap;
+use WeakReference;
 use Workflow\V2\Support\WorkflowFiberContext;
 
 /** Immutable request metadata recorded in canonical workflow history. */
 final class CancellationContext
 {
+    /**
+     * @var WeakMap<self, WeakReference<Fiber>>|null
+     */
+    private static ?WeakMap $replayFibers = null;
+
     /**
      * @param array<string, string> $requester
      * @param list<array{request_id: string, workflow_instance_id: string, workflow_run_id: string}> $lineage
@@ -140,8 +148,10 @@ final class CancellationContext
      */
     public function remaining(): float
     {
-        if (! WorkflowFiberContext::active()) {
-            throw new LogicException('Cancellation remaining() requires deterministic workflow time.');
+        $fiber = Fiber::getCurrent();
+        $binding = self::$replayFibers === null ? null : (self::$replayFibers[$this] ?? null);
+        if (! $fiber instanceof Fiber || $binding?->get() !== $fiber || ! WorkflowFiberContext::active()) {
+            throw new LogicException('Cancellation remaining() requires its active workflow replay.');
         }
 
         $time = WorkflowFiberContext::getCancellationTime();
@@ -149,6 +159,15 @@ final class CancellationContext
         $microseconds = (int) $this->cleanupDeadline->format('u') - (int) $time->format('u');
 
         return max(0.0, $seconds + $microseconds / 1_000_000);
+    }
+
+    /**
+     * @internal Bind only at canonical executor delivery, without retaining the Fiber.
+     */
+    public function bindToReplayFiber(Fiber $fiber): void
+    {
+        self::$replayFibers ??= new WeakMap();
+        self::$replayFibers[$this] = WeakReference::create($fiber);
     }
 
     /**

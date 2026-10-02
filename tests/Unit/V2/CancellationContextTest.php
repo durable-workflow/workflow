@@ -43,6 +43,9 @@ final class CancellationContextTest extends TestCase
             $fiber = new Fiber(function () use ($context): void {
                 WorkflowFiberContext::enter();
                 try {
+                    $current = Fiber::getCurrent();
+                    $this->assertInstanceOf(Fiber::class, $current);
+                    $context->bindToReplayFiber($current);
                     WorkflowFiberContext::startCancellationTime(
                         CarbonImmutable::parse('2026-10-01T00:00:03.500000Z'),
                         Fiber::getCurrent(),
@@ -141,6 +144,68 @@ final class CancellationContextTest extends TestCase
         });
         $this->expectException(LogicException::class);
         $fiber->start();
+    }
+
+    public function testDetachedMetadataCannotBorrowAnActiveDeliveryClock(): void
+    {
+        $context = CancellationContext::fromArray($this->snapshot());
+        $execution = WorkflowExecution::startCallback(static function (): void {
+            try {
+                Fiber::suspend('delivery');
+            } catch (WorkflowCancellationRequestedException $cancelled) {
+                $delivered = $cancelled->cancellation;
+                self::assertNotNull($delivered);
+                self::assertSame(27.0, $delivered->remaining());
+                $detached = CancellationContext::fromArray($delivered->toArray());
+
+                $detached->remaining();
+            }
+        });
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('active workflow replay');
+        $execution->throw(
+            new WorkflowCancellationRequestedException(cancellation: $context),
+            CarbonImmutable::parse('2026-10-01T00:00:03Z'),
+        );
+    }
+
+    public function testDeliveredContextCannotBorrowAnotherFiberAndRetainsMetadataEquality(): void
+    {
+        $context = CancellationContext::fromArray($this->snapshot());
+        $execution = WorkflowExecution::startCallback(static function (): void {
+            try {
+                Fiber::suspend('delivery');
+            } catch (WorkflowCancellationRequestedException) {
+                Fiber::suspend('cleanup');
+            }
+        });
+        $execution->throw(
+            new WorkflowCancellationRequestedException(cancellation: $context),
+            CarbonImmutable::parse('2026-10-01T00:00:03Z')
+        );
+        $this->assertEquals(CancellationContext::fromArray($context->toArray()), $context);
+        $other = WorkflowExecution::startCallback(static function () use ($context): void {
+            try {
+                Fiber::suspend('delivery');
+            } catch (WorkflowCancellationRequestedException $cancelled) {
+                self::assertNotNull($cancelled->cancellation);
+                self::assertSame(26.0, $cancelled->cancellation->remaining());
+
+                $context->remaining();
+            }
+        });
+        try {
+            $this->expectException(LogicException::class);
+            $this->expectExceptionMessage('active workflow replay');
+            $other->throw(
+                new WorkflowCancellationRequestedException(cancellation: CancellationContext::fromArray(
+                    $this->snapshot()
+                )),
+                CarbonImmutable::parse('2026-10-01T00:00:04Z')
+            );
+        } finally {
+            $execution->send(null);
+        }
     }
 
     public function testDescendantKeepsTheRootBudgetAndImmediateParentIdentity(): void

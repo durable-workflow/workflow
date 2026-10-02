@@ -134,6 +134,7 @@ final class WorkflowExecution
         }
 
         if ($throwable instanceof WorkflowCancellationRequestedException && $throwable->cancellation !== null) {
+            $throwable->cancellation->bindToReplayFiber($this->fiber);
             WorkflowFiberContext::startCancellationTime($eventTime, $this->fiber);
         }
 
