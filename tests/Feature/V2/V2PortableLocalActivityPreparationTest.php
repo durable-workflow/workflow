@@ -944,7 +944,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             }
             $this->assertSame(
                 2,
-                $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
             );
         } finally {
             Carbon::setTestNow();
