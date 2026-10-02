@@ -61,7 +61,7 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         );
         $started = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityStarted)->sole();
-        $this->assertSame(
+        $this->assertCleanupSnapshot(
             $prepared['cancellation_cleanup'],
             $started->payload['local_preparation']['cancellation_cleanup']
         );
@@ -115,13 +115,15 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         $delivery = $run->historyEvents()
             ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
         $delivery->forceFill([
-            'recorded_at' => $run->cancellation_delivered_at->copy()->addMicroseconds(200),
+            'recorded_at' => $run->cancellation_delivered_at->copy()
+                ->addMicroseconds(200),
         ])->save();
         Carbon::setTestNow(now()->addMillisecond());
         $prepared = $this->prepare($task, $descriptor);
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
         $this->assertTrue(
-            $this->bridge()->controlLocalActivity($prepared['activity_attempt_id'], 'owner', 7, false, '1.20')['active']
+            $this->bridge()
+                ->controlLocalActivity($prepared['activity_attempt_id'], 'owner', 7, false, '1.20')['active']
         );
         $this->assertTrue($this->outcome($prepared['activity_attempt_id'])['recorded']);
     }
@@ -344,7 +346,7 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         $this->assertTrue($retry['prepared'], $retry['reason'] ?? '');
         $this->assertSame(2, $retry['attempt_number']);
         $this->assertNotSame($prepared['activity_attempt_id'], $retry['activity_attempt_id']);
-        $this->assertSame($prepared['cancellation_cleanup'], $retry['cancellation_cleanup']);
+        $this->assertCleanupSnapshot($prepared['cancellation_cleanup'], $retry['cancellation_cleanup']);
         $this->assertSame($deadline, $retry['start_to_close_deadline_at']);
         $this->assertSame($deadline, $retry['schedule_to_close_deadline_at']);
         $completed = $this->bridge()
@@ -454,6 +456,13 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
             $execution->run->historyEvents()
                 ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
         );
+    }
+
+    private function assertCleanupSnapshot(array $expected, array $actual): void
+    {
+        ksort($expected);
+        ksort($actual);
+        $this->assertSame($expected, $actual);
     }
 
     private function bridge(): PreparedLocalActivityTaskBridge
