@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use JsonException;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -83,7 +83,11 @@ final class PortableLocalActivityPreparation
         ): array {
             // Follow the shared attempt/execution/run/task lock order whenever
             // an execution exists. An unseen concurrent creation is retried.
-            $rows = $snapshotExecution === null ? null : ActivityRowLockOrder::lockForExecution($snapshotExecution->id);
+            $rows = $snapshotExecution === null ? null : (
+                is_string($snapshotExecution->current_attempt_id)
+                    ? ActivityRowLockOrder::lockForAttempt($snapshotExecution->current_attempt_id)
+                    : ActivityRowLockOrder::lockForExecution($snapshotExecution->id)
+            );
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->lockForUpdate()
@@ -116,8 +120,12 @@ final class PortableLocalActivityPreparation
             $attempt = $rows['attempt'] ?? null;
             if ($snapshotExecution !== null) {
                 if (! $execution instanceof ActivityExecution || ! $attempt instanceof ActivityAttempt
+                    || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
                     || $execution->current_attempt_id !== ($rows['snapshot_attempt_id'] ?? null)) {
                     return self::response('local_activity_previous_attempt_unresolved');
+                }
+                if ($execution->status === ActivityStatus::Pending) {
+                    return self::prepareRetry($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
                 }
                 return self::duplicate($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
             }
@@ -144,7 +152,6 @@ final class PortableLocalActivityPreparation
                 scheduleToCloseTimeout: $normalized['schedule_to_close_timeout'] ?? null,
                 heartbeatTimeout: $normalized['heartbeat_timeout'] ?? null,
             );
-            $attemptId = (string) Str::ulid();
             /** @var ActivityExecution $execution */
             $execution = ActivityExecution::query()->create([
                 'workflow_run_id' => $run->id,
@@ -185,52 +192,13 @@ final class PortableLocalActivityPreparation
                 ...$base,
                 'activity' => ActivitySnapshot::fromExecution($execution),
             ], $task);
-            $execution->forceFill([
-                'status' => ActivityStatus::Running,
-                'attempt_count' => 1,
-                'current_attempt_id' => $attemptId,
-                'started_at' => $now,
-                'last_heartbeat_at' => $now,
-                'close_deadline_at' => $options->startToCloseTimeout === null
-                    ? null : $now->copy()
-                        ->addSeconds($options->startToCloseTimeout),
-                'heartbeat_deadline_at' => $options->heartbeatTimeout === null
-                    ? null : $now->copy()
-                        ->addSeconds($options->heartbeatTimeout),
-            ])->save();
-            /** @var ActivityAttempt $attempt */
-            $attempt = ActivityAttempt::query()->create([
-                'id' => $attemptId,
-                'worker_attempt_id' => $workerAttemptId,
-                'workflow_run_id' => $run->id,
-                'activity_execution_id' => $execution->id,
-                'workflow_task_id' => $task->id,
-                'attempt_number' => 1,
-                'status' => ActivityAttemptStatus::Running,
-                'lease_owner' => $leaseOwner,
-                'started_at' => $now,
-                'last_heartbeat_at' => $now,
-                'lease_expires_at' => $task->lease_expires_at,
-            ]);
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
-                ...$base,
-                'activity_attempt_id' => $attempt->id,
-                'worker_attempt_id' => $workerAttemptId,
-                'attempt_number' => 1,
-                'lease_expires_at' => $task->lease_expires_at->toISOString(),
-                'activity' => ActivitySnapshot::fromExecution($execution),
-                'activity_attempt' => [
-                    'id' => $attempt->id,
-                    'worker_attempt_id' => $workerAttemptId,
-                    'activity_execution_id' => $execution->id,
-                    'task_id' => $task->id,
-                    'attempt_number' => 1,
-                    'status' => ActivityAttemptStatus::Running->value,
-                    'lease_owner' => $leaseOwner,
-                    'started_at' => $now->toISOString(),
-                    'lease_expires_at' => $task->lease_expires_at->toISOString(),
-                ],
-            ], $task);
+            $attempt = app(LocalActivityExecutor::class)->startPortableAttempt(
+                $run,
+                $task,
+                $execution,
+                $workerAttemptId,
+                $preparation
+            );
 
             return self::response(null, $execution, $attempt, task: $task);
         }, 5);
@@ -313,8 +281,85 @@ final class PortableLocalActivityPreparation
             || ($started->payload['activity_attempt']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id) {
             return null;
         }
+        if (array_key_exists('schedule_to_close_deadline_at', $started->payload['local_preparation'])
+            && $started->payload['local_preparation']['schedule_to_close_deadline_at']
+                !== $execution->schedule_to_close_deadline_at?->toISOString()) {
+            return null;
+        }
 
         return $started;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function prepareRetry(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        ActivityAttempt $previous,
+        string $workerAttemptId,
+        string $fingerprint,
+    ): array {
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)
+            ->where('payload->activity_attempt_id', $previous->id)
+            ->first();
+        $originalTaskAttempt = $started?->payload['local_preparation']['workflow_task_attempt'] ?? null;
+        if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
+            || $previous->status !== ActivityAttemptStatus::Failed || $previous->closed_at === null
+            || $execution->attempt_count !== $previous->attempt_number
+            || ! is_int($originalTaskAttempt)
+            || self::originalStart($run, $execution, $previous, $previous->lease_owner, $originalTaskAttempt) === null
+            || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
+            return self::response('local_activity_retry_preparation_mismatch');
+        }
+        $retry = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+            ->where('payload->activity_attempt_id', $previous->id)
+            ->first();
+        if (! $retry instanceof WorkflowHistoryEvent || $retry->sequence <= $started->sequence
+            || $retry->workflow_task_id !== $previous->workflow_task_id
+            || ($retry->payload['activity_execution_id'] ?? null) !== $execution->id
+            || ($retry->payload['retry_task_id'] ?? null) !== $task->id
+            || ($retry->payload['retry_of_task_id'] ?? null) !== $previous->workflow_task_id
+            || ($retry->payload['retry_after_attempt_id'] ?? null) !== $previous->id
+            || ($retry->payload['retry_after_attempt'] ?? null) !== $previous->attempt_number
+            || ($retry->payload['retry_policy'] ?? null) !== $execution->retry_policy
+            || ($retry->payload['local_outcome']['version'] ?? null) !== 1
+            || ($retry->payload['local_outcome']['workflow_task_attempt'] ?? null) !== $originalTaskAttempt
+            || ($retry->payload['task']['lease_owner'] ?? null) !== $previous->lease_owner
+            || ($retry->payload['task']['attempt_count'] ?? null) !== $originalTaskAttempt
+            || ! is_string($retry->payload['retry_available_at'] ?? null)
+            || $execution->attempt_count >= ActivityRetryPolicy::maxAttemptsFromSnapshot($execution)) {
+            return self::response('local_activity_retry_preparation_mismatch');
+        }
+        if ($execution->attempts()->where('worker_attempt_id', $workerAttemptId)->exists()) {
+            return self::response('local_activity_retry_worker_attempt_reused');
+        }
+        // The durable receipt owns backoff. Mutable task availability cannot
+        // admit a callback early. Total timeout owns the entire retry chain.
+        if ($execution->schedule_to_close_deadline_at !== null && now()->gte(
+            $execution->schedule_to_close_deadline_at
+        )) {
+            $event = app(LocalActivityExecutor::class)->expirePortableRetry($run, $task, $execution);
+            return [
+                ...self::response('local_activity_deadline_expired'),
+                'event_id' => $event->id,
+                'event_type' => $event->event_type->value,
+            ];
+        }
+        if (now()->lt(Carbon::parse($retry->payload['retry_available_at']))) {
+            return self::response('local_activity_retry_not_due');
+        }
+        $attempt = app(LocalActivityExecutor::class)->startPortableAttempt($run, $task, $execution, $workerAttemptId, [
+            'version' => 1,
+            'descriptor_fingerprint' => $fingerprint,
+            'worker_attempt_id' => $workerAttemptId,
+            'workflow_task_attempt' => $task->attempt_count,
+        ]);
+
+        return self::response(null, $execution, $attempt, task: $task);
     }
 
     /**
@@ -338,6 +383,9 @@ final class PortableLocalActivityPreparation
         if (! $started instanceof WorkflowHistoryEvent
             || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
             return self::response('local_activity_preparation_mismatch');
+        }
+        if ($attempt->lease_expires_at === null || now()->gte($attempt->lease_expires_at)) {
+            return self::response('local_activity_preparation_lease_expired');
         }
         foreach ([
             $execution->close_deadline_at,

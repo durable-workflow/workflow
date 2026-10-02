@@ -290,6 +290,36 @@ final class LocalActivityExecutor
         return $this->recordAttemptOutcome($task, $execution, $attempt, $result, $throwable);
     }
 
+    /**
+     * @internal Portable preparation validates and locks the execution, run and
+     * hosting claim before calling this shared attempt recorder.
+     * @param array<string, mixed> $preparation
+     */
+    public function startPortableAttempt(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        string $workerAttemptId,
+        array $preparation,
+    ): ActivityAttempt {
+        $preparation['schedule_to_close_deadline_at'] = $execution->schedule_to_close_deadline_at?->toISOString();
+        return $this->startAttempt($run, $task, $execution, $workerAttemptId, $preparation);
+    }
+
+    /**
+     * @internal The caller holds canonical locks and has validated the retry
+     * authority and the expired original total deadline. No callback is admitted.
+     */
+    public function expirePortableRetry(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+    ): WorkflowHistoryEvent {
+        $outcome = $this->recordTimeoutOutcome($run, $task, $execution, 'schedule_to_close');
+
+        return $outcome['event'];
+    }
+
     /** @param array<string, mixed> $report
      * @return array<string, mixed>
      */
@@ -518,14 +548,18 @@ final class LocalActivityExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         ActivityExecution $execution,
+        ?string $workerAttemptId = null,
+        array $preparation = [],
     ): ActivityAttempt {
         $now = now();
         $attemptId = (string) Str::ulid();
         $attemptNumber = ((int) $execution->attempt_count) + 1;
         $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
-        $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask($task)
-            ?? $task->lease_expires_at
-            ?? LocalActivityRuntime::workflowTaskLeaseExpiresAt();
+        $leaseExpiresAt = $workerAttemptId === null
+            ? LocalActivityRuntime::renewWorkflowTask($task)
+                ?? $task->lease_expires_at
+                ?? LocalActivityRuntime::workflowTaskLeaseExpiresAt()
+            : $task->lease_expires_at;
         $startToCloseTimeout = is_int($retryPolicy['start_to_close_timeout'] ?? null)
             ? $retryPolicy['start_to_close_timeout']
             : null;
@@ -548,6 +582,7 @@ final class LocalActivityExecutor
         /** @var ActivityAttempt $attempt */
         $attempt = ActivityAttempt::query()->create([
             'id' => $attemptId,
+            'worker_attempt_id' => $workerAttemptId,
             'workflow_run_id' => $run->id,
             'activity_execution_id' => $execution->id,
             'workflow_task_id' => $task->id,
@@ -559,6 +594,10 @@ final class LocalActivityExecutor
             'lease_expires_at' => $leaseExpiresAt,
         ]);
 
+        $metadata = $workerAttemptId === null ? [] : [
+            'worker_attempt_id' => $workerAttemptId,
+            'local_preparation' => $preparation,
+        ];
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, LocalActivityRuntime::eventPayload([
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,
@@ -570,6 +609,7 @@ final class LocalActivityExecutor
             'lease_expires_at' => $leaseExpiresAt?->toJSON(),
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => self::attemptSnapshot($attempt),
+            ...$metadata,
         ]), $task);
 
         LifecycleEventDispatcher::activityStarted(

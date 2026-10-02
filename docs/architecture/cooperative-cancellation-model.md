@@ -231,11 +231,20 @@ a replacement workflow claim. This refuses result publication. It does not
 acknowledge physical callback stop. The original owner must separately report
 that its supervisor has stopped and joined the callback.
 
-Retry preparation and cold recovery still need integration. Server admission
-and SDK physical local supervisors must connect these primitives, dispatch
-created work and qualify response loss, cancellation and worker replacement
-together. A portable SDK must not reconstruct already prepared local rows from
-a posthoc completion report.
+Retry preparation validates the canonical retry event, its hosting workflow
+task, original descriptor and backoff before allocating a distinct attempt.
+It shares the embedded attempt recorder without renewing the hosting claim.
+The SDK must use a fresh attempt identity. A lost preparation response returns
+the same current attempt. The total deadline remains recorded in Started
+history. An expired total budget records a terminal timeout without admitting
+another callback. A renewed workflow claim cannot readmit an expired local
+attempt.
+
+Cold recovery still needs integration. Server admission and SDK physical local
+supervisors must connect these primitives, dispatch created work and qualify
+response loss, cancellation and worker replacement together. A portable SDK
+must not reconstruct already prepared local rows from a posthoc completion
+report.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.
