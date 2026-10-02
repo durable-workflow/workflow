@@ -26,12 +26,16 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalActivityCall;
+use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
 
 final class V2PortableCancellationDeliveryTest extends TestCase
@@ -543,6 +547,226 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(0, $this->stopReceiptCount($run));
     }
 
+    public function testLocalStopReceiptKeepsTheOriginalWorkflowClaimAndDoesNotRenewCleanupAuthority(): void
+    {
+        [$run, $task, $attempt] = $this->cancelledLocalAttempt();
+        $taskBefore = $task->getAttributes();
+        $attemptBefore = $attempt->getAttributes();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertTrue($reply['acknowledged']);
+        $event = $run->historyEvents()
+            ->whereKey($reply['history_event_id'])->sole();
+        $this->assertTrue($event->payload['local_activity']);
+        $this->assertSame(LocalActivityRuntime::EXECUTION_MODE, $event->payload['execution_mode']);
+        $this->assertSame('workflow_worker', $event->payload['evidence_source']);
+        $this->assertSame($task->id, $event->payload['workflow_task_id']);
+        $this->assertSame('portable-worker', $event->payload['task']['lease_owner']);
+        $this->assertSame(1, $event->payload['task']['attempt_count']);
+        $this->assertSame($deadline, $event->payload['cleanup_deadline_at']);
+        $this->assertSame($run->cancellation_request_command_id, $event->payload['root_request_id']);
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        $receipt = collect(HistoryTimeline::forRun($run->fresh()))->firstWhere(
+            'type',
+            'ActivityCancellationAcknowledged'
+        );
+        $this->assertSame($event->id, $receipt['id']);
+        $this->assertSame($attempt->id, $receipt['activity']['attempt_id']);
+    }
+
+    public function testLocalOriginalOwnerCanReportAfterWorkflowTakeoverButTheReplacementCannotImpersonateIt(): void
+    {
+        [$run, $task, $attempt] = $this->cancelledLocalAttempt();
+        $task->forceFill([
+            'lease_owner' => 'replacement-owner',
+            'attempt_count' => 2,
+        ])->save();
+        $taskBefore = $task->getAttributes();
+        foreach ([['replacement-owner', 2],
+            ['portable-worker', 2],
+            ['portable-worker', 0],
+        ] as [$owner, $claimAttempt]) {
+            $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+                $attempt->id,
+                $owner,
+                $run->cancellation_request_command_id,
+                $claimAttempt,
+            );
+            $this->assertFalse($reply['acknowledged']);
+        }
+        $this->assertSame(0, $this->stopReceiptCount($run));
+        $original = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertTrue($original['acknowledged']);
+        $event = $run->historyEvents()
+            ->whereKey($original['history_event_id'])->sole();
+        $this->assertSame('portable-worker', $event->payload['task']['lease_owner']);
+        $this->assertSame(1, $event->payload['task']['attempt_count']);
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $receipt = collect(HistoryTimeline::forRun($run->fresh()))->firstWhere(
+            'type',
+            'ActivityCancellationAcknowledged'
+        );
+        $this->assertSame('workflow', $receipt['task']['type']);
+        $this->assertSame('leased', $receipt['task']['status']);
+        $this->assertSame(1, $receipt['task']['attempt_count']);
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'attempt_count' => 3,
+        ])->save();
+        $taskBefore = $task->getAttributes();
+        $duplicate = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertTrue($duplicate['acknowledged']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($original['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame(1, $this->stopReceiptCount($run));
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $receipt = collect(HistoryTimeline::forRun($run->fresh()))->firstWhere(
+            'type',
+            'ActivityCancellationAcknowledged'
+        );
+        $this->assertSame('workflow', $receipt['task']['type']);
+        $this->assertSame('leased', $receipt['task']['status']);
+        $this->assertSame(1, $receipt['task']['attempt_count']);
+    }
+
+    #[DataProvider('invalidLocalStopClaims')]
+    public function testLocalStopReceiptRequiresTheClaimSavedBeforeItsCallback(string $field, mixed $value): void
+    {
+        [$run, , $attempt] = $this->cancelledLocalAttempt();
+        $event = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)->sole();
+        $payload = $event->payload;
+        if ($field === 'task') {
+            $payload['task'] = $value;
+        } else {
+            $payload['task'][$field] = $value;
+        }
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('local_activity_workflow_claim_mismatch', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    public static function invalidLocalStopClaims(): iterable
+    {
+        yield 'legacy start without claim' => ['task', null];
+        yield 'malformed claim' => ['task', 'not-a-claim'];
+        yield 'another task' => ['id', 'another-task'];
+        yield 'ordinary activity task' => ['type', TaskType::Activity->value];
+        yield 'unclaimed task' => ['status', TaskStatus::Ready->value];
+        yield 'another original owner' => ['lease_owner', 'another-owner'];
+        yield 'missing original attempt' => ['attempt_count', null];
+        yield 'nonpositive original attempt' => ['attempt_count', 0];
+    }
+
+    public function testLocalStopReceiptCannotBorrowARemoteAttemptOrAnotherCancellationRequest(): void
+    {
+        [$run, , $attempt] = $this->cancelledRemoteAttempt();
+        $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'activity-owner',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('activity_is_not_local', $reply['reason']);
+        [$run, , $attempt] = $this->cancelledLocalAttempt();
+        $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            'another-request',
+            1,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('cancellation_request_mismatch', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    #[DataProvider('unpreparedLocalCallbacks')]
+    public function testLocalStopReceiptRejectsAnAbsentOrPostCancellationStart(bool $missing): void
+    {
+        [$run, , $attempt] = $this->cancelledLocalAttempt();
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)->sole();
+        if ($missing) {
+            $started->delete();
+        } else {
+            $started->forceFill([
+                'sequence' => $run->last_history_sequence + 1,
+            ])->save();
+        }
+        $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attempt->id,
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertFalse($reply['acknowledged']);
+        $this->assertSame('local_activity_workflow_claim_mismatch', $reply['reason']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+    }
+
+    public static function unpreparedLocalCallbacks(): iterable
+    {
+        yield 'callback without durable preparation' => [true];
+        yield 'post hoc callback start' => [false];
+    }
+
+    public function testLateLocalReceiptDoesNotRenewTheOriginalDeadlineOrReplacementLease(): void
+    {
+        [$run, $task, $attempt] = $this->cancelledLocalAttempt();
+        $task->forceFill([
+            'lease_owner' => 'replacement-owner',
+            'attempt_count' => 2,
+        ])->save();
+        $taskBefore = $task->getAttributes();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
+        try {
+            $reply = ActivityCancellationAcknowledgement::recordLocalStopped(
+                $attempt->id,
+                'portable-worker',
+                $run->cancellation_request_command_id,
+                1,
+            );
+            $this->assertTrue($reply['acknowledged']);
+            $event = $run->historyEvents()
+                ->whereKey($reply['history_event_id'])->sole();
+            $this->assertTrue($event->payload['received_after_deadline']);
+            $this->assertSame($deadline, $event->payload['cleanup_deadline_at']);
+            $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+            $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testARecordedCallCannotBeRelabelledAsADifferentOperation(): void
     {
         [$run, $task] = $this->newRun();
@@ -858,6 +1082,51 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         }
 
         return [$run, $activityTask->refresh(), $attempt->refresh()];
+    }
+
+    /**
+     * Exercises the actual embedded preparation path. The mock checks history
+     * before cancellation, but does not claim to prove an SDK process stopped.
+     *
+     * @return array{WorkflowRun, WorkflowTask, \Workflow\V2\Models\ActivityAttempt}
+     */
+    private function cancelledLocalAttempt(): array
+    {
+        [$run, $task] = $this->newRun();
+        $task->forceFill([
+            'attempt_count' => 1,
+        ])->save();
+        WorkflowStub::mock(TestGreetingActivity::class, function (ActivityFakeContext $context): string {
+            $started = $context->run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)->sole();
+            $this->assertSame($context->taskId, $started->payload['task']['id']);
+            $this->assertSame('portable-worker', $started->payload['task']['lease_owner']);
+            $this->assertSame(1, $started->payload['task']['attempt_count']);
+            $this->assertSame(TaskStatus::Leased->value, $started->payload['task']['status']);
+            $this->request($context->run);
+            ActivityCancellation::record(
+                $context->run,
+                $context->execution,
+                command: $context->run->cancellation_request_command_id,
+            );
+
+            return 'a fenced local result';
+        });
+        $outcome = (new LocalActivityExecutor())->execute(
+            $run,
+            $task,
+            1,
+            new LocalActivityCall(TestGreetingActivity::class, ['Taylor']),
+        );
+        $this->assertSame('waiting', $outcome['status']);
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        $attempt = $run->activityExecutions()
+            ->sole()
+            ->attempts()
+            ->sole();
+
+        return [$run->refresh(), $task->refresh(), $attempt];
     }
 
     private function stopReceiptCount(WorkflowRun $run): int

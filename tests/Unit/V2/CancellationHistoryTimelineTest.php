@@ -77,6 +77,28 @@ final class CancellationHistoryTimelineTest extends TestCase
         yield 'after original deadline' => [true];
     }
 
+    public function testLocalStopReceiptDoesNotDescribeItsWorkflowClaimAsACancelledActivityTask(): void
+    {
+        $entry = $this->entry(HistoryEventType::ActivityCancellationAcknowledged, [
+            'activity_execution_id' => 'local-activity-1',
+            'activity_attempt_id' => 'original-local-attempt',
+            'local_activity' => true,
+            'execution_mode' => 'local',
+            'evidence_source' => 'workflow_worker',
+            'task' => [
+                'id' => 'task-1',
+                'type' => 'workflow',
+                'status' => 'leased',
+                'attempt_count' => 1,
+            ],
+        ]);
+
+        $this->assertSame('cancelled', $entry['activity_status']);
+        $this->assertSame('workflow', $entry['task']['type']);
+        $this->assertSame('leased', $entry['task']['status']);
+        $this->assertSame(1, $entry['task']['attempt_count']);
+    }
+
     /** @param array<string, mixed> $payload
      * @return array<string, mixed>
      */

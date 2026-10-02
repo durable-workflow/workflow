@@ -9,6 +9,7 @@ use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -26,15 +27,55 @@ final class ActivityCancellationAcknowledgement
      */
     public static function recordStopped(string $attemptId, string $leaseOwner, string $requestId): array
     {
-        return DB::transaction(static function () use ($attemptId, $leaseOwner, $requestId): array {
+        return self::record($attemptId, $leaseOwner, $requestId, null);
+    }
+
+    /**
+     * Reports a joined local callback using the workflow claim that started it.
+     * The current workflow claim can belong to a replacement cleanup worker.
+     *
+     * @return array{acknowledged: bool, duplicate: bool, reason: ?string, history_event_id: ?string}
+     */
+    public static function recordLocalStopped(
+        string $attemptId,
+        string $leaseOwner,
+        string $requestId,
+        int $workflowTaskAttempt,
+    ): array {
+        if ($workflowTaskAttempt < 1) {
+            return self::refused('local_activity_workflow_claim_mismatch');
+        }
+
+        return self::record($attemptId, $leaseOwner, $requestId, $workflowTaskAttempt);
+    }
+
+    /**
+     * @return array{acknowledged: bool, duplicate: bool, reason: ?string, history_event_id: ?string}
+     */
+    private static function record(
+        string $attemptId,
+        string $leaseOwner,
+        string $requestId,
+        ?int $workflowTaskAttempt,
+    ): array {
+        return DB::transaction(static function () use (
+            $attemptId,
+            $leaseOwner,
+            $requestId,
+            $workflowTaskAttempt
+        ): array {
             $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
             $attempt = $rows['attempt'];
             $execution = $rows['execution'];
             if (! $attempt instanceof ActivityAttempt || ! $execution instanceof ActivityExecution) {
                 return self::refused('activity_attempt_not_found');
             }
-            if (LocalActivityRuntime::isExecution($execution)) {
+            $local = LocalActivityRuntime::isExecution($execution);
+            if ($local && $workflowTaskAttempt === null) {
                 return self::refused('local_cancellation_acknowledgement_requires_workflow_claim');
+            }
+            if (! $local && $workflowTaskAttempt !== null) {
+                return self::refused('activity_is_not_local');
             }
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
@@ -52,7 +93,8 @@ final class ActivityCancellationAcknowledgement
                 || $execution->workflow_run_id !== $run->id
                 || $task->workflow_run_id !== $run->id
                 || $attempt->lease_owner !== $leaseOwner
-                || $task->lease_owner !== $leaseOwner) {
+                || (! $local && $task->lease_owner !== $leaseOwner)
+                || ($local && $task->task_type !== TaskType::Workflow)) {
                 return self::refused('activity_cancellation_acknowledgement_fence_mismatch');
             }
             if ($run->cancellation_request_command_id !== $requestId) {
@@ -83,6 +125,20 @@ final class ActivityCancellationAcknowledgement
                 || ($snapshot['activity_execution_id'] ?? null) !== $execution->id) {
                 return self::refused('activity_cancellation_snapshot_mismatch');
             }
+            $originalClaim = null;
+            if ($local) {
+                $originalClaim = self::originalLocalClaim(
+                    $run,
+                    $task,
+                    $cancelled,
+                    $attemptId,
+                    $leaseOwner,
+                    $workflowTaskAttempt
+                );
+                if ($originalClaim === null) {
+                    return self::refused('local_activity_workflow_claim_mismatch');
+                }
+            }
             /** @var WorkflowHistoryEvent|null $existing */
             $existing = $events->first(static fn (WorkflowHistoryEvent $event): bool =>
                 $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
@@ -98,7 +154,7 @@ final class ActivityCancellationAcknowledgement
             }
             if ($attempt->status !== ActivityAttemptStatus::Cancelled
                 || $execution->status !== ActivityStatus::Cancelled
-                || $task->status !== TaskStatus::Cancelled) {
+                || (! $local && $task->status !== TaskStatus::Cancelled)) {
                 return self::refused('activity_cancellation_not_fenced');
             }
             $context = CooperativeCancellationDelivery::context($run);
@@ -106,7 +162,7 @@ final class ActivityCancellationAcknowledgement
                 return self::refused('cancellation_context_not_recorded');
             }
             $receivedAt = now();
-            $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancellationAcknowledged, [
+            $payload = [
                 'sequence' => $execution->sequence,
                 'activity_execution_id' => $execution->id,
                 'activity_attempt_id' => $attemptId,
@@ -117,10 +173,23 @@ final class ActivityCancellationAcknowledgement
                 'cleanup_deadline_at' => $context->deadline()
                     ->toISOString(),
                 'callback_state' => 'stopped',
-                'evidence_source' => 'activity_worker',
+                'evidence_source' => $local ? 'workflow_worker' : 'activity_worker',
                 'acknowledged_at' => $receivedAt->toISOString(),
                 'received_after_deadline' => $receivedAt->gte($context->deadline()),
-            ], $task, $requestId);
+            ];
+            if ($originalClaim !== null) {
+                $payload = LocalActivityRuntime::eventPayload($payload);
+                $payload['workflow_task_id'] = $task->id;
+                // Keep the receipt's claim snapshot bound to the original owner.
+                $payload['task'] = $originalClaim;
+            }
+            $event = WorkflowHistoryEvent::record(
+                $run,
+                HistoryEventType::ActivityCancellationAcknowledged,
+                $payload,
+                $task,
+                $requestId
+            );
 
             return [
                 'acknowledged' => true,
@@ -129,6 +198,48 @@ final class ActivityCancellationAcknowledgement
                 'history_event_id' => $event->id,
             ];
         }, 5);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function originalLocalClaim(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowHistoryEvent $cancelled,
+        string $attemptId,
+        string $leaseOwner,
+        ?int $workflowTaskAttempt,
+    ): ?array {
+        if (($cancelled->payload['local_activity'] ?? null) !== true
+            || ($cancelled->payload['execution_mode'] ?? null) !== LocalActivityRuntime::EXECUTION_MODE) {
+            return null;
+        }
+        /** @var WorkflowHistoryEvent|null $started */
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)
+            ->where('payload->activity_attempt_id', $attemptId)
+            ->where('sequence', '<', $cancelled->sequence)
+            ->first();
+        if (! $started instanceof WorkflowHistoryEvent
+            || ($started->payload['local_activity'] ?? null) !== true
+            || ($started->payload['execution_mode'] ?? null) !== LocalActivityRuntime::EXECUTION_MODE
+            || ($started->payload['activity_execution_id'] ?? null) !== $cancelled->payload['activity_execution_id']
+            || ($started->payload['workflow_task_id'] ?? null) !== $task->id) {
+            return null;
+        }
+        $claim = $started->payload['task'] ?? null;
+        if (! is_array($claim) || array_is_list($claim)
+            || ($claim['id'] ?? null) !== $task->id
+            || ($claim['type'] ?? null) !== TaskType::Workflow->value
+            || ($claim['status'] ?? null) !== TaskStatus::Leased->value
+            || ($claim['lease_owner'] ?? null) !== $leaseOwner
+            || ! is_int($workflowTaskAttempt) || $workflowTaskAttempt < 1
+            || ($claim['attempt_count'] ?? null) !== $workflowTaskAttempt) {
+            return null;
+        }
+
+        return $claim;
     }
 
     /**

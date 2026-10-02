@@ -1242,6 +1242,10 @@ final class HistoryTimeline
         if ($taskId === null) {
             return null;
         }
+        if ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+            && ($event->payload['local_activity'] ?? null) === true) {
+            return 'workflow';
+        }
 
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
@@ -1261,6 +1265,10 @@ final class HistoryTimeline
     {
         if ($taskId === null) {
             return null;
+        }
+        if ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+            && ($event->payload['local_activity'] ?? null) === true) {
+            return self::stringValue($event->payload['task']['status'] ?? null);
         }
 
         return match ($event->event_type) {
