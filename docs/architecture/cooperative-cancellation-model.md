@@ -361,6 +361,30 @@ in [Temporal's activity cancellation contract](https://docs.temporal.io/develop/
 DW's independent cancellation observation and original bounded cascade remain
 the advantages to qualify.
 
+The internal Source remote lifetime now reads `Abandon` from the canonical
+`ActivityScheduled` snapshot and captures the original absolute
+`schedule_to_close_deadline_at` with it. Detachment requires that finite total
+budget. Cooperative parent closure preserves the activity task and attempt.
+The original owner can continue and commit a canonical outcome after the
+parent closes, including after the parent's cleanup deadline. The activity's
+own deadline remains unchanged. Outcomes and timeout closure do not create a
+workflow task or reopen the cancelled parent. Failure retries and expired-owner
+recovery retain the same total budget and reject stale publication.
+
+Retention holds the parent detail and external payloads until canonical terminal
+history resolves the latest activity attempt. A mutable completed row is
+insufficient. `WorkflowRunRetentionCleanup::retentionHoldReason()` lets hosts
+check this before reclaiming objects, and `pruneRun()` also enforces the hold.
+An older backend that cannot evaluate this policy must preserve its records and
+return an explicit unsupported-backend diagnostic until a compatible backend
+is restored. Legacy terminal cancellation and termination retain their authority
+revocation contracts.
+
+This kernel does not expose SDK policy admission or qualify physical SDK callback
+supervision. Local `Abandon` remains refused because its callback needs an
+independent lifetime after the hosting workflow claim closes. Complete that
+lifetime and scope behavior before exposing the full operation-policy API.
+
 ## Lifecycle and diagnostics
 
 Expose requested, delivered and cleaning-up progress without guessing from a

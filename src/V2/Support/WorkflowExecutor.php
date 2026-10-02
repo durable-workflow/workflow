@@ -3896,12 +3896,19 @@ final class WorkflowExecutor
         }
 
         // The caller holds the run lock; acquiring the instance lock here would invert command lock order.
+        $preservedActivityIds = $run->activityExecutions
+            ->filter(static fn (ActivityExecution $execution): bool => in_array(
+                $execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true
+            ) && ActivityAbandonment::allows($run, $execution))
+            ->pluck('id')
+            ->all();
         $openTasks = $run->tasks
             ->filter(static fn (WorkflowTask $candidate): bool => in_array(
                 $candidate->status,
                 [TaskStatus::Ready, TaskStatus::Leased],
                 true,
-            ));
+            ) && ! ($candidate->task_type === TaskType::Activity
+                && in_array($candidate->payload['activity_execution_id'] ?? null, $preservedActivityIds, true)));
         $tasksByActivityExecutionId = $openTasks
             ->filter(static fn (WorkflowTask $candidate): bool => is_string(
                 $candidate->payload['activity_execution_id'] ?? null
@@ -3917,7 +3924,8 @@ final class WorkflowExecutor
         }
 
         foreach ($run->activityExecutions as $execution) {
-            if (! in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+            if (in_array($execution->id, $preservedActivityIds, true)
+                || ! in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
                 continue;
             }
 
@@ -5625,6 +5633,12 @@ final class WorkflowExecutor
         } elseif (in_array($callKind, ['activity', 'local_activity'], true)) {
             /** @var ActivityExecution|null $execution */
             $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
+
+            if ($execution instanceof ActivityExecution
+                && ActivityCancellationWait::policy($run, $sequence) === CancellationPolicy::Abandon) {
+                ActivityAbandonment::prepare($run, $execution);
+                return false;
+            }
 
             if ($execution instanceof ActivityExecution
                 && ActivityCancellationWait::policy(

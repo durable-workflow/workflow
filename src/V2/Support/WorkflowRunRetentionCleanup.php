@@ -7,6 +7,8 @@ namespace Workflow\V2\Support;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
+use Workflow\V2\Enums\CancellationPolicy;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -172,6 +174,28 @@ final class WorkflowRunRetentionCleanup
         });
     }
 
+    /**
+     * @api Allows hosts to check the hold before reclaiming external payloads.
+     */
+    public static function retentionHoldReason(WorkflowRun|string $run): ?string
+    {
+        $run = $run instanceof WorkflowRun ? $run
+            : ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($run);
+        $schedules = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->where('payload->activity->cancellation_policy', CancellationPolicy::Abandon->value)->get();
+        if ($schedules->isEmpty()) {
+            return null;
+        }
+        $run->setRelation('historyEvents', $run->historyEvents()->get());
+        foreach ($schedules as $scheduled) {
+            if (! ActivityAbandonment::hasTerminalHistory($run, $scheduled)) {
+                return 'detached_activity_still_open';
+            }
+        }
+        return null;
+    }
+
     private static function assertPrunable(WorkflowRun $run): void
     {
         $status = $run->status instanceof RunStatus
@@ -184,6 +208,10 @@ final class WorkflowRunRetentionCleanup
 
         if ($run->closed_at === null) {
             throw new LogicException(sprintf('Workflow run [%s] has not been closed.', $run->getKey()));
+        }
+        $reason = self::retentionHoldReason($run);
+        if ($reason !== null) {
+            throw new LogicException(sprintf('Workflow run [%s] cannot be pruned: %s.', $run->getKey(), $reason));
         }
     }
 

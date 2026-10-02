@@ -76,7 +76,8 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
 
-            if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)) {
+            $abandoned = ActivityAbandonment::allows($run, $lockedExecution);
+            if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true) && ! $abandoned) {
                 $reason = $run->status === RunStatus::Terminated
                     ? 'run_terminated'
                     : 'run_cancelled';
@@ -111,6 +112,10 @@ final class ActivityOutcomeRecorder
                 self::closeAttemptIfStale($run, $attemptId);
 
                 return self::ignored('stale_attempt');
+            }
+
+            if ($abandoned && ActivityTimeoutEnforcer::hasExpiredDeadline($lockedExecution, now())) {
+                return self::ignored('activity_deadline_elapsed');
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -384,6 +389,11 @@ final class ActivityOutcomeRecorder
             ) {
                 self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
+                return self::recorded(null);
+            }
+
+            if ($abandoned && $run->status->isTerminal()) {
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
                 return self::recorded(null);
             }
 

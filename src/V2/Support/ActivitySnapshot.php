@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -35,6 +36,9 @@ final class ActivitySnapshot
             'attempt_count' => self::executionAttemptCount($execution),
             'retry_policy' => self::arrayValue($execution->retry_policy),
             'cancellation_policy' => self::stringValue($execution->activity_options['cancellation_policy'] ?? null),
+            'schedule_to_close_deadline_at' => ($execution->activity_options['cancellation_policy'] ?? null)
+                === CancellationPolicy::Abandon->value
+                ? self::timestamp($execution->schedule_to_close_deadline_at) : null,
             'connection' => $execution->connection,
             'queue' => $execution->queue,
             'last_heartbeat_at' => self::timestamp($execution->last_heartbeat_at),
@@ -177,6 +181,7 @@ final class ActivitySnapshot
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
             'cancellation_policy' => self::stringValue($snapshot['cancellation_policy'] ?? null),
+            'schedule_to_close_deadline_at' => self::stringValue($snapshot['schedule_to_close_deadline_at'] ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null),
             'queue' => self::stringValue($snapshot['queue'] ?? null),
             'last_heartbeat_at' => self::stringValue($snapshot['last_heartbeat_at'] ?? null),

@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -27,9 +28,11 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityAbandonment;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalActivityCall;
@@ -37,6 +40,8 @@ use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
 
@@ -58,6 +63,226 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testOptionalCooperativeBridgeUsesTheExistingBinding(): void
     {
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
+    }
+
+    public function testInternalActivityAbandonCompletesAfterParentClosureWithoutReopeningIt(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'abandoned-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $activityDeadline = $execution->refresh()
+            ->schedule_to_close_deadline_at->toISOString();
+        $this->closeCooperativeParent($run, $initial);
+        $closedAt = $run->closed_at->toISOString();
+        $request = $run->cancellation_request_command_id;
+        $cleanupDeadline = $run->cancellation_deadline_at->toISOString();
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Leased, $activityTask->refresh()->status);
+        $this->assertSame('detached_activity_still_open', WorkflowRunRetentionCleanup::retentionHoldReason($run));
+        $historyCount = $run->historyEvents()
+            ->count();
+        try {
+            WorkflowRunRetentionCleanup::pruneRun($run);
+            $this->fail('An open detached activity must hold retention.');
+        } catch (LogicException $exception) {
+            $this->assertStringContainsString('detached_activity_still_open', $exception->getMessage());
+        }
+        $this->assertSame($historyCount, $run->historyEvents()->count());
+        $this->assertNull($run->refresh()->details_pruned_at);
+        try {
+            Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
+            $control = $activities->heartbeat($attempt->id);
+            $this->assertTrue($control['can_continue']);
+            $this->assertFalse($control['cancel_requested']);
+            $outcome = $activities->complete($attempt->id, 'independent result');
+        } finally {
+            Carbon::setTestNow();
+        }
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['next_task_id']);
+        $this->assertSame(ActivityStatus::Completed, $execution->refresh()->status);
+        $this->assertSame($activityDeadline, $execution->schedule_to_close_deadline_at->toISOString());
+        $this->assertSame('independent result', Serializer::unserialize($execution->result));
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancelled)->count());
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame($closedAt, $run->closed_at->toISOString());
+        $this->assertSame($request, $run->cancellation_request_command_id);
+        $this->assertSame($cleanupDeadline, $run->cancellation_deadline_at->toISOString());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow)
+            ->where('status', TaskStatus::Ready)->count());
+        $this->assertNull(WorkflowRunRetentionCleanup::retentionHoldReason($run));
+        $this->assertSame(1, WorkflowRunRetentionCleanup::pruneRun($run)['activity_executions_deleted']);
+    }
+
+    public function testInternalActivityAbandonRetriesWithItsOriginalBudgetAndRefusesStalePublication(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial, maxAttempts: 2);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'first-owner')['claimed']);
+        $first = $execution->attempts()
+            ->sole();
+        $deadline = $execution->refresh()
+            ->schedule_to_close_deadline_at->toISOString();
+        $this->closeCooperativeParent($run, $initial);
+        $retry = $activities->fail($first->id, [
+            'class' => \RuntimeException::class,
+            'message' => 'temporary failure',
+        ]);
+        $this->assertTrue($retry['recorded']);
+        $retryTask = WorkflowTask::query()->findOrFail($retry['next_task_id']);
+        $this->assertSame(TaskType::Activity, $retryTask->task_type);
+        $this->assertSame(ActivityStatus::Pending, $execution->refresh()->status);
+        $this->assertSame('detached_activity_still_open', WorkflowRunRetentionCleanup::retentionHoldReason($run));
+        $this->assertTrue($activities->claimStatus($retryTask->id, 'replacement-owner')['claimed']);
+        $second = $execution->attempts()
+            ->where('attempt_number', 2)
+            ->sole();
+        $this->assertSame('stale_attempt', $activities->complete($first->id, 'stale result')['reason']);
+        $this->assertTrue($activities->status($second->id)['can_continue']);
+        $outcome = $activities->complete($second->id, 'replacement result');
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['next_task_id']);
+        $this->assertSame($deadline, $execution->refresh()->schedule_to_close_deadline_at->toISOString());
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count()
+        );
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    public function testInternalActivityAbandonExpiresAtItsOriginalTotalDeadlineWithoutWakingParent(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial, maxAttempts: 3);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'deadline-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->closeCooperativeParent($run, $initial);
+        try {
+            Carbon::setTestNow($execution->refresh()->schedule_to_close_deadline_at);
+            $this->assertFalse($activities->status($attempt->id)['can_continue']);
+            $this->assertSame('activity_deadline_elapsed', $activities->complete($attempt->id, 'too late')['reason']);
+            $expired = ActivityTimeoutEnforcer::enforce($execution->id);
+        } finally {
+            Carbon::setTestNow();
+        }
+        $this->assertTrue($expired['enforced']);
+        $this->assertNull($expired['next_task']);
+        $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityTimedOut)->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
+        $this->assertNull(WorkflowRunRetentionCleanup::retentionHoldReason($run));
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    public function testInternalActivityAbandonCanBeFirstClaimedAfterCooperativeParentClosure(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        $this->closeCooperativeParent($run, $initial);
+        $this->assertSame(ActivityStatus::Pending, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Ready, $activityTask->refresh()->status);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'late-first-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->assertTrue($activities->status($attempt->id)['can_continue']);
+        $this->assertTrue($activities->complete($attempt->id, 'late first claim')['recorded']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame(
+            0,
+            $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->count()
+        );
+    }
+
+    public function testInternalActivityAbandonRecoversAnExpiredOwnerAfterParentClosure(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'lost-owner')['claimed']);
+        $first = $execution->attempts()
+            ->sole();
+        $deadline = $execution->refresh()
+            ->schedule_to_close_deadline_at->toISOString();
+        $this->closeCooperativeParent($run, $initial);
+        $activityTask->refresh()
+            ->forceFill([
+                'lease_expires_at' => now()
+                    ->subSecond(),
+            ])->save();
+        $repaired = TaskRepair::recoverExistingTask($activityTask, $run->fresh());
+        $this->assertNotNull($repaired);
+        $this->assertSame(TaskStatus::Ready, $repaired->status);
+        $this->assertSame(ActivityAttemptStatus::Expired, $first->refresh()->status);
+        $this->assertTrue($activities->claimStatus($repaired->id, 'fresh-owner')['claimed']);
+        $second = $execution->attempts()
+            ->where('attempt_number', 2)
+            ->sole();
+        $this->assertSame('stale_attempt', $activities->complete($first->id, 'lost owner result')['reason']);
+        $this->assertTrue($activities->complete($second->id, 'recovered result')['recorded']);
+        $this->assertSame($deadline, $execution->refresh()->schedule_to_close_deadline_at->toISOString());
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    public function testInternalActivityAbandonCannotBeEnabledByChangingOnlyAMutableOption(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity(
+            $run,
+            $initial,
+            policy: CancellationPolicy::TryCancel
+        );
+        $execution->forceFill([
+            'activity_options' => [
+                'cancellation_policy' => CancellationPolicy::Abandon->value,
+            ],
+        ])->save();
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'mutable-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->closeCooperativeParent($run, $initial);
+        $this->assertSame(ActivityStatus::Cancelled, $execution->refresh()->status);
+        $this->assertFalse($activities->status($attempt->id)['can_continue']);
+        $this->assertFalse($activities->complete($attempt->id, 'not authorized')['recorded']);
+    }
+
+    public function testInternalActivityAbandonDoesNotOverrideLegacyTerminalCancellation(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'terminal-owner')['claimed']);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->request($run);
+        $this->assertTrue(
+            WorkflowStub::load($run->workflow_instance_id)->cancel('terminal operator action')->accepted()
+        );
+        $this->assertFalse($activities->status($attempt->id)['can_continue']);
+        $this->assertFalse($activities->complete($attempt->id, 'terminal late result')['recorded']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    public function testInternalActivityAbandonRefusesAnUnboundedDetachedLifetime(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution] = $this->scheduleInternalAbandonableActivity($run, $initial, totalTimeout: null);
+        $this->request($run);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('original finite total deadline');
+        ActivityAbandonment::prepare($run->fresh(['historyEvents']), $execution);
     }
 
     public function testInternalActivityWaitReleasesClaimAndResumesOnlyAfterOriginalCallbackStopReceipt(): void
@@ -1180,8 +1405,76 @@ final class V2PortableCancellationDeliveryTest extends TestCase
 
     /**
      * Creates internal Source history before callback admission. Portable SDK
-     * policy admission and the complete Abandon lifecycle are not exposed yet.
+     * policy admission and local Abandon lifetime are not exposed yet.
      *
+     * @return array{ActivityExecution, WorkflowTask}
+     */
+    private function scheduleInternalAbandonableActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        CancellationPolicy $policy = CancellationPolicy::Abandon,
+        ?int $totalTimeout = 180,
+        int $maxAttempts = 1,
+    ): array {
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Pending,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'database',
+            'queue' => 'default',
+            'activity_options' => [
+                'cancellation_policy' => $policy->value,
+            ],
+            'retry_policy' => [
+                'snapshot_version' => 1,
+                'max_attempts' => $maxAttempts,
+                'backoff_seconds' => [0],
+                'schedule_to_close_timeout' => $totalTimeout,
+            ],
+            'schedule_to_close_deadline_at' => $totalTimeout === null ? null : now()
+                ->addSeconds($totalTimeout),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => 1,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ], $task);
+        $activityTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+        ]);
+        return [$execution, $activityTask];
+    }
+
+    private function closeCooperativeParent(WorkflowRun $run, WorkflowTask $initial): void
+    {
+        $initial->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+        $this->request($run);
+        $resume = $this->leaseReadyTask($run);
+        $this->assertTrue($this->deliver($run, $resume)['delivered']);
+        $this->assertTrue($this->bridge->complete($resume->id, [[
+            'type' => 'complete_workflow',
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    /**
      * @return array{ActivityExecution, WorkflowTask, \Workflow\V2\Models\ActivityAttempt}
      */
     private function scheduleInternalWaitingActivity(
