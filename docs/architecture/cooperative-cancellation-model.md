@@ -198,7 +198,7 @@ and Started history before callback admission. It preserves encoded inputs,
 the original workflow task and attempt, a Server-issued activity attempt ID,
 the SDK attempt ID and the original deadlines. A same-claim retry after response
 loss returns that preparation. Changed descriptors, a reclaimed claim,
-cancellation or expiry refuse invocation. This is an internal protocol 1.20
+unshielded cancellation or expiry refuse invocation. This is an internal protocol 1.20
 primitive. Published protocol 1.19 keeps its existing local execution path.
 
 Before preparation, `checkpointLocalActivityPrefix()` can atomically commit
@@ -208,14 +208,26 @@ the normalized command fingerprint and authored sequence range. A lost response
 can be retried before sending a subsequent checkpoint. Changed contents or
 ownership cannot relabel a receipt or repeat child creation, side effects or
 memo updates. Checkpointing does not renew the lease or admit application code.
-An accepted cancellation refuses new prefix work, and callback preparation
-still refuses invocation even when a prior checkpoint receipt is readable.
+An accepted cancellation refuses new prefix work until its delivery is recorded.
+After delivery, the retained claim can checkpoint cleanup commands before the
+original deadline. A checkpoint receipt alone never admits a callback.
 The SDK must replay committed history before submitting later commands.
+
+A shielded cleanup descriptor explicitly supplies `cancellation_cleanup` with
+`request_id` and `delivery_history_event_id`. Admission validates that request
+and canonical delivery on this run and requires a later authored command
+sequence. Workers cannot supply or extend a cleanup deadline. The runtime
+records the original root identity and deadline in the execution and Started
+authority, and bounds local execution deadlines by that budget. Retries and
+replacement-worker recovery retain the same delivery and budget. Pre-request
+activities remain fenced. A cleanup result at or after the original deadline
+is refused, and a supervisor stop instruction still requires a separate joined
+callback report.
 
 The candidate local stop receipt uses the saved Started snapshot and the
 canonical cancellation fence. The original workflow owner can report stop after
 task takeover without changing the replacement claim. A missing or
-post-cancellation preparation cannot authorize a stop report. Local history and
+unqualified post-cancellation preparation cannot authorize a stop report. Local history and
 timeline retain the original workflow claim rather than inventing an ordinary
 activity queue task.
 
@@ -256,7 +268,7 @@ prepared attempt immediately without waiting for expiry, changing the
 replacement claim or fabricating an acknowledgement.
 
 The optional `PreparedLocalActivityTaskBridge` exposes checkpoint, preparation,
-outcome, recovery, supervisor control and stop-receipt persistence through the existing workflow
+outcome, recovery, supervisor control, application heartbeat and stop-receipt persistence through the existing workflow
 bridge binding. Consumers must check the actual bound instance. An existing
 custom workflow or cooperative bridge does not acquire this role from an alias.
 The published protocol default still refuses these candidate operations. This
@@ -269,12 +281,22 @@ under the original canonical owner and workflow epoch. It never records an
 application heartbeat or renews the start-to-close, total, heartbeat, run or
 cancellation deadline. Expired authority cannot be revived by polling.
 
-An accepted cancellation returns its original context even to the original
+`heartbeatLocalActivity()` records an actual application heartbeat using the
+same prepared authority checks and bounded progress format as other activities.
+It updates heartbeat time and timeout and records canonical heartbeat history.
+It does not renew either lease or move start-to-close, total or root deadlines.
+Cleanup heartbeat timeouts and supervisor lease renewals stay bounded by the
+original cleanup deadline. Neither path revives expired authority. SDKs must
+keep the latest acknowledged heartbeat timeout separate from fixed execution
+deadlines when validating control responses.
+
+For a pre-request activity, accepted cancellation returns its original context even to the original
 supervisor after takeover. It fences publication without changing the
 replacement cleanup claim. The supervisor must stop and join its callback,
 then report the separate acknowledgement. A fence or stop instruction is not
-physical-stop evidence. SDK control loops and Server admission still need
-connected qualification.
+physical-stop evidence. A prepared cleanup call continues only under its
+recorded delivery, original budget and live claim. Server admission for cleanup
+and application heartbeats and SDK control loops still need connected qualification.
 
 Server admission and SDK physical local supervisors must connect these
 primitives, dispatch created work and qualify response loss, cancellation and

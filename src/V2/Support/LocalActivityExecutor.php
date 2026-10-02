@@ -126,7 +126,9 @@ final class LocalActivityExecutor
             // An original owner may fence its own still-running attempt after
             // takeover. This grants no result authority and leaves the hosting
             // workflow claim untouched. A separate joined-callback receipt follows.
-            if ($run->cancellation_request_command_id !== null) {
+            $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            if ($run->cancellation_request_command_id !== null
+                && (! $cleanup || now()->gte($run->cancellation_deadline_at))) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_execution_id', $execution->id)
@@ -144,7 +146,7 @@ final class LocalActivityExecutor
                     );
                 }
                 return [
-                    ...$refused('cancellation_requested'),
+                    ...$refused($cleanup ? 'cancellation_deadline_expired' : 'cancellation_requested'),
                     'fenced' => true,
                     'cancellation_history_event_id' => $cancelled?->id,
                 ];
@@ -618,10 +620,16 @@ final class LocalActivityExecutor
             'current_attempt_id' => $attemptId,
             'started_at' => $now,
             'last_heartbeat_at' => $now,
-            'close_deadline_at' => $startToCloseTimeout === null ? null : $now->copy()
-                ->addSeconds($startToCloseTimeout),
-            'heartbeat_deadline_at' => $heartbeatTimeout === null ? null : $now->copy()
-                ->addSeconds($heartbeatTimeout),
+            'close_deadline_at' => PortableLocalActivityCleanup::bound(
+                $execution,
+                $startToCloseTimeout === null ? null : $now->copy()
+                    ->addSeconds($startToCloseTimeout),
+            ),
+            'heartbeat_deadline_at' => PortableLocalActivityCleanup::bound(
+                $execution,
+                $heartbeatTimeout === null ? null : $now->copy()
+                    ->addSeconds($heartbeatTimeout),
+            ),
         ])->save();
 
         /** @var ActivityAttempt $attempt */

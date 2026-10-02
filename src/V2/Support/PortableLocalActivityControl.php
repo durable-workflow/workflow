@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use LogicException;
 use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -35,6 +36,40 @@ final class PortableLocalActivityControl
         bool $renewLease = false,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        return self::observe($attemptId, $leaseOwner, $workflowTaskAttempt, $renewLease, false, null, $protocolVersion);
+    }
+
+    /** @param array<string, mixed> $progress
+     * @return array<string, mixed>
+     */
+    public static function heartbeat(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $progress = [],
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        try {
+            $normalized = HeartbeatProgress::normalizeForWrite($progress);
+        } catch (LogicException) {
+            return self::response('invalid_local_activity_heartbeat');
+        }
+
+        return self::observe($attemptId, $leaseOwner, $workflowTaskAttempt, false, true, $normalized, $protocolVersion);
+    }
+
+    /** @param array<string, mixed>|null $progress
+     * @return array<string, mixed>
+     */
+    private static function observe(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease,
+        bool $applicationHeartbeat,
+        ?array $progress,
+        string $protocolVersion,
+    ): array {
         if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
             return self::response('local_activity_control_requires_protocol_1_20');
@@ -48,6 +83,8 @@ final class PortableLocalActivityControl
             $leaseOwner,
             $workflowTaskAttempt,
             $renewLease,
+            $applicationHeartbeat,
+            $progress,
         ): array {
             $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
             $attempt = $rows['attempt'];
@@ -90,7 +127,9 @@ final class PortableLocalActivityControl
             }
             // The original callback supervisor must see accepted cancellation
             // even after takeover. This never renews the replacement claim.
-            if ($run->cancellation_request_command_id !== null) {
+            $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            if ($run->cancellation_request_command_id !== null
+                && (! $cleanup || now()->gte($run->cancellation_deadline_at))) {
                 // A supervisor needs one request, not the run's entire history.
                 $requested = $run->historyEvents()
                     ->where('event_type', HistoryEventType::CooperativeCancellationRequested)
@@ -109,7 +148,8 @@ final class PortableLocalActivityControl
                     || ! $requested instanceof WorkflowHistoryEvent) {
                     return $reply('cancellation_context_not_recorded');
                 }
-                if ($started->sequence >= $requested->sequence || $started->recorded_at->gt($requested->recorded_at)) {
+                if (! $cleanup && ($started->sequence >= $requested->sequence
+                    || $started->recorded_at->gt($requested->recorded_at))) {
                     return $reply('local_activity_preparation_mismatch');
                 }
                 $cancelled = $run->historyEvents()
@@ -163,12 +203,68 @@ final class PortableLocalActivityControl
             if ($renewLease) {
                 // Both rows and the task summary commit in one transaction.
                 // No application heartbeat or recorded execution deadline moves.
-                $expiry = LocalActivityRuntime::renewWorkflowTask($task);
+                $expiry = LocalActivityRuntime::renewWorkflowTask(
+                    $task,
+                    PortableLocalActivityCleanup::deadline($execution)
+                );
                 $attempt->forceFill([
                     'lease_expires_at' => $expiry,
                 ])->save();
             }
-            return $reply(null, $renewLease);
+            $heartbeatEvent = null;
+            if ($applicationHeartbeat) {
+                $heartbeatAt = now();
+                $timeout = $execution->retry_policy['heartbeat_timeout'] ?? null;
+                $execution->forceFill([
+                    'last_heartbeat_at' => $heartbeatAt,
+                    'heartbeat_deadline_at' => PortableLocalActivityCleanup::bound(
+                        $execution,
+                        is_int($timeout) && $timeout > 0 ? $heartbeatAt->copy()
+                            ->addSeconds($timeout) : null,
+                    ),
+                ])->save();
+                $attempt->forceFill([
+                    'last_heartbeat_at' => $heartbeatAt,
+                ])->save();
+                $heartbeatEvent = WorkflowHistoryEvent::record(
+                    $run,
+                    HistoryEventType::ActivityHeartbeatRecorded,
+                    LocalActivityRuntime::eventPayload([
+                        'activity_execution_id' => $execution->id,
+                        'activity_attempt_id' => $attempt->id,
+                        'activity_class' => $execution->activity_class,
+                        'activity_type' => $execution->activity_type,
+                        'sequence' => $execution->sequence,
+                        'attempt_number' => $attempt->attempt_number,
+                        'heartbeat_at' => $heartbeatAt->toISOString(),
+                        'activity' => ActivitySnapshot::fromExecution($execution),
+                        'activity_attempt' => [
+                            'id' => $attempt->id,
+                            'activity_execution_id' => $execution->id,
+                            'task_id' => $task->id,
+                            'attempt_number' => $attempt->attempt_number,
+                            'status' => $attempt->status->value,
+                            'lease_owner' => $attempt->lease_owner,
+                            'worker_attempt_id' => $attempt->worker_attempt_id,
+                            'started_at' => $attempt->started_at?->toISOString(),
+                            'last_heartbeat_at' => $heartbeatAt->toISOString(),
+                            'lease_expires_at' => $attempt->lease_expires_at?->toISOString(),
+                        ],
+                        ...($progress === null ? [] : [
+                            'progress' => $progress,
+                        ]),
+                    ]),
+                    $task
+                );
+                app(\Workflow\V2\Contracts\HistoryProjectionRole::class)->projectRun(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']) ?? $run
+                );
+            }
+            return [
+                ...$reply(null, $renewLease),
+                'heartbeat_recorded' => $heartbeatEvent !== null,
+                'heartbeat_history_event_id' => $heartbeatEvent?->id,
+            ];
         });
     }
 
@@ -199,6 +295,9 @@ final class PortableLocalActivityControl
             'start_to_close_deadline_at' => $execution?->close_deadline_at?->toISOString(),
             'schedule_to_close_deadline_at' => $execution?->schedule_to_close_deadline_at?->toISOString(),
             'heartbeat_deadline_at' => $execution?->heartbeat_deadline_at?->toISOString(),
+            'cancellation_cleanup' => $execution?->activity_options['cancellation_cleanup'] ?? null,
+            'heartbeat_recorded' => false,
+            'heartbeat_history_event_id' => null,
             'run_status' => $run?->status->value,
             'task_status' => $task?->status->value,
             'server_time' => now()

@@ -109,8 +109,20 @@ final class PortableLocalActivityPreparation
             if ($run->status->isTerminal()) {
                 return self::response('run_closed');
             }
-            if ($run->cancellation_request_command_id !== null) {
-                return self::response('cancellation_requested');
+            $cleanup = PortableLocalActivityCleanup::snapshot(
+                $run,
+                $normalized['cancellation_cleanup'] ?? null,
+                $sequence,
+            );
+            if ($run->cancellation_request_command_id !== null && $cleanup === null) {
+                return self::response(isset($normalized['cancellation_cleanup'])
+                    ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
+            }
+            if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup'])) {
+                return self::response('local_activity_cleanup_authority_mismatch');
+            }
+            if ($cleanup !== null && now()->gte($run->cancellation_deadline_at)) {
+                return self::response('cancellation_deadline_expired');
             }
             if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
                 || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
@@ -169,16 +181,26 @@ final class PortableLocalActivityPreparation
                     'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
                     'queue_bypassed' => true,
                     'routing' => 'workflow_worker_process',
+                    ...($cleanup === null ? [] : [
+                        'cancellation_cleanup' => $cleanup,
+                    ]),
                 ],
-                'schedule_to_close_deadline_at' => $options->scheduleToCloseTimeout === null
+                'schedule_to_close_deadline_at' => $cleanup === null ? ($options->scheduleToCloseTimeout === null
                     ? null : $now->copy()
-                        ->addSeconds($options->scheduleToCloseTimeout),
+                        ->addSeconds($options->scheduleToCloseTimeout))
+                    : ($options->scheduleToCloseTimeout === null ? $run->cancellation_deadline_at
+                        : $now->copy()
+                            ->addSeconds($options->scheduleToCloseTimeout)
+                            ->min($run->cancellation_deadline_at)),
             ]);
             $preparation = [
                 'version' => 1,
                 'descriptor_fingerprint' => $fingerprint,
                 'worker_attempt_id' => $workerAttemptId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
+                ...($cleanup === null ? [] : [
+                    'cancellation_cleanup' => $cleanup,
+                ]),
             ];
             $base = LocalActivityRuntime::eventPayload([
                 'activity_execution_id' => $execution->id,
@@ -318,7 +340,11 @@ final class PortableLocalActivityPreparation
             }
             // Accepted cancellation may fence immediately, without waiting for
             // lease expiry. The replacement claim and root budget stay intact.
-            if ($run->cancellation_request_command_id !== null) {
+            $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            if ($cleanup && now()->gte($run->cancellation_deadline_at)) {
+                return $refused('cancellation_deadline_expired');
+            }
+            if ($run->cancellation_request_command_id !== null && ! $cleanup) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_attempt_id', $attempt->id)
@@ -410,7 +436,8 @@ final class PortableLocalActivityPreparation
     public static function normalizeDescriptor(array $descriptor): array
     {
         $allowed = ['type', 'activity_type', 'arguments', 'payload_codec', 'retry_policy',
-            'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode'];
+            'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode',
+            'cancellation_cleanup'];
         if (($descriptor['type'] ?? null) !== 'record_local_activity'
             || array_diff(array_keys($descriptor), $allowed) !== []
             || (isset($descriptor['execution_mode']) && $descriptor['execution_mode'] !== LocalActivityRuntime::EXECUTION_MODE)) {
@@ -421,7 +448,7 @@ final class PortableLocalActivityPreparation
         // Common activity input/retry/timeout validation does not need a
         // fabricated outcome or a claim that an application attempt ran.
         $input = $descriptor;
-        unset($input['execution_mode']);
+        unset($input['execution_mode'], $input['cancellation_cleanup']);
         $input['type'] = 'schedule_activity';
         $normalized = WorkflowCommandNormalizer::normalize([$input], self::MINIMUM_PROTOCOL_VERSION)[0];
         if (! is_string($normalized['arguments'] ?? null) || ! is_string($normalized['payload_codec'] ?? null)) {
@@ -431,6 +458,21 @@ final class PortableLocalActivityPreparation
         }
         $normalized['type'] = 'record_local_activity';
         $normalized['execution_mode'] = LocalActivityRuntime::EXECUTION_MODE;
+        if (array_key_exists('cancellation_cleanup', $descriptor)) {
+            $proof = $descriptor['cancellation_cleanup'];
+            if (! is_array($proof) || array_diff(array_keys($proof), ['request_id', 'delivery_history_event_id']) !== []
+                || ! is_string($proof['request_id'] ?? null) || trim($proof['request_id']) === ''
+                || ! is_string($proof['delivery_history_event_id'] ?? null)
+                || trim($proof['delivery_history_event_id']) === '') {
+                throw ValidationException::withMessages([
+                    'local_activity.cancellation_cleanup' => ['Expected canonical request and delivery identities.'],
+                ]);
+            }
+            $normalized['cancellation_cleanup'] = [
+                'request_id' => $proof['request_id'],
+                'delivery_history_event_id' => $proof['delivery_history_event_id'],
+            ];
+        }
 
         return $normalized;
     }
@@ -484,6 +526,10 @@ final class PortableLocalActivityPreparation
         if (array_key_exists('schedule_to_close_deadline_at', $started->payload['local_preparation'])
             && $started->payload['local_preparation']['schedule_to_close_deadline_at']
                 !== $execution->schedule_to_close_deadline_at?->toISOString()) {
+            return null;
+        }
+        if (isset($execution->activity_options['cancellation_cleanup'])
+            && ! PortableLocalActivityCleanup::isExecution($run, $execution, $started)) {
             return null;
         }
 
@@ -554,6 +600,10 @@ final class PortableLocalActivityPreparation
             'descriptor_fingerprint' => $fingerprint,
             'worker_attempt_id' => $workerAttemptId,
             'workflow_task_attempt' => $task->attempt_count,
+            ...(isset($execution->activity_options['cancellation_cleanup'])
+                ? [
+                    'cancellation_cleanup' => $execution->activity_options['cancellation_cleanup'],
+                ] : []),
         ]);
 
         return self::response(null, $execution, $attempt, task: $task);
@@ -678,6 +728,7 @@ final class PortableLocalActivityPreparation
             'start_to_close_deadline_at' => $execution?->close_deadline_at?->toISOString(),
             'schedule_to_close_deadline_at' => $execution?->schedule_to_close_deadline_at?->toISOString(),
             'heartbeat_deadline_at' => $execution?->heartbeat_deadline_at?->toISOString(),
+            'cancellation_cleanup' => $execution?->activity_options['cancellation_cleanup'] ?? null,
             'server_time' => now()
                 ->toISOString(),
         ];

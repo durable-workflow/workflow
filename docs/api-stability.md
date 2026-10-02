@@ -220,6 +220,22 @@ request admission, observation, worker capability checks, compatible replay
 and a versioned wire specification before advertising cooperative cancellation
 to service workers.
 
+## Prepared local activity bridge
+
+The candidate protocol 1.20 `PreparedLocalActivityTaskBridge` is a separate
+optional role for local preparation, prefix checkpointing, outcome, recovery,
+supervisor control, application heartbeat and joined-stop persistence. Check
+the actual bound bridge before advertising it. Ordinary and cooperative-only
+bridges retain their existing interfaces, and protocol 1.19 keeps its published
+local execution path. The role is not yet a published capability contract.
+
+Prepared cleanup requires canonical request and delivery identities and a
+later authored sequence. Its immutable root budget comes from recorded
+cancellation history. Supervisor renewal changes both leases without an
+application heartbeat. Application heartbeat records progress and updates
+only its heartbeat timeout. Neither can move the original total or cleanup
+deadline, revive expired authority or establish physical callback stop.
+
 ## Workflow service operation caller API
 
 PHP workflow code can initiate a durable Nexus service operation from inside

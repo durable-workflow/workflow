@@ -77,6 +77,19 @@ interface PreparedLocalActivityTaskBridge extends WorkflowTaskBridge
     ): array;
 
     /**
+     * Record a real application heartbeat. This does not renew either lease.
+     * @param array<string, mixed> $progress
+     * @return array<string, mixed>
+     */
+    public function heartbeatLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $progress = [],
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array;
+
+    /**
      * @return array<string, mixed>
      */
     public function acknowledgeLocalActivityCancellation(

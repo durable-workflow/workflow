@@ -995,6 +995,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         );
     }
 
+    public function heartbeatLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $progress = [],
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityControl::heartbeat(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $progress,
+            $protocolVersion,
+        );
+    }
+
     public function acknowledgeLocalActivityCancellation(
         string $attemptId,
         string $leaseOwner,
@@ -1134,7 +1150,20 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ];
             }
             if ($run->cancellation_request_command_id !== null) {
-                return $refused('cancellation_requested');
+                $delivery = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
+                    ->where('workflow_command_id', $run->cancellation_request_command_id)
+                    ->first();
+                $cleanup = PortableLocalActivityCleanup::snapshot($run, [
+                    'request_id' => $run->cancellation_request_command_id,
+                    'delivery_history_event_id' => $delivery?->id,
+                ], $startSequence);
+                if ($cleanup === null) {
+                    return $refused('cancellation_requested');
+                }
+                if (now()->gte($run->cancellation_deadline_at)) {
+                    return $refused('cancellation_deadline_expired');
+                }
             }
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             if ($sequence !== $startSequence) {
