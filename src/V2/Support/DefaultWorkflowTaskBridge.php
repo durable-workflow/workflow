@@ -961,6 +961,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         );
     }
 
+    public function controlLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityControl::poll(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $renewLease,
+            $protocolVersion,
+        );
+    }
+
     public function recoverLocalActivity(
         string $taskId,
         string $leaseOwner,

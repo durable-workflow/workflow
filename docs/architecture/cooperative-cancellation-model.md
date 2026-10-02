@@ -256,11 +256,25 @@ prepared attempt immediately without waiting for expiry, changing the
 replacement claim or fabricating an acknowledgement.
 
 The optional `PreparedLocalActivityTaskBridge` exposes checkpoint, preparation,
-outcome, recovery and stop-receipt persistence through the existing workflow
+outcome, recovery, supervisor control and stop-receipt persistence through the existing workflow
 bridge binding. Consumers must check the actual bound instance. An existing
 custom workflow or cooperative bridge does not acquire this role from an alias.
 The published protocol default still refuses these candidate operations. This
-role does not qualify physical SDK supervision or its lease-control loop.
+role does not qualify physical SDK supervision.
+
+`controlLocalActivity()` polls the original prepared attempt independently of
+application heartbeats. Active status polling alone is read-only. Optional
+renewal commits the hosting workflow lease and local attempt lease together
+under the original canonical owner and workflow epoch. It never records an
+application heartbeat or renews the start-to-close, total, heartbeat, run or
+cancellation deadline. Expired authority cannot be revived by polling.
+
+An accepted cancellation returns its original context even to the original
+supervisor after takeover. It fences publication without changing the
+replacement cleanup claim. The supervisor must stop and join its callback,
+then report the separate acknowledgement. A fence or stop instruction is not
+physical-stop evidence. SDK control loops and Server admission still need
+connected qualification.
 
 Server admission and SDK physical local supervisors must connect these
 primitives, dispatch created work and qualify response loss, cancellation and

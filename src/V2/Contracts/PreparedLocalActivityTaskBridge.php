@@ -64,6 +64,19 @@ interface PreparedLocalActivityTaskBridge extends WorkflowTaskBridge
     ): array;
 
     /**
+     * Poll cancellation and authority independently of application heartbeats.
+     * Optional renewal commits the attempt and hosting claim together.
+     * @return array<string, mixed>
+     */
+    public function controlLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array;
+
+    /**
      * @return array<string, mixed>
      */
     public function acknowledgeLocalActivityCancellation(
