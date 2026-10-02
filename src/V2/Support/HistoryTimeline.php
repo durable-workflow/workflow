@@ -1242,8 +1242,8 @@ final class HistoryTimeline
         if ($taskId === null) {
             return null;
         }
-        if ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
-            && ($event->payload['local_activity'] ?? null) === true) {
+        if (($event->payload['local_activity'] ?? null) === true
+            || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
             return 'workflow';
         }
 
@@ -1266,8 +1266,8 @@ final class HistoryTimeline
         if ($taskId === null) {
             return null;
         }
-        if ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
-            && ($event->payload['local_activity'] ?? null) === true) {
+        if (($event->payload['local_activity'] ?? null) === true
+            || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
             return self::stringValue($event->payload['task']['status'] ?? null);
         }
 

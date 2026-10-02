@@ -99,6 +99,38 @@ final class CancellationHistoryTimelineTest extends TestCase
         $this->assertSame(1, $entry['task']['attempt_count']);
     }
 
+    #[DataProvider('localActivityEvents')]
+    public function testLocalActivityHistoryCannotInventAClosedOrdinaryActivityTask(HistoryEventType $type): void
+    {
+        $entry = $this->entry($type, [
+            'activity_execution_id' => 'local-activity-1',
+            'execution_mode' => 'local',
+            'task' => [
+                'id' => 'task-1',
+                'type' => 'workflow',
+                'status' => 'leased',
+                'attempt_count' => 1,
+            ],
+        ]);
+
+        $this->assertSame('workflow', $entry['task']['type']);
+        $this->assertSame('leased', $entry['task']['status']);
+    }
+
+    /**
+     * @return iterable<string, array{HistoryEventType}>
+     */
+    public static function localActivityEvents(): iterable
+    {
+        foreach ([HistoryEventType::ActivityScheduled, HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded, HistoryEventType::ActivityRetryScheduled,
+            HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled, HistoryEventType::ActivityTimedOut,
+            HistoryEventType::ActivityCancellationAcknowledged] as $type) {
+            yield $type->value => [$type];
+        }
+    }
+
     /** @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
