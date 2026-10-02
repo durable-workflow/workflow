@@ -136,7 +136,7 @@ final class CancellationContext
     }
 
     /**
-     * Remaining seconds at the latest replayed event, never the host clock.
+     * Remaining seconds at the consumed blocking boundary, never the host clock.
      */
     public function remaining(): float
     {
@@ -144,7 +144,11 @@ final class CancellationContext
             throw new LogicException('Cancellation remaining() requires deterministic workflow time.');
         }
 
-        return max(0.0, (float) WorkflowFiberContext::getRecordedTime()->diffInSeconds($this->cleanupDeadline, false));
+        $time = WorkflowFiberContext::getCancellationTime();
+        $seconds = $this->cleanupDeadline->getTimestamp() - $time->getTimestamp();
+        $microseconds = (int) $this->cleanupDeadline->format('u') - (int) $time->format('u');
+
+        return max(0.0, $seconds + $microseconds / 1_000_000);
     }
 
     /**

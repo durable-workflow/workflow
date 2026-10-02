@@ -479,7 +479,11 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+                    $this->execution->send(
+                        $recorded['result'],
+                        $recorded['recorded_at'],
+                        advanceCancellationTime: false
+                    );
 
                     continue;
                 }
@@ -489,7 +493,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send($result);
+                $this->execution->send($result, advanceCancellationTime: false);
 
                 continue;
             }
@@ -517,6 +521,7 @@ final class WorkflowFiberRunner
                 $this->execution->send(
                     $current->resolveValue($resolution->version),
                     $versionMarkerEvent?->recorded_at,
+                    advanceCancellationTime: false,
                 );
 
                 continue;
@@ -536,7 +541,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at']);
+                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -545,7 +550,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null);
+                $this->execution->send(null, advanceCancellationTime: false);
 
                 continue;
             }
@@ -564,7 +569,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at']);
+                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -573,7 +578,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null);
+                $this->execution->send(null, advanceCancellationTime: false);
 
                 continue;
             }

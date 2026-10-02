@@ -26,6 +26,16 @@ final class WorkflowFiberContext
     private static array $workflowTime = [];
 
     /**
+     * @var array<int, CarbonInterface>
+     */
+    private static array $cancellationTime = [];
+
+    /**
+     * @var array<int, bool>
+     */
+    private static array $cancellationTimeAvailable = [];
+
+    /**
      * @var array<int, int>
      */
     private static array $cancellationShields = [];
@@ -51,6 +61,8 @@ final class WorkflowFiberContext
 
         unset(self::$activeFibers[spl_object_id($fiber)]);
         unset(self::$workflowTime[spl_object_id($fiber)]);
+        unset(self::$cancellationTime[spl_object_id($fiber)]);
+        unset(self::$cancellationTimeAvailable[spl_object_id($fiber)]);
         unset(self::$cancellationShields[spl_object_id($fiber)]);
     }
 
@@ -101,13 +113,56 @@ final class WorkflowFiberContext
      * reference must be supplied so the executor can seed the time before
      * resuming the workflow.
      */
-    public static function setTime(CarbonInterface $time, ?Fiber $fiber = null): void
-    {
+    public static function setTime(
+        CarbonInterface $time,
+        ?Fiber $fiber = null,
+        bool $advanceCancellationTime = true,
+    ): void {
         $fiber ??= Fiber::getCurrent();
 
         if ($fiber instanceof Fiber) {
             self::$workflowTime[spl_object_id($fiber)] = $time->copy();
+            if ($advanceCancellationTime && array_key_exists(spl_object_id($fiber), self::$cancellationTimeAvailable)) {
+                self::observeCancellationTime($time, $fiber);
+            }
         }
+    }
+
+    public static function observeCancellationTime(?CarbonInterface $time, ?Fiber $fiber = null): void
+    {
+        $fiber ??= Fiber::getCurrent();
+        if (! $fiber instanceof Fiber) {
+            return;
+        }
+
+        $fiberId = spl_object_id($fiber);
+        if (! array_key_exists($fiberId, self::$cancellationTimeAvailable)) {
+            return;
+        }
+        self::$cancellationTimeAvailable[$fiberId] = $time !== null;
+        if ($time !== null && (! isset(self::$cancellationTime[$fiberId]) || $time->greaterThan(
+            self::$cancellationTime[$fiberId]
+        ))) {
+            self::$cancellationTime[$fiberId] = $time->copy();
+        }
+    }
+
+    public static function startCancellationTime(?CarbonInterface $time, Fiber $fiber): void
+    {
+        self::$cancellationTimeAvailable[spl_object_id($fiber)] = false;
+        self::observeCancellationTime($time, $fiber);
+    }
+
+    public static function getCancellationTime(): CarbonInterface
+    {
+        $fiber = Fiber::getCurrent();
+        if (! self::active() || ! $fiber instanceof Fiber
+            || ! (self::$cancellationTimeAvailable[spl_object_id($fiber)] ?? false)
+            || ! isset(self::$cancellationTime[spl_object_id($fiber)])) {
+            throw new LogicException('Cancellation remaining() requires a recorded blocking boundary timestamp.');
+        }
+
+        return self::$cancellationTime[spl_object_id($fiber)]->copy();
     }
 
     /**

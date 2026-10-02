@@ -67,9 +67,18 @@ exposes it to workflow cleanup. The object contains reason, requester, source,
 original requested-at, immutable deadline and lineage. Requester metadata is
 restricted to caller type, ID and label.
 
-`remaining()` reads deterministic workflow time and refuses calls outside a
-workflow Fiber. Older histories that lack this snapshot keep their existing
-delivery behavior and expose a null context.
+`remaining()` reads the consumed blocking-boundary clock. It starts at recorded
+delivery and advances through awaited cleanup outcomes. Synchronous side effects,
+version markers, memo updates and search-attribute updates preserve it because
+the service runner returns their first results before persistence. A later
+persistence timestamp cannot change the same authored decision during cold
+replay. The existing `now()` clock keeps its current behavior.
+
+Fractional seconds are preserved, expiry clamps to zero, and recorded clock
+skew cannot increase the consumed budget. Missing blocking timestamps and calls
+outside an active workflow Fiber fail without a host-time fallback. The runtime
+supervisor independently enforces the actual deadline. Older histories that
+lack the snapshot keep their existing delivery behavior and expose a null context.
 
 ### Cleanup outcome
 

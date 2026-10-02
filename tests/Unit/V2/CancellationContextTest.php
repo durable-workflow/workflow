@@ -10,6 +10,8 @@ use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\CancellationContext;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
+use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Support\WorkflowFiberContext;
 
 final class CancellationContextTest extends TestCase
@@ -41,6 +43,10 @@ final class CancellationContextTest extends TestCase
             $fiber = new Fiber(function () use ($context): void {
                 WorkflowFiberContext::enter();
                 try {
+                    WorkflowFiberContext::startCancellationTime(
+                        CarbonImmutable::parse('2026-10-01T00:00:03.500000Z'),
+                        Fiber::getCurrent(),
+                    );
                     WorkflowFiberContext::setTime(CarbonImmutable::parse('2026-10-01T00:00:03.500000Z'));
                     $this->assertSame(26.5, $context->remaining());
                     WorkflowFiberContext::setTime(CarbonImmutable::parse('2026-10-01T00:00:31Z'));
@@ -59,6 +65,67 @@ final class CancellationContextTest extends TestCase
     {
         $this->expectException(LogicException::class);
         CancellationContext::fromArray($this->snapshot())->remaining();
+    }
+
+    public function testConsumedBudgetPreservesMicrosecondsAcrossSynchronousPersistenceAndClockSkew(): void
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['cleanup_deadline_at'] = '2026-10-01T00:00:30.123456Z';
+        $context = CancellationContext::fromArray($snapshot);
+        $execution = WorkflowExecution::startCallback(static function () use ($context): array {
+            try {
+                Fiber::suspend('initial');
+            } catch (WorkflowCancellationRequestedException) {
+                // The real delivery arms the consumed-budget clock.
+            }
+            $initial = $context->remaining();
+            Fiber::suspend('memo');
+            $afterMemo = $context->remaining();
+            Fiber::suspend('activity');
+            $afterActivity = $context->remaining();
+            Fiber::suspend('timer');
+
+            return [
+                $initial,
+                $afterMemo,
+                $afterActivity,
+                $context->remaining(),
+                WorkflowFiberContext::getRecordedTime()->format('H:i:s.u'),
+            ];
+        }, eventTime: CarbonImmutable::parse('2026-10-01T00:00:08Z'));
+
+        $execution->throw(
+            new WorkflowCancellationRequestedException(cancellation: $context),
+            CarbonImmutable::parse('2026-10-01T00:00:08Z'),
+        );
+        $execution->send(null, CarbonImmutable::parse('2026-10-01T00:00:28Z'), advanceCancellationTime: false);
+        $execution->send(null, CarbonImmutable::parse('2026-10-01T00:00:25Z'));
+        $execution->send(null, CarbonImmutable::parse('2026-10-01T00:00:20Z'));
+
+        $this->assertSame([22.123456, 22.123456, 5.123456, 5.123456, '00:00:20.000000'], $execution->getReturn());
+    }
+
+    public function testMissingBlockingResumeTimestampCannotReuseAnEarlierBudget(): void
+    {
+        $context = CancellationContext::fromArray($this->snapshot());
+        $execution = WorkflowExecution::startCallback(static function () use ($context): float {
+            try {
+                Fiber::suspend('initial');
+            } catch (WorkflowCancellationRequestedException) {
+                // Continue into the durable cleanup wait.
+            }
+            Fiber::suspend('activity');
+
+            return $context->remaining();
+        }, eventTime: CarbonImmutable::parse('2026-10-01T00:00:08Z'));
+
+        $execution->throw(
+            new WorkflowCancellationRequestedException(cancellation: $context),
+            CarbonImmutable::parse('2026-10-01T00:00:08Z'),
+        );
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('recorded blocking boundary timestamp');
+        $execution->send(null);
     }
 
     public function testRemainingInAnUnseededFiberRefusesWallClockArithmetic(): void

@@ -682,6 +682,7 @@ final class WorkflowExecutor
                     $current = $workflowExecution->send(
                         $this->sideEffectResult($sideEffectEvent, $run),
                         $sideEffectEvent->recorded_at,
+                        advanceCancellationTime: false,
                     );
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -742,7 +743,8 @@ final class WorkflowExecutor
                     $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                     $current = $workflowExecution->send(
                         $current->resolveValue($version),
-                        $versionMarkerEvent?->recorded_at
+                        $versionMarkerEvent?->recorded_at,
+                        advanceCancellationTime: false,
                     );
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -787,7 +789,11 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(null, $upsertEvent?->recorded_at);
+                    $current = $workflowExecution->send(
+                        null,
+                        $upsertEvent?->recorded_at,
+                        advanceCancellationTime: false
+                    );
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -823,7 +829,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(null, $memoEvent?->recorded_at);
+                    $current = $workflowExecution->send(null, $memoEvent?->recorded_at, advanceCancellationTime: false);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
