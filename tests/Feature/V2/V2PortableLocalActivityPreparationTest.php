@@ -155,7 +155,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             'lease_owner' => 'replacement-worker',
             'attempt_count' => 2,
         ])->save();
-        $taskBefore = $task->getAttributes();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
         $this->assertSame('workflow_claim_mismatch', $this->prepare($task)['reason']);
         $reply = PortableLocalActivityPreparation::prepare(
             $task->id,
@@ -280,7 +281,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             'lease_owner' => 'replacement-worker',
             'attempt_count' => 2,
         ])->save();
-        $taskBefore = $task->getAttributes();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
         $receipt = ActivityCancellationAcknowledgement::recordLocalStopped(
             $first['activity_attempt_id'],
             'portable-worker',

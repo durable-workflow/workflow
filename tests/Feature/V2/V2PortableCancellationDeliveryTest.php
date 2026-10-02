@@ -589,7 +589,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             'lease_owner' => 'replacement-owner',
             'attempt_count' => 2,
         ])->save();
-        $taskBefore = $task->getAttributes();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
         foreach ([['replacement-owner', 2],
             ['portable-worker', 2],
             ['portable-worker', 0],
@@ -626,7 +627,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             'status' => TaskStatus::Completed,
             'attempt_count' => 3,
         ])->save();
-        $taskBefore = $task->getAttributes();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
         $duplicate = ActivityCancellationAcknowledgement::recordLocalStopped(
             $attempt->id,
             'portable-worker',
@@ -745,7 +747,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
             'lease_owner' => 'replacement-owner',
             'attempt_count' => 2,
         ])->save();
-        $taskBefore = $task->getAttributes();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
         $deadline = $run->cancellation_deadline_at->toISOString();
         Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
         try {
