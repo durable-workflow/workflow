@@ -281,6 +281,15 @@ deadline. A scheduled retry releases the replacement claim for polling, while
 a terminal outcome retains it for replay. Response loss returns the original
 recovery receipt after takeover or later cancellation.
 
+For an admitted local group, recovering another interrupted member may create
+a successor workflow task before any callback resumes. An earlier member can
+prepare on that final claim only through the recorded sibling retry chain.
+Every link must belong to the same original admission batch, retain its original
+attempt authority, and follow a completed hosting task. Unrelated claims,
+cycles, missing links and changed batches are refused. Each member still keeps
+its own recorded backoff and total deadline, and cleanup keeps the original
+cancellation delivery and deadline.
+
 The recovery receipt and timeline retain the original and replacement claims
 and explicitly report callback stop as unknown. Lease expiry fences publication
 and does not establish physical stop. An accepted cancellation fences the

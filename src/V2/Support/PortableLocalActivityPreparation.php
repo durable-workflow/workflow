@@ -751,7 +751,7 @@ final class PortableLocalActivityPreparation
             ->first();
         if (! $retry instanceof WorkflowHistoryEvent || $retry->sequence <= $started->sequence
             || ($retry->payload['activity_execution_id'] ?? null) !== $execution->id
-            || ($retry->payload['retry_task_id'] ?? null) !== $task->id
+            || ! self::retryTaskMatches($run, $task, $execution, $retry)
             || ($retry->payload['retry_of_task_id'] ?? null) !== $retry->workflow_task_id
             || ($retry->payload['retry_after_attempt_id'] ?? null) !== $previous->id
             || ($retry->payload['retry_after_attempt'] ?? null) !== $previous->attempt_number
@@ -791,6 +791,104 @@ final class PortableLocalActivityPreparation
         ]);
 
         return self::response(null, $execution, $attempt, task: $task);
+    }
+
+    /** A sibling's cold recovery releases the shared hosting claim. Only its
+     * immutable retry chain within the same admitted batch can transfer the
+     * earlier member's retry authority to the final replacement claim.
+     */
+    private static function retryTaskMatches(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        WorkflowHistoryEvent $retry
+    ): bool {
+        $cursor = $retry->payload['retry_task_id'] ?? null;
+        if ($cursor === $task->id) {
+            return true;
+        }
+        $admission = self::groupAdmission($run, $execution);
+        if (! is_string($cursor) || $cursor === '' || $admission === null
+            || ($retry->payload['local_recovery']['version'] ?? null) !== 1) {
+            return false;
+        }
+        $after = $retry->sequence;
+        $visited = [];
+        for ($count = 0; $count < 100; ++$count) {
+            if (isset($visited[$cursor])) {
+                return false;
+            }
+            $visited[$cursor] = true;
+            $previousTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($cursor);
+            $links = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+                ->where('workflow_task_id', $cursor)
+                ->where('sequence', '>', $after)
+                ->get();
+            if ($previousTask === null || $previousTask->workflow_run_id !== $run->id
+                || $previousTask->task_type !== TaskType::Workflow || $previousTask->status !== TaskStatus::Completed
+                || $links->count() !== 1) {
+                return false;
+            }
+            $link = $links->sole();
+            $payload = $link->payload;
+            $sibling = ActivityExecution::query()->find($payload['activity_execution_id'] ?? null);
+            $attempt = ActivityAttempt::query()->find($payload['activity_attempt_id'] ?? null);
+            $started = $attempt === null ? null : $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)
+                ->where('payload->activity_attempt_id', $attempt->id)
+                ->first();
+            $epoch = $started?->payload['local_preparation']['workflow_task_attempt'] ?? null;
+            $fingerprint = $started?->payload['local_preparation']['descriptor_fingerprint'] ?? null;
+            $next = $payload['retry_task_id'] ?? null;
+            if (! $sibling instanceof ActivityExecution || ! $attempt instanceof ActivityAttempt
+                || self::groupAdmission($run, $sibling) !== $admission
+                || $attempt->status !== ActivityAttemptStatus::Expired || $attempt->closed_at === null
+                || ! is_int($epoch) || ! is_string($fingerprint)
+                || self::originalStart($run, $sibling, $attempt, $attempt->lease_owner, $epoch) === null
+                || ($payload['local_recovery']['version'] ?? null) !== 1
+                || ! self::retryAuthorityMatches($link, $attempt, $epoch, $fingerprint)
+                || ($payload['retry_of_task_id'] ?? null) !== $cursor
+                || ($payload['retry_after_attempt_id'] ?? null) !== $attempt->id
+                || ($payload['retry_after_attempt'] ?? null) !== $attempt->attempt_number
+                || ! is_string($next) || $next === '' || isset($visited[$next])) {
+                return false;
+            }
+            if ($next === $task->id) {
+                return true;
+            }
+            $cursor = $next;
+            $after = $link->sequence;
+        }
+        return false;
+    }
+
+    /** @return array{task_id: string, checkpoint_id: string, batch_fingerprint: string, workflow_task_attempt: int}|null
+     */
+    private static function groupAdmission(WorkflowRun $run, ActivityExecution $execution): ?array
+    {
+        if ($execution->workflow_run_id !== $run->id || ($execution->parallel_group_path ?? []) === []) {
+            return null;
+        }
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)
+            ->where('payload->activity_execution_id', $execution->id)
+            ->first();
+        $admission = $scheduled?->payload['local_group_admission'] ?? [];
+        if (! $scheduled instanceof WorkflowHistoryEvent || ! is_string($scheduled->workflow_task_id)
+            || ($admission['version'] ?? null) !== 1
+            || ! is_string($admission['checkpoint_id'] ?? null) || $admission['checkpoint_id'] === ''
+            || ! is_string($admission['batch_fingerprint'] ?? null) || $admission['batch_fingerprint'] === ''
+            || ! is_int($admission['workflow_task_attempt'] ?? null)
+            || $admission['workflow_task_attempt'] < 1) {
+            return null;
+        }
+        return [
+            'task_id' => $scheduled->workflow_task_id,
+            'checkpoint_id' => $admission['checkpoint_id'],
+            'batch_fingerprint' => $admission['batch_fingerprint'],
+            'workflow_task_attempt' => $admission['workflow_task_attempt'],
+        ];
     }
 
     /**

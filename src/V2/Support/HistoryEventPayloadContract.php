@@ -264,6 +264,12 @@ final class HistoryEventPayloadContract
             'workflow_task_id',
             'activity',
             'activity_attempt',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'parallel_group_path',
         ],
         'ActivityCancellationAcknowledged' => [
             'sequence',
