@@ -4,6 +4,7 @@
   "unit_contracts": [
     "tests/Unit/Serializers/ExternalStorageEnvelopeTest.php",
     "tests/Unit/Traits/ResolvesMethodDependenciesTest.php",
+    "tests/Unit/V2/ActivityCancellationCompletionTest.php",
     "tests/Unit/V2/CompiledWorkflowDefinitionTest.php",
     "tests/Unit/V2/ExternalPayloadStorageTest.php",
     "tests/Unit/V2/PlatformProtocolSpecsTest.php",

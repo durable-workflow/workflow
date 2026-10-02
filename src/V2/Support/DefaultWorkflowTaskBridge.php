@@ -722,7 +722,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'operation_sequence' => $event?->payload['operation_sequence'] ?? null,
                 'operation_sequence_span' => $event === null ? null : ($event->payload['operation_sequence_span'] ?? 1),
                 'reason' => $reason,
-                ...($reason === 'cancellation_waiting_for_child' ? [
+                ...(in_array($reason, ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity'], true) ? [
                     'claim_released' => true,
                 ] : []),
             ];
@@ -771,7 +771,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             );
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return $response($event === null ? 'cancellation_waiting_for_child' : null, $run, $event);
+            return $response($event === null ? (
+                isset($task->payload['cancellation_activity_wait'])
+                    ? 'cancellation_waiting_for_activity' : 'cancellation_waiting_for_child'
+            ) : null, $run, $event);
         });
     }
 

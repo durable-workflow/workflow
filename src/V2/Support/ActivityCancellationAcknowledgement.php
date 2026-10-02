@@ -190,6 +190,7 @@ final class ActivityCancellationAcknowledgement
                 $task,
                 $requestId
             );
+            ActivityCancellationWait::resume($run, $event);
 
             return [
                 'acknowledged' => true,

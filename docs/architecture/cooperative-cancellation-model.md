@@ -337,6 +337,22 @@ prepared local rows from a posthoc completion report.
 
 Activity `WaitCancellationCompleted` must wait for this callback acknowledgement
 or a prior canonical completion. Lease expiry alone leaves stop state unknown.
+The Source Native kernel now uses `ActivityCancellationCompletion` to distinguish
+the latest attempt's canonical callback outcome, an atomically fenced operation
+that never started, and the original owner's stop receipt. A timeout, cancellation
+row or receipt for another owner/attempt/request/root/deadline does not resolve
+this wait. An outcome recorded after its cancellation fence cannot replace the
+stop receipt.
+
+An internal recorded activity policy can park the awaiting workflow and complete
+its hosting claim while the callback stops. The completed claim retains the
+original requested delivery boundary, root and deadline. All required receipts
+must be present before one fresh workflow claim resumes that boundary. Receipts
+arriving after the original deadline remain late evidence and do not create a
+fresh cleanup claim or budget. The public SDK activity-policy admission API and
+the complete detached `Abandon` lifetime are still under development. Internal
+kernel tests do not qualify those consumer APIs or physical SDK supervision.
+
 An `Abandon` activity must remain independently tracked and capable of finishing
 after the awaiting scope is cancelled. Implement its retention and terminal-run
 behavior deliberately rather than routing it through the normal terminal

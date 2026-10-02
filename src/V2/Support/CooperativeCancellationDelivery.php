@@ -97,6 +97,18 @@ final class CooperativeCancellationDelivery
             return 'cancellation_delivery_history_missing';
         }
 
+        $waitingBoundary = ActivityCancellationWait::validateBoundary(
+            $run,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+        if ($waitingBoundary !== null) {
+            return $waitingBoundary;
+        }
+
         $nextSequence = WorkflowStepHistory::nextDurableCommandSequence($run);
         if ($sequence > $nextSequence) {
             return 'cancellation_delivery_sequence_mismatch';
@@ -154,7 +166,9 @@ final class CooperativeCancellationDelivery
 
     public static function context(WorkflowRun $run): ?CancellationContext
     {
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
         $request = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type
                 === HistoryEventType::CooperativeCancellationRequested

@@ -22,12 +22,14 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalActivityCall;
@@ -56,6 +58,122 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testOptionalCooperativeBridgeUsesTheExistingBinding(): void
     {
         $this->assertSame($this->bridge, $this->app->make(CooperativeWorkflowTaskBridge::class));
+    }
+
+    public function testInternalActivityWaitReleasesClaimAndResumesOnlyAfterOriginalCallbackStopReceipt(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask, $attempt] = $this->scheduleInternalWaitingActivity($run, $initial, 1);
+        $initial->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+        $this->request($run);
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $resume = $this->leaseReadyTask($run);
+        $waiting = $this->deliver($run, $resume);
+        $this->assertFalse($waiting['delivered']);
+        $this->assertTrue($waiting['claim_released']);
+        $this->assertSame('cancellation_waiting_for_activity', $waiting['reason']);
+        $this->assertSame(TaskStatus::Completed, $resume->refresh()->status);
+        $this->assertNull($resume->lease_expires_at);
+        $this->assertSame(ActivityStatus::Cancelled, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Cancelled, $activityTask->refresh()->status);
+        $this->assertSame(0, $this->deliveryCount($run));
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)->count());
+
+        $stale = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            'replacement-owner',
+            $run->cancellation_request_command_id
+        );
+        $this->assertFalse($stale['acknowledged']);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)->count());
+        $receipt = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            $attempt->lease_owner,
+            $run->cancellation_request_command_id
+        );
+        $this->assertTrue($receipt['acknowledged']);
+        $next = $this->leaseReadyTask($run);
+        $this->assertNotSame($resume->id, $next->id);
+        $this->assertSame('activity_cancellation_acknowledged', $next->payload['resume_source_kind']);
+        $this->assertSame($receipt['history_event_id'], $next->payload['resume_source_id']);
+        $changedBoundary = $this->deliver($run, $next, 2, 'timer');
+        $this->assertFalse($changedBoundary['delivered']);
+        $this->assertSame('cancellation_wait_boundary_mismatch', $changedBoundary['reason']);
+        $this->assertSame(TaskStatus::Leased, $next->refresh()->status);
+        $delivery = $this->deliver($run, $next);
+        $this->assertTrue($delivery['delivered']);
+        $this->assertSame(1, $this->deliveryCount($run));
+        $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        $duplicate = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            $attempt->lease_owner,
+            $run->cancellation_request_command_id
+        );
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($receipt['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)->count());
+    }
+
+    public function testInternalParallelActivityWaitWakesOnlyAfterAllOriginalCallbacksAreAcknowledged(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [, , $first] = $this->scheduleInternalWaitingActivity($run, $initial, 1, 2);
+        [, , $second] = $this->scheduleInternalWaitingActivity($run, $initial, 2, 2);
+        $initial->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+        $this->request($run);
+        $waiting = $this->deliver($run, $this->leaseReadyTask($run), 1, 'parallel', 2);
+        $this->assertFalse($waiting['delivered']);
+        foreach ([$first, $second] as $index => $attempt) {
+            $receipt = ActivityCancellationAcknowledgement::recordStopped(
+                $attempt->id,
+                $attempt->lease_owner,
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($receipt['acknowledged']);
+            $this->assertSame($index, $run->tasks()->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)->count());
+        }
+        $this->assertTrue($this->deliver($run, $this->leaseReadyTask($run), 1, 'parallel', 2)['delivered']);
+        $this->assertSame(1, $this->deliveryCount($run));
+    }
+
+    public function testInternalActivityWaitDoesNotTurnLateStopEvidenceIntoANewCleanupBudget(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [, , $attempt] = $this->scheduleInternalWaitingActivity($run, $initial, 1);
+        $initial->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+        $this->request($run);
+        $waiting = $this->deliver($run, $this->leaseReadyTask($run));
+        $this->assertFalse($waiting['delivered']);
+        Carbon::setTestNow($run->cancellation_deadline_at->copy()->addSecond());
+        try {
+            $receipt = ActivityCancellationAcknowledgement::recordStopped(
+                $attempt->id,
+                $attempt->lease_owner,
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($receipt['acknowledged']);
+            $event = $run->historyEvents()
+                ->findOrFail($receipt['history_event_id']);
+            $this->assertTrue($event->payload['received_after_deadline']);
+            $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)->count());
+            $this->assertSame(0, $this->deliveryCount($run));
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testPortableChildWaitReleasesItsClaimUntilCanonicalChildCancellationCompletes(): void
@@ -1058,6 +1176,63 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     {
         yield 'parallel barrier' => [false];
         yield 'selection member range' => [true];
+    }
+
+    /**
+     * Creates internal Source history before callback admission. Portable SDK
+     * policy admission and the complete Abandon lifecycle are not exposed yet.
+     *
+     * @return array{ActivityExecution, WorkflowTask, \Workflow\V2\Models\ActivityAttempt}
+     */
+    private function scheduleInternalWaitingActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        ?int $groupSize = null,
+    ): array {
+        $metadata = $groupSize === null ? [] : ParallelChildGroup::itemMetadata(
+            1,
+            $groupSize,
+            $sequence - 1,
+            'activity'
+        );
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Pending,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'database',
+            'queue' => 'default',
+            'activity_options' => [
+                'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted->value,
+            ],
+            'parallel_group_path' => $metadata['parallel_group_path'] ?? null,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+            ...$metadata,
+        ], $task);
+        $activityTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+        ]);
+        $claimed = $this->app->make(ActivityTaskBridge::class)->claimStatus($activityTask->id, 'owner-' . $sequence);
+        $this->assertTrue($claimed['claimed']);
+        return [$execution, $activityTask, $execution->attempts()->sole()];
     }
 
     /**

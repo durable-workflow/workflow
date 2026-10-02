@@ -2388,6 +2388,14 @@ final class WorkflowExecutor
             }
         }
         if ($waiting) {
+            ActivityCancellationWait::bindBoundary(
+                $task,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan
+            );
             $this->waitForNextResumeSource($run, $task);
 
             return null;
@@ -5520,6 +5528,18 @@ final class WorkflowExecutor
             return CancellationDeliveryState::None;
         }
 
+        $waitingBoundary = ActivityCancellationWait::validateBoundary(
+            $run,
+            $sequence,
+            $callKind,
+            $parallelCall instanceof AllCall ? count($parallelCall->leafDescriptors($sequence)) : 1,
+            $operationSequence,
+            $operationSequenceSpan,
+        );
+        if ($waitingBoundary !== null) {
+            throw new LogicException($waitingBoundary);
+        }
+
         $waiting = false;
         if ($parallelCall instanceof AllCall) {
             foreach ($parallelCall->leafDescriptors($sequence) as $descriptor) {
@@ -5549,6 +5569,14 @@ final class WorkflowExecutor
             $waiting = $this->cancelOpenWaitAtSequence($run, $task, $sequence, $callKind);
         }
         if ($waiting) {
+            ActivityCancellationWait::bindBoundary(
+                $task,
+                $sequence,
+                $callKind,
+                $parallelCall instanceof AllCall ? count($parallelCall->leafDescriptors($sequence)) : 1,
+                $operationSequence,
+                $operationSequenceSpan,
+            );
             return CancellationDeliveryState::Waiting;
         }
 
@@ -5597,6 +5625,14 @@ final class WorkflowExecutor
         } elseif (in_array($callKind, ['activity', 'local_activity'], true)) {
             /** @var ActivityExecution|null $execution */
             $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
+
+            if ($execution instanceof ActivityExecution
+                && ActivityCancellationWait::policy(
+                    $run,
+                    $sequence
+                ) === CancellationPolicy::WaitCancellationCompleted) {
+                return ActivityCancellationWait::prepare($run, $task, $execution);
+            }
 
             if ($execution instanceof ActivityExecution && in_array(
                 $execution->status,
