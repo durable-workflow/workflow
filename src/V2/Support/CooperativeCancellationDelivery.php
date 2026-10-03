@@ -154,7 +154,9 @@ final class CooperativeCancellationDelivery
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
     ): ?string {
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
         $nextSequence = WorkflowStepHistory::nextDurableCommandSequence($run);
         if ($sequence > $nextSequence) {
             return 'cancellation_delivery_sequence_mismatch';
