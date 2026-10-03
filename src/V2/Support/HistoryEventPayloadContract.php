@@ -25,6 +25,13 @@ final class HistoryEventPayloadContract
      * @var array<string, list<string>>
      */
     private const PAYLOAD_KEYS = [
+        'CancellationScopeRequested' => [
+            'schema', 'workflow_run_id', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
+        ],
+        'CancellationScopeRequestConflicted' => [
+            'schema', 'workflow_run_id', 'scope_id', 'parent_scope_id', 'reason',
+            'accepted_cancellation', 'incoming_cancellation',
+        ],
         'CancellationScopeOpened' => [
             'schema',
             'workflow_run_id',

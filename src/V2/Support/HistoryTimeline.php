@@ -219,6 +219,13 @@ final class HistoryTimeline
                     'shield_parent' => is_bool($payload['shield_parent'] ?? null) ? $payload['shield_parent'] : null,
                 ],
             ] : []),
+            ...(in_array($event->event_type, [HistoryEventType::CancellationScopeRequested,
+                HistoryEventType::CancellationScopeRequestConflicted], true) ? [
+                    'cancellation_scope' => array_intersect_key($payload, array_flip([
+                        'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
+                        'reason', 'accepted_cancellation', 'incoming_cancellation',
+                    ])),
+                ] : []),
             'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
@@ -384,7 +391,9 @@ final class HistoryTimeline
             HistoryEventType::VersionMarkerRecorded => 'version',
             HistoryEventType::SelectionResolved => 'selection',
             HistoryEventType::SelectionOperationCancelled => 'selection',
-            HistoryEventType::CancellationScopeOpened => 'cancellation_scope',
+            HistoryEventType::CancellationScopeOpened,
+            HistoryEventType::CancellationScopeRequested,
+            HistoryEventType::CancellationScopeRequestConflicted => 'cancellation_scope',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired,
             HistoryEventType::TimerCancelled => 'timer',
@@ -422,6 +431,8 @@ final class HistoryTimeline
                 ? 'Start rejected.'
                 : sprintf('Start rejected: %s.', $rejectionReason),
             HistoryEventType::WorkflowStarted => 'Workflow run started.',
+            HistoryEventType::CancellationScopeRequested => 'Cooperative operation scope cancellation requested.',
+            HistoryEventType::CancellationScopeRequestConflicted => 'Operation scope cancellation root conflicts with its accepted request.',
             HistoryEventType::CancellationScopeOpened => sprintf(
                 'Cancellation scope %s opened under %s%s.',
                 self::stringValue($payload['scope_id'] ?? null) ?? 'unknown',

@@ -3,7 +3,7 @@
 Design decision for [shared cancellation work](https://github.com/durable-workflow/.github/issues/136)
 and [the Native implementation](https://github.com/durable-workflow/workflow/pull/603).
 User-facing scopes and scoped operation delivery are not implemented or
-advertised by the current source tuple. Native now has an internal canonical
+advertised by the current source tuple. Native has an internal canonical
 registration kernel: `CancellationScopeHistory` records `CancellationScopeOpened`
 at a typed durable command position under the configured storage connection
 and matching live claim. It preserves the recorded parent and shield mode on
@@ -112,8 +112,25 @@ The existing v1 parser and snapshots are unchanged. This metadata parser grants
 no authority: backend consumers must verify the recorded scope, propagation
 edge and accepted root under lock. Later ancestor authority ceilings and
 competing roots are separate records, not mutations of the accepted context.
-Scoped delivery/replay-clock binding and scoped `remaining()` are not implemented
-by this metadata foundation. No scope capability is advertised.
+Native's internal `CancellationScopeRequests` kernel now accepts requests at
+recorded non-root addresses under the configured run lock. The accepted
+`CancellationScopeRequested` history event owns its context and identity.
+Duplicates return that event, including after run closure. Inheritance reads
+the immediate canonical parent's accepted context, or the run's validated
+request for an implicit-root edge. A conflicting inherited root records
+`CancellationScopeRequestConflicted` with both contexts and leaves the accepted
+event unchanged. Request and conflict facts appear in the history timeline.
+Repeated propagation of the same conflicting root returns its original conflict
+event and incoming address identity rather than growing history on every retry.
+
+The separate authority inspection takes the earliest accepted ancestor, run
+cancellation, execution or run deadline, and marks terminal or expired authority
+inactive. Shielding does not remove those ceilings. Requests do not set run
+cancellation fields, release claims, wake or stop callbacks, or deliver an
+exception. Root scope requests still use the existing whole-run boundary.
+Canonical reads reject contradictory addresses or inherited contexts. Scoped
+delivery/replay-clock binding and scoped `remaining()` are not implemented by
+this request foundation. No scope capability is advertised.
 
 The first accepted request at an address owns its identity and deadline.
 Duplicates return that context. A different root is a recorded conflict with
