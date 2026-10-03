@@ -381,7 +381,8 @@ final class V2ScopedTimerCancellationTest extends TestCase
         $prepared = $this->prepare($run, $task, $scope);
         if ($seconds === 5) {
             $task->forceFill([
-                'lease_expires_at' => now()->addSeconds(5),
+                'lease_expires_at' => now()
+                    ->addSeconds(5),
             ])->save();
         }
         $crossed = false;

@@ -158,6 +158,10 @@ final class ScopedActivityCancellation
                             : $tasks->whereIn('status', [TaskStatus::Ready, TaskStatus::Leased])->lockForUpdate()
                                 ->sole();
                     }
+                    // The remote task lock must not extend the hosting claim.
+                    if (now()->gte($claim->lease_expires_at)) {
+                        throw new LogicException('cancellation_scope_workflow_claim_mismatch');
+                    }
                     $event = ActivityCancellation::record($locked, $execution, $activityTask, $requestId, $metadata);
                     if (! $event instanceof WorkflowHistoryEvent) {
                         throw new LogicException('cancellation_scope_activity_fence_not_recorded');

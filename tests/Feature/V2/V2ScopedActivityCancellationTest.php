@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -110,6 +112,56 @@ final class V2ScopedActivityCancellationTest extends TestCase
             )['duplicate']
         );
         $this->assertTrue($bridge->claimStatus($this->activityTask($run, $other)->id, 'sibling-owner')['claimed']);
+    }
+
+    public function testRemoteActivityTaskLockCannotExtendHostingClaim(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target] = $this->remotePair($run, $task, $scope, $sibling);
+        $activityTask = $this->activityTask($run, $target);
+        $claim = app(ActivityTaskBridge::class)->claimStatus($activityTask->id, 'activity-owner');
+        $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
+        $task->forceFill([
+            'lease_expires_at' => now()
+                ->addSeconds(5),
+        ])->save();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $crossed = false;
+        DB::listen(static function (QueryExecuted $query) use ($activityTask, &$crossed): void {
+            if (! $crossed && str_contains($query->sql, 'workflow_tasks')
+                && in_array($activityTask->id, $query->bindings, true)) {
+                Carbon::setTestNow('2026-10-03T00:00:05Z');
+                $crossed = true;
+            }
+        });
+        $before = $run->historyEvents()
+            ->count();
+        try {
+            ScopedActivityCancellation::fence(
+                $run->fresh(),
+                $task,
+                $target->id,
+                $scope,
+                $request->payload['request_id'],
+                '1.20'
+            );
+            $this->fail('Waiting for the Activity task lock must not renew the hosting claim.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_workflow_claim_mismatch', $error->getMessage());
+        }
+        $this->assertTrue($crossed);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Running, $target->fresh()->status);
+        $this->assertSame(TaskStatus::Leased, $activityTask->fresh()->status);
     }
 
     public static function policies(): iterable
