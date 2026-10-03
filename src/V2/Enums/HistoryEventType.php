@@ -38,6 +38,7 @@ enum HistoryEventType: string
     case CooperativeCancellationDelivered = 'CooperativeCancellationDelivered';
     case CancellationScopeOpened = 'CancellationScopeOpened';
     case CancellationScopeRequested = 'CancellationScopeRequested';
+    case CancellationScopeDeliveryPrepared = 'CancellationScopeDeliveryPrepared';
     case CancellationScopeDelivered = 'CancellationScopeDelivered';
     case CancellationScopeRequestConflicted = 'CancellationScopeRequestConflicted';
     case WorkflowCancelled = 'WorkflowCancelled';

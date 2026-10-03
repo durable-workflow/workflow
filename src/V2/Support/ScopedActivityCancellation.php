@@ -101,6 +101,7 @@ final class ScopedActivityCancellation
                     || ($execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID) !== $scopeId) {
                     throw new LogicException('cancellation_scope_activity_membership_mismatch');
                 }
+                $preparation = CancellationScopeDelivery::prepared($locked, $scopeId);
                 $policy = ActivityCancellationWait::policy($locked, $execution->sequence);
                 $local = LocalActivityRuntime::isExecution($execution);
                 if ($policy === CancellationPolicy::Abandon) {
@@ -114,6 +115,28 @@ final class ScopedActivityCancellation
                         'history_event_id' => null,
                     ];
                 }
+                if (in_array($execution->status, [ActivityStatus::Completed, ActivityStatus::Failed], true)) {
+                    if (! ActivityCancellationCompletion::resolved($locked, $executionId, $context)) {
+                        throw new LogicException('cancellation_scope_activity_terminal_history_not_recorded');
+                    }
+                    return [
+                        'fenced' => false,
+                        'abandoned' => false,
+                        'waiting_for_stop' => false,
+                        'history_event_id' => null,
+                    ];
+                }
+                if ($preparation === null) {
+                    throw new LogicException('cancellation_scope_delivery_not_prepared');
+                }
+                if (now()->gte(\Carbon\CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                    throw new LogicException('cancellation_scope_authority_expired');
+                }
+                if (! collect($preparation->payload['activity_members'])->contains(static fn (array $member): bool =>
+                    $member['activity_execution_id'] === $executionId && $member['sequence'] === $execution->sequence)) {
+                    throw new LogicException('cancellation_scope_activity_not_prepared');
+                }
+                $metadata['authority_deadline_at'] = $preparation->payload['authority_deadline_at'];
                 $existing = $locked->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_execution_id', $executionId)

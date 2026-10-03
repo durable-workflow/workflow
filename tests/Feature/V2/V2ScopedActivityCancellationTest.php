@@ -192,6 +192,18 @@ final class V2ScopedActivityCancellationTest extends TestCase
             $claims[] = $bridge->claimStatus($this->activityTask($run, $execution)->id, 'activity-owner');
         }
         $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            $selection ? 6 : 4,
+            $selection ? 'selection_handle' : 'parallel',
+            '1.20',
+            $selection ? 1 : 2,
+            $selection ? 4 : null,
+            $selection ? 2 : 1
+        );
         foreach ([$first, $second] as $execution) {
             $this->fence($run, $task, $execution, $scope);
         }
@@ -753,6 +765,455 @@ final class V2ScopedActivityCancellationTest extends TestCase
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public function testPreparationRetainsWholeScopeWithoutDeliveringOrMutatingClaims(): void
+    {
+        [, $run, $task, , $scope] = $this->tree();
+        [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $claim = $task->fresh()
+            ->getAttributes();
+        $next = \Workflow\V2\Support\WorkflowStepHistory::nextDurableCommandSequence($run->fresh());
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->assertSame(
+            [$first->id, $second->id],
+            array_column($prepared->payload['activity_members'], 'activity_execution_id')
+        );
+        $this->assertSame($claim, $task->fresh()->getAttributes());
+        $this->assertSame($next, \Workflow\V2\Support\WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertSame(ActivityStatus::Pending, $first->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $second->fresh()->status);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $timeline = collect(\Workflow\V2\Support\HistoryTimeline::fromHistory($run->fresh()))->firstWhere(
+            'id',
+            $prepared->id
+        );
+        $this->assertSame('cancellation_scope', $timeline['kind']);
+        $this->assertCount(2, $timeline['cancellation_scope']['activity_members']);
+    }
+
+    public function testPreparationCannotRetainCallerLocksAcrossActivityEffects(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        $history = $run->historyEvents()
+            ->count();
+        try {
+            $run->getConnection()
+                ->transaction(static fn () => CancellationScopeDelivery::prepare(
+                    $run,
+                    $task,
+                    $scope,
+                    $request->payload['request_id'],
+                    4,
+                    'activity',
+                    '1.20'
+                ));
+            $this->fail('Preparation must commit before any attempt/execution locks.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_preparation_requires_own_transaction', $error->getMessage());
+        }
+        $this->assertSame($history, $run->historyEvents()->count());
+    }
+
+    public function testReplacementFinishesPartialFencesUsingFirstPreparationAndDeadline(): void
+    {
+        [, $run, $task, , $scope] = $this->tree();
+        [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->fence($run, $task, $first, $scope);
+        Carbon::setTestNow('2026-10-03T00:00:11Z');
+        $replacement = $task->fresh();
+        $replacement->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+            'lease_expires_at' => now()
+                ->addSeconds(10),
+        ])->save();
+        $duplicate = CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $replacement,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->assertSame($prepared->id, $duplicate->id);
+        $this->assertSame('2026-10-03T00:00:00.000000Z', $duplicate->recorded_at->toISOString());
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $duplicate->payload['authority_deadline_at']);
+        $this->fence($run->fresh(), $replacement, $second, $scope);
+        $delivered = CancellationScopeDelivery::record(
+            $run->fresh(),
+            $replacement,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->assertSame($prepared->id, $delivered->payload['preparation_history_event_id']);
+        $this->assertSame($prepared->payload['authority_deadline_at'], $delivered->payload['authority_deadline_at']);
+        $this->assertSame($delivered->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+        );
+    }
+
+    public function testSelectedHandleStillRequiresStopProofForOtherOriginalScopeMembers(): void
+    {
+        [, $run, $task, , $scope] = $this->tree();
+        [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
+        $bridge = app(ActivityTaskBridge::class);
+        $claims = [];
+        foreach ([$first, $second] as $execution) {
+            $claims[] = $bridge->claimStatus($this->activityTask($run, $execution)->id, 'activity-owner');
+        }
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'selection_handle',
+            '1.20',
+            1,
+            4
+        );
+        $this->fence($run, $task, $first, $scope);
+        $this->assertTrue(
+            ActivityCancellationAcknowledgement::recordStopped(
+                $claims[0]['activity_attempt_id'],
+                'activity-owner',
+                $request->payload['request_id']
+            )['acknowledged']
+        );
+        $deliver = static fn () => CancellationScopeDelivery::record(
+            $run->fresh(),
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'selection_handle',
+            '1.20',
+            1,
+            4
+        );
+        foreach ([
+            'cancellation_scope_activity_fence_not_established',
+            'cancellation_scope_activity_stop_not_acknowledged',
+        ] as $reason) {
+            try {
+                $deliver();
+                $this->fail('All original scope members need the policy-specific proof.');
+            } catch (LogicException $error) {
+                $this->assertSame($reason, $error->getMessage());
+            }
+            $this->fence($run, $task, $second, $scope);
+        }
+        $this->assertTrue(
+            ActivityCancellationAcknowledgement::recordStopped(
+                $claims[1]['activity_attempt_id'],
+                'activity-owner',
+                $request->payload['request_id']
+            )['acknowledged']
+        );
+        $delivered = $deliver();
+        $this->assertSame($delivered->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
+    }
+
+    public function testAnUnpreparedScopeCannotFenceAnUnfinishedActivity(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target] = $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        $history = $run->historyEvents()
+            ->count();
+        try {
+            ScopedActivityCancellation::fence(
+                $run,
+                $task,
+                $target->id,
+                $scope,
+                $request->payload['request_id'],
+                '1.20'
+            );
+            $this->fail('Cancellation effects require prior retained preparation.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_delivery_not_prepared', $error->getMessage());
+        }
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Pending, $target->fresh()->status);
+    }
+
+    #[DataProvider('weakenedPolicies')]
+    public function testAChangedOriginalPolicyCannotWeakenThePreparedWaitContract(string $policy): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target] = $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 4, 'activity', '1.20');
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->where(
+                'payload->activity_execution_id',
+                $target->id
+            )->sole();
+        $payload = $scheduled->payload;
+        $payload['activity']['cancellation_policy'] = $policy;
+        $scheduled->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $this->expectExceptionMessage('cancellation_scope_delivery_history_invalid');
+        ScopedActivityCancellation::fence(
+            $run->fresh(),
+            $task,
+            $target->id,
+            $scope,
+            $request->payload['request_id'],
+            '1.20'
+        );
+    }
+
+    public static function weakenedPolicies(): iterable
+    {
+        yield 'try cancel' => ['try_cancel'];
+        yield 'abandon' => ['abandon'];
+    }
+
+    #[DataProvider('changedPreparations')]
+    public function testPartialFencesCannotMoveTheOriginalPreparedCall(
+        int $sequence,
+        string $kind,
+        int $span,
+        ?int $operation,
+        int $operationSpan
+    ): void {
+        [, $run, $task, , $scope] = $this->tree();
+        [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->fence($run, $task, $first, $scope);
+        $history = $run->historyEvents()
+            ->count();
+        try {
+            CancellationScopeDelivery::prepare(
+                $run->fresh(),
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                $sequence,
+                $kind,
+                '1.20',
+                $span,
+                $operation,
+                $operationSpan
+            );
+            $this->fail('Partial effects must preserve the first preparation.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_delivery_mismatch', $error->getMessage());
+        }
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Pending, $second->fresh()->status);
+        $this->assertSame($prepared->id, CancellationScopeDelivery::prepared($run->fresh(), $scope)->id);
+    }
+
+    public static function changedPreparations(): iterable
+    {
+        yield 'move call' => [5, 'activity', 1, null, 1];
+        yield 'change kind' => [4, 'timer', 1, null, 1];
+        yield 'move selected operation' => [6, 'selection_handle', 1, 5, 1];
+        yield 'widen call' => [4, 'parallel', 2, null, 1];
+    }
+
+    public function testExpiredPreparationRemainsReadableButCannotRenewEffectAuthority(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target] = $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        Carbon::setTestNow('2026-10-03T00:00:31Z');
+        $this->assertSame($prepared->id, CancellationScopeDelivery::prepared($run->fresh(), $scope)->id);
+        $this->expectExceptionMessage('cancellation_scope_authority_expired');
+        ScopedActivityCancellation::fence(
+            $run->fresh(),
+            $task,
+            $target->id,
+            $scope,
+            $request->payload['request_id'],
+            '1.20'
+        );
+    }
+
+    public function testPreparationRejectsNewAdmissionsButAllowsRecordedPrefixReplay(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 4, 'activity', '1.20');
+        $command = [
+            'type' => 'schedule_activity',
+            'activity_type' => TestGreetingActivity::class,
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'payload_codec' => 'avro',
+            'cancellation_scope_id' => $scope,
+        ];
+        $history = $run->historyEvents()
+            ->count();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertNull($bridge->validateCancellationScopeMembership($run->fresh(), [$command], 4));
+        $this->remotePair($run->fresh(), $task, $scope, $sibling);
+        $this->assertSame($history, $run->historyEvents()->count());
+        $result = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'scope-owner',
+            1,
+            'late-scope-work',
+            6,
+            [$command],
+            '1.20'
+        );
+        $this->assertFalse($result['checkpointed']);
+        $this->assertSame('operation_scope_cancellation_prepared', $result['reason']);
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertCount(2, $run->activityExecutions()->get());
+        $command['cancellation_scope_id'] = $sibling;
+        $this->assertNull($bridge->validateCancellationScopeMembership($run->fresh(), [$command], 6));
+    }
+
+    #[DataProvider('ancestorShielding')]
+    public function testPreparedAncestorRejectsNewDescendantWorkUnlessShielded(bool $shield): void
+    {
+        [, $run, $task, $parent, $scope, $sibling] = $this->tree($shield);
+        $this->remotePair($run, $task, $parent, $parent);
+        $request = CancellationScopeRequests::request($run, $parent, '1.20');
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $parent,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $this->assertSame(
+            $shield ? null : 'operation_scope_cancellation_prepared',
+            CancellationScopeDelivery::admissionRefusal($run->fresh(), $scope, 6)
+        );
+        $this->assertNull(CancellationScopeDelivery::admissionRefusal($run->fresh(), $sibling, 6));
+        // The original parent command cannot be replayed under another scope.
+        $this->assertSame(
+            $shield ? null : 'operation_scope_cancellation_prepared',
+            CancellationScopeDelivery::admissionRefusal($run->fresh(), $scope, 4)
+        );
+    }
+
+    public static function ancestorShielding(): iterable
+    {
+        yield 'inherited' => [false];
+        yield 'shielded' => [true];
+    }
+
+    public function testActivityOutsideTheOriginalPreparationCannotBeFenced(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 4, 'activity', '1.20');
+        $reply = app(DefaultWorkflowTaskBridge::class)->checkpointCancellationScopePrefix(
+            $task->id,
+            'scope-owner',
+            1,
+            'later-sibling',
+            6,
+            [[
+                'type' => 'schedule_activity',
+                'activity_type' => TestGreetingActivity::class,
+                'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+                'payload_codec' => 'avro',
+                'cancellation_scope_id' => $sibling,
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $execution = $run->activityExecutions()
+            ->where('sequence', 6)
+            ->sole();
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)
+            ->where('payload->activity_execution_id', $execution->id)
+            ->sole();
+        // Corrupt a later admission to bypass the bridge's prepared-scope guard.
+        $payload = $scheduled->payload;
+        $payload['cancellation_scope_id'] = $scope;
+        $payload['activity']['cancellation_scope_id'] = $scope;
+        $scheduled->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $execution->forceFill([
+            'activity_options' => [
+                ...$execution->activity_options,
+                'cancellation_scope_id' => $scope,
+            ],
+        ])->save();
+        $history = $run->historyEvents()
+            ->count();
+        try {
+            ScopedActivityCancellation::fence(
+                $run->fresh(),
+                $task,
+                $execution->id,
+                $scope,
+                $request->payload['request_id'],
+                '1.20'
+            );
+            $this->fail('A later Activity cannot become an original preparation member.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_activity_not_prepared', $error->getMessage());
+        }
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Pending, $execution->fresh()->status);
+    }
+
+    /**
      * @return array{WorkflowStub, WorkflowRun, WorkflowTask, string, string, string}
      */
     private function tree(bool $shield = false): array
@@ -840,11 +1301,41 @@ final class V2ScopedActivityCancellationTest extends TestCase
         ];
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     private function fence(WorkflowRun $run, WorkflowTask $task, ActivityExecution $execution, string $scope): array
     {
+        $execution = $execution->fresh();
+        if (! in_array($execution->status, [ActivityStatus::Completed, ActivityStatus::Failed], true)
+            && ($execution->activity_options['cancellation_scope_id'] ?? 'root') === $scope
+            && CancellationScopeDelivery::prepared($run->fresh(), $scope) === null) {
+            $scheduled = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityScheduled)
+                ->where('payload->activity_execution_id', $execution->id)
+                ->sole();
+            $size = $scheduled->payload['parallel_group_size'] ?? 1;
+            $kind = $size > 1 ? 'parallel'
+                : (\Workflow\V2\Support\CooperativeCancellationDelivery::callKindAt(
+                    $run->fresh(),
+                    $execution->sequence
+                ) ?? 'activity');
+            $base = $scheduled->payload['parallel_group_base_sequence'] ?? $execution->sequence;
+            $mixed = $size > 1 && $run->activityExecutions()
+                ->whereBetween('sequence', [$base, $base + $size - 1])
+                ->get()
+                ->contains(static fn (ActivityExecution $member): bool =>
+                                    ($member->activity_options['cancellation_scope_id'] ?? 'root') !== $scope);
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                CancellationScopeRequests::context($run, $scope)->requestId,
+                $mixed ? $base + $size : $base,
+                $mixed ? 'selection_handle' : $kind,
+                '1.20',
+                $mixed ? 1 : $size,
+                $mixed ? $execution->sequence : null,
+                1
+            );
+        }
         return ScopedActivityCancellation::fence(
             $run,
             $task,
@@ -862,6 +1353,19 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $history = $run->historyEvents()
             ->count();
         try {
+            if (CancellationScopeDelivery::prepared($run->fresh(), $scope) === null) {
+                CancellationScopeDelivery::prepare(
+                    $run,
+                    $task,
+                    $scope,
+                    CancellationScopeRequests::context($run, $scope)->requestId,
+                    4,
+                    'activity',
+                    '1.20'
+                );
+                $history = $run->historyEvents()
+                    ->count();
+            }
             CancellationScopeDelivery::record(
                 $run->fresh(),
                 $task,

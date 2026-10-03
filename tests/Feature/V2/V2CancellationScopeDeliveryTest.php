@@ -145,6 +145,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $first = $this->deliver($run, $task, $parent);
         CancellationScopeRequests::request($run, $child, '1.20', 30);
         $request = CancellationScopeRequests::context($run, $child);
+        CancellationScopeDelivery::prepare($run, $task, $child, $request->requestId, 4, 'timer', '1.20');
         $second = CancellationScopeDelivery::record($run, $task, $child, $request->requestId, 4, 'timer', '1.20');
         $this->assertNotSame($first->id, $second->id);
         $this->assertNotSame($first->payload['request_id'], $second->payload['request_id']);
@@ -350,6 +351,18 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             );
             return;
         }
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            $selection ? 5 : 3,
+            $selection ? 'selection_handle' : 'parallel',
+            '1.20',
+            $selection ? 1 : 2,
+            $selection ? 3 : null,
+            $selection ? 2 : 1
+        );
         $this->fenceActivities($run, $task, $scope);
         $event = $delivery();
         $this->assertSame($selection ? 5 : 3, $event->payload['sequence']);
@@ -492,6 +505,15 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         string $scope,
         string $kind = 'activity'
     ): WorkflowHistoryEvent {
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            CancellationScopeRequests::context($run, $scope)->requestId,
+            3,
+            $kind,
+            '1.20'
+        );
         $this->fenceActivities($run, $task, $scope);
         return CancellationScopeDelivery::record(
             $run,

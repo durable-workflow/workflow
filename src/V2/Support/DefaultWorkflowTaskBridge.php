@@ -1272,14 +1272,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             $createdTaskIds = [];
-            if (! self::operationScopesAreRecorded($run, $parsed['non_terminal'], $sequence)) {
+            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+            if ($scopeError !== null) {
                 return [
                     'completed' => false,
                     'task_id' => $taskId,
                     'workflow_run_id' => $run->id,
                     'run_status' => $run->status->value,
                     'created_task_ids' => [],
-                    'reason' => 'operation_scope_not_recorded',
+                    'reason' => $scopeError,
                 ];
             }
             $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
@@ -1368,6 +1369,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return 'operation_scope_not_recorded';
         }
         foreach ($commands as $offset => $command) {
+            if (isset($command['cancellation_scope_id'])) {
+                $refusal = CancellationScopeDelivery::admissionRefusal(
+                    $run,
+                    $command['cancellation_scope_id'],
+                    $sequence + $offset
+                );
+                if ($refusal !== null) {
+                    return $refusal;
+                }
+            }
             if ($command['type'] === 'prepare_local_activity'
                 && ! CancellationScopeHistory::isRecordedBefore(
                     $run,
@@ -1521,8 +1532,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             if ($sequence !== $startSequence) {
                 return $refused($checkpointName . '_checkpoint_sequence_mismatch');
             }
-            if (! self::operationScopesAreRecorded($run, $parsed['non_terminal'], $sequence)) {
-                return $refused('operation_scope_not_recorded');
+            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+            if ($scopeError !== null) {
+                return $refused($scopeError);
             }
             $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
             if ($invalidUpdate !== null) {
