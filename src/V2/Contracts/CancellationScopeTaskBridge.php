@@ -14,6 +14,24 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 interface CancellationScopeTaskBridge extends WorkflowTaskBridge
 {
     /**
+     * Commit ordinary commands preceding a scope without releasing the claim.
+     * The SDK must replay the canonical history before opening the scope.
+     * No local callback admission or scope delivery capability is implied.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    public function checkpointCancellationScopePrefix(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array;
+
+    /**
      * @return array<string, mixed>
      */
     public function openCancellationScope(

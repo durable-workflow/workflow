@@ -1103,7 +1103,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        return $this->checkpointLocalActivities(
+        return $this->checkpointCommands(
             $taskId,
             $leaseOwner,
             $workflowTaskAttempt,
@@ -1111,7 +1111,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $startSequence,
             $commands,
             $protocolVersion,
-            false
+            'local'
         );
     }
 
@@ -1124,7 +1124,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        return $this->checkpointLocalActivities(
+        return $this->checkpointCommands(
             $taskId,
             $leaseOwner,
             $workflowTaskAttempt,
@@ -1132,7 +1132,28 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $startSequence,
             $commands,
             $protocolVersion,
-            true
+            'local_group'
+        );
+    }
+
+    public function checkpointCancellationScopePrefix(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->checkpointCommands(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $commands,
+            $protocolVersion,
+            'cancellation_scope'
         );
     }
 
@@ -1362,7 +1383,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     /** @param list<array{type: string, ...}> $commands
      * @return array<string, mixed>
      */
-    private function checkpointLocalActivities(
+    private function checkpointCommands(
         string $taskId,
         string $leaseOwner,
         int $workflowTaskAttempt,
@@ -1370,30 +1391,34 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $startSequence,
         array $commands,
         string $protocolVersion,
-        bool $group,
+        string $kind,
     ): array {
+        $group = $kind === 'local_group';
+        $scopePrefix = $kind === 'cancellation_scope';
+        $checkpointName = $scopePrefix ? 'cancellation_scope' : 'local_activity';
         $refused = static fn (string $reason): array => [
             'checkpointed' => false,
             'duplicate' => false,
             'task_id' => $taskId,
             'reason' => $reason,
         ];
-        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+        if (($scopePrefix && ! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion))
+            || preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
-            return $refused('local_activity_checkpoint_requires_protocol_1_20');
+            return $refused($checkpointName . '_checkpoint_requires_protocol_1_20');
         }
         if ($startSequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
             || trim($checkpointId) === '' || strlen($checkpointId) > 255
             || preg_match('//u', $checkpointId) !== 1 || ! array_is_list($commands)
             || count($commands) > 100) {
-            return $refused('invalid_local_activity_checkpoint');
+            return $refused('invalid_' . $checkpointName . '_checkpoint');
         }
         $parsed = $group ? self::parsePreparedLocalGroupCommands($commands) : ($commands === [] ? [
             'non_terminal' => [],
             'terminal' => null,
         ] : self::parseCommands($commands));
         if ($parsed === null || $parsed['terminal'] !== null) {
-            return $refused('invalid_local_activity_checkpoint_commands');
+            return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
         }
         foreach ($parsed['non_terminal'] as $command) {
             if (isset($command['cancellation_scope_id'])
@@ -1405,13 +1430,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             // None belongs in this retained-claim preparation prefix.
             if (in_array($command['type'], ['record_local_activity', 'open_condition_wait',
                 'open_signal_wait', 'cancel_selection_operation'], true)) {
-                return $refused('invalid_local_activity_checkpoint_commands');
+                return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
             }
         }
         try {
             $fingerprint = hash('sha256', json_encode($parsed['non_terminal'], JSON_THROW_ON_ERROR));
         } catch (JsonException) {
-            return $refused('invalid_local_activity_checkpoint_commands');
+            return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
         }
         /** @var WorkflowTask|null $snapshot */
         $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
@@ -1430,6 +1455,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $fingerprint,
             $refused,
             $group,
+            $scopePrefix,
+            $checkpointName,
         ): array {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
@@ -1455,14 +1482,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return $refused('run_deadline_expired');
             }
             $payload = is_array($task->payload) ? $task->payload : [];
-            $receiptKey = $group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint';
+            $receiptKey = $scopePrefix ? 'portable_scope_checkpoint'
+                : ($group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint');
             $receipt = $payload[$receiptKey] ?? null;
             if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
                 if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
                     || ($receipt['lease_owner'] ?? null) !== $leaseOwner
                     || ($receipt['start_sequence'] ?? null) !== $startSequence
                     || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
-                    return $refused('local_activity_checkpoint_mismatch');
+                    return $refused($checkpointName . '_checkpoint_mismatch');
                 }
                 // This receipt proves prefix commit, not permission to start
                 // application code. Preparation still checks cancellation.
@@ -1491,7 +1519,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             }
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             if ($sequence !== $startSequence) {
-                return $refused('local_activity_checkpoint_sequence_mismatch');
+                return $refused($checkpointName . '_checkpoint_sequence_mismatch');
             }
             if (! self::operationScopesAreRecorded($run, $parsed['non_terminal'], $sequence)) {
                 return $refused('operation_scope_not_recorded');
@@ -1501,7 +1529,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return $refused($invalidUpdate);
             }
             if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
-                return $refused('invalid_local_activity_checkpoint_commands');
+                return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
             }
             // Validate every local scope/cleanup member before creating any sibling.
             foreach ($parsed['non_terminal'] as $offset => $command) {

@@ -87,6 +87,163 @@ final class V2CancellationScopeHistoryTest extends TestCase
         );
     }
 
+    public function testScopePrefixCommitsBeforeOpeningWithoutLocalActivityAdmission(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('scope-prefix');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $originalLease = $claim->lease_expires_at->toISOString();
+        $commands = [[
+            'type' => 'record_side_effect',
+            'result' => Serializer::serializeWithCodec('avro', 'before-scope'),
+        ]];
+        $first = $bridge->checkpointCancellationScopePrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'scope-prefix',
+            1,
+            $commands,
+            '1.20'
+        );
+        $this->assertTrue($first['checkpointed'], $first['reason'] ?? '');
+        $this->assertFalse($first['duplicate']);
+        $this->assertSame(2, $first['next_sequence']);
+        $this->assertSame($originalLease, $claim->fresh()->lease_expires_at->toISOString());
+        $this->assertArrayHasKey('portable_scope_checkpoint', $claim->fresh()->payload);
+        $this->assertArrayNotHasKey('portable_local_checkpoint', $claim->fresh()->payload);
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $retry = $bridge->checkpointCancellationScopePrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'scope-prefix',
+            1,
+            $commands,
+            '1.20'
+        );
+        $this->assertTrue($retry['checkpointed']);
+        $this->assertTrue($retry['duplicate']);
+        $this->assertSame($first['fingerprint'], $retry['fingerprint']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+        $scope = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 2, 'root', false, '1.20');
+        $this->assertTrue($scope['opened'], $scope['reason'] ?? '');
+        $this->assertSame(3, WorkflowStepHistory::nextDurableCommandSequence($workflow->run()->fresh()));
+        $this->assertSame(TaskStatus::Leased, $claim->fresh()->status);
+        $this->assertSame(0, ActivityExecution::query()->count());
+    }
+
+    public static function refusedScopePrefixes(): iterable
+    {
+        yield 'legacy protocol' => [
+            '1.19',
+            1,
+            'scope-owner',
+            1,
+            [],
+            'cancellation_scope_checkpoint_requires_protocol_1_20',
+        ];
+        yield 'unknown protocol major' => [
+            '2.0',
+            1,
+            'scope-owner',
+            1,
+            [],
+            'cancellation_scope_checkpoint_requires_protocol_1_20',
+        ];
+        yield 'old attempt' => ['1.20', 2, 'scope-owner', 1, [], 'workflow_claim_mismatch'];
+        yield 'wrong owner' => ['1.20', 1, 'wrong-owner', 1, [], 'workflow_claim_mismatch'];
+        yield 'future sequence' => ['1.20', 1, 'scope-owner', 2, [], 'cancellation_scope_checkpoint_sequence_mismatch'];
+        yield 'terminal command' => ['1.20', 1, 'scope-owner', 1, [[
+            'type' => 'complete_workflow',
+            'result' => 'ignored',
+        ]], 'invalid_cancellation_scope_checkpoint_commands'];
+        yield 'local callback report' => ['1.20', 1, 'scope-owner', 1, [[
+            'type' => 'record_local_activity',
+        ]], 'invalid_cancellation_scope_checkpoint_commands'];
+        yield 'local preparation' => ['1.20', 1, 'scope-owner', 1, [[
+            'type' => 'prepare_local_activity',
+        ]], 'invalid_cancellation_scope_checkpoint_commands'];
+    }
+
+    #[DataProvider('refusedScopePrefixes')]
+    public function testScopePrefixRefusalLeavesHistoryAndClaimUnchanged(
+        string $protocol,
+        int $attempt,
+        string $owner,
+        int $sequence,
+        array $commands,
+        string $reason
+    ): void {
+        [$workflow, $claim] = $this->workflowClaim('refused-scope-prefix');
+        $before = $claim->getAttributes();
+        $history = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $reply = app(DefaultWorkflowTaskBridge::class)->checkpointCancellationScopePrefix(
+            $claim->id,
+            $owner,
+            $attempt,
+            'scope-prefix',
+            $sequence,
+            $commands,
+            $protocol
+        );
+        $this->assertFalse($reply['checkpointed']);
+        $this->assertSame($reason, $reply['reason']);
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $this->assertSame($history, $workflow->run()->historyEvents()->count());
+    }
+
+    public function testScopePrefixCannotReplayChangedCommandsOrPublishFromAReplacedClaim(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('changed-scope-prefix');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $commands = [[
+            'type' => 'record_side_effect',
+            'result' => Serializer::serializeWithCodec('avro', 'first'),
+        ]];
+        $this->assertTrue($bridge->checkpointCancellationScopePrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'scope-prefix',
+            1,
+            $commands,
+            '1.20'
+        )['checkpointed']);
+        $history = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $commands[0]['result'] = Serializer::serializeWithCodec('avro', 'changed');
+        $this->assertSame('cancellation_scope_checkpoint_mismatch', $bridge->checkpointCancellationScopePrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'scope-prefix',
+            1,
+            $commands,
+            '1.20'
+        )['reason']);
+        $claim->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $this->assertSame('workflow_claim_mismatch', $bridge->checkpointCancellationScopePrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'scope-prefix',
+            2,
+            $commands,
+            '1.20'
+        )['reason']);
+        $scope = $bridge->openCancellationScope($claim->id, 'replacement', 2, 2, 'root', false, '1.20');
+        $this->assertTrue($scope['opened'], $scope['reason'] ?? '');
+        $this->assertSame($history + 1, $workflow->run()->historyEvents()->count());
+    }
+
     public function testOptionalScopeOpeningReplaysTheSameNestedShieldAfterClaimTakeover(): void
     {
         [$workflow, $claim] = $this->workflowClaim('portable-shield');
