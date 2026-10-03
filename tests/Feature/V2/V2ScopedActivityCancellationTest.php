@@ -1920,10 +1920,6 @@ final class V2ScopedActivityCancellationTest extends TestCase
 
     public static function unsupportedScopeOperations(): iterable
     {
-        yield 'timer' => [[
-            'type' => 'start_timer',
-            'delay_seconds' => 60,
-        ], 'scoped_timer_delivery'];
         yield 'child' => [[
             'type' => 'start_child_workflow',
             'workflow_type' => 'child-scope-fixture',

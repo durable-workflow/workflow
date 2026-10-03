@@ -230,7 +230,7 @@ final class HistoryTimeline
                     'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
                     'reason', 'accepted_cancellation', 'incoming_cancellation',
                     'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
-                    'authority_deadline_at', 'activity_members', 'preparation_history_event_id',
+                    'authority_deadline_at', 'activity_members', 'timer_members', 'preparation_history_event_id',
                 ])),
             ] : []),
             'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),

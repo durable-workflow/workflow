@@ -17,10 +17,12 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -28,6 +30,7 @@ use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ScopedActivityCancellation;
+use Workflow\V2\Support\ScopedTimerCancellation;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\WorkflowStub;
 
@@ -562,6 +565,31 @@ final class V2CancellationScopeDeliveryTest extends TestCase
                     'activity_execution_id' => $execution->id,
                 ],
             ]);
+        } elseif ($type === HistoryEventType::TimerScheduled) {
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $payload['sequence'],
+                'status' => TimerStatus::Pending,
+                'delay_seconds' => 60,
+                'fire_at' => now()
+                    ->addMinute(),
+            ]);
+            $payload = [
+                ...$payload,
+                'timer_id' => $timer->id,
+                'delay_seconds' => 60,
+                'fire_at' => $timer->fire_at->toISOString(),
+            ];
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Timer,
+                'status' => TaskStatus::Ready,
+                'available_at' => $timer->fire_at,
+                'payload' => [
+                    'timer_id' => $timer->id,
+                ],
+            ]);
         } elseif ($type === HistoryEventType::ActivityCompleted) {
             $execution = $run->activityExecutions()
                 ->where('sequence', $payload['sequence'])->sole();
@@ -583,6 +611,16 @@ final class V2CancellationScopeDeliveryTest extends TestCase
 
     private function fenceActivities(WorkflowRun $run, WorkflowTask $task, string $scope): void
     {
+        foreach (CancellationScopeDelivery::prepared($run->fresh(), $scope)->payload['timer_members'] as $member) {
+            ScopedTimerCancellation::fence(
+                $run,
+                $task,
+                $member['timer_id'],
+                $scope,
+                CancellationScopeRequests::context($run, $scope)->requestId,
+                '1.20'
+            );
+        }
         foreach ($run->activityExecutions()->get() as $execution) {
             if ($execution->activity_options['cancellation_scope_id'] === $scope
                 && $execution->status === ActivityStatus::Pending) {

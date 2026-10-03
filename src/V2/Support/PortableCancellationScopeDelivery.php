@@ -13,7 +13,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\ScopedCancellationContext;
 
 /**
- * @internal Authenticate preparation and dispatch the original scoped Activities.
+ * @internal Authenticate preparation and dispatch the original scoped operations.
  * Each actor owns its locks; no outer transaction spans preparation and dispatch.
  */
 final class PortableCancellationScopeDelivery
@@ -104,6 +104,17 @@ final class PortableCancellationScopeDelivery
                     ];
                 }
                 $response['activity_cancellations'] = [];
+                $response['timer_cancellations'] = [];
+                foreach ($event->payload['timer_members'] as $member) {
+                    $response['timer_cancellations'][] = ScopedTimerCancellation::fence(
+                        $run,
+                        $claim,
+                        $member['timer_id'],
+                        $scopeId,
+                        $requestId,
+                        $protocolVersion
+                    );
+                }
                 foreach ($event->payload['activity_members'] as $member) {
                     $receipt = ScopedActivityCancellation::fence(
                         $run,
@@ -204,6 +215,9 @@ final class PortableCancellationScopeDelivery
                     'descriptor_hash' => $member['descriptor_hash'],
                 ], $payload['activity_members']),
             ] : []),
+            ...(array_key_exists('timer_members', $payload) ? [
+                'timer_members' => ScopedTimerCancellation::normalizeMembers($payload['timer_members']),
+            ] : []),
         ];
     }
 
@@ -245,7 +259,6 @@ final class PortableCancellationScopeDelivery
             }
             $missing = $memberScope !== $scopeId ? 'scoped_descendant_delivery'
                 : match ($event->event_type) {
-                    HistoryEventType::TimerScheduled => 'scoped_timer_delivery',
                     HistoryEventType::ChildWorkflowScheduled => 'scoped_child_delivery',
                     HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => 'scoped_wait_delivery',
                     default => null,

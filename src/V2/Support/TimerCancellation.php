@@ -14,12 +14,16 @@ use Workflow\V2\Models\WorkflowTimer;
 
 final class TimerCancellation
 {
+    /**
+     * @param array<string, mixed>|null $cancellationScope
+     */
     public static function record(
         WorkflowRun $run,
         WorkflowTimer $timer,
         WorkflowTask|string|null $task = null,
         WorkflowCommand|string|null $command = null,
         ?CarbonInterface $cancelledAt = null,
+        ?array $cancellationScope = null,
     ): WorkflowHistoryEvent {
         $run->loadMissing('historyEvents');
 
@@ -53,6 +57,7 @@ final class TimerCancellation
             'signal_wait_id' => self::stringValue($scheduledPayload['signal_wait_id'] ?? null),
             'signal_name' => self::stringValue($scheduledPayload['signal_name'] ?? null),
             'cancelled_at' => $cancelledAt->toJSON(),
+            'cancellation_scope' => $cancellationScope,
             ...ParallelChildGroup::payloadForPath(ParallelChildGroup::metadataPathFromPayload($scheduledPayload)),
         ], static fn (mixed $value): bool => $value !== null), $task, $command);
 
