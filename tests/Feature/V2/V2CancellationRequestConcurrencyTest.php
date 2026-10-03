@@ -290,7 +290,8 @@ final class V2CancellationRequestConcurrencyTest extends TestCase
         $this->assertSame(RunStatus::Waiting, $run->status);
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationRequested)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested)->count()
         );
         $this->assertSameJsonObject($context, CooperativeCancellationDelivery::context($run)->toArray());
         $this->assertSame(1, WorkflowCommand::query()->where('workflow_run_id', $run->id)
