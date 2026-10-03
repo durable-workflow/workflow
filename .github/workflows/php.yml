@@ -330,6 +330,11 @@ jobs:
           vendor/bin/phpunit --testdox \
           --log-junit build/test-results/pr-unit-contracts.xml
 
+    - name: Run workflow command normalizer unit cases
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/WorkflowCommandNormalizerTest.php
+        --fail-on-warning --log-junit build/test-results/pr-workflow-command-normalizer.xml
+
     - name: Run cancellation timeline unit cases
       run: >-
         vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php
