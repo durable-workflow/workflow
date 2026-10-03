@@ -381,7 +381,7 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
     public static function ordinaryLeaseDurations(): iterable
     {
         yield 'Server normal lease' => [60];
-        yield 'embedded normal lease' => [300];
+        yield 'longer configured lease' => [300];
         yield 'shorter configured lease' => [4];
     }
 

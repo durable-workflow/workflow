@@ -87,12 +87,17 @@ lack the snapshot keep their existing delivery behavior and expose a null contex
 
 ### Cleanup outcome
 
-Active cleanup uses renewable ownership windows of at most ten seconds, or the
-configured workflow lease when it is shorter. Each window also ends at the
-original cancellation deadline. Canonical delivery changes the hosting claim
+Supervised portable cleanup uses renewable ownership windows of at most ten
+seconds, or the configured workflow lease when it is shorter. Each window also
+ends at the original cancellation deadline. Portable delivery changes the hosting claim
 to this cleanup window. Replacement claims, workflow heartbeats and local
 callback supervision preserve the same bound. Ordinary workflow lease settings
 remain unchanged.
+
+Embedded Laravel callbacks retain their existing configured lease. They execute
+inside the workflow transaction and do not have the portable SDK supervisor
+that renews short ownership windows. The cancellation deadline still bounds
+their cleanup outcome.
 
 Prepared local callback supervision renews the task and Activity attempt in
 one transaction without requiring an application heartbeat. A dead worker

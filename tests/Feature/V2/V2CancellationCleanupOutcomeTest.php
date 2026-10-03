@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestCooperativeNormalCleanupWorkflow;
 use Tests\Fixtures\V2\TestCooperativeWaitCleanupWorkflow;
+use Tests\Fixtures\V2\TestElapsedLocalCleanupWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -22,6 +23,45 @@ use Workflow\V2\WorkflowStub;
 
 final class V2CancellationCleanupOutcomeTest extends TestCase
 {
+    public function testEmbeddedLocalCleanupCanOutliveThePortableRenewalWindow(): void
+    {
+        Carbon::setTestNow('2026-10-03T08:00:00.000000Z');
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.workflow_task_lease_seconds' => 300,
+        ]);
+        Queue::fake();
+
+        try {
+            $workflow = WorkflowStub::make(TestElapsedLocalCleanupWorkflow::class);
+            $workflow->start();
+            $runId = $workflow->runId();
+            $this->assertIsString($runId);
+            $this->runTask($runId, TaskType::Workflow);
+            $request = $workflow->requestCancellation('embedded local cleanup', 30);
+            $deadline = $request->cancellationContext()?->deadline()
+                ->toISOString();
+            $this->runTask($runId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->refresh()->cancelled());
+            $this->assertSame([
+                'cleanup' => 'cleaned',
+            ], $workflow->memo());
+            $outcome = $this->terminal($runId)
+->payload['cancellation_cleanup'];
+            $this->assertSame('completed', $outcome['outcome']);
+            $this->assertSame($deadline, $outcome['cleanup_deadline_at']);
+            $started = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityStarted)->sole();
+            $this->assertSame('2026-10-03T08:05:00.000000Z', $started->payload['lease_expires_at']);
+            $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+            $this->assertSame('2026-10-03T08:00:11.000000Z', now()->toISOString());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testLegacyTerminalCancellationDoesNotClaimCooperativeCleanup(): void
     {
         config([

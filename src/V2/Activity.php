@@ -22,7 +22,6 @@ use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityRowLockOrder;
 use Workflow\V2\Support\ActivitySnapshot;
-use Workflow\V2\Support\CancellationCleanupLease;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\LocalActivityRuntime;
 
@@ -200,10 +199,7 @@ abstract class Activity
             }
 
             if ($this->ownsLocalWorkflowTask($execution, $attempt, $task)) {
-                $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask(
-                    $task,
-                    CancellationCleanupLease::deadline($run)
-                );
+                $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask($task);
 
                 if ($attempt->status === ActivityAttemptStatus::Running) {
                     $attempt->forceFill([

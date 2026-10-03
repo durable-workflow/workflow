@@ -788,6 +788,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $operationSequence,
                 $operationSequenceSpan,
             );
+            if ($event instanceof WorkflowHistoryEvent) {
+                LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run));
+            }
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return $response($event === null ? (
@@ -6978,7 +6981,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $taskId,
-                'lease_expires_at' => CancellationCleanupLease::expiresAt($run),
+                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
                 'attempt_count' => $task->attempt_count + 1,
                 'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $taskId),
                 'sticky_claimed_at' => now(),
