@@ -3778,7 +3778,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
             ? (int) $command['timeout_seconds']
             : null;
-        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelMetadata = [...self::parallelMetadataForCommand($command), ...self::operationScopeMetadata($command)];
         $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
 
         $waitId = (string) Str::ulid();
@@ -3892,7 +3892,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
             ? (int) $command['timeout_seconds']
             : null;
-        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelMetadata = [...self::parallelMetadataForCommand($command), ...self::operationScopeMetadata($command)];
         $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
         $pendingSignalWaitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName);
         $waitId = $pendingSignalWaitId ?? (string) Str::ulid();
@@ -4014,6 +4014,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
             'fired_at' => $timer->fired_at?->toJSON(),
+            ...(isset($parallelMetadata['cancellation_scope_id']) ? [
+                'fire_at' => $recordedAt->toJSON(),
+            ] : []),
             'timer_kind' => 'signal_timeout',
             'signal_wait_id' => $waitId,
             'signal_name' => $signalName,
@@ -4064,6 +4067,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
             ...$payload,
             'fired_at' => $recordedAt->toJSON(),
+            ...(isset($parallelMetadata['cancellation_scope_id']) ? [
+                'fire_at' => $recordedAt->toJSON(),
+            ] : []),
         ], $task);
     }
 
@@ -5658,7 +5664,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         if (array_key_exists('cancellation_scope_id', $command)
             && ($scopeMetadata === [] || ! in_array(
                 $type,
-                ['schedule_activity', 'start_timer', 'start_child_workflow'],
+                ['schedule_activity', 'start_timer', 'start_child_workflow', 'open_signal_wait', 'open_condition_wait'],
                 true
             ))) {
             return null;
@@ -5708,7 +5714,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         foreach ($commands as $command) {
             if (isset($command['cancellation_scope_id']) && in_array(
                 $command['type'],
-                ['schedule_activity', 'start_timer', 'start_child_workflow'],
+                ['schedule_activity', 'start_timer', 'start_child_workflow', 'open_signal_wait', 'open_condition_wait'],
                 true,
             ) && ! CancellationScopeHistory::isRecordedBefore($run, $command['cancellation_scope_id'], $sequence)) {
                 return false;

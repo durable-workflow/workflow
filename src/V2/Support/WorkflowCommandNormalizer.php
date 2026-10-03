@@ -151,8 +151,14 @@ final class WorkflowCommandNormalizer
             'guidance' => 'cancellation_policy declares how an awaiting workflow handles child or remote activity cancellation. Explicit activity policies require protocol 1.20 and remote abandon requires a finite schedule_to_close_timeout.',
         ],
         'cancellation_scope_id' => [
-            'allowed' => ['schedule_activity', 'start_timer', 'start_child_workflow'],
-            'guidance' => 'cancellation_scope_id is recorded operation membership on activity, timer or child scheduling and requires candidate protocol 1.20.',
+            'allowed' => [
+                'schedule_activity',
+                'start_timer',
+                'start_child_workflow',
+                'open_signal_wait',
+                'open_condition_wait',
+            ],
+            'guidance' => 'cancellation_scope_id records activity, timer, child or wait membership and requires candidate protocol 1.20.',
         ],
         'delay_seconds' => [
             'allowed' => ['start_timer'],
@@ -1192,6 +1198,7 @@ final class WorkflowCommandNormalizer
                     'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                     'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
                     'timeout_seconds' => $timeoutSeconds,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -1226,6 +1233,7 @@ final class WorkflowCommandNormalizer
                     'type' => $type,
                     'signal_name' => trim((string) $command['signal_name']),
                     'timeout_seconds' => $timeoutSeconds,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 

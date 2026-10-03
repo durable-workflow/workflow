@@ -90,6 +90,18 @@ history and task locators, and child scheduling/started history retain the
 address. Child operator metadata is a projection, not its authority. Historical
 unscoped scheduling shapes remain unchanged.
 
+Signal and condition wait commands also retain their optional address on the
+canonical opening event. Timed waits retain it on timeout scheduling and task
+locators, including immediate timeout history. Untimed waits retain membership
+without creating a timer. Foreign or unknown scope addresses refuse the entire
+command batch before effects. Waits still close a turn and cannot enter a
+retained-claim prefix. Once delivery is prepared, the original wait can replay
+but new work in that scope cannot be admitted.
+
+Wait membership does not enable wait cancellation. Delivery still refuses
+`scoped_wait_delivery` before any timer or activity effect until canonical wait
+cancellation and mailbox recovery are implemented and qualified.
+
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,
 refuses a backend without that role, checks before payload resolution and

@@ -59,10 +59,6 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             [
                 'type' => 'record_side_effect',
                 'result' => Serializer::serializeWithCodec('avro', 1),
-            ],
-            [
-                'type' => 'open_signal_wait',
-                'signal_name' => 'ready',
             ]] as $command) {
             try {
                 WorkflowCommandNormalizer::normalize([[
@@ -2580,6 +2576,16 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             [
                 'type' => 'start_child_workflow',
                 'workflow_type' => 'child',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'ready',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'ready',
                 'cancellation_scope_id' => 'recorded-scope',
             ],
         ];

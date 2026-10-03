@@ -24,6 +24,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -501,6 +502,247 @@ final class V2CancellationScopeHistoryTest extends TestCase
             ->sole()
 ->payload['cancellation_scope_id']);
         $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    public static function waitMemberships(): iterable
+    {
+        foreach (['signal', 'condition'] as $kind) {
+            foreach ([null, 0, 5] as $timeout) {
+                foreach ([false, true] as $scoped) {
+                    yield $kind . ':' . ($timeout ?? 'untimed') . ':' . (int) $scoped => [$kind, $timeout, $scoped];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('waitMemberships')]
+    public function testWaitOpeningAndItsTimeoutRetainCanonicalMembership(
+        string $kind,
+        ?int $timeout,
+        bool $scoped,
+    ): void {
+        [$workflow, $claim] = $this->workflowClaim('wait-membership');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20', 'root', true)->payload['scope_id'];
+        $command = $this->waitCommand($kind, $timeout);
+        if ($scoped) {
+            $command['cancellation_scope_id'] = $scope;
+        }
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete(
+            $claim->id,
+            WorkflowCommandNormalizer::normalize([$command], $scoped ? '1.20' : '1.19'),
+        );
+        $this->assertTrue($reply['completed'], $reply['reason'] ?? '');
+        $opened = $run->historyEvents()
+            ->where('event_type', $kind === 'signal'
+                        ? HistoryEventType::SignalWaitOpened : HistoryEventType::ConditionWaitOpened)->sole();
+        $this->assertSame(2, $opened->payload['sequence']);
+        $this->assertSame($timeout, $opened->payload['timeout_seconds'] ?? null);
+        $this->assertSame($scoped ? $scope : null, $opened->payload['cancellation_scope_id'] ?? null);
+        $this->assertSame($scoped, array_key_exists('cancellation_scope_id', $opened->payload));
+        $this->assertTrue(CancellationScopeHistory::forRun($run->fresh())[$scope]['shield_parent']);
+        $waitId = $opened->payload[$kind . '_wait_id'];
+        $this->assertIsString($waitId);
+        $timers = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerScheduled)->get();
+        $this->assertCount($timeout === null ? 0 : 1, $timers);
+        foreach ($timers as $timer) {
+            $this->assertSame($waitId, $timer->payload[$kind . '_wait_id']);
+            $this->assertSame($scoped ? $scope : null, $timer->payload['cancellation_scope_id'] ?? null);
+            $this->assertSame($scoped, array_key_exists('cancellation_scope_id', $timer->payload));
+        }
+        $timerTasks = $run->tasks()
+            ->where('task_type', TaskType::Timer)->get();
+        $this->assertCount($timeout !== null && $timeout > 0 ? 1 : 0, $timerTasks);
+        foreach ($timerTasks as $timerTask) {
+            $this->assertSame($waitId, $timerTask->payload[$kind . '_wait_id']);
+            $this->assertSame($scoped ? $scope : null, $timerTask->payload['cancellation_scope_id'] ?? null);
+        }
+        foreach ($run->historyEvents()->where('event_type', HistoryEventType::TimerFired)->get() as $fired) {
+            $this->assertSame($waitId, $fired->payload[$kind . '_wait_id']);
+            $this->assertSame($scoped ? $scope : null, $fired->payload['cancellation_scope_id'] ?? null);
+            $this->assertSame($scoped, array_key_exists('fire_at', $fired->payload));
+            if ($scoped) {
+                $this->assertSame($timers->sole()->payload['fire_at'], $fired->payload['fire_at']);
+            }
+        }
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
+    }
+
+    public static function foreignWaitScopes(): iterable
+    {
+        foreach (['signal', 'condition'] as $kind) {
+            foreach ([false, true] as $foreign) {
+                yield $kind . ':' . (int) $foreign => [$kind, $foreign];
+            }
+        }
+    }
+
+    #[DataProvider('foreignWaitScopes')]
+    public function testUnknownOrForeignWaitScopeRefusesTheWholeBatchBeforeAnyEffect(string $kind, bool $foreign): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('foreign-wait');
+        $run = $workflow->run()
+            ->fresh();
+        CancellationScopeHistory::open($run, $claim, 1, '1.20');
+        $scope = 'unknown-scope';
+        if ($foreign) {
+            [$other, $otherClaim] = $this->workflowClaim('other-wait');
+            $scope = CancellationScopeHistory::open(
+                $other->run()
+                    ->fresh(),
+                $otherClaim,
+                1,
+                '1.20'
+            )->payload['scope_id'];
+        }
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $before = $claim->fresh()
+            ->getAttributes();
+        $commands = [$this->operationCommands()[0], [
+            ...$this->waitCommand($kind, 5),
+            'cancellation_scope_id' => $scope,
+        ]];
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete(
+            $claim->id,
+            WorkflowCommandNormalizer::normalize($commands, '1.20'),
+        );
+        $this->assertFalse($reply['completed']);
+        $this->assertSame('operation_scope_not_recorded', $reply['reason']);
+        $this->assertSame([], $reply['created_task_ids']);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+    }
+
+    public function testScopedWaitsStillCloseATurnAndCannotEnterARetainedClaimPrefix(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('wait-prefix');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $before = $claim->fresh()
+            ->getAttributes();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        foreach (['signal', 'condition'] as $kind) {
+            $commands = [[
+                ...$this->waitCommand($kind, null),
+                'cancellation_scope_id' => $scope,
+            ]];
+            $this->assertSame(
+                'invalid_cancellation_scope_checkpoint_commands',
+                $bridge->checkpointCancellationScopePrefix(
+                    $claim->id,
+                    'scope-owner',
+                    1,
+                    'wait-prefix',
+                    2,
+                    $commands,
+                    '1.20',
+                )['reason']
+            );
+            $this->assertSame('invalid_local_activity_checkpoint_commands', $bridge->checkpointLocalActivityPrefix(
+                $claim->id,
+                'scope-owner',
+                1,
+                'wait-prefix',
+                2,
+                $commands,
+                '1.20',
+            )['reason']);
+        }
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+    }
+
+    public static function waitKinds(): iterable
+    {
+        yield 'signal' => ['signal'];
+        yield 'condition' => ['condition'];
+    }
+
+    #[DataProvider('waitKinds')]
+    public function testPreparedWaitKeepsReplayMembershipButRefusesNewWorkBeforeEffects(string $kind): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('prepared-wait');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $command = [
+            ...$this->waitCommand($kind, 5),
+            'cancellation_scope_id' => $scope,
+        ];
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertTrue($bridge->complete($claim->id, [$command])['completed']);
+        $hosting = $run->tasks()
+            ->create([
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow,
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'scope-replacement',
+                'attempt_count' => 1,
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
+                'available_at' => now(),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+        $request = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 30);
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $hosting->id,
+            'scope-replacement',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            2,
+            $kind,
+            protocolVersion: '1.20',
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertCount(1, $prepared['timer_members']);
+        $this->assertSame(2, $prepared['timer_members'][0]['sequence']);
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $before = $hosting->fresh()
+            ->getAttributes();
+        $this->assertNull($bridge->validateCancellationScopeMembership($run->fresh(), [$command], 2));
+        $reply = $bridge->complete($hosting->id, [$command]);
+        $this->assertFalse($reply['completed']);
+        $this->assertSame('operation_scope_cancellation_prepared', $reply['reason']);
+        $delivery = $bridge->deliverCancellationScope(
+            $hosting->id,
+            'scope-replacement',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            2,
+            $kind,
+            protocolVersion: '1.20',
+        );
+        $this->assertFalse($delivery['delivered']);
+        $this->assertSame('cancellation_scope_operation_delivery_unavailable', $delivery['reason']);
+        $this->assertContains('scoped_wait_delivery', $delivery['unavailable']);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame($before, $hosting->fresh()->getAttributes());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
+        $this->assertSame(
+            1,
+            $run->tasks()
+                ->where('task_type', TaskType::Timer)->where('status', TaskStatus::Ready)->count()
+        );
     }
 
     #[DataProvider('foreignOperationScopes')]
@@ -999,6 +1241,22 @@ final class V2CancellationScopeHistoryTest extends TestCase
                 'payload_codec' => 'avro',
             ],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function waitCommand(string $kind, ?int $timeout): array
+    {
+        return array_filter([
+            'type' => $kind === 'signal' ? 'open_signal_wait' : 'open_condition_wait',
+            ...($kind === 'signal' ? [
+                'signal_name' => 'ready',
+            ] : [
+                'condition_key' => 'ready',
+            ]),
+            'timeout_seconds' => $timeout,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**
