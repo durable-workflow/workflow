@@ -10,13 +10,21 @@ use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\WorkflowStub;
 
@@ -37,6 +45,285 @@ final class V2CancellationScopeHistoryTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public function testRemoteActivityTimerAndChildKeepCanonicalMembershipBeforeAdmission(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('operations');
+        $run = $workflow->run()
+            ->fresh();
+        $parent = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $shield = CancellationScopeHistory::open($run, $claim, 2, '1.20', $parent, true)->payload['scope_id'];
+        $commands = $this->operationCommands();
+        foreach ($commands as $index => &$command) {
+            $command['cancellation_scope_id'] = $index === 1 ? $shield : $parent;
+        }
+        unset($command);
+        $commands = WorkflowCommandNormalizer::normalize($commands, '1.20');
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete($claim->id, $commands);
+        $this->assertTrue($reply['completed'], $reply['reason'] ?? '');
+        $activity = $run->activityExecutions()
+            ->sole();
+        $this->assertSame($parent, $activity->activity_options['cancellation_scope_id']);
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
+        $this->assertSame($parent, $scheduled->payload['activity']['cancellation_scope_id']);
+        $timer = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerScheduled)->sole();
+        $this->assertSame($shield, $timer->payload['cancellation_scope_id']);
+        $timerTask = $run->tasks()
+            ->where('task_type', TaskType::Timer)->sole();
+        $this->assertSame($shield, $timerTask->payload['cancellation_scope_id']);
+        foreach ($run->historyEvents()->whereIn('event_type', [HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted])->get() as $event) {
+            $this->assertSame($parent, $event->payload['cancellation_scope_id']);
+        }
+        $projection = WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->sole();
+        $this->assertSame($parent, $projection->metadata['cancellation_scope_id']);
+        $projection->forceFill([
+            'metadata' => [
+                'cancellation_scope_id' => 'projection-only',
+            ],
+        ])->save();
+        $this->assertSame($parent, $run->historyEvents()->where('event_type', HistoryEventType::ChildWorkflowScheduled)
+            ->sole()
+->payload['cancellation_scope_id']);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('foreignOperationScopes')]
+    public function testUnrecordedOperationScopeRefusesTheWholeBatchBeforeAnySiblingIsCreated(
+        int $operation,
+        bool $foreign,
+    ): void {
+        [$workflow, $claim] = $this->workflowClaim('refused');
+        $run = $workflow->run()
+            ->fresh();
+        CancellationScopeHistory::open($run, $claim, 1, '1.20');
+        $scope = 'unrecorded-scope';
+        if ($foreign) {
+            [$other, $otherClaim] = $this->workflowClaim('foreign-operation');
+            $scope = CancellationScopeHistory::open(
+                $other->run()
+                    ->fresh(),
+                $otherClaim,
+                1,
+                '1.20'
+            )->payload['scope_id'];
+        }
+        $commands = $this->operationCommands();
+        $invalid = [
+            ...$commands[$operation],
+            'cancellation_scope_id' => $scope,
+        ];
+        $before = $claim->fresh()
+            ->getAttributes();
+        $historyBefore = $run->historyEvents()
+            ->count();
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete($claim->id, [$commands[0], $invalid]);
+        $this->assertFalse($reply['completed']);
+        $this->assertSame('operation_scope_not_recorded', $reply['reason']);
+        $this->assertSame([], $reply['created_task_ids']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+        $this->assertSame(0, WorkflowLink::query()->count());
+        $this->assertSame($historyBefore, $run->historyEvents()->count());
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $prefix = app(DefaultWorkflowTaskBridge::class)->checkpointLocalActivityPrefix(
+            $claim->id,
+            'scope-owner',
+            1,
+            'refused-prefix',
+            2,
+            [$commands[0], $invalid],
+            '1.20',
+        );
+        $this->assertFalse($prefix['checkpointed']);
+        $this->assertSame('operation_scope_not_recorded', $prefix['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame($historyBefore, $run->historyEvents()->count());
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+    }
+
+    public static function foreignOperationScopes(): iterable
+    {
+        foreach (['remote activity', 'timer', 'child'] as $index => $kind) {
+            yield $kind . ' unknown scope' => [$index, false];
+            yield $kind . ' foreign run scope' => [$index, true];
+        }
+    }
+
+    #[DataProvider('operationKinds')]
+    public function testLostCheckpointResponseCannotReparentAnAdmittedOperation(int $operation): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('lost-response');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $otherScope = CancellationScopeHistory::open($run, $claim, 2, '1.20')->payload['scope_id'];
+        $command = [
+            ...$this->operationCommands()[$operation],
+            'cancellation_scope_id' => $scope,
+        ];
+        $checkpoint = static fn (array $commands): array => app(DefaultWorkflowTaskBridge::class)
+            ->checkpointLocalActivityPrefix($claim->id, 'scope-owner', 1, 'lost-response', 3, $commands, '1.20');
+        $first = $checkpoint([$command]);
+        $this->assertTrue($first['checkpointed'], $first['reason'] ?? '');
+        $historyBefore = $run->historyEvents()
+            ->orderBy('id')
+            ->get()
+            ->toArray();
+        $claimBefore = $claim->fresh()
+            ->getAttributes();
+        $duplicate = $checkpoint([$command]);
+        $this->assertTrue($duplicate['checkpointed']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['created_task_ids'], $duplicate['created_task_ids']);
+        foreach ([$otherScope, CancellationScopeHistory::ROOT_SCOPE_ID, null] as $changed) {
+            $reparented = $command;
+            if ($changed === null) {
+                unset($reparented['cancellation_scope_id']);
+            } else {
+                $reparented['cancellation_scope_id'] = $changed;
+            }
+            $reply = $checkpoint([$reparented]);
+            $this->assertFalse($reply['checkpointed']);
+            $this->assertSame('local_activity_checkpoint_mismatch', $reply['reason']);
+        }
+        $this->assertSame($historyBefore, $run->historyEvents()->orderBy('id')->get()->toArray());
+        $this->assertSame($claimBefore, $claim->fresh()->getAttributes());
+    }
+
+    public static function operationKinds(): iterable
+    {
+        foreach (['remote activity', 'timer', 'child'] as $index => $kind) {
+            yield $kind => [$index];
+        }
+    }
+
+    public function testRetainedOperationScopesRejectAnUnqualifiedMajorProtocolBeforeAdmission(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('unqualified-major');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $historyBefore = $run->historyEvents()
+            ->count();
+        $claimBefore = $claim->fresh()
+            ->getAttributes();
+        foreach ($this->operationCommands() as $command) {
+            $reply = app(DefaultWorkflowTaskBridge::class)->checkpointLocalActivityPrefix(
+                $claim->id,
+                'scope-owner',
+                1,
+                'unqualified-major',
+                2,
+                [[
+                    ...$command,
+                    'cancellation_scope_id' => $scope,
+                ]],
+                '2.0',
+            );
+            $this->assertFalse($reply['checkpointed']);
+            $this->assertSame('operation_scope_requires_protocol_1_20', $reply['reason']);
+            $this->assertSame($historyBefore, $run->historyEvents()->count());
+            $this->assertSame($claimBefore, $claim->fresh()->getAttributes());
+        }
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+        $this->assertSame(0, WorkflowLink::query()->count());
+    }
+
+    public function testUnscopedActivityTimerAndChildKeepHistoricalSchedulingShapes(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('unscoped');
+        $run = $workflow->run()
+            ->fresh();
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete(
+            $claim->id,
+            WorkflowCommandNormalizer::normalize($this->operationCommands(), '1.19'),
+        );
+        $this->assertTrue($reply['completed'], $reply['reason'] ?? '');
+        foreach ($run->historyEvents()->whereIn('event_type', [HistoryEventType::ActivityScheduled,
+            HistoryEventType::TimerScheduled, HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted])->get() as $event) {
+            $this->assertArrayNotHasKey('cancellation_scope_id', $event->payload);
+            if ($event->event_type === HistoryEventType::ActivityScheduled) {
+                $this->assertArrayNotHasKey('cancellation_scope_id', $event->payload['activity']);
+            }
+        }
+        $this->assertNull($run->activityExecutions()->sole()->activity_options);
+        $this->assertArrayNotHasKey(
+            'cancellation_scope_id',
+            $run->tasks()
+                ->where('task_type', TaskType::Timer)->sole()->payload
+        );
+        $this->assertSame([], CancellationScopeHistory::forRun($run->fresh()));
+    }
+
+    public function testRetainedClaimMixedGroupPreservesEveryLocalAndRemoteLeafScope(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('mixed-scoped');
+        $run = $workflow->run()
+            ->fresh();
+        $first = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $second = CancellationScopeHistory::open($run, $claim, 2, '1.20')->payload['scope_id'];
+        $commands = $this->operationCommands();
+        array_unshift($commands, [
+            ...$commands[0],
+            'type' => 'prepare_local_activity',
+        ]);
+        foreach ($commands as $index => &$command) {
+            $command = [
+                ...$command,
+                'cancellation_scope_id' => $index === 0 ? $first : $second,
+                ...ParallelChildGroup::itemMetadata(3, 4, $index, 'mixed'),
+            ];
+        }
+        unset($command);
+        $before = $claim->fresh()
+            ->getAttributes();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $reply = $bridge->checkpointLocalActivityGroup(
+            $claim->id,
+            'scope-owner',
+            1,
+            'mixed-scoped',
+            3,
+            $commands,
+            '1.20'
+        );
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $local = [
+            ...$commands[0],
+            'type' => 'record_local_activity',
+        ];
+        $prepared = $bridge->prepareLocalActivity(
+            $claim->id,
+            'scope-owner',
+            1,
+            3,
+            'scoped-worker-attempt',
+            $local,
+            '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertSame($first, $prepared['cancellation_scope_id']);
+        $this->assertSame($claim->id, $prepared['workflow_task_id']);
+        $remote = $run->activityExecutions()
+            ->where('sequence', 4)
+            ->sole();
+        $this->assertSame($second, $remote->activity_options['cancellation_scope_id']);
+        $this->assertSame($second, $run->historyEvents()->where('event_type', HistoryEventType::TimerScheduled)
+            ->sole()
+->payload['cancellation_scope_id']);
+        $this->assertSame($second, $run->historyEvents()->where('event_type', HistoryEventType::ChildWorkflowScheduled)
+            ->sole()
+->payload['cancellation_scope_id']);
+        $this->assertSame(TaskStatus::Leased, $claim->fresh()->status);
+        $this->assertSame($before['lease_owner'], $claim->fresh()->lease_owner);
+        $this->assertSame($before['attempt_count'], $claim->fresh()->attempt_count);
+        $this->assertSame(1, $run->tasks()->where('task_type', TaskType::Activity)->count());
     }
 
     public function testNestedScopeIdentityAndShieldModeSurviveResponseLossAndFreshRead(): void
@@ -156,6 +443,7 @@ final class V2CancellationScopeHistoryTest extends TestCase
         return [
             'published default' => ['1.19'],
             'malformed' => ['1.20.extra'],
+            'unknown protocol major' => ['2.0'],
         ];
     }
 
@@ -274,6 +562,31 @@ final class V2CancellationScopeHistoryTest extends TestCase
         $this->assertSame($original->id, CancellationScopeHistory::open($run, $claim, 1, '1.20')->id);
         $this->expectExceptionMessage('cancellation_scope_run_not_active');
         CancellationScopeHistory::open($run, $claim, 2, '1.20');
+    }
+
+    /**
+     * @return list<array{type: string, ...}>
+     */
+    private function operationCommands(): array
+    {
+        return [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote-scope-fixture',
+                'arguments' => Serializer::serializeWithCodec('avro', ['value']),
+                'payload_codec' => 'avro',
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 5,
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'child-scope-fixture',
+                'arguments' => Serializer::serializeWithCodec('avro', ['child']),
+                'payload_codec' => 'avro',
+            ],
+        ];
     }
 
     /**

@@ -64,9 +64,17 @@ fingerprint, execution options and Scheduled/Started activity snapshots preserve
 that identity. Original-claim inspection refuses contradictory membership.
 Atomic local group admission checks every member before creating any sibling.
 Historical omission leaves unscoped descriptors and snapshots unchanged.
+Remote activity, timer and child scheduling now carry the same optional address.
+Candidate protocol 1.20 is required when transport commands name a scope. Both
+ordinary completion and retained-claim checkpointing verify every named scope
+before applying any sibling command. Remote activity snapshots, timer scheduling
+history and task locators, and child scheduling/started history retain the
+address. Child operator metadata is a projection, not its authority. Historical
+unscoped scheduling shapes remain unchanged.
+
 These are backend admission contracts. Scope-aware authoring/replay, request
-delivery, remote/child/timer membership and physical sibling supervision remain
-separate implementation and qualification gates. No scope capability is enabled.
+delivery and physical sibling supervision remain separate implementation and
+qualification gates. No scope capability is enabled.
 
 Operation policy and shielding are independent. TryCancel, WaitCancellationCompleted
 and Abandon retain their meanings. A shield blocks inherited cooperative

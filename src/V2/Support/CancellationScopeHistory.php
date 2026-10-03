@@ -38,8 +38,7 @@ final class CancellationScopeHistory
         string $parentScopeId = self::ROOT_SCOPE_ID,
         bool $shieldParent = false,
     ): WorkflowHistoryEvent {
-        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
-            || version_compare($protocolVersion, self::MINIMUM_PROTOCOL_VERSION, '<')) {
+        if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
             throw new LogicException('cancellation_scope_requires_protocol_1_20');
         }
         if ($sequence < 1 || $parentScopeId === '' || ! $run->exists || ! $task->exists) {

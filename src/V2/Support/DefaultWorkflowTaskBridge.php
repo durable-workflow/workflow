@@ -1222,6 +1222,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             $createdTaskIds = [];
+            if (! self::operationScopesAreRecorded($run, $parsed['non_terminal'], $sequence)) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => 'operation_scope_not_recorded',
+                ];
+            }
             $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
 
             if ($invalidUpdateCommands !== null) {
@@ -1336,6 +1346,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return $refused('invalid_local_activity_checkpoint_commands');
         }
         foreach ($parsed['non_terminal'] as $command) {
+            if (isset($command['cancellation_scope_id'])
+                && ! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
+                return $refused('operation_scope_requires_protocol_1_20');
+            }
             // A wait closes a turn, a local report reconstructs an executed
             // callback, and selection cancellation requires activity fencing.
             // None belongs in this retained-claim preparation prefix.
@@ -1428,6 +1442,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             if ($sequence !== $startSequence) {
                 return $refused('local_activity_checkpoint_sequence_mismatch');
+            }
+            if (! self::operationScopesAreRecorded($run, $parsed['non_terminal'], $sequence)) {
+                return $refused('operation_scope_not_recorded');
             }
             $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
             if ($invalidUpdate !== null) {
@@ -3163,6 +3180,18 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
             $options,
         );
+        $activityOptions = $options?->toSnapshot();
+        if (isset($command['cancellation_policy']) || isset($command['cancellation_scope_id'])) {
+            $activityOptions = [
+                ...($activityOptions ?? []),
+                ...(isset($command['cancellation_policy']) ? [
+                    'cancellation_policy' => $command['cancellation_policy'],
+                ] : []),
+                ...(isset($command['cancellation_scope_id']) ? [
+                    'cancellation_scope_id' => $command['cancellation_scope_id'],
+                ] : []),
+            ];
+        }
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -3177,12 +3206,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'connection' => $connection,
             'queue' => $queue,
             'retry_policy' => $retryPolicy,
-            'activity_options' => isset($command['cancellation_policy'])
-                ? [
-                    ...($options?->toSnapshot() ?? []),
-                    'cancellation_policy' => $command['cancellation_policy'],
-                ]
-                : $options?->toSnapshot(),
+            'activity_options' => $activityOptions,
             'schedule_deadline_at' => $scheduleDeadlineAt,
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
@@ -3246,6 +3270,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'sequence' => $sequence,
             'delay_seconds' => $delaySeconds,
             'fire_at' => $fireAt->toJSON(),
+            ...self::operationScopeMetadata($command),
             ...self::parallelMetadataForCommand($command),
         ], $task);
 
@@ -3258,6 +3283,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'available_at' => $fireAt,
             'payload' => [
                 'timer_id' => $timer->id,
+                ...self::operationScopeMetadata($command),
                 ...self::parallelMetadataForCommand($command),
             ],
             'connection' => $run->connection,
@@ -4055,6 +4081,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'child_call_id' => $childCallId,
                 'attempt_count' => 1,
                 'cancellation_policy' => $cancellationPolicy->value,
+                ...self::operationScopeMetadata($command),
             ],
             'resolved_child_instance_id' => $childInstance->id,
             'resolved_child_run_id' => $childRun->id,
@@ -4086,6 +4113,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'cancellation_policy' => $cancellationPolicy->value,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
+            ...self::operationScopeMetadata($command),
             ...self::parallelMetadataForCommand($command),
         ], $task);
 
@@ -4100,6 +4128,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'child_run_number' => 1,
             'parent_close_policy' => $parentClosePolicy,
             'cancellation_policy' => $cancellationPolicy->value,
+            ...self::operationScopeMetadata($command),
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,
@@ -5477,7 +5506,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return null;
         }
 
-        return match ($type) {
+        $scopeMetadata = self::operationScopeMetadata($command);
+        if (array_key_exists('cancellation_scope_id', $command)
+            && ($scopeMetadata === [] || ! in_array(
+                $type,
+                ['schedule_activity', 'start_timer', 'start_child_workflow'],
+                true
+            ))) {
+            return null;
+        }
+        $normalized = match ($type) {
             'cancel_selection_operation' => self::normalizeCancelSelectionOperationCommand($command),
             'complete_workflow' => self::normalizeCompleteWorkflowCommand($command),
             'fail_workflow' => self::normalizeFailWorkflowCommand($command),
@@ -5497,6 +5535,38 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'open_signal_wait' => self::normalizeOpenSignalWaitCommand($command),
             default => null,
         };
+        return $normalized === null ? null : [...$normalized, ...$scopeMetadata];
+    }
+
+    /** @param array<string, mixed> $command
+     * @return array{cancellation_scope_id?: string}
+     */
+    private static function operationScopeMetadata(array $command): array
+    {
+        $scopeId = $command['cancellation_scope_id'] ?? null;
+        return is_string($scopeId) && trim($scopeId) !== '' && strlen($scopeId) <= 255
+            && preg_match('//u', $scopeId) === 1 ? [
+                'cancellation_scope_id' => $scopeId,
+            ] : [];
+    }
+
+    /**
+     * Scope opening is checkpointed separately. Every operation in this batch
+     * must already have its exact-run scope before the first admission.
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function operationScopesAreRecorded(WorkflowRun $run, array $commands, int $sequence): bool
+    {
+        foreach ($commands as $command) {
+            if (isset($command['cancellation_scope_id']) && in_array(
+                $command['type'],
+                ['schedule_activity', 'start_timer', 'start_child_workflow'],
+                true,
+            ) && ! CancellationScopeHistory::isRecordedBefore($run, $command['cancellation_scope_id'], $sequence)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
