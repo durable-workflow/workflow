@@ -104,9 +104,10 @@ final class V2ScopedTimerCancellationTest extends TestCase
         if ($drift === 'missing') {
             $timer->delete();
         } elseif ($drift === 'pending') {
-            $timer->refresh()->forceFill([
-                'status' => TimerStatus::Pending,
-            ])->save();
+            $timer->refresh()
+                ->forceFill([
+                    'status' => TimerStatus::Pending,
+                ])->save();
         }
         $timerTask->forceFill([
             'status' => TaskStatus::Ready,
@@ -169,9 +170,10 @@ final class V2ScopedTimerCancellationTest extends TestCase
                     if ($drift) {
                         // A claimed job must honor durable cancellation even if
                         // its mutable projection changes after the fence.
-                        $timer->refresh()->forceFill([
-                            'status' => TimerStatus::Pending,
-                        ])->save();
+                        $timer->refresh()
+                            ->forceFill([
+                                'status' => TimerStatus::Pending,
+                            ])->save();
                     }
                 });
             }
@@ -206,9 +208,10 @@ final class V2ScopedTimerCancellationTest extends TestCase
         $this->assertNull($result['timer_cancellations'][0]['history_event_id']);
         $this->assertSame(TimerStatus::Fired, $timer->fresh()->status);
         $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
-        $timer->refresh()->forceFill([
-            'status' => TimerStatus::Pending,
-        ])->save();
+        $timer->refresh()
+            ->forceFill([
+                'status' => TimerStatus::Pending,
+            ])->save();
         $timerTask->forceFill([
             'status' => TaskStatus::Ready,
         ])->save();
