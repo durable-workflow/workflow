@@ -1213,6 +1213,442 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame(ActivityStatus::Pending, $execution->fresh()->status);
     }
 
+    public function testAuthenticatedBridgeRetainsPreparationWhileWaitingForOriginalStopProof(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target, $other] = $this->remotePair($run, $task, $scope, $sibling);
+        $activityBridge = app(ActivityTaskBridge::class);
+        $claim = $activityBridge->claimStatus($this->activityTask($run, $target)->id, 'activity-owner');
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertInstanceOf(\Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge::class, $bridge);
+        $taskBefore = $task->fresh()
+            ->getAttributes();
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertFalse($prepared['delivered']);
+        $this->assertFalse($prepared['claim_released']);
+        $this->assertCount(1, $prepared['activity_members']);
+        $this->assertSame($target->id, $prepared['activity_members'][0]['activity_execution_id']);
+        $this->assertSame($prepared['history_event_id'], $prepared['preparation_history_event_id']);
+        $deliver = static fn () => $bridge->deliverCancellationScope(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $unfenced = $deliver();
+        $this->assertTrue($unfenced['prepared']);
+        $this->assertFalse($unfenced['delivered']);
+        $this->assertSame('cancellation_scope_activity_fence_not_established', $unfenced['reason']);
+        $this->fence($run, $task, $target, $scope);
+        $waiting = $deliver();
+        $this->assertTrue($waiting['prepared']);
+        $this->assertFalse($waiting['delivered']);
+        $this->assertSame('cancellation_scope_activity_stop_not_acknowledged', $waiting['reason']);
+        $this->assertSame($prepared['preparation_history_event_id'], $waiting['preparation_history_event_id']);
+        $this->assertSame($prepared['authority_deadline_at'], $waiting['authority_deadline_at']);
+        $this->assertSame($prepared['cancellation'], $waiting['cancellation']);
+        $this->assertTrue(ActivityCancellationAcknowledgement::recordStopped(
+            $claim['activity_attempt_id'],
+            'activity-owner',
+            $request->payload['request_id']
+        )['acknowledged']);
+        $delivered = $deliver();
+        $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
+        $this->assertSame($prepared['preparation_history_event_id'], $delivered['preparation_history_event_id']);
+        $this->assertSame($prepared['activity_members'], $delivered['activity_members']);
+        $this->assertSame($delivered['history_event_id'], $deliver()['history_event_id']);
+        $this->assertSame($taskBefore, $task->fresh()->getAttributes());
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+    }
+
+    #[DataProvider('bridgeRefusals')]
+    public function testAuthenticatedBridgeRefusesInvalidClaimsWithoutEffects(
+        string $owner,
+        int $attempt,
+        string $protocol,
+        string $requestMode,
+        int $sequence,
+        string $kind,
+        string $reason,
+    ): void {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target, $other] = $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        if ($requestMode === 'expired') {
+            Carbon::setTestNow('2026-10-03T00:05:01Z');
+        } elseif ($requestMode === 'namespace') {
+            $task->forceFill([
+                'namespace' => 'other-namespace',
+            ])->save();
+        } elseif ($requestMode === 'activity-task') {
+            $task->forceFill([
+                'task_type' => TaskType::Activity,
+            ])->save();
+        }
+        $history = $run->historyEvents()
+            ->count();
+        $before = $task->fresh()
+            ->getAttributes();
+        $result = app(DefaultWorkflowTaskBridge::class)->prepareCancellationScopeDelivery(
+            $requestMode === 'missing' ? 'missing-task' : $task->id,
+            $owner,
+            $attempt,
+            $requestMode === 'sibling' ? $sibling : $scope,
+            $requestMode === 'request' ? 'wrong-request' : $request->payload['request_id'],
+            $sequence,
+            $kind,
+            protocolVersion: $protocol
+        );
+        $this->assertFalse($result['prepared']);
+        $this->assertFalse($result['delivered']);
+        $this->assertFalse($result['claim_released']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(ActivityStatus::Pending, $target->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+    }
+
+    public static function bridgeRefusals(): iterable
+    {
+        yield 'wrong owner' => ['other', 1, '1.20', '', 4, 'activity', 'cancellation_scope_workflow_claim_mismatch'];
+        yield 'wrong attempt' => [
+            'scope-owner',
+            2,
+            '1.20',
+            '',
+            4,
+            'activity',
+            'cancellation_scope_workflow_claim_mismatch',
+        ];
+        yield 'invalid attempt' => ['scope-owner', 0, '1.20', '', 4, 'activity', 'invalid_cancellation_scope_delivery'];
+        yield 'expired claim' => [
+            'scope-owner',
+            1,
+            '1.20',
+            'expired',
+            4,
+            'activity',
+            'cancellation_scope_workflow_claim_mismatch',
+        ];
+        yield 'namespace mismatch' => [
+            'scope-owner',
+            1,
+            '1.20',
+            'namespace',
+            4,
+            'activity',
+            'cancellation_scope_workflow_claim_mismatch',
+        ];
+        yield 'wrong task type' => [
+            'scope-owner',
+            1,
+            '1.20',
+            'activity-task',
+            4,
+            'activity',
+            'cancellation_scope_workflow_claim_mismatch',
+        ];
+        yield 'missing task' => ['scope-owner', 1, '1.20', 'missing', 4, 'activity', 'task_not_found'];
+        yield 'older protocol' => [
+            'scope-owner',
+            1,
+            '1.19',
+            '',
+            4,
+            'activity',
+            'cancellation_scope_requires_protocol_1_20',
+        ];
+        yield 'wrong protocol major' => [
+            'scope-owner',
+            1,
+            '2.0',
+            '',
+            4,
+            'activity',
+            'cancellation_scope_requires_protocol_1_20',
+        ];
+        yield 'wrong request' => [
+            'scope-owner',
+            1,
+            '1.20',
+            'request',
+            4,
+            'activity',
+            'cancellation_scope_request_mismatch',
+        ];
+        yield 'wrong scope' => [
+            'scope-owner',
+            1,
+            '1.20',
+            'sibling',
+            4,
+            'activity',
+            'cancellation_scope_request_mismatch',
+        ];
+        yield 'later call' => ['scope-owner', 1, '1.20', '', 99, 'activity', 'cancellation_delivery_sequence_mismatch'];
+        yield 'invalid call' => ['scope-owner', 1, '1.20', '', 4, 'missing', 'invalid_cancellation_delivery'];
+    }
+
+    public function testAuthenticatedBridgeCannotDeliverWithoutPreparation(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        $history = $run->historyEvents()
+            ->count();
+        $result = app(DefaultWorkflowTaskBridge::class)->deliverCancellationScope(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertFalse($result['prepared']);
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_scope_delivery_not_prepared', $result['reason']);
+        $this->assertSame($history, $run->historyEvents()->count());
+    }
+
+    public function testAuthenticatedBridgeReplacementReusesFirstPreparationAndBoundary(): void
+    {
+        [, $run, $task, , $scope] = $this->tree();
+        [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->fence($run, $task, $first, $scope);
+        Carbon::setTestNow('2026-10-03T00:00:11Z');
+        $replacement = $task->fresh();
+        $replacement->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+            'lease_expires_at' => now()
+                ->addSeconds(10),
+        ])->save();
+        $history = $run->historyEvents()
+            ->count();
+        $stale = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertFalse($stale['prepared']);
+        $this->assertSame('cancellation_scope_workflow_claim_mismatch', $stale['reason']);
+        $duplicate = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'replacement',
+            2,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertSame($prepared, $duplicate);
+        $moved = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'replacement',
+            2,
+            $scope,
+            $request->payload['request_id'],
+            5,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertFalse($moved['prepared']);
+        $this->assertSame('cancellation_scope_delivery_mismatch', $moved['reason']);
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->fence($run->fresh(), $replacement, $second, $scope);
+        $delivered = $bridge->deliverCancellationScope(
+            $task->id,
+            'replacement',
+            2,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
+        $this->assertSame($prepared['preparation_history_event_id'], $delivered['preparation_history_event_id']);
+        $this->assertSame($prepared['cancellation'], $delivered['cancellation']);
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $delivered['authority_deadline_at']);
+    }
+
+    #[DataProvider('bridgeTransactionPhases')]
+    public function testAuthenticatedBridgeCannotRetainCallerTransactionLocks(bool $preparing): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        $history = $run->historyEvents()
+            ->count();
+        $method = $preparing ? 'prepareCancellationScopeDelivery' : 'deliverCancellationScope';
+        $result = $run->getConnection()
+            ->transaction(static fn () => app(DefaultWorkflowTaskBridge::class)->{$method}(
+                $task->id,
+                'scope-owner',
+                1,
+                $scope,
+                $request->payload['request_id'],
+                4,
+                'activity',
+                protocolVersion: '1.20'
+            ));
+        $this->assertFalse($result['prepared']);
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_scope_preparation_requires_own_transaction', $result['reason']);
+        $this->assertSame($history, $run->historyEvents()->count());
+    }
+
+    public static function bridgeTransactionPhases(): iterable
+    {
+        yield 'prepare' => [true];
+        yield 'record delivery' => [false];
+    }
+
+    #[DataProvider('ancestorShielding')]
+    public function testAuthenticatedBridgePreservesShieldedDescendantsAndDiagnosesUnshieldedOnes(bool $shield): void
+    {
+        [, $run, $task, $parent, $scope] = $this->tree($shield);
+        [$first, $descendant] = $this->remotePair($run, $task, $parent, $scope);
+        $request = CancellationScopeRequests::request($run, $parent, '1.20');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'scope-owner',
+            1,
+            $parent,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->fence($run, $task, $first, $parent);
+        $history = $run->historyEvents()
+            ->count();
+        $result = $bridge->deliverCancellationScope(
+            $task->id,
+            'scope-owner',
+            1,
+            $parent,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertSame($shield, $result['delivered'], $result['reason'] ?? '');
+        if (! $shield) {
+            $this->assertSame('cancellation_scope_operation_delivery_unavailable', $result['reason']);
+            $this->assertSame(['scoped_descendant_delivery'], $result['unavailable']);
+            $this->assertSame($history, $run->historyEvents()->count());
+        }
+        $this->assertSame(ActivityStatus::Pending, $descendant->fresh()->status);
+        $this->assertSame($prepared['preparation_history_event_id'], $result['preparation_history_event_id']);
+    }
+
+    #[DataProvider('unsupportedScopeOperations')]
+    public function testAuthenticatedBridgeDiagnosesUnimplementedOperationActors(
+        array $command,
+        string $capability
+    ): void {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $scheduled = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'scope-owner',
+            1,
+            'unsupported-op',
+            6,
+            [[
+                ...$command,
+                'cancellation_scope_id' => $scope,
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($scheduled['checkpointed'], $scheduled['reason'] ?? '');
+        $request = CancellationScopeRequests::request($run, $scope, '1.20');
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $before = $run->historyEvents()
+            ->count();
+        $result = $bridge->deliverCancellationScope(
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($result['prepared']);
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_scope_operation_delivery_unavailable', $result['reason']);
+        $this->assertSame([$capability], $result['unavailable']);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+    }
+
+    public static function unsupportedScopeOperations(): iterable
+    {
+        yield 'timer' => [[
+            'type' => 'start_timer',
+            'delay_seconds' => 60,
+        ], 'scoped_timer_delivery'];
+        yield 'child' => [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'child-scope-fixture',
+            'arguments' => Serializer::serializeWithCodec('avro', ['child']),
+            'payload_codec' => 'avro',
+        ], 'scoped_child_delivery'];
+    }
+
     /**
      * @return array{WorkflowStub, WorkflowRun, WorkflowTask, string, string, string}
      */

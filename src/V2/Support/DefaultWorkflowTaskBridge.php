@@ -17,9 +17,9 @@ use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
-use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -55,7 +55,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, CancellationScopeTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, PreparedCancellationScopeTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -965,6 +965,64 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $sequence,
             $parentScopeId,
             $shieldParent,
+            $protocolVersion
+        );
+    }
+
+    public function prepareCancellationScopeDelivery(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $scopeId,
+        string $requestId,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeDelivery::mutate(
+            true,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $scopeId,
+            $requestId,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+            $protocolVersion
+        );
+    }
+
+    public function deliverCancellationScope(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $scopeId,
+        string $requestId,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeDelivery::mutate(
+            false,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $scopeId,
+            $requestId,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
             $protocolVersion
         );
     }
