@@ -199,6 +199,7 @@ final class CooperativeCancellationDelivery
             'cancellation_delivered_at' => $deliveredAt,
             'last_progress_at' => $deliveredAt,
         ])->save();
+        LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run));
         $payload = [
             'workflow_command_id' => $run->cancellation_request_command_id,
             'workflow_run_id' => $run->id,

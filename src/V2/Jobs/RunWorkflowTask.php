@@ -16,6 +16,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CancellationCleanupLease;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
@@ -23,7 +24,6 @@ use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
-use Workflow\V2\Support\WorkflowTaskLease;
 
 final class RunWorkflowTask implements ShouldQueue
 {
@@ -145,7 +145,7 @@ final class RunWorkflowTask implements ShouldQueue
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $this->taskId,
-                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
+                'lease_expires_at' => CancellationCleanupLease::expiresAt($run),
                 'attempt_count' => $task->attempt_count + 1,
                 'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $this->taskId),
                 'sticky_claimed_at' => now(),

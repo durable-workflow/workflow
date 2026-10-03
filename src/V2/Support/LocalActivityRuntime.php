@@ -74,10 +74,8 @@ final class LocalActivityRuntime
             return null;
         }
 
-        $leaseExpiresAt = self::workflowTaskLeaseExpiresAt();
-        if ($deadline !== null && $deadline->lt($leaseExpiresAt)) {
-            $leaseExpiresAt = $deadline;
-        }
+        $leaseExpiresAt = $deadline === null
+            ? self::workflowTaskLeaseExpiresAt() : CancellationCleanupLease::forDeadline($deadline);
 
         $task->forceFill([
             'lease_expires_at' => $leaseExpiresAt,

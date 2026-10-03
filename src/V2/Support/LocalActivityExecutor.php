@@ -603,7 +603,7 @@ final class LocalActivityExecutor
         $attemptNumber = ((int) $execution->attempt_count) + 1;
         $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
         $leaseExpiresAt = $workerAttemptId === null
-            ? LocalActivityRuntime::renewWorkflowTask($task)
+            ? LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run))
                 ?? $task->lease_expires_at
                 ?? LocalActivityRuntime::workflowTaskLeaseExpiresAt()
             : $task->lease_expires_at;

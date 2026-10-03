@@ -87,6 +87,22 @@ lack the snapshot keep their existing delivery behavior and expose a null contex
 
 ### Cleanup outcome
 
+Active cleanup uses renewable ownership windows of at most ten seconds, or the
+configured workflow lease when it is shorter. Each window also ends at the
+original cancellation deadline. Canonical delivery changes the hosting claim
+to this cleanup window. Replacement claims, workflow heartbeats and local
+callback supervision preserve the same bound. Ordinary workflow lease settings
+remain unchanged.
+
+Prepared local callback supervision renews the task and Activity attempt in
+one transaction without requiring an application heartbeat. A dead worker
+therefore leaves a reclaimable ownership window within a longer cleanup
+budget. Recovery retains the original request, delivery boundary and deadline.
+Lease expiry fences publication and still leaves physical callback stop state
+unknown until a matching worker reports it. Replacement availability, polling
+and queue repair affect recovery time. An exhausted budget ends as
+`deadline_expired` rather than granting another cleanup window.
+
 The candidate cooperative `WorkflowCancelled` terminal event includes an
 optional `cancellation_cleanup` object. It retains the local `request_id`,
 original `cleanup_deadline_at`, `finished_at` and, when the canonical delivery

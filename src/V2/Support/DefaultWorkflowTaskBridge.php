@@ -321,7 +321,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             }
 
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
-            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+            $leaseExpiresAt = CancellationCleanupLease::expiresAt($run);
             $stickyReplayMode = StickyExecution::claimReplayMode($task, $resolvedLeaseOwner);
 
             $task->forceFill([
@@ -853,7 +853,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ];
             }
 
-            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+            $leaseExpiresAt = CancellationCleanupLease::expiresAt($run);
 
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
@@ -6978,7 +6978,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $taskId,
-                'lease_expires_at' => WorkflowTaskLease::expiresAt(),
+                'lease_expires_at' => CancellationCleanupLease::expiresAt($run),
                 'attempt_count' => $task->attempt_count + 1,
                 'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $taskId),
                 'sticky_claimed_at' => now(),

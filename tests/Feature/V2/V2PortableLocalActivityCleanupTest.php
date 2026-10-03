@@ -304,6 +304,85 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         )['acknowledged']);
     }
 
+    #[DataProvider('ordinaryLeaseDurations')]
+    public function testCleanupCanBeRecoveredBeforeItsDeadlineWithNormalRuntimeLeases(int $leaseSeconds): void
+    {
+        config()->set('workflows.v2.workflow_task_lease_seconds', $leaseSeconds);
+        [$run, $task, $descriptor] = $this->cleanupClaim($leaseSeconds);
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $recoveryWindow = min(10, $leaseSeconds);
+        $this->assertSame(now()->addSeconds($recoveryWindow)->toISOString(), $task->lease_expires_at->toISOString());
+        $this->assertSame($leaseSeconds, \Workflow\V2\Support\WorkflowTaskLease::seconds());
+        $descriptor['retry_policy'] = [
+            'max_attempts' => 2,
+            'backoff_seconds' => [0],
+        ];
+        $prepared = $this->prepare($task, $descriptor);
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertSame($task->lease_expires_at->toISOString(), $prepared['lease_expires_at']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        $renewed = $this->bridge()
+            ->controlLocalActivity($prepared['activity_attempt_id'], 'owner', 7, true, '1.20');
+        $this->assertTrue($renewed['active'], $renewed['reason'] ?? '');
+        $this->assertSame(now()->addSeconds($recoveryWindow)->toISOString(), $renewed['lease_expires_at']);
+        $this->assertSame($renewed['lease_expires_at'], $renewed['workflow_lease_expires_at']);
+        $heartbeat = app(\Workflow\V2\Contracts\WorkflowTaskBridge::class)->heartbeat($task->id);
+        $this->assertTrue($heartbeat['renewed']);
+        $this->assertSame($renewed['lease_expires_at'], $heartbeat['lease_expires_at']);
+        Carbon::setTestNow(now()->addSeconds($recoveryWindow + 1));
+        $this->assertSame('workflow_claim_expired', $this->bridge()->controlLocalActivity(
+            $prepared['activity_attempt_id'],
+            'owner',
+            7,
+            true,
+            '1.20'
+        )['reason']);
+        $repaired = \Workflow\V2\Support\TaskRepair::recoverExistingTask($task->refresh(), $run->refresh());
+        $this->assertInstanceOf(WorkflowTask::class, $repaired);
+        $claim = app(\Workflow\V2\Contracts\WorkflowTaskBridge::class)->claimStatus($task->id, 'replacement');
+        $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
+        $this->assertSame(now()->addSeconds($recoveryWindow)->toISOString(), $claim['lease_expires_at']);
+        $recovered = $this->bridge()
+            ->recoverLocalActivity($task->id, 'replacement', 8, 2, $descriptor, '1.20');
+        $this->assertTrue($recovered['recovered'], $recovered['reason'] ?? '');
+        $this->assertSame('unknown', $recovered['callback_stop_state']);
+        $retryTask = WorkflowTask::query()->findOrFail($recovered['created_task_ids'][0]);
+        $this->assertTrue(app(\Workflow\V2\Contracts\WorkflowTaskBridge::class)
+            ->claimStatus($retryTask->id, 'replacement')['claimed']);
+        $retry = $this->bridge()
+            ->prepareLocalActivity($retryTask->id, 'replacement', 1, 2, 'replacement-local', $descriptor, '1.20');
+        $this->assertTrue($retry['prepared'], $retry['reason'] ?? '');
+        $this->assertCleanupSnapshot($prepared['cancellation_cleanup'], $retry['cancellation_cleanup']);
+        $this->assertTrue($this->bridge()->recordLocalActivityOutcome($retry['activity_attempt_id'], 'replacement', 1, [
+            'outcome' => 'completed',
+            'result' => Serializer::serializeWithCodec('avro', 'cleaned'),
+            'payload_codec' => 'avro',
+        ], '1.20')['recorded']);
+        $this->assertTrue(app(\Workflow\V2\Contracts\WorkflowTaskBridge::class)->complete($retryTask->id, [[
+            'type' => 'complete_workflow',
+            'output' => Serializer::serializeWithCodec('avro', 'cleaned'),
+            'payload_codec' => 'avro',
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame($deadline, $run->cancellation_deadline_at->toISOString());
+        $this->assertTrue(now()->lt($run->cancellation_deadline_at));
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+        );
+    }
+
+    public static function ordinaryLeaseDurations(): iterable
+    {
+        yield 'Server normal lease' => [60];
+        yield 'embedded normal lease' => [300];
+        yield 'shorter configured lease' => [4];
+    }
+
     public function testAReplacementRecoversCleanupWithoutRedeliveryOrAResetDeadline(): void
     {
         [$run, $task, $descriptor] = $this->cleanupClaim();
@@ -523,9 +602,9 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
             ], '1.20');
     }
 
-    private function cleanupClaim(): array
+    private function cleanupClaim(int $leaseSeconds = 10): array
     {
-        [$run, $task] = $this->newClaim();
+        [$run, $task] = $this->newClaim($leaseSeconds);
         $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('stop', 30)->accepted());
         $run->refresh();
         $delivery = app(CooperativeWorkflowTaskBridge::class)->deliverCancellation(
@@ -557,7 +636,7 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         ];
     }
 
-    private function newClaim(): array
+    private function newClaim(int $leaseSeconds = 10): array
     {
         $instance = WorkflowInstance::query()->create([
             'workflow_class' => TestGreetingWorkflow::class,
@@ -590,7 +669,7 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
             'compatibility' => 'build-a',
             'lease_owner' => 'owner',
             'lease_expires_at' => now()
-                ->addSeconds(10),
+                ->addSeconds($leaseSeconds),
         ]);
 
         return [$run, $task];
