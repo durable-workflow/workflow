@@ -22,6 +22,8 @@ final class WorkflowStepHistory
 
     public const CHILD_WORKFLOW = 'child workflow';
 
+    public const CANCELLATION_SCOPE = 'cancellation scope';
+
     public const CONDITION_WAIT = 'condition wait';
 
     public const CONTINUE_AS_NEW = 'continue as new';
@@ -48,6 +50,7 @@ final class WorkflowStepHistory
      * @var list<HistoryEventType>
      */
     private const WORKFLOW_STEP_EVENT_TYPES = [
+        HistoryEventType::CancellationScopeOpened,
         HistoryEventType::ActivityScheduled,
         HistoryEventType::ActivityStarted,
         HistoryEventType::ActivityHeartbeatRecorded,
@@ -413,6 +416,7 @@ final class WorkflowStepHistory
     private static function eventMatchesShape(WorkflowHistoryEvent $event, string $expectedShape): bool
     {
         return match ($expectedShape) {
+            self::CANCELLATION_SCOPE => $event->event_type === HistoryEventType::CancellationScopeOpened,
             self::ACTIVITY => in_array($event->event_type, [
                 HistoryEventType::ActivityScheduled,
                 HistoryEventType::ActivityStarted,

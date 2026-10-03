@@ -2,7 +2,15 @@
 
 Design decision for [shared cancellation work](https://github.com/durable-workflow/.github/issues/136)
 and [the Native implementation](https://github.com/durable-workflow/workflow/pull/603).
-These scopes are not implemented or advertised by the current source tuple.
+User-facing scopes and scoped operation delivery are not implemented or
+advertised by the current source tuple. Native now has an internal canonical
+registration kernel: `CancellationScopeHistory` records `CancellationScopeOpened`
+at a typed durable command position under the configured storage connection
+and matching live claim. It preserves the recorded parent and shield mode on
+fresh reads and replacement-claim replay, and includes those facts in the
+history timeline. No Server endpoint or SDK scope capability is enabled by
+that foundation. The kernel's database tests use authoritative claim fixtures,
+not an end-to-end SDK scope execution.
 Protocol 1.20 remains unfrozen until the authority and replay contracts below
 have an implemented, qualified consumer.
 

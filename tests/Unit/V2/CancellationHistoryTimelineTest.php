@@ -15,6 +15,24 @@ use Workflow\V2\Support\HistoryTimeline;
 
 final class CancellationHistoryTimelineTest extends TestCase
 {
+    public function testScopeInspectionExplainsRecordedParentAndShieldWithoutImplyingCancellation(): void
+    {
+        $scope = [
+            'schema' => 'durable-workflow.cancellation-scope/v1',
+            'scope_id' => 'scope-child',
+            'parent_scope_id' => 'scope-parent',
+            'shield_parent' => true,
+        ];
+        $entry = $this->entry(HistoryEventType::CancellationScopeOpened, $scope);
+        $this->assertSame($scope, $entry['cancellation_scope']);
+        $this->assertSame('cancellation_scope', $entry['kind']);
+        $this->assertSame(
+            'Cancellation scope scope-child opened under scope-parent with parent shielding.',
+            $entry['summary']
+        );
+        $this->assertArrayNotHasKey('cancellation_request', $entry);
+    }
+
     #[DataProvider('cleanupOutcomes')]
     public function testCleanupOutcomeRetainsTheOriginalBudgetWhenInspectedLater(string $outcome, string $summary): void
     {
