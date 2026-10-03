@@ -8,20 +8,26 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\ScopedActivityCancellation;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\WorkflowStub;
 
@@ -344,6 +350,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             );
             return;
         }
+        $this->fenceActivities($run, $task, $scope);
         $event = $delivery();
         $this->assertSame($selection ? 5 : 3, $event->payload['sequence']);
         $this->assertSame($selection ? 6 : 5, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
@@ -485,6 +492,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         string $scope,
         string $kind = 'activity'
     ): WorkflowHistoryEvent {
+        $this->fenceActivities($run, $task, $scope);
         return CancellationScopeDelivery::record(
             $run,
             $task,
@@ -501,8 +509,71 @@ final class V2CancellationScopeDeliveryTest extends TestCase
      */
     private function schedule(WorkflowRun $run, HistoryEventType $type, array $payload): void
     {
+        if ($type === HistoryEventType::ActivityScheduled) {
+            $scope = $payload['activity']['cancellation_scope_id'] ?? $payload['cancellation_scope_id'] ?? 'root';
+            $execution = ActivityExecution::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $payload['sequence'],
+                'activity_type' => TestGreetingActivity::class,
+                'activity_class' => TestGreetingActivity::class,
+                'queue' => 'scope-delivery-activities',
+                'status' => ActivityStatus::Pending,
+                'payload_codec' => 'avro',
+                'arguments' => Serializer::serializeWithCodec('avro', []),
+                'activity_options' => [
+                    'cancellation_scope_id' => $scope,
+                ],
+            ]);
+            $payload['activity_execution_id'] = $execution->id;
+            $payload['activity'] = [
+                'id' => $execution->id,
+                ...($payload['activity'] ?? []),
+            ];
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Activity,
+                'status' => TaskStatus::Ready,
+                'queue' => 'scope-delivery-activities',
+                'available_at' => now(),
+                'payload' => [
+                    'activity_execution_id' => $execution->id,
+                ],
+            ]);
+        } elseif ($type === HistoryEventType::ActivityCompleted) {
+            $execution = $run->activityExecutions()
+                ->where('sequence', $payload['sequence'])->sole();
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Activity)
+                ->where('payload->activity_execution_id', $execution->id)
+                ->sole();
+            $bridge = app(DefaultActivityTaskBridge::class);
+            $claim = $bridge->claimStatus($task->id, 'activity-owner');
+            $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
+            $result = $bridge->complete($claim['activity_attempt_id'], Serializer::serializeWithCodec('avro', 'done'));
+            $this->assertTrue($result['recorded'], $result['reason'] ?? '');
+            $run->refresh();
+            return;
+        }
         WorkflowHistoryEvent::record($run, $type, $payload);
         $run->refresh();
+    }
+
+    private function fenceActivities(WorkflowRun $run, WorkflowTask $task, string $scope): void
+    {
+        foreach ($run->activityExecutions()->get() as $execution) {
+            if ($execution->activity_options['cancellation_scope_id'] === $scope
+                && $execution->status === ActivityStatus::Pending) {
+                $this->assertTrue(ScopedActivityCancellation::fence(
+                    $run,
+                    $task,
+                    $execution->id,
+                    $scope,
+                    CancellationScopeRequests::context($run, $scope)->requestId,
+                    '1.20'
+                )['fenced']);
+            }
+        }
     }
 
     private function assertRefusedWithoutMutation(

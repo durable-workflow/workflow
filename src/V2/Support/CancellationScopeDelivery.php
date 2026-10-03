@@ -125,6 +125,7 @@ final class CancellationScopeDelivery
                     || ! self::matchesMembership($locked, $scopeId, $operationStart, $operationSpan)) {
                     throw new LogicException('cancellation_scope_delivery_membership_mismatch');
                 }
+                ScopedActivityDeliveryPolicy::assertReady($locked, $context, $operationStart, $operationSpan);
                 return WorkflowHistoryEvent::record($locked, HistoryEventType::CancellationScopeDelivered, [
                     'schema' => self::SCHEMA,
                     'workflow_run_id' => $locked->id,
@@ -201,6 +202,17 @@ final class CancellationScopeDelivery
                 $payload['operation_sequence_span']
             ) !== null) {
             throw new LogicException('cancellation_scope_delivery_history_invalid');
+        }
+        try {
+            ScopedActivityDeliveryPolicy::assertReady(
+                $run,
+                $context,
+                $operationStart,
+                $operationSpan,
+                $event->sequence
+            );
+        } catch (LogicException $error) {
+            throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);
         }
         return $event;
     }
