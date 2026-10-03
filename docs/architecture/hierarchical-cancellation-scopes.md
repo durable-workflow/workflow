@@ -57,6 +57,17 @@ that identity in its admission fingerprint, Scheduled and Started snapshots.
 Child, remote activity, timer and selection/group history retain it too.
 Response loss, retry, selection and replacement cannot reparent work.
 
+The internal prepared-local descriptor now accepts optional
+`cancellation_scope_id`. Admission checks the exact run's canonical scope and
+requires its creation before the operation's authored sequence. The descriptor
+fingerprint, execution options and Scheduled/Started activity snapshots preserve
+that identity. Original-claim inspection refuses contradictory membership.
+Atomic local group admission checks every member before creating any sibling.
+Historical omission leaves unscoped descriptors and snapshots unchanged.
+These are backend admission contracts. Scope-aware authoring/replay, request
+delivery, remote/child/timer membership and physical sibling supervision remain
+separate implementation and qualification gates. No scope capability is enabled.
+
 Operation policy and shielding are independent. TryCancel, WaitCancellationCompleted
 and Abandon retain their meanings. A shield blocks inherited cooperative
 delivery. It does not silently change an activity to Abandon. Prepared local

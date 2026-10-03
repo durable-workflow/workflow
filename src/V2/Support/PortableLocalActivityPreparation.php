@@ -109,6 +109,13 @@ final class PortableLocalActivityPreparation
             if ($run->status->isTerminal()) {
                 return self::response('run_closed');
             }
+            if (! CancellationScopeHistory::isRecordedBefore(
+                $run,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence,
+            )) {
+                return self::response('local_activity_scope_not_recorded');
+            }
             $cleanup = PortableLocalActivityCleanup::snapshot(
                 $run,
                 $normalized['cancellation_cleanup'] ?? null,
@@ -214,6 +221,15 @@ final class PortableLocalActivityPreparation
         if (DB::transactionLevel() < 1 || ($normalized['parallel_group_path'] ?? []) === []) {
             throw ValidationException::withMessages([
                 'local_activity' => ['Expected an atomic group transaction.'],
+            ]);
+        }
+        if (! CancellationScopeHistory::isRecordedBefore(
+            $run,
+            $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+            $sequence,
+        )) {
+            throw ValidationException::withMessages([
+                'local_activity.cancellation_scope_id' => ['Scope must be recorded in this run before its operation.'],
             ]);
         }
         $cleanup = PortableLocalActivityCleanup::snapshot($run, $normalized['cancellation_cleanup'] ?? null, $sequence);
@@ -447,7 +463,7 @@ final class PortableLocalActivityPreparation
     {
         $allowed = ['type', 'activity_type', 'arguments', 'payload_codec', 'retry_policy',
             'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode',
-            'cancellation_cleanup', 'cancellation_policy', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
+            'cancellation_cleanup', 'cancellation_policy', 'cancellation_scope_id', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
             'parallel_group_base_sequence', 'parallel_group_size', 'parallel_group_index', 'parallel_group_path'];
         if (($descriptor['type'] ?? null) !== 'record_local_activity'
             || array_diff(array_keys($descriptor), $allowed) !== []
@@ -464,10 +480,19 @@ final class PortableLocalActivityPreparation
                 ],
             ]);
         }
+        if (array_key_exists('cancellation_scope_id', $descriptor)
+            && (! is_string($descriptor['cancellation_scope_id'])
+                || trim($descriptor['cancellation_scope_id']) === ''
+                || strlen($descriptor['cancellation_scope_id']) > 255
+                || preg_match('//u', $descriptor['cancellation_scope_id']) !== 1)) {
+            throw ValidationException::withMessages([
+                'local_activity.cancellation_scope_id' => ['Expected a nonempty canonical scope identity.'],
+            ]);
+        }
         // Common activity input/retry/timeout validation does not need a
         // fabricated outcome or a claim that an application attempt ran.
         $input = $descriptor;
-        unset($input['execution_mode'], $input['cancellation_cleanup']);
+        unset($input['execution_mode'], $input['cancellation_cleanup'], $input['cancellation_scope_id']);
         $input['type'] = 'schedule_activity';
         $normalized = WorkflowCommandNormalizer::normalize([$input], self::MINIMUM_PROTOCOL_VERSION)[0];
         if (! is_string($normalized['arguments'] ?? null) || ! is_string($normalized['payload_codec'] ?? null)) {
@@ -477,6 +502,9 @@ final class PortableLocalActivityPreparation
         }
         $normalized['type'] = 'record_local_activity';
         $normalized['execution_mode'] = LocalActivityRuntime::EXECUTION_MODE;
+        if (array_key_exists('cancellation_scope_id', $descriptor)) {
+            $normalized['cancellation_scope_id'] = $descriptor['cancellation_scope_id'];
+        }
         if (array_key_exists('cancellation_cleanup', $descriptor)) {
             $proof = $descriptor['cancellation_cleanup'];
             if (! is_array($proof) || array_diff(array_keys($proof), ['request_id', 'delivery_history_event_id']) !== []
@@ -542,6 +570,21 @@ final class PortableLocalActivityPreparation
             || ($started->payload['activity_attempt']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id) {
             return null;
         }
+        $scopeId = $execution->activity_options['cancellation_scope_id'] ?? null;
+        if (($started->payload['activity']['cancellation_scope_id'] ?? null) !== $scopeId) {
+            return null;
+        }
+        if ($scopeId !== null) {
+            $scheduled = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityScheduled)
+                ->where('payload->activity_execution_id', $execution->id)
+                ->first();
+            if (! is_string($scopeId)
+                || ! CancellationScopeHistory::isRecordedBefore($run, $scopeId, $execution->sequence)
+                || ($scheduled?->payload['activity']['cancellation_scope_id'] ?? null) !== $scopeId) {
+                return null;
+            }
+        }
         if (array_key_exists('schedule_to_close_deadline_at', $started->payload['local_preparation'])
             && $started->payload['local_preparation']['schedule_to_close_deadline_at']
                 !== $execution->schedule_to_close_deadline_at?->toISOString()) {
@@ -601,6 +644,9 @@ final class PortableLocalActivityPreparation
                 'routing' => 'workflow_worker_process',
                 ...(isset($normalized['cancellation_policy']) ? [
                     'cancellation_policy' => $normalized['cancellation_policy'],
+                ] : []),
+                ...(isset($normalized['cancellation_scope_id']) ? [
+                    'cancellation_scope_id' => $normalized['cancellation_scope_id'],
                 ] : []),
                 ...($cleanup === null ? [] : [
                     'cancellation_cleanup' => $cleanup,
@@ -670,6 +716,8 @@ final class PortableLocalActivityPreparation
             || $execution->attempt_count !== 0 || $execution->current_attempt_id !== null
             || ! $scheduled instanceof WorkflowHistoryEvent || ($admission['version'] ?? null) !== 1
             || ($admission['descriptor_fingerprint'] ?? null) !== $fingerprint
+            || ($scheduled->payload['activity']['cancellation_scope_id'] ?? null)
+                !== ($execution->activity_options['cancellation_scope_id'] ?? null)
             || ($admission['checkpoint_id'] ?? null) !== ($receipt['checkpoint_id'] ?? null)
             || ($admission['batch_fingerprint'] ?? null) !== ($receipt['fingerprint'] ?? null)
             || ($admission['workflow_task_attempt'] ?? null) !== ($receipt['workflow_task_attempt'] ?? null)
@@ -1022,6 +1070,9 @@ final class PortableLocalActivityPreparation
             'schedule_to_close_deadline_at' => $execution?->schedule_to_close_deadline_at?->toISOString(),
             'heartbeat_deadline_at' => $execution?->heartbeat_deadline_at?->toISOString(),
             'cancellation_cleanup' => $execution?->activity_options['cancellation_cleanup'] ?? null,
+            ...(isset($execution?->activity_options['cancellation_scope_id']) ? [
+                'cancellation_scope_id' => $execution->activity_options['cancellation_scope_id'],
+            ] : []),
             'server_time' => now()
                 ->toISOString(),
         ];

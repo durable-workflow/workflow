@@ -28,6 +28,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
@@ -1066,6 +1068,275 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->count());
         $this->assertSame(0, ActivityExecution::query()->count());
         $this->assertSame(0, $run->historyEvents()->count());
+    }
+
+    public function testRecordedLocalScopeSurvivesResponseLossAndCanonicalClaimInspection(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $descriptor = [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ];
+        $before = $task->fresh()
+            ->getAttributes();
+        $first = $this->prepareGroupMember($task, $descriptor, 2);
+        $duplicate = $this->prepareGroupMember($task, $descriptor, 2);
+        $this->assertTrue($first['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['activity_attempt_id'], $duplicate['activity_attempt_id']);
+        $this->assertSame($scope, $duplicate['cancellation_scope_id']);
+        $execution = ActivityExecution::query()->findOrFail($first['activity_execution_id']);
+        $this->assertSame($scope, $execution->activity_options['cancellation_scope_id']);
+        foreach ($run->historyEvents()->whereIn('event_type', [HistoryEventType::ActivityScheduled,
+            HistoryEventType::ActivityStarted])->get() as $event) {
+            $this->assertSame($scope, $event->payload['activity']['cancellation_scope_id']);
+            $this->assertSame($scope, ActivitySnapshot::fromEvent($event)['cancellation_scope_id']);
+        }
+        $this->assertNotNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution,
+            $execution->attempts()
+                ->sole(),
+            'portable-worker',
+            1,
+        ));
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('changedScopeMembership')]
+    public function testLocalScopeCannotBeChangedOrDroppedBeforeRetryOrColdRecovery(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $firstScope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $secondScope = CancellationScopeHistory::open($run, $task, 2, '1.20')->payload['scope_id'];
+        $descriptor = [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $firstScope,
+        ];
+        $first = $this->prepareGroupMember($task, $descriptor, 3);
+        $this->assertTrue($first['prepared']);
+        $changed = $this->descriptor();
+        if ($change !== 'omitted') {
+            $changed['cancellation_scope_id'] = $change === 'root' ? CancellationScopeHistory::ROOT_SCOPE_ID : $secondScope;
+        }
+        $retry = $this->prepareGroupMember($task, $changed, 3);
+        $this->assertFalse($retry['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $retry['reason']);
+        $task->forceFill([
+            'lease_owner' => 'replacement-worker',
+            'attempt_count' => 2,
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ])->save();
+        $recovery = PortableLocalActivityPreparation::recover($task->id, 'replacement-worker', 2, 3, $changed, '1.20');
+        $this->assertFalse($recovery['recovered']);
+        $this->assertSame('local_activity_preparation_mismatch', $recovery['reason']);
+        $this->assertFalse($recovery['claim_released']);
+        $this->assertSame(1, ActivityAttempt::query()->count());
+        $this->assertSame($firstScope, ActivityExecution::query()->sole()->activity_options['cancellation_scope_id']);
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertSame('replacement-worker', $task->fresh()->lease_owner);
+    }
+
+    public static function changedScopeMembership(): iterable
+    {
+        yield 'another recorded scope' => ['other'];
+        yield 'implicit run root' => ['root'];
+        yield 'membership removed' => ['omitted'];
+    }
+
+    #[DataProvider('unrecordedScopeMembership')]
+    public function testLocalScopeMustBelongToTheExactRunBeforeAdmission(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = 'unknown-scope';
+        if ($change === 'foreign') {
+            [$foreignRun, $foreignTask] = $this->newClaim();
+            $scope = CancellationScopeHistory::open($foreignRun, $foreignTask, 1, '1.20')->payload['scope_id'];
+        } elseif ($change === 'same position') {
+            $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        }
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 1);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_scope_not_recorded', $reply['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function unrecordedScopeMembership(): iterable
+    {
+        yield 'unknown' => ['unknown'];
+        yield 'scope in another run' => ['foreign'];
+        yield 'creation is not before operation' => ['same position'];
+    }
+
+    #[DataProvider('malformedScopeMembership')]
+    public function testMalformedLocalScopeIsRefusedWithoutCreatingAnAttempt(mixed $scope): void
+    {
+        [$run, $task] = $this->newClaim();
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 1);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('invalid_local_activity_preparation', $reply['reason']);
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+    }
+
+    public static function malformedScopeMembership(): iterable
+    {
+        yield 'null' => [null];
+        yield 'empty' => [''];
+        yield 'whitespace' => ['  '];
+        yield 'numeric' => [7];
+        yield 'object' => [[
+            'scope_id' => 'root',
+        ]];
+        yield 'too long' => [str_repeat('x', 256)];
+        yield 'invalid UTF-8' => ["\xff"];
+    }
+
+    public function testUnscopedLocalDescriptorsKeepTheirHistoricalFingerprintAndSnapshots(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $normalized = PortableLocalActivityPreparation::normalizeDescriptor($this->descriptor());
+        $this->assertArrayNotHasKey('cancellation_scope_id', $normalized);
+        $reply = $this->prepare($task);
+        $this->assertTrue($reply['prepared']);
+        $this->assertArrayNotHasKey('cancellation_scope_id', $reply);
+        foreach ($run->historyEvents()->get() as $event) {
+            $this->assertArrayNotHasKey('cancellation_scope_id', $event->payload['activity']);
+            $this->assertArrayNotHasKey('cancellation_scope_id', ActivitySnapshot::fromEvent($event));
+        }
+        $this->assertSame(
+            hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR)),
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)->sole()
+                ->payload['local_preparation']['descriptor_fingerprint']
+        );
+    }
+
+    public function testScopedGroupAdmissionRefusesAnUnknownMemberBeforeCreatingAnySibling(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $commands = [];
+        foreach ([$scope, 'unknown-scope'] as $index => $id) {
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'cancellation_scope_id' => $id,
+                ...ParallelChildGroup::itemMetadata(2, 2, $index, 'mixed'),
+            ];
+        }
+        $before = $task->fresh()
+            ->getAttributes();
+        $reply = app(PreparedLocalActivityGroupTaskBridge::class)->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'scoped-group',
+            2,
+            $commands,
+            '1.20',
+        );
+        $this->assertFalse($reply['checkpointed']);
+        $this->assertSame('local_activity_scope_not_recorded', $reply['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(1, $run->historyEvents()->count());
+        $this->assertSame($before, $task->fresh()->getAttributes());
+    }
+
+    public function testScopedLocalSiblingsKeepDistinctMembershipOnTheSameHostingClaim(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scopes = [CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'],
+            CancellationScopeHistory::open($run, $task, 2, '1.20')->payload['scope_id']];
+        $commands = [];
+        foreach ($scopes as $index => $scope) {
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'cancellation_scope_id' => $scope,
+                ...ParallelChildGroup::itemMetadata(3, 2, $index, 'mixed'),
+            ];
+        }
+        $reply = app(PreparedLocalActivityGroupTaskBridge::class)->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'scoped-group',
+            3,
+            $commands,
+            '1.20',
+        );
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        foreach ($commands as $index => $command) {
+            $prepared = $this->prepareGroupMember($task, $command, 3 + $index);
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $this->assertSame($scopes[$index], $prepared['cancellation_scope_id']);
+            $this->assertSame($task->id, $prepared['workflow_task_id']);
+        }
+        $this->assertSame(2, ActivityAttempt::query()->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertSame('portable-worker', $task->fresh()->lease_owner);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+    }
+
+    #[DataProvider('changedCanonicalScopeReceipt')]
+    public function testChangedCanonicalScopeSnapshotCannotAuthorizeTheOriginalClaim(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 2);
+        $this->assertTrue($reply['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($reply['activity_execution_id']);
+        if ($change === 'execution') {
+            $execution->forceFill([
+                'activity_options' => [
+                    ...$execution->activity_options,
+                    'cancellation_scope_id' => CancellationScopeHistory::ROOT_SCOPE_ID,
+                ],
+            ])->save();
+        } else {
+            $event = $run->historyEvents()
+                ->where('event_type', $change === 'scheduled'
+                                ? HistoryEventType::ActivityScheduled : HistoryEventType::ActivityStarted)->sole();
+            $payload = $event->payload;
+            $payload['activity']['cancellation_scope_id'] = CancellationScopeHistory::ROOT_SCOPE_ID;
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+        }
+        $this->assertNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution->fresh(),
+            $execution->attempts()
+                ->sole(),
+            'portable-worker',
+            1,
+        ));
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function changedCanonicalScopeReceipt(): iterable
+    {
+        yield 'execution reparented' => ['execution'];
+        yield 'scheduled snapshot reparented' => ['scheduled'];
+        yield 'started snapshot reparented' => ['started'];
     }
 
     /** @param list<array<string, mixed>> $expected

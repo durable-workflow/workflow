@@ -169,4 +169,20 @@ final class CancellationScopeHistory
         $ancestry[] = self::ROOT_SCOPE_ID;
         return array_reverse($ancestry);
     }
+
+    /**
+     * The admission caller holds the run lock. A scope created later cannot
+     * retroactively own an earlier operation. Historical omission means root.
+     */
+    public static function isRecordedBefore(WorkflowRun $run, string $scopeId, int $operationSequence): bool
+    {
+        if ($operationSequence < 1) {
+            return false;
+        }
+        if ($scopeId === self::ROOT_SCOPE_ID) {
+            return true;
+        }
+        $scope = self::forRun($run)[$scopeId] ?? null;
+        return $scope !== null && $scope['sequence'] < $operationSequence;
+    }
 }

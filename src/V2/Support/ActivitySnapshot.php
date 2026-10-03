@@ -36,6 +36,7 @@ final class ActivitySnapshot
             'attempt_count' => self::executionAttemptCount($execution),
             'retry_policy' => self::arrayValue($execution->retry_policy),
             'cancellation_policy' => self::stringValue($execution->activity_options['cancellation_policy'] ?? null),
+            'cancellation_scope_id' => self::stringValue($execution->activity_options['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => ($execution->activity_options['cancellation_policy'] ?? null)
                 === CancellationPolicy::Abandon->value
                 ? self::timestamp($execution->schedule_to_close_deadline_at) : null,
@@ -103,6 +104,9 @@ final class ActivitySnapshot
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
             'cancellation_policy' => self::stringValue($payload['cancellation_policy'] ?? null),
+            ...(isset($payload['cancellation_scope_id']) ? [
+                'cancellation_scope_id' => self::stringValue($payload['cancellation_scope_id']),
+            ] : []),
             'result' => self::payloadValue($payload['result'] ?? null),
             'reused_from_run_id' => self::stringValue($payload['reused_from_run_id'] ?? null),
             'reused_activity_execution_id' => self::stringValue($payload['reused_activity_execution_id'] ?? null),
@@ -181,6 +185,7 @@ final class ActivitySnapshot
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
             'cancellation_policy' => self::stringValue($snapshot['cancellation_policy'] ?? null),
+            'cancellation_scope_id' => self::stringValue($snapshot['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => self::stringValue($snapshot['schedule_to_close_deadline_at'] ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null),
             'queue' => self::stringValue($snapshot['queue'] ?? null),

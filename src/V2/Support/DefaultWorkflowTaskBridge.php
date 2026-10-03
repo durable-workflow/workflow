@@ -1436,10 +1436,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
                 return $refused('invalid_local_activity_checkpoint_commands');
             }
-            // Validate every local cleanup member before creating any sibling.
+            // Validate every local scope/cleanup member before creating any sibling.
             foreach ($parsed['non_terminal'] as $offset => $command) {
                 if ($command['type'] !== 'prepare_local_activity') {
                     continue;
+                }
+                if (! CancellationScopeHistory::isRecordedBefore(
+                    $run,
+                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                    $sequence + $offset,
+                )) {
+                    return $refused('local_activity_scope_not_recorded');
                 }
                 $cleanup = PortableLocalActivityCleanup::snapshot(
                     $run,
@@ -1547,7 +1554,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         ...$local,
                         'type' => 'prepare_local_activity',
                     ];
-                    unset($local['execution_mode'], $local['cancellation_cleanup']);
+                    unset($local['execution_mode'], $local['cancellation_cleanup'], $local['cancellation_scope_id']);
                     $command = [
                         ...$local,
                         'type' => 'schedule_activity',
