@@ -76,6 +76,26 @@ scope addresses before adding consumers. Do not squeeze scope hops into repeated
 run entries or replace a local delivery ID with the root ID. The rich authored
 context retains requester, source, reason and deterministic remaining-time helpers.
 
+The internal metadata encoding is
+`durable-workflow.scoped-cancellation-context/v1`. `root_context` contains the
+original rich v1 root snapshot with its original single root request. The
+separate `lineage` contains `request_id`, `workflow_instance_id`,
+`workflow_run_id`, `scope_id` and `cleanup_deadline_at` for each accepted address.
+The first address must match that root and its deadline. A descendant deadline
+can shorten but cannot increase. `rootDeadline()` keeps the original global
+budget while `deadline()` returns the selected scope's accepted budget.
+
+`ScopedCancellationContext` permits different scopes within one run, rejects
+repeated request IDs or run/scope addresses and contradictory run/instance
+mapping, and explicitly adapts old run lineage to implicit root scopes. It
+normalizes scope address field order independently of database JSON key order.
+The existing v1 parser and snapshots are unchanged. This metadata parser grants
+no authority: backend consumers must verify the recorded scope, propagation
+edge and accepted root under lock. Later ancestor authority ceilings and
+competing roots are separate records, not mutations of the accepted context.
+Scoped delivery/replay-clock binding and scoped `remaining()` are not implemented
+by this metadata foundation. No scope capability is advertised.
+
 The first accepted request at an address owns its identity and deadline.
 Duplicates return that context. A different root is a recorded conflict with
 both identities and deadlines, not an implicit merge. The accepted context is
