@@ -239,9 +239,10 @@ final class ScopedWaitCancellation
                     $request = $locked->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
                         $event->event_type === HistoryEventType::CancellationScopeRequested
                         && ($event->payload['scope_id'] ?? null) === $scopeId);
-                    $terminal = WorkflowHistoryEvent::record($locked, $member['kind'] === 'signal'
-                        ? HistoryEventType::SignalWaitCancelled : HistoryEventType::ConditionWaitCancelled, array_filter([
-                            
+                    $cancelledEventType = $member['kind'] === 'signal'
+                        ? HistoryEventType::SignalWaitCancelled : HistoryEventType::ConditionWaitCancelled;
+                    $terminal = WorkflowHistoryEvent::record($locked, $cancelledEventType, array_filter(
+                        [
                             ...array_intersect_key($opened->payload, array_flip([
                                 'signal_name', 'signal_wait_id', 'condition_wait_id', 'condition_wait_occurrence_id',
                                 'condition_key', 'condition_definition_fingerprint', 'sequence', 'timeout_seconds',
@@ -263,8 +264,8 @@ final class ScopedWaitCancellation
                                 ParallelChildGroup::metadataPathFromPayload($opened->payload)
                             ),
                         ],
-                            static fn (mixed $value): bool => $value !== null
-                        ), $claim);
+                        static fn (mixed $value): bool => $value !== null
+                    ), $claim);
                     $locked->historyEvents->push($terminal);
                 }
                 $timerReceipt = null;
