@@ -216,6 +216,38 @@ final class ActivityCancellationCompletionTest extends TestCase
         yield 'retry scheduling' => [HistoryEventType::ActivityRetryScheduled, false];
     }
 
+    #[DataProvider('retryStopEvidence')]
+    public function testRetryOnlyProvesExitWithTheOriginalCallbacksRecordedFailure(
+        string $status,
+        ?string $timeout,
+        string $attemptId,
+        bool $resolved,
+    ): void {
+        $run = $this->fixtureRun();
+        $run->historyEvents->forget(3);
+        $run->historyEvents->push($this->event(HistoryEventType::ActivityRetryScheduled, 4, [
+            'sequence' => 1,
+            'activity_execution_id' => 'activity',
+            'activity_attempt_id' => 'attempt',
+            'timeout_kind' => $timeout,
+            'activity_attempt' => [
+                'id' => $attemptId,
+                'activity_execution_id' => 'activity',
+                'status' => $status,
+                'closed_at' => '2026-10-02T13:00:01.000000Z',
+            ],
+        ]));
+        $this->assertSame($resolved, ActivityCancellationCompletion::resolved($run, 'activity'));
+    }
+
+    public static function retryStopEvidence(): iterable
+    {
+        yield 'original callback failed' => ['failed', null, 'attempt', true];
+        yield 'expired lease' => ['expired', null, 'attempt', false];
+        yield 'timeout fence' => ['failed', 'start_to_close', 'attempt', false];
+        yield 'different attempt' => ['failed', null, 'replacement', false];
+    }
+
     private function fixtureRun(bool $local = false): WorkflowRun
     {
         $run = new WorkflowRun([

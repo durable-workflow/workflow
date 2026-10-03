@@ -4,16 +4,21 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\ScopedCancellationContext;
 
 /** Canonical proof for an activity cancellation wait. A fence alone never proves callback exit. */
 final class ActivityCancellationCompletion
 {
-    public static function resolved(WorkflowRun $run, string $executionId): bool
-    {
+    public static function resolved(
+        WorkflowRun $run,
+        string $executionId,
+        CancellationContext|ScopedCancellationContext|null $request = null
+    ): bool {
         if (! $run->relationLoaded('historyEvents')) {
             $run->loadMissing('historyEvents');
         }
@@ -22,24 +27,31 @@ final class ActivityCancellationCompletion
             && ($event->payload['activity_execution_id'] ?? null) === $executionId);
         if (! $scheduled instanceof WorkflowHistoryEvent
             || ! is_int($scheduled->payload['sequence'] ?? null) || $scheduled->payload['sequence'] < 1
-            || CooperativeCancellationDelivery::context($run) === null) {
+            || ($request === null && CooperativeCancellationDelivery::context($run) === null)) {
             return false;
         }
 
         $cancelled = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
             $event->event_type === HistoryEventType::ActivityCancelled
-            && ($event->payload['activity_execution_id'] ?? null) === $executionId
-            && $event->workflow_command_id === $run->cancellation_request_command_id);
+            && ($event->payload['activity_execution_id'] ?? null) === $executionId);
+        if ($cancelled !== null && ActivityCancellationContext::forEvent($run, $cancelled) === null) {
+            return false;
+        }
         $started = $run->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>
             $event->event_type === HistoryEventType::ActivityStarted
             && ($event->payload['activity_execution_id'] ?? null) === $executionId)->sortByDesc('sequence')->first();
         if ($started instanceof WorkflowHistoryEvent && is_string($started->payload['activity_attempt_id'] ?? null)
             && $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
-                in_array(
+                (in_array(
                     $event->event_type,
                     [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed],
                     true
-                )
+                ) || ($event->event_type === HistoryEventType::ActivityRetryScheduled
+                    && ($event->payload['activity_attempt']['id'] ?? null) === $started->payload['activity_attempt_id']
+                    && ($event->payload['activity_attempt']['activity_execution_id'] ?? null) === $executionId
+                    && ($event->payload['activity_attempt']['status'] ?? null) === ActivityAttemptStatus::Failed->value
+                    && is_string($event->payload['activity_attempt']['closed_at'] ?? null)
+                    && ($event->payload['timeout_kind'] ?? null) === null))
                 && ($event->payload['activity_execution_id'] ?? null) === $executionId
                 && ($event->payload['activity_attempt_id'] ?? null) === $started->payload['activity_attempt_id']
                 && ($event->payload['sequence'] ?? null) === ($scheduled->payload['sequence'] ?? null)
@@ -72,7 +84,7 @@ final class ActivityCancellationCompletion
 
     public static function stopReceipt(WorkflowRun $run, WorkflowHistoryEvent $cancelled): ?WorkflowHistoryEvent
     {
-        $context = CooperativeCancellationDelivery::context($run);
+        $context = ActivityCancellationContext::forEvent($run, $cancelled);
         $snapshot = $cancelled->payload['activity_attempt'] ?? null;
         $attemptId = $cancelled->payload['activity_attempt_id'] ?? null;
         $executionId = $cancelled->payload['activity_execution_id'] ?? null;
@@ -98,7 +110,7 @@ final class ActivityCancellationCompletion
             && ($event->payload['lease_owner'] ?? null) === $snapshot['lease_owner']
             && ($event->payload['cancellation_history_event_id'] ?? null) === $cancelled->id
             && ($event->payload['request_id'] ?? null) === $context->requestId
-            && ($event->payload['root_request_id'] ?? null) === $context->rootRequestId
+            && ($event->payload['root_request_id'] ?? null) === ActivityCancellationContext::rootRequestId($context)
             && ($event->payload['cleanup_deadline_at'] ?? null) === $context->deadline()->toISOString()
             && ($event->payload['callback_state'] ?? null) === 'stopped'
             && ($event->payload['evidence_source'] ?? null) === $source);

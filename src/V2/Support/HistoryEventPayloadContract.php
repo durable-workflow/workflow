@@ -276,6 +276,7 @@ final class HistoryEventPayloadContract
             'structural_limit_configured',
         ],
         'ActivityCancelled' => [
+            'cancellation_scope',
             'workflow_command_id',
             'activity_execution_id',
             'activity_attempt_id',

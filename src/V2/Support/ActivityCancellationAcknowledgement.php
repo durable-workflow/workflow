@@ -97,7 +97,10 @@ final class ActivityCancellationAcknowledgement
                 || ($local && $task->task_type !== TaskType::Workflow)) {
                 return self::refused('activity_cancellation_acknowledgement_fence_mismatch');
             }
-            if ($run->cancellation_request_command_id !== $requestId) {
+            if ($run->cancellation_request_command_id !== $requestId && ! $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeRequested)
+                ->where('payload->request_id', $requestId)
+                ->exists()) {
                 return self::refused('cancellation_request_mismatch');
             }
             $events = $run->historyEvents()
@@ -139,6 +142,10 @@ final class ActivityCancellationAcknowledgement
                     return self::refused('local_activity_workflow_claim_mismatch');
                 }
             }
+            $context = ActivityCancellationContext::forEvent($run, $cancelled);
+            if ($context === null || $context->requestId !== $requestId) {
+                return self::refused('cancellation_context_not_recorded');
+            }
             /** @var WorkflowHistoryEvent|null $existing */
             $existing = $events->first(static fn (WorkflowHistoryEvent $event): bool =>
                 $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
@@ -157,10 +164,6 @@ final class ActivityCancellationAcknowledgement
                 || (! $local && $task->status !== TaskStatus::Cancelled)) {
                 return self::refused('activity_cancellation_not_fenced');
             }
-            $context = CooperativeCancellationDelivery::context($run);
-            if ($context === null || $context->requestId !== $requestId) {
-                return self::refused('cancellation_context_not_recorded');
-            }
             $receivedAt = now();
             $payload = [
                 'sequence' => $execution->sequence,
@@ -169,7 +172,7 @@ final class ActivityCancellationAcknowledgement
                 'lease_owner' => $leaseOwner,
                 'cancellation_history_event_id' => $cancelled->id,
                 'request_id' => $requestId,
-                'root_request_id' => $context->rootRequestId,
+                'root_request_id' => ActivityCancellationContext::rootRequestId($context),
                 'cleanup_deadline_at' => $context->deadline()
                     ->toISOString(),
                 'callback_state' => 'stopped',

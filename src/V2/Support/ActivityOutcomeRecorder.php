@@ -235,6 +235,10 @@ final class ActivityOutcomeRecorder
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
 
+                // Preserve the callback owner's completed failure as a history
+                // fact. A timeout-created retry has no such stop evidence.
+                $closedAttempt = ActivityAttempt::query()->findOrFail($attemptId);
+
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Pending,
                     'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
@@ -283,6 +287,14 @@ final class ActivityOutcomeRecorder
                     'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
                     'retry_policy' => $lockedExecution->retry_policy,
                     'exception_type' => $exceptionPayload['type'] ?? null,
+                    'activity_attempt' => [
+                        'id' => $closedAttempt->id,
+                        'activity_execution_id' => $closedAttempt->activity_execution_id,
+                        'task_id' => $closedAttempt->workflow_task_id,
+                        'status' => $closedAttempt->status->value,
+                        'lease_owner' => $closedAttempt->lease_owner,
+                        'closed_at' => $closedAttempt->closed_at?->toJSON(),
+                    ],
                     'exception_class' => $exceptionPayload['class'] ?? get_class($throwable),
                     'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
                     'code' => $throwable->getCode(),
