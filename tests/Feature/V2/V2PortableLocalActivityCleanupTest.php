@@ -368,11 +368,13 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
         $this->assertTrue(now()->lt($run->cancellation_deadline_at));
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
         );
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
         );
     }
 

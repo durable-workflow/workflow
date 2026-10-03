@@ -631,7 +631,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         [$run, $task] = $this->newRun();
         $this->request($run);
         $deadline = $run->cancellation_deadline_at?->toISOString();
-        $lease = $task->lease_expires_at?->toISOString();
+        $lease = $task->lease_expires_at?->copy();
 
         $result = $this->deliver($run, $task);
 
@@ -639,7 +639,9 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame($run->cancellation_request_command_id, $result['request_id']);
         $this->assertSame(1, $result['sequence']);
         $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
-        $this->assertSame($lease, $task->lease_expires_at?->toISOString());
+        $this->assertTrue($task->lease_expires_at->lt($lease));
+        $this->assertTrue($task->lease_expires_at->gt(now()));
+        $this->assertTrue($task->lease_expires_at->lte(now()->addSeconds(10)));
         $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at?->toISOString());
         $this->assertTrue($this->bridge->heartbeat($task->id)['renewed']);
         $cleanup = $this->bridge->complete($task->id, [[
