@@ -8,9 +8,11 @@ registration kernel: `CancellationScopeHistory` records `CancellationScopeOpened
 at a typed durable command position under the configured storage connection
 and matching live claim. It preserves the recorded parent and shield mode on
 fresh reads and replacement-claim replay, and includes those facts in the
-history timeline. No Server endpoint or SDK scope capability is enabled by
-that foundation. The kernel's database tests use authoritative claim fixtures,
-not an end-to-end SDK scope execution.
+history timeline. The optional internal `CancellationScopeTaskBridge` now
+exposes this kernel through `openCancellationScope()`. No Server endpoint or
+SDK scope capability is enabled by that foundation. The database tests exercise
+the real bridge with authoritative claim fixtures, not an end-to-end SDK scope
+execution.
 Protocol 1.20 remains unfrozen until the authority and replay contracts below
 have an implemented, qualified consumer.
 
@@ -50,6 +52,22 @@ replay. It cannot manufacture a new identity from host time or process state.
 Scope creation must reject a foreign run, an unknown parent, duplicate authored
 identity or a cycle. Replaying a creation with a changed parent or shield mode
 is a nondeterminism failure before work admission.
+
+The optional opening bridge requires candidate protocol 1.20, the exact issued
+workflow task, its live lease owner and attempt, and the next authored command
+sequence. It locks the owning run before the task, then invokes the canonical
+kernel. A successful receipt contains the recorded scope and history identities,
+parent, shield mode and sequence. Opening retains the workflow claim, creates no
+operation and grants no new lease or cancellation budget. The SDK must receive
+that durable acknowledgement before entering the scope body.
+
+A response-loss retry or replacement claim returns the same scope and history
+event, marked as a duplicate. It cannot change the recorded parent or shield.
+Expired, stale, wrong-namespace, non-workflow or foreign-run claims are refused
+before mutation. Malformed or unsupported requests have explicit reasons.
+Existing bridge adapters need not implement this optional role. Server must
+report that absence before accepting scope authoring. Default protocol 1.19,
+scope delivery, scoped clocks and physical supervision remain unchanged.
 
 Each scheduled leaf records its immediate scope ID. Descendant membership is
 resolved through canonical parent links. A prepared local descriptor includes

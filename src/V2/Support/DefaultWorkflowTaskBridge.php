@@ -17,6 +17,7 @@ use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
@@ -54,7 +55,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, CancellationScopeTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -939,6 +940,30 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'attempt_count' => $attemptCount,
             'reason' => null,
         ];
+    }
+
+    /**
+     * @internal Candidate scope registration before workflow body execution.
+     * @return array<string, mixed>
+     */
+    public function openCancellationScope(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $parentScopeId = 'root',
+        bool $shieldParent = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeOpening::open(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $parentScopeId,
+            $shieldParent,
+            $protocolVersion
+        );
     }
 
     /**

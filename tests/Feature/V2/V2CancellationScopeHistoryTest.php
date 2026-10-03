@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -46,6 +47,208 @@ final class V2CancellationScopeHistoryTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public function testOptionalScopeOpeningPersistsBeforeTheBodyAndRetainsTheClaim(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('portable-open');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertInstanceOf(CancellationScopeTaskBridge::class, $bridge);
+        $before = $claim->fresh()
+            ->getAttributes();
+        $first = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertTrue($first['opened'], $first['reason'] ?? '');
+        $this->assertFalse($first['duplicate']);
+        $this->assertFalse($first['claim_released']);
+        $this->assertSame([], $first['created_task_ids']);
+        $this->assertSame($workflow->runId(), $first['workflow_run_id']);
+        $event = $workflow->run()
+            ->historyEvents()
+            ->where('event_type', HistoryEventType::CancellationScopeOpened)->sole();
+        $this->assertSame($event->id, $first['history_event_id']);
+        $this->assertSame($event->payload['scope_id'], $first['scope_id']);
+        $this->assertSame('root', $first['parent_scope_id']);
+        $this->assertFalse($first['shield_parent']);
+        $this->assertSame(1, $first['sequence']);
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+        $this->assertSame(0, WorkflowLink::query()->count());
+        $duplicate = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertTrue($duplicate['opened']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['scope_id'], $duplicate['scope_id']);
+        $this->assertSame($first['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame(
+            1,
+            $workflow->run()
+                ->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeOpened)->count()
+        );
+    }
+
+    public function testOptionalScopeOpeningReplaysTheSameNestedShieldAfterClaimTakeover(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('portable-shield');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $parent = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $child = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 2, $parent['scope_id'], true, '1.20');
+        $this->assertTrue($child['opened']);
+        $this->assertTrue($child['shield_parent']);
+        $claim->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $stale = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 2, $parent['scope_id'], true, '1.20');
+        $this->assertFalse($stale['opened']);
+        $this->assertSame('cancellation_scope_workflow_claim_mismatch', $stale['reason']);
+        $replay = $bridge->openCancellationScope($claim->id, 'replacement', 2, 2, $parent['scope_id'], true, '1.20');
+        $this->assertTrue($replay['opened']);
+        $this->assertTrue($replay['duplicate']);
+        $this->assertSame($child['scope_id'], $replay['scope_id']);
+        $this->assertSame($child['history_event_id'], $replay['history_event_id']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+    }
+
+    public function testOptionalScopeOpeningRefusesChangedReplayWithoutWritingHistory(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('portable-mismatch');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $first = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        foreach ([['root', true], [$first['scope_id'], false]] as [$parent, $shield]) {
+            $changed = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, $parent, $shield, '1.20');
+            $this->assertFalse($changed['opened']);
+            $this->assertSame('cancellation_scope_replay_mismatch', $changed['reason']);
+        }
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+    }
+
+    public static function invalidScopeOpenings(): array
+    {
+        return [
+            ['1.19', 'scope-owner', 1, 1, 'root', 'cancellation_scope_requires_protocol_1_20'],
+            ['2.20', 'scope-owner', 1, 1, 'root', 'cancellation_scope_requires_protocol_1_20'],
+            ['invalid', 'scope-owner', 1, 1, 'root', 'cancellation_scope_requires_protocol_1_20'],
+            ['1.20', '', 1, 1, 'root', 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 0, 1, 'root', 'invalid_cancellation_scope_open'],
+            ['1.20', 'other-owner', 1, 1, 'root', 'cancellation_scope_workflow_claim_mismatch'],
+            ['1.20', 'scope-owner', 2, 1, 'root', 'cancellation_scope_workflow_claim_mismatch'],
+            ['1.20', 'scope-owner', 1, 0, 'root', 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 1, 1, '', 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 1, 1, '   ', 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 1, 1, "\xff", 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 1, 1, str_repeat('x', 256), 'invalid_cancellation_scope_open'],
+            ['1.20', 'scope-owner', 1, 1, 'unknown-parent', 'cancellation_scope_parent_not_recorded'],
+            ['1.20', 'scope-owner', 1, 2, 'root', 'cancellation_scope_sequence_mismatch'],
+        ];
+    }
+
+    #[DataProvider('invalidScopeOpenings')]
+    public function testOptionalScopeOpeningRefusesInvalidAuthorityBeforeAnyHistory(
+        string $version,
+        string $owner,
+        int $attempt,
+        int $sequence,
+        string $parent,
+        string $reason,
+    ): void {
+        [$workflow, $claim] = $this->workflowClaim('portable-refused');
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $attributes = $claim->fresh()
+            ->getAttributes();
+        $reply = app(DefaultWorkflowTaskBridge::class)->openCancellationScope(
+            $claim->id,
+            $owner,
+            $attempt,
+            $sequence,
+            $parent,
+            false,
+            $version
+        );
+        $this->assertFalse($reply['opened']);
+        $this->assertFalse($reply['claim_released']);
+        $this->assertSame($reason, $reply['reason']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+        $this->assertSame($attributes, $claim->fresh()->getAttributes());
+    }
+
+    public function testOptionalScopeOpeningRefusesExpiredClaimAndForeignParent(): void
+    {
+        [$other, $otherClaim] = $this->workflowClaim('portable-foreign');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $foreign = $bridge->openCancellationScope($otherClaim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        [$workflow, $claim] = $this->workflowClaim('portable-current');
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $reply = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, $foreign['scope_id'], false, '1.20');
+        $this->assertFalse($reply['opened']);
+        $this->assertSame('cancellation_scope_parent_not_recorded', $reply['reason']);
+        $claim->forceFill([
+            'lease_expires_at' => now(),
+        ])->save();
+        $reply = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertFalse($reply['opened']);
+        $this->assertSame('cancellation_scope_workflow_claim_mismatch', $reply['reason']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+    }
+
+    public function testOptionalScopeOpeningRefusesMissingTaskAndWrongNamespaceWithoutMutation(): void
+    {
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $missing = $bridge->openCancellationScope('missing-task', 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertFalse($missing['opened']);
+        $this->assertSame('task_not_found', $missing['reason']);
+        [$workflow, $claim] = $this->workflowClaim('portable-namespace');
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $claim->forceFill([
+            'namespace' => 'another-namespace',
+        ])->save();
+        $reply = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertFalse($reply['opened']);
+        $this->assertSame('cancellation_scope_workflow_claim_mismatch', $reply['reason']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+    }
+
+    public function testOptionalScopeOpeningRequiresAnActiveRunAndAnUnchangedCanonicalHistory(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('portable-history');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $first = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $event = $workflow->run()
+            ->historyEvents()
+            ->findOrFail($first['history_event_id']);
+        $event->forceFill([
+            'payload' => [
+                ...$event->payload,
+                'workflow_run_id' => 'another-run',
+            ],
+        ])->save();
+        $before = $workflow->run()
+            ->historyEvents()
+            ->count();
+        $reply = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 1, 'root', false, '1.20');
+        $this->assertFalse($reply['opened']);
+        $this->assertSame('cancellation_scope_history_invalid', $reply['reason']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
+        $workflow->run()
+            ->forceFill([
+                'status' => \Workflow\V2\Enums\RunStatus::Cancelled,
+            ])->save();
+        $reply = $bridge->openCancellationScope($claim->id, 'scope-owner', 1, 2, 'root', false, '1.20');
+        $this->assertFalse($reply['opened']);
+        $this->assertSame('cancellation_scope_run_not_active', $reply['reason']);
+        $this->assertSame($before, $workflow->run()->historyEvents()->count());
     }
 
     public function testOptionalScopeAdmissionRoleValidatesBeforeEffectsWithoutMutatingTheClaim(): void
