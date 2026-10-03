@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -45,6 +46,56 @@ final class V2CancellationScopeHistoryTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public function testOptionalScopeAdmissionRoleValidatesBeforeEffectsWithoutMutatingTheClaim(): void
+    {
+        [$workflow, $claim] = $this->workflowClaim('admission-role');
+        $run = $workflow->run()
+            ->fresh();
+        $scope = CancellationScopeHistory::open($run, $claim, 1, '1.20')->payload['scope_id'];
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertInstanceOf(CancellationScopeAdmission::class, $bridge);
+        $commands = $this->operationCommands();
+        foreach ($commands as &$command) {
+            $command['cancellation_scope_id'] = $scope;
+        }
+        unset($command);
+        $history = $run->historyEvents()
+            ->count();
+        $before = $claim->fresh()
+            ->getAttributes();
+        $this->assertNull($bridge->validateCancellationScopeMembership($run, $commands, 2));
+        foreach (array_keys($commands) as $index) {
+            $changed = $commands;
+            $changed[$index]['cancellation_scope_id'] = 'unknown-scope';
+            $this->assertSame(
+                'operation_scope_not_recorded',
+                $bridge->validateCancellationScopeMembership($run, $changed, 2)
+            );
+        }
+        $this->assertSame(
+            'operation_scope_not_recorded',
+            $bridge->validateCancellationScopeMembership($run, $commands, 1)
+        );
+        $local = [
+            'type' => 'prepare_local_activity',
+            'cancellation_scope_id' => $scope,
+        ];
+        $this->assertNull($bridge->validateCancellationScopeMembership($run, [$local], 2));
+        $local['cancellation_scope_id'] = 'unknown-scope';
+        $this->assertSame(
+            'local_activity_scope_not_recorded',
+            $bridge->validateCancellationScopeMembership($run, [$local], 2)
+        );
+        $this->assertNull($bridge->validateCancellationScopeMembership($run, [[
+            'type' => 'prepare_local_activity',
+        ]], 2));
+        $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+        $this->assertSame(0, WorkflowLink::query()->count());
     }
 
     public function testRemoteActivityTimerAndChildKeepCanonicalMembershipBeforeAdmission(): void

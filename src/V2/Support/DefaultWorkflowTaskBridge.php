@@ -16,6 +16,7 @@ use Throwable;
 use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
@@ -53,7 +54,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -1307,6 +1308,27 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'reason' => null,
             ];
         });
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    public function validateCancellationScopeMembership(WorkflowRun $run, array $commands, int $sequence): ?string
+    {
+        if (! self::operationScopesAreRecorded($run, $commands, $sequence)) {
+            return 'operation_scope_not_recorded';
+        }
+        foreach ($commands as $offset => $command) {
+            if ($command['type'] === 'prepare_local_activity'
+                && ! CancellationScopeHistory::isRecordedBefore(
+                    $run,
+                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                    $sequence + $offset,
+                )) {
+                return 'local_activity_scope_not_recorded';
+            }
+        }
+        return null;
     }
 
     /** @param list<array{type: string, ...}> $commands

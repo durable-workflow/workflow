@@ -72,6 +72,13 @@ history and task locators, and child scheduling/started history retain the
 address. Child operator metadata is a projection, not its authority. Historical
 unscoped scheduling shapes remain unchanged.
 
+The optional internal `CancellationScopeAdmission` bridge role exposes these
+canonical membership checks to Server. Server preserves the optional field,
+refuses a backend without that role, checks before payload resolution and
+rechecks under the run lock. Stream directives commit only after successful
+Native admission in the same transaction. A refusal does not publish stream
+items, while timeout or cancellation decisions made by Native remain durable.
+
 These are backend admission contracts. Scope-aware authoring/replay, request
 delivery and physical sibling supervision remain separate implementation and
 qualification gates. No scope capability is enabled.

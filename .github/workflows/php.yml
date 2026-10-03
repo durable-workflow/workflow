@@ -500,6 +500,16 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
+    - name: Run canonical operation scope admission cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2CancellationScopeHistoryTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scope-admission.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Run activity cancellation policy and portable admission cases
       run: >-
         vendor/bin/phpunit tests/Feature/V2/V2PortableCancellationDeliveryTest.php
