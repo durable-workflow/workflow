@@ -7,7 +7,7 @@ namespace Workflow\V2\Contracts;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
- * @internal Optional authenticated preparation/recording role for unfrozen 1.20.
+ * @internal Optional authenticated preparation/dispatch role for unfrozen 1.20.
  * This role does not advertise scope execution or supervise callbacks.
  */
 interface PreparedCancellationScopeTaskBridge extends CancellationScopeTaskBridge
@@ -30,7 +30,8 @@ interface PreparedCancellationScopeTaskBridge extends CancellationScopeTaskBridg
     ): array;
 
     /**
-     * Record delivery only after the original members' policy proofs exist.
+     * Dispatch the original scoped Activities, then record their policy barrier.
+     * Preparation and each actor commit separately, allowing partial retry.
      * Pending stop proof retains the preparation and workflow claim.
      * @return array<string, mixed>
      */

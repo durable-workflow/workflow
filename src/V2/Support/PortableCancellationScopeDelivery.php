@@ -13,8 +13,8 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\ScopedCancellationContext;
 
 /**
- * @internal Authenticate an issued workflow claim before preparation/recording.
- * No outer transaction or Activity effects belong in this adapter.
+ * @internal Authenticate preparation and dispatch the original scoped Activities.
+ * Each actor owns its locks; no outer transaction spans preparation and dispatch.
  */
 final class PortableCancellationScopeDelivery
 {
@@ -78,19 +78,9 @@ final class PortableCancellationScopeDelivery
             if (! $preparing && $preparation === null) {
                 return $refused('cancellation_scope_delivery_not_prepared');
             }
-            if ($preparation !== null) {
-                $response = [...$response, ...self::frame($run, $preparation->payload, $preparation->id)];
-                $unavailable = self::unavailableOperations($run, $scopeId);
-                if ($unavailable !== []) {
-                    return [
-                        ...$response,
-                        'reason' => 'cancellation_scope_operation_delivery_unavailable',
-                        'unavailable' => $unavailable,
-                    ];
-                }
-            }
-            $method = $preparing ? 'prepare' : 'record';
-            $event = CancellationScopeDelivery::$method(
+            // Replay validates the exact original boundary before any effects.
+            // Its run/task locks are released before an Activity actor starts.
+            $event = CancellationScopeDelivery::prepare(
                 $run,
                 $claim,
                 $scopeId,
@@ -102,6 +92,47 @@ final class PortableCancellationScopeDelivery
                 $operationSequence,
                 $operationSequenceSpan,
             );
+            $response = [...$response, ...self::frame($run, $event->payload, $event->id)];
+            if (! $preparing) {
+                $run->unsetRelation('historyEvents');
+                $unavailable = self::unavailableOperations($run, $scopeId);
+                if ($unavailable !== []) {
+                    return [
+                        ...$response,
+                        'reason' => 'cancellation_scope_operation_delivery_unavailable',
+                        'unavailable' => $unavailable,
+                    ];
+                }
+                $response['activity_cancellations'] = [];
+                foreach ($event->payload['activity_members'] as $member) {
+                    $receipt = ScopedActivityCancellation::fence(
+                        $run,
+                        $claim,
+                        $member['activity_execution_id'],
+                        $scopeId,
+                        $requestId,
+                        $protocolVersion,
+                    );
+                    $response['activity_cancellations'][] = [
+                        'sequence' => $member['sequence'],
+                        'activity_execution_id' => $member['activity_execution_id'],
+                        ...$receipt,
+                    ];
+                }
+                // Recording remains a barrier over every original member's policy.
+                $event = CancellationScopeDelivery::record(
+                    $run,
+                    $claim,
+                    $scopeId,
+                    $requestId,
+                    $sequence,
+                    $callKind,
+                    $protocolVersion,
+                    $sequenceSpan,
+                    $operationSequence,
+                    $operationSequenceSpan,
+                );
+            }
             return [
                 ...$response,
                 ...self::frame(
@@ -119,7 +150,8 @@ final class PortableCancellationScopeDelivery
                 && ! str_starts_with($reason, 'cancellation_delivery_')
                 && ! in_array(
                     $reason,
-                    ['invalid_cancellation_scope_delivery', 'invalid_cancellation_delivery'],
+                    ['invalid_cancellation_scope_delivery', 'invalid_cancellation_delivery',
+                        'activity_cancellation_owned_by_another_request'],
                     true
                 )) {
                 throw $error;
