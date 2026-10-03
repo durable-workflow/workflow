@@ -113,6 +113,21 @@ final class PortableCancellationScopeDelivery
                         $requestId,
                         $protocolVersion,
                     );
+                    // Database JSON key order must not change a retried receipt.
+                    if (isset($receipt['cancellation_scope'])) {
+                        $snapshot = $receipt['cancellation_scope'];
+                        $receipt['cancellation_scope'] = [
+                            'schema' => $snapshot['schema'],
+                            'workflow_run_id' => $snapshot['workflow_run_id'],
+                            'scope_id' => $snapshot['scope_id'],
+                            'request_id' => $snapshot['request_id'],
+                            'request_history_event_id' => $snapshot['request_history_event_id'],
+                            'cancellation' => ScopedCancellationContext::fromArray(
+                                $snapshot['cancellation']
+                            )->toArray(),
+                            'authority_deadline_at' => $snapshot['authority_deadline_at'],
+                        ];
+                    }
                     $response['activity_cancellations'][] = [
                         'sequence' => $member['sequence'],
                         'activity_execution_id' => $member['activity_execution_id'],
