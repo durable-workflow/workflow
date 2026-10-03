@@ -177,7 +177,7 @@ final class V2CancellationScopeHistoryTest extends TestCase
         string $reason
     ): void {
         [$workflow, $claim] = $this->workflowClaim('refused-scope-prefix');
-        $before = $claim->getAttributes();
+        $before = $claim->fresh()->getAttributes();
         $history = $workflow->run()
             ->historyEvents()
             ->count();
