@@ -481,7 +481,11 @@ timeout. The callback currently depends on its hosting workflow claim. It
 cannot acquire an independent lifetime by changing the policy field. Use a
 remote Activity for independently tracked work. No local-to-remote conversion
 is implicit. A full local Abandon lifetime and independently cancellable
-subtree scopes remain separate model work.
+subtree scopes require separate authority. The
+[hierarchical scope decision](hierarchical-cancellation-scopes.md) defines the
+chosen durable operation-tree boundary, canonical membership, shield inheritance,
+shared local claim handling and the implementation/qualification gate. The current
+source tuple does not implement or advertise those scopes.
 
 ## Lifecycle and diagnostics
 
