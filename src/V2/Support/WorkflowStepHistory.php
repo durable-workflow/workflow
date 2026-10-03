@@ -105,6 +105,7 @@ final class WorkflowStepHistory
                 self::WORKFLOW_STEP_EVENT_TYPES,
             );
             $stepTypes[] = HistoryEventType::CooperativeCancellationDelivered->value;
+            $stepTypes[] = HistoryEventType::CancellationScopeDelivered->value;
 
             return self::nextSequenceFromEvents(
                 $run->historyEvents()
@@ -254,7 +255,8 @@ final class WorkflowStepHistory
         foreach ($events as $event) {
             if (! $event instanceof WorkflowHistoryEvent || (
                 ! self::isWorkflowStepEvent($event)
-                && $event->event_type !== HistoryEventType::CooperativeCancellationDelivered
+                && ! in_array($event->event_type, [HistoryEventType::CooperativeCancellationDelivered,
+                    HistoryEventType::CancellationScopeDelivered], true)
             )) {
                 continue;
             }
@@ -262,7 +264,8 @@ final class WorkflowStepHistory
             $sequence = self::intValue($event->payload['sequence'] ?? null);
 
             if ($sequence !== null) {
-                if ($event->event_type === HistoryEventType::CooperativeCancellationDelivered) {
+                if (in_array($event->event_type, [HistoryEventType::CooperativeCancellationDelivered,
+                    HistoryEventType::CancellationScopeDelivered], true)) {
                     $span = self::intValue($event->payload['sequence_span'] ?? null) ?? 1;
                     if ($span > 1 && $sequence <= PHP_INT_MAX - $span) {
                         $sequence += $span - 1;

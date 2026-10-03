@@ -57,16 +57,15 @@ final class CooperativeCancellationDelivery
             return 'cancellation_request_mismatch';
         }
 
-        $limit = StructuralLimits::commandBatchSizeLimit();
-        if ($sequence < 1 || $sequenceSpan < 1 || $operationSequenceSpan < 1
-            || $sequence > PHP_INT_MAX - $sequenceSpan
-            || ($limit > 0 && $sequenceSpan > $limit)
-            || ($limit > 0 && $operationSequenceSpan > $limit)
-            || (! isset(self::CALL_SHAPES[$callKind]) && ! in_array($callKind, ['parallel', 'selection_handle'], true))
-            || ($callKind !== 'parallel' && $sequenceSpan !== 1)
-            || ($callKind === 'selection_handle') !== ($operationSequence !== null)
-            || ($callKind !== 'selection_handle' && $operationSequenceSpan !== 1)) {
-            return 'invalid_cancellation_delivery';
+        $invalid = self::validateBoundarySyntax(
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+        if ($invalid !== null) {
+            return $invalid;
         }
 
         if (! $run->relationLoaded('historyEvents')) {
@@ -109,6 +108,53 @@ final class CooperativeCancellationDelivery
             return $waitingBoundary;
         }
 
+        return self::validateCallBoundary(
+            $run,
+            $request,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+    }
+
+    /**
+     * @internal Shared syntax gate for run and scoped delivery.
+     */
+    public static function validateBoundarySyntax(
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): ?string {
+        $limit = StructuralLimits::commandBatchSizeLimit();
+        return ($sequence < 1 || $sequenceSpan < 1 || $operationSequenceSpan < 1
+            || $sequence > PHP_INT_MAX - $sequenceSpan
+            || ($limit > 0 && $sequenceSpan > $limit)
+            || ($limit > 0 && $operationSequenceSpan > $limit)
+            || (! isset(self::CALL_SHAPES[$callKind]) && ! in_array($callKind, ['parallel', 'selection_handle'], true))
+            || ($callKind !== 'parallel' && $sequenceSpan !== 1)
+            || ($callKind === 'selection_handle') !== ($operationSequence !== null)
+            || ($callKind !== 'selection_handle' && $operationSequenceSpan !== 1))
+            ? 'invalid_cancellation_delivery' : null;
+    }
+
+    /**
+     * @internal Validate durable call ordering against the selected canonical request.
+     * Identity, syntax, scope membership, claim and authority are separate gates.
+     */
+    public static function validateCallBoundary(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $request,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): ?string {
+        $run->loadMissing('historyEvents');
         $nextSequence = WorkflowStepHistory::nextDurableCommandSequence($run);
         if ($sequence > $nextSequence) {
             return 'cancellation_delivery_sequence_mismatch';

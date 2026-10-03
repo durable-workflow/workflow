@@ -28,6 +28,11 @@ final class HistoryEventPayloadContract
         'CancellationScopeRequested' => [
             'schema', 'workflow_run_id', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
         ],
+        'CancellationScopeDelivered' => [
+            'schema', 'workflow_run_id', 'scope_id', 'request_id', 'cancellation',
+            'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
+            'authority_deadline_at',
+        ],
         'CancellationScopeRequestConflicted' => [
             'schema', 'workflow_run_id', 'scope_id', 'parent_scope_id', 'reason',
             'accepted_cancellation', 'incoming_cancellation',

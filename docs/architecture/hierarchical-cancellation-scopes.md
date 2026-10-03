@@ -153,9 +153,28 @@ cancellation, execution or run deadline, and marks terminal or expired authority
 inactive. Shielding does not remove those ceilings. Requests do not set run
 cancellation fields, release claims, wake or stop callbacks, or deliver an
 exception. Root scope requests still use the existing whole-run boundary.
-Canonical reads reject contradictory addresses or inherited contexts. Scoped
-delivery/replay-clock binding and scoped `remaining()` are not implemented by
-this request foundation. No scope capability is advertised.
+Canonical reads reject contradictory addresses or inherited contexts.
+
+The internal `CancellationScopeDelivery` kernel records one
+`CancellationScopeDelivered` boundary per accepted exact-run scope address.
+It rechecks the live claim owner/attempt, accepted identity, current authority,
+authored call shape and canonical operation membership under the configured run
+lock. Response loss and replacement claims return the original event, context
+and recorded clock. A changed boundary is refused. An inherited request is
+deferred at a parent shield, while a direct request can reach the shielded scope.
+Every member of a recorded parallel or selection boundary must belong to the
+address. A mixed-scope barrier requires selective member delivery and is refused
+by this boundary kernel.
+
+Delivery consumes the interrupted durable command range even when it was not
+scheduled. It does not set whole-run cancellation fields or change the workflow
+claim. Its `authority_deadline_at` preserves the ceiling observed at delivery.
+Later ancestors can shorten live authority without rewriting this receipt, so
+the receipt never authorizes a new effect. Cold inspection remains possible
+after expiry or run closure. This is a recording kernel, not a consumer that
+injects cancellation or physically stops callbacks. Scope-aware SDK replay,
+selective supervision and scoped `remaining()` remain unimplemented. No scope
+capability is advertised.
 
 The first accepted request at an address owns its identity and deadline.
 Duplicates return that context. A different root is a recorded conflict with
