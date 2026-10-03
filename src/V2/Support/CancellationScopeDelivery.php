@@ -24,7 +24,7 @@ final class CancellationScopeDelivery
 {
     public const SCHEMA = 'durable-workflow.cancellation-scope-delivery/v1';
 
-    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v3';
+    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v4';
 
     /**
      * Commit preparation before acquiring any Activity attempt/execution locks.
@@ -276,6 +276,8 @@ final class CancellationScopeDelivery
                     : $preparation->payload['timer_members'];
                 $waitMembers = $preparing ? ScopedWaitCancellation::members($locked, $scopeId)
                     : $preparation->payload['wait_members'];
+                $childMembers = $preparing ? ScopedChildCancellation::members($locked, $scopeId)
+                    : $preparation->payload['child_members'];
                 if ($preparing && $locked->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
                     in_array(
                         $event->event_type,
@@ -293,6 +295,7 @@ final class CancellationScopeDelivery
                     }
                     ScopedTimerCancellation::assertReady($locked, $preparation);
                     ScopedWaitCancellation::assertReady($locked, $preparation);
+                    ScopedChildCancellation::assertReady($preparation);
                 }
                 return WorkflowHistoryEvent::record($locked, $preparing
                     ? HistoryEventType::CancellationScopeDeliveryPrepared : HistoryEventType::CancellationScopeDelivered, [
@@ -311,6 +314,7 @@ final class CancellationScopeDelivery
                             'activity_members' => $members,
                             'timer_members' => $timerMembers,
                             'wait_members' => $waitMembers,
+                            'child_members' => $childMembers,
                         ]
                             : [
                                 'preparation_history_event_id' => $preparation->id,
@@ -393,6 +397,8 @@ final class CancellationScopeDelivery
                             !== ScopedTimerCancellation::members($run, $scopeId)
                         || ScopedWaitCancellation::normalizeMembers($payload['wait_members'] ?? null)
                             !== ScopedWaitCancellation::members($run, $scopeId)
+                        || ScopedChildCancellation::normalizeMembers($payload['child_members'] ?? null)
+                            !== ScopedChildCancellation::members($run, $scopeId)
                         || CooperativeCancellationDelivery::validateCallBoundary(
                             $run,
                             $request,
@@ -442,6 +448,7 @@ final class CancellationScopeDelivery
                 }
                 ScopedTimerCancellation::assertReady($run, $preparation, $event->sequence);
                 ScopedWaitCancellation::assertReady($run, $preparation, $event->sequence);
+                ScopedChildCancellation::assertReady($preparation);
             }
         } catch (LogicException $error) {
             throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);

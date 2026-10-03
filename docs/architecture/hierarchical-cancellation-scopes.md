@@ -100,7 +100,7 @@ but new work in that scope cannot be admitted.
 
 The candidate backend records canonical `SignalWaitCancelled` and
 `ConditionWaitCancelled` decisions for timed and untimed original waits.
-Preparation v3 freezes each wait's identity, descriptor and associated timer.
+Preparation freezes each wait's identity, descriptor and associated timer.
 The wait decision and timeout fence commit together under the timer-task, run,
 hosting-claim and timer-row lock order. Untimed waits use run and claim locks.
 Every timer entry point delegates a wait-owned timer to this atomic actor.
@@ -109,6 +109,16 @@ their original outcome. Cancellation retains buffered signal bytes, closes only
 the original wait occurrence, and denies stale publication into that occurrence.
 Replacement and lost-acknowledgement retries use the first receipt and deadline.
 Source qualification remains required before exposing SDK scope execution.
+
+Preparation v4 also freezes each child call's sequence, call identity, instance,
+typed-history run target and recorded cancellation policy. It selects the latest
+child start committed before preparation. Later child starts, changed current
+run pointers and missing operator projections cannot retarget a cold retry.
+Natural completion leaves the original prepared membership intact. The snapshot
+is exposed through candidate worker responses and the history timeline, without
+copying application payload bytes. Child dispatch and descendant actors remain
+separate gates. Delivery refuses child members until the cooperative actor and
+its original-context receipt barrier are implemented.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,

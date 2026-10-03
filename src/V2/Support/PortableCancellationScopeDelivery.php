@@ -234,6 +234,9 @@ final class PortableCancellationScopeDelivery
             ...(array_key_exists('wait_members', $payload) ? [
                 'wait_members' => ScopedWaitCancellation::normalizeMembers($payload['wait_members']),
             ] : []),
+            ...(array_key_exists('child_members', $payload) ? [
+                'child_members' => ScopedChildCancellation::normalizeMembers($payload['child_members']),
+            ] : []),
         ];
     }
 
