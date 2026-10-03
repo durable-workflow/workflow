@@ -82,7 +82,10 @@ final class V2ScopedWaitCancellationTest extends TestCase
             $this->assertSame(
                 0,
                 $run->historyEvents()
-                    ->whereIn('event_type', [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled])->count()
+                    ->whereIn(
+                        'event_type',
+                        [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled]
+                    )->count()
             );
         }
     }
@@ -222,7 +225,10 @@ final class V2ScopedWaitCancellationTest extends TestCase
         $this->assertSame(
             0,
             $run->historyEvents()
-                ->whereIn('event_type', [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled])->count()
+                ->whereIn(
+                    'event_type',
+                    [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled]
+                )->count()
         );
     }
 
@@ -275,7 +281,8 @@ final class V2ScopedWaitCancellationTest extends TestCase
         $this->assertSame($timerCancellation->id, $result['timer_cancellations'][0]['history_event_id']);
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::ConditionWaitCancelled)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ConditionWaitCancelled)->count()
         );
         $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
     }
@@ -339,10 +346,11 @@ final class V2ScopedWaitCancellationTest extends TestCase
         $this->assertSame($before, $run->signals()->sole()->getAttributes());
         $this->assertSame(
             0,
-            $run->historyEvents()->whereIn(
-                'event_type',
-                [HistoryEventType::SignalApplied, HistoryEventType::ConditionWaitSatisfied]
-            )->count()
+            $run->historyEvents()
+                ->whereIn(
+                    'event_type',
+                    [HistoryEventType::SignalApplied, HistoryEventType::ConditionWaitSatisfied]
+                )->count()
         );
         $waits = $kind === 'signal' ? SignalWaits::forRun($run->fresh()) : ConditionWaits::forRun($run->fresh());
         $this->assertSame('cancelled', $waits[0]['status']);
