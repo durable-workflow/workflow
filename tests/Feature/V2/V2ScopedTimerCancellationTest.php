@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -370,6 +371,53 @@ final class V2ScopedTimerCancellationTest extends TestCase
             }
         });
         $this->assertSame(TimerStatus::Pending, $timer->fresh()->status);
+    }
+
+    #[DataProvider('lockExpiry')]
+    public function testFinalTimerRowLockDoesNotExtendClaimOrCancellationAuthority(int $seconds, string $reason): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $timer = $this->timer($run, $task, $scope, 3);
+        $prepared = $this->prepare($run, $task, $scope);
+        if ($seconds === 5) {
+            $task->forceFill([
+                'lease_expires_at' => now()->addSeconds(5),
+            ])->save();
+        }
+        $crossed = false;
+        DB::listen(static function (QueryExecuted $query) use ($timer, $seconds, &$crossed): void {
+            if (! $crossed && str_contains($query->sql, 'workflow_run_timers')
+                && $query->bindings === [$timer->id]) {
+                // Model the time spent acquiring the actor's final timer row.
+                Carbon::setTestNow(Carbon::parse('2026-10-03T00:00:00Z')->addSeconds($seconds));
+                $crossed = true;
+            }
+        });
+        $before = $run->historyEvents()
+            ->count();
+        try {
+            ScopedTimerCancellation::fence(
+                $run->fresh(),
+                $task,
+                $timer->id,
+                $scope,
+                $prepared['request_id'],
+                '1.20'
+            );
+            $this->fail('Time waiting for the final row lock must not renew authority.');
+        } catch (LogicException $error) {
+            $this->assertSame($reason, $error->getMessage());
+        }
+        $this->assertTrue($crossed);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertSame(TimerStatus::Pending, $timer->fresh()->status);
+        $this->assertSame(TaskStatus::Ready, $this->timerTask($run, $timer)->status);
+    }
+
+    public static function lockExpiry(): iterable
+    {
+        yield 'original cleanup deadline' => [30, 'cancellation_scope_authority_expired'];
+        yield 'hosting claim expires first' => [5, 'cancellation_scope_workflow_claim_mismatch'];
     }
 
     public function testBarrierCannotReplaceFenceOrUseReceiptWrittenAfterDeliveryMarker(): void

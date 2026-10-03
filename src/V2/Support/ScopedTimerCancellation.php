@@ -193,6 +193,16 @@ final class ScopedTimerCancellation
                 if ($timer === null || $timer->workflow_run_id !== $locked->id || $timer->sequence !== $member['sequence']) {
                     throw new LogicException('cancellation_scope_timer_projection_mismatch');
                 }
+                // The final row lock may have waited beyond either authority.
+                // Holding the rows does not extend the original claim or budget.
+                if (now()->gte($claim->lease_expires_at)) {
+                    throw new LogicException('cancellation_scope_workflow_claim_mismatch');
+                }
+                if (now()->gte(CarbonImmutable::parse($authority['deadline_at']))
+                    || now()
+                        ->gte(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                    throw new LogicException('cancellation_scope_authority_expired');
+                }
                 if ($terminal?->event_type === HistoryEventType::TimerFired) {
                     return [
                         'fenced' => false,
