@@ -222,16 +222,16 @@ final class HistoryTimeline
             ...(in_array(
                 $event->event_type,
                 [HistoryEventType::CancellationScopeRequested, HistoryEventType::CancellationScopeDelivered,
-                HistoryEventType::CancellationScopeRequestConflicted],
+                    HistoryEventType::CancellationScopeRequestConflicted],
                 true
             ) ? [
-                    'cancellation_scope' => array_intersect_key($payload, array_flip([
-                        'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
-                        'reason', 'accepted_cancellation', 'incoming_cancellation',
-                        'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
-                        'authority_deadline_at',
-                    ])),
-                ] : []),
+                'cancellation_scope' => array_intersect_key($payload, array_flip([
+                    'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
+                    'reason', 'accepted_cancellation', 'incoming_cancellation',
+                    'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
+                    'authority_deadline_at',
+                ])),
+            ] : []),
             'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),

@@ -214,8 +214,8 @@ final class CancellationScopeDelivery
                 || ! in_array(
                     $event->event_type,
                     [HistoryEventType::ActivityScheduled, HistoryEventType::TimerScheduled,
-                    HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened,
-                    HistoryEventType::ChildWorkflowScheduled],
+                        HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened,
+                        HistoryEventType::ChildWorkflowScheduled],
                     true
                 )) {
                 continue;

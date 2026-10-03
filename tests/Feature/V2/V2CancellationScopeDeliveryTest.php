@@ -98,7 +98,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame('2026-10-03T00:00:00.000000Z', $replayed->recorded_at->toISOString());
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
         );
         $this->expectExceptionMessage('cancellation_scope_workflow_claim_mismatch');
         $this->deliver($run->fresh(), $task, $scope);
@@ -250,7 +251,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         }
         $this->assertSame(
             3,
-            $this->deliver($run, $task, $scope, $layout === 'flat' ? 'timer' : 'activity')->payload['sequence']
+            $this->deliver($run, $task, $scope, $layout === 'flat' ? 'timer' : 'activity')
+->payload['sequence']
         );
     }
 
