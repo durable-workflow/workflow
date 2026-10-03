@@ -105,6 +105,19 @@ final class PortableCancellationScopeDelivery
                 }
                 $response['activity_cancellations'] = [];
                 $response['timer_cancellations'] = [];
+                $response['wait_cancellations'] = [];
+                foreach ($event->payload['wait_members'] as $member) {
+                    $receipt = ScopedWaitCancellation::fence(
+                        $run,
+                        $claim,
+                        $member['wait_id'],
+                        $scopeId,
+                        $requestId,
+                        $protocolVersion
+                    );
+                    unset($receipt['timer_cancellation']);
+                    $response['wait_cancellations'][] = $receipt;
+                }
                 foreach ($event->payload['timer_members'] as $member) {
                     $response['timer_cancellations'][] = ScopedTimerCancellation::fence(
                         $run,
@@ -218,6 +231,9 @@ final class PortableCancellationScopeDelivery
             ...(array_key_exists('timer_members', $payload) ? [
                 'timer_members' => ScopedTimerCancellation::normalizeMembers($payload['timer_members']),
             ] : []),
+            ...(array_key_exists('wait_members', $payload) ? [
+                'wait_members' => ScopedWaitCancellation::normalizeMembers($payload['wait_members']),
+            ] : []),
         ];
     }
 
@@ -260,7 +276,6 @@ final class PortableCancellationScopeDelivery
             $missing = $memberScope !== $scopeId ? 'scoped_descendant_delivery'
                 : match ($event->event_type) {
                     HistoryEventType::ChildWorkflowScheduled => 'scoped_child_delivery',
-                    HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => 'scoped_wait_delivery',
                     default => null,
                 };
             if ($missing !== null) {

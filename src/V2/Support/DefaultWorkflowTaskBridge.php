@@ -2127,6 +2127,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return;
         }
 
+        if ($signalWaitId !== null && ScopedWaitCancellation::cancelled($run, 'signal', $signalWaitId)) {
+            // Keep the received signal bytes, but deny this cancelled occurrence.
+            return;
+        }
+
         $alreadyApplied = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::SignalApplied->value)

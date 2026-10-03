@@ -54,7 +54,9 @@ final class ScopedTimerCancellation
             $fireAt = $payload['fire_at'] ?? null;
             if (! is_string($id) || $id === '' || ! is_int($sequence) || $sequence < 1
                 || ! is_int($delay) || $delay < 0 || ! is_string($fireAt) || $fireAt === ''
-                || isset($ids[$id]) || isset($sequences[$sequence])) {
+                || isset($ids[$id]) || (array_key_exists($sequence, $sequences)
+                    && (! in_array($payload['timer_kind'] ?? null, ['signal_timeout', 'condition_timeout'], true)
+                        || $sequences[$sequence] !== $payload['timer_kind']))) {
                 throw new LogicException('cancellation_scope_timer_history_invalid');
             }
             try {
@@ -65,7 +67,7 @@ final class ScopedTimerCancellation
                 throw new LogicException('cancellation_scope_timer_history_invalid', previous: $error);
             }
             $ids[$id] = true;
-            $sequences[$sequence] = true;
+            $sequences[$sequence] = $payload['timer_kind'] ?? null;
             $members[] = [
                 'sequence' => $sequence,
                 'timer_id' => $id,
@@ -119,6 +121,19 @@ final class ScopedTimerCancellation
         }
         if ($run->getConnection()->transactionLevel() !== 0) {
             throw new LogicException('cancellation_scope_timer_requires_own_transaction');
+        }
+        $preparation = CancellationScopeDelivery::prepared($run->fresh(), $scopeId);
+        $wait = $preparation === null ? null : ScopedWaitCancellation::forTimer($preparation, $timerId);
+        if ($wait !== null) {
+            // Every entry point preserves the wait/timer atomic commit.
+            return ScopedWaitCancellation::fence(
+                $run,
+                $workflowTask,
+                $wait['wait_id'],
+                $scopeId,
+                $requestId,
+                $protocolVersion
+            )['timer_cancellation'];
         }
         $tasks = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('workflow_run_id', $run->id)
@@ -272,7 +287,10 @@ final class ScopedTimerCancellation
                 if ($terminal->event_type === HistoryEventType::TimerFired) {
                     continue;
                 }
-                self::assertReceipt($run, $preparation, $terminal);
+                if (isset($terminal->payload['cancellation_scope'])
+                    || ! ScopedWaitCancellation::hasTimerWaitProof($run, $preparation, $member['timer_id'])) {
+                    self::assertReceipt($run, $preparation, $terminal);
+                }
                 if ($beforeHistorySequence === null) {
                     $timer = ConfiguredV2Models::query('timer_model', WorkflowTimer::class)->find($member['timer_id']);
                     $tasks = $run->tasks()
@@ -292,7 +310,7 @@ final class ScopedTimerCancellation
         }
     }
 
-    private static function terminal(WorkflowRun $run, string $timerId, int $sequence): ?WorkflowHistoryEvent
+    public static function terminal(WorkflowRun $run, string $timerId, int $sequence): ?WorkflowHistoryEvent
     {
         $run->loadMissing('historyEvents');
         $scheduled = $run->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>

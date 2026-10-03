@@ -24,7 +24,7 @@ final class CancellationScopeDelivery
 {
     public const SCHEMA = 'durable-workflow.cancellation-scope-delivery/v1';
 
-    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v2';
+    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v3';
 
     /**
      * Commit preparation before acquiring any Activity attempt/execution locks.
@@ -274,10 +274,13 @@ final class CancellationScopeDelivery
                 ) : $preparation->payload['activity_members'];
                 $timerMembers = $preparing ? ScopedTimerCancellation::members($locked, $scopeId)
                     : $preparation->payload['timer_members'];
+                $waitMembers = $preparing ? ScopedWaitCancellation::members($locked, $scopeId)
+                    : $preparation->payload['wait_members'];
                 if ($preparing && $locked->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
                     in_array(
                         $event->event_type,
-                        [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled],
+                        [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled,
+                            HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled],
                         true
                     )
                     && ($event->payload['cancellation_scope']['scope_id'] ?? null) === $scopeId)) {
@@ -289,6 +292,7 @@ final class CancellationScopeDelivery
                         ScopedActivityDeliveryPolicy::assertReady($locked, $context, $member['sequence'], 1);
                     }
                     ScopedTimerCancellation::assertReady($locked, $preparation);
+                    ScopedWaitCancellation::assertReady($locked, $preparation);
                 }
                 return WorkflowHistoryEvent::record($locked, $preparing
                     ? HistoryEventType::CancellationScopeDeliveryPrepared : HistoryEventType::CancellationScopeDelivered, [
@@ -306,6 +310,7 @@ final class CancellationScopeDelivery
                         ...($preparing ? [
                             'activity_members' => $members,
                             'timer_members' => $timerMembers,
+                            'wait_members' => $waitMembers,
                         ]
                             : [
                                 'preparation_history_event_id' => $preparation->id,
@@ -386,6 +391,8 @@ final class CancellationScopeDelivery
                     )
                         || ScopedTimerCancellation::normalizeMembers($payload['timer_members'] ?? null)
                             !== ScopedTimerCancellation::members($run, $scopeId)
+                        || ScopedWaitCancellation::normalizeMembers($payload['wait_members'] ?? null)
+                            !== ScopedWaitCancellation::members($run, $scopeId)
                         || CooperativeCancellationDelivery::validateCallBoundary(
                             $run,
                             $request,
@@ -398,7 +405,8 @@ final class CancellationScopeDelivery
                         || $run->historyEvents->contains(static fn (WorkflowHistoryEvent $row): bool =>
                             in_array(
                                 $row->event_type,
-                                [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled],
+                                [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled,
+                                    HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled],
                                 true
                             )
                             && ($row->payload['cancellation_scope']['scope_id'] ?? null) === $scopeId)) {
@@ -433,6 +441,7 @@ final class CancellationScopeDelivery
                     ScopedActivityDeliveryPolicy::assertReady($run, $context, $member['sequence'], 1, $event->sequence);
                 }
                 ScopedTimerCancellation::assertReady($run, $preparation, $event->sequence);
+                ScopedWaitCancellation::assertReady($run, $preparation, $event->sequence);
             }
         } catch (LogicException $error) {
             throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);

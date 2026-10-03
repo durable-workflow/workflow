@@ -25,7 +25,9 @@ enum HistoryEventType: string
     case ConditionWaitOpened = 'ConditionWaitOpened';
     case ConditionWaitSatisfied = 'ConditionWaitSatisfied';
     case ConditionWaitTimedOut = 'ConditionWaitTimedOut';
+    case ConditionWaitCancelled = 'ConditionWaitCancelled';
     case SignalWaitOpened = 'SignalWaitOpened';
+    case SignalWaitCancelled = 'SignalWaitCancelled';
     case SignalReceived = 'SignalReceived';
     case SignalApplied = 'SignalApplied';
     case UpdateAccepted = 'UpdateAccepted';

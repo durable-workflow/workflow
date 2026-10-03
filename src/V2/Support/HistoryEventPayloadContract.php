@@ -31,7 +31,14 @@ final class HistoryEventPayloadContract
         'CancellationScopeDeliveryPrepared' => [
             'schema', 'workflow_run_id', 'scope_id', 'request_id', 'cancellation',
             'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
-            'authority_deadline_at', 'activity_members', 'timer_members',
+            'authority_deadline_at', 'activity_members', 'timer_members', 'wait_members',
+        ],
+        'SignalWaitCancelled' => [
+            'signal_name', 'signal_wait_id', 'sequence', 'timeout_seconds', 'timer_id', 'cancelled_at', 'cancellation_scope',
+        ],
+        'ConditionWaitCancelled' => [
+            'condition_wait_id', 'condition_wait_occurrence_id', 'condition_key', 'condition_definition_fingerprint',
+            'sequence', 'timeout_seconds', 'timer_id', 'cancelled_at', 'cancellation_scope',
         ],
         'CancellationScopeDelivered' => [
             'schema', 'workflow_run_id', 'scope_id', 'request_id', 'cancellation',

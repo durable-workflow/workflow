@@ -722,6 +722,7 @@ final class V2CancellationScopeHistoryTest extends TestCase
         $reply = $bridge->complete($hosting->id, [$command]);
         $this->assertFalse($reply['completed']);
         $this->assertSame('operation_scope_cancellation_prepared', $reply['reason']);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
         $delivery = $bridge->deliverCancellationScope(
             $hosting->id,
             'scope-replacement',
@@ -732,16 +733,15 @@ final class V2CancellationScopeHistoryTest extends TestCase
             $kind,
             protocolVersion: '1.20',
         );
-        $this->assertFalse($delivery['delivered']);
-        $this->assertSame('cancellation_scope_operation_delivery_unavailable', $delivery['reason']);
-        $this->assertContains('scoped_wait_delivery', $delivery['unavailable']);
-        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertTrue($delivery['delivered'], $delivery['reason'] ?? '');
+        $this->assertCount(1, $delivery['wait_cancellations']);
+        $this->assertTrue($delivery['wait_cancellations'][0]['cancelled']);
         $this->assertSame($before, $hosting->fresh()->getAttributes());
-        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
         $this->assertSame(
             1,
             $run->tasks()
-                ->where('task_type', TaskType::Timer)->where('status', TaskStatus::Ready)->count()
+                ->where('task_type', TaskType::Timer)->where('status', TaskStatus::Cancelled)->count()
         );
     }
 

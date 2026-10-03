@@ -230,10 +230,18 @@ final class HistoryTimeline
                     'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
                     'reason', 'accepted_cancellation', 'incoming_cancellation',
                     'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
-                    'authority_deadline_at', 'activity_members', 'timer_members', 'preparation_history_event_id',
+                    'authority_deadline_at', 'activity_members', 'timer_members', 'wait_members', 'preparation_history_event_id',
                 ])),
             ] : []),
             'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
+            ...(in_array(
+                $event->event_type,
+                [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled],
+                true
+            )
+                ? [
+                    'cancellation_scope' => $payload['cancellation_scope'] ?? null,
+                ] : []),
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
@@ -366,6 +374,7 @@ final class HistoryTimeline
             HistoryEventType::TerminateRequested,
             HistoryEventType::ArchiveRequested => 'command',
             HistoryEventType::SignalWaitOpened,
+            HistoryEventType::SignalWaitCancelled,
             HistoryEventType::SignalApplied => 'signal',
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
@@ -383,7 +392,8 @@ final class HistoryTimeline
             HistoryEventType::ServiceCallCancelled => 'service_call',
             HistoryEventType::ConditionWaitOpened,
             HistoryEventType::ConditionWaitSatisfied,
-            HistoryEventType::ConditionWaitTimedOut => 'condition',
+            HistoryEventType::ConditionWaitTimedOut,
+            HistoryEventType::ConditionWaitCancelled => 'condition',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
@@ -450,6 +460,8 @@ final class HistoryTimeline
                 self::stringValue($payload['parent_scope_id'] ?? null) ?? 'unknown',
                 ($payload['shield_parent'] ?? null) === true ? ' with parent shielding' : '',
             ),
+            HistoryEventType::SignalWaitCancelled => 'Signal wait cancelled by its operation scope.',
+            HistoryEventType::ConditionWaitCancelled => 'Condition wait cancelled by its operation scope.',
             HistoryEventType::WorkflowContinuedAsNew => sprintf(
                 'Continued as new on run %s.',
                 self::stringValue($payload['continued_to_run_id'] ?? null) ?? 'unknown'

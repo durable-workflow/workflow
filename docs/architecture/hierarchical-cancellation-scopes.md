@@ -98,9 +98,17 @@ command batch before effects. Waits still close a turn and cannot enter a
 retained-claim prefix. Once delivery is prepared, the original wait can replay
 but new work in that scope cannot be admitted.
 
-Wait membership does not enable wait cancellation. Delivery still refuses
-`scoped_wait_delivery` before any timer or activity effect until canonical wait
-cancellation and mailbox recovery are implemented and qualified.
+The candidate backend records canonical `SignalWaitCancelled` and
+`ConditionWaitCancelled` decisions for timed and untimed original waits.
+Preparation v3 freezes each wait's identity, descriptor and associated timer.
+The wait decision and timeout fence commit together under the timer-task, run,
+hosting-claim and timer-row lock order. Untimed waits use run and claim locks.
+Every timer entry point delegates a wait-owned timer to this atomic actor.
+Already received/applied signals, satisfied conditions and natural timeouts keep
+their original outcome. Cancellation retains buffered signal bytes, closes only
+the original wait occurrence, and denies stale publication into that occurrence.
+Replacement and lost-acknowledgement retries use the first receipt and deadline.
+Source qualification remains required before exposing SDK scope execution.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,
