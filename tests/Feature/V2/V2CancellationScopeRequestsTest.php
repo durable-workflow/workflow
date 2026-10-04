@@ -239,7 +239,8 @@ final class V2CancellationScopeRequestsTest extends TestCase
             'lease_owner' => null,
             'lease_expires_at' => null,
         ])->save();
-        $before = $task->getAttributes();
+        $before = $task->fresh()
+            ->getAttributes();
         CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $this->assertSame($before, $task->fresh()->getAttributes());
         $this->assertSame(
@@ -262,7 +263,8 @@ final class V2CancellationScopeRequestsTest extends TestCase
             'lease_expires_at' => now()
                 ->subSecond(),
         ])->save();
-        $before = $task->getAttributes();
+        $before = $task->fresh()
+            ->getAttributes();
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $this->assertSame($before, $task->fresh()->getAttributes());
         $this->assertSame(
