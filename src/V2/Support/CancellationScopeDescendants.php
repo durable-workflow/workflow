@@ -130,10 +130,6 @@ final class CancellationScopeDescendants
         ?string $preparationHistoryEventId = null,
     ): void {
         foreach (self::normalizeMembers($members) as $member) {
-            if ($member['activity_members'] === [] && $member['timer_members'] === []
-                && $member['wait_members'] === [] && $member['child_members'] === []) {
-                continue;
-            }
             $preparation = ScopedCancellationPreparation::forScope(
                 $run,
                 $member['scope_id'],
@@ -155,8 +151,11 @@ final class CancellationScopeDescendants
                     throw new LogicException('cancellation_scope_descendant_delivery_membership_mismatch');
                 }
             }
-            if (ScopedCancellationReconciliation::completed($run, $preparation) !== null) {
+            if (ScopedCancellationReconciliation::completed($run, $preparation, $beforeHistorySequence) !== null) {
                 continue;
+            }
+            if (ScopedCancellationReconciliation::pending($run, $preparation, $beforeHistorySequence)) {
+                throw new LogicException('cancellation_scope_descendant_delivery_pending');
             }
             $context = ScopedCancellationContext::fromArray($member['cancellation']);
             foreach ($member['activity_members'] as $activity) {

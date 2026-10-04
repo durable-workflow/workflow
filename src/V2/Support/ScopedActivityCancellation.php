@@ -110,6 +110,9 @@ final class ScopedActivityCancellation
                     throw new LogicException('cancellation_scope_activity_membership_mismatch');
                 }
                 $preparation = ScopedCancellationPreparation::forScope($locked, $scopeId, $preparationHistoryEventId);
+                if ($preparation !== null) {
+                    ScopedCancellationReconciliation::assertDispatchable($locked, $preparation);
+                }
                 $policy = ActivityCancellationWait::policy($locked, $execution->sequence);
                 $local = LocalActivityRuntime::isExecution($execution);
                 if ($policy === CancellationPolicy::Abandon) {

@@ -265,15 +265,23 @@ Duplicates return that context. A different root is a recorded conflict with
 both identities and deadlines, not an implicit merge. The accepted context is
 unchanged. Qualification must race these requests on supported databases.
 
-When a later ancestor preparation includes an independently cancelled descendant
-that already completed delivery, reconcile its original preparation and marker.
-The canonical marker must precede the new preparation and prove the same accepted
-context and exact activity, timer, wait and child inventory. A descendant may use
-the original marker of its own earlier ancestor. Read receipts from that marker's
-history prefix without rerunning actors, changing projections or rebinding the
-captured budget. Completed cleanup remains readable after its original deadline
-or when a later parent imposes a tighter ceiling. An unfinished preparation or a
-later marker cannot substitute for this proof or authorize another effect.
+When a later ancestor preparation includes an independently cancelled descendant,
+its strictly earlier preparation continues to own the original delivery boundary.
+While that delivery is unfinished, portable delivery returns
+`cancellation_scope_descendant_delivery_pending` before dispatching any actor.
+Direct activity, timer, wait and child actors also reject an ancestor preparation
+that would replace the unfinished boundary. The original preparation can finish
+within its remaining authority.
+
+Once delivery completes, reconcile its original preparation and canonical marker.
+The marker can follow the new preparation, but must precede the ancestor marker
+that consumes it. It must prove the same accepted context and exact activity,
+timer, wait and child inventory. A descendant may use the original marker of its
+own earlier ancestor. Read receipts from that marker's history prefix without
+rerunning actors, changing projections or rebinding the captured budget.
+Completed cleanup remains readable after its original deadline or when a later
+parent imposes a tighter ceiling. Future history cannot justify an earlier marker
+or authorize another effect.
 
 An inherited deadline is never later than its originating deadline. A stricter
 authored scope limit can shorten authority and is recorded once. The inspection

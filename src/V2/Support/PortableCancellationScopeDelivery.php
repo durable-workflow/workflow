@@ -101,6 +101,16 @@ final class PortableCancellationScopeDelivery
                     $references[] = ScopedCancellationPreparation::forScope($run, $descendant['scope_id'], $event->id)
                         ?? throw new LogicException('cancellation_scope_descendant_not_prepared');
                 }
+                // Check the whole subtree before dispatching even the parent's
+                // first actor. An older prepared boundary retains its effects.
+                foreach ($references as $reference) {
+                    if (ScopedCancellationReconciliation::pending($run, $reference)) {
+                        return [
+                            ...$response,
+                            'reason' => 'cancellation_scope_descendant_delivery_pending',
+                        ];
+                    }
+                }
                 $response['activity_cancellations'] = [];
                 $response['timer_cancellations'] = [];
                 $response['wait_cancellations'] = [];

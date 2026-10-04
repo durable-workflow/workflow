@@ -195,6 +195,7 @@ final class ScopedWaitCancellation
                 if (! is_array($member) || $member['timer_id'] !== $timerId) {
                     throw new LogicException('cancellation_scope_wait_not_prepared');
                 }
+                ScopedCancellationReconciliation::assertDispatchable($locked, $preparation);
                 $timer = $timerId === null ? null
                     : ConfiguredV2Models::query('timer_model', WorkflowTimer::class)->lockForUpdate()->find($timerId);
                 if ($timerId !== null) {

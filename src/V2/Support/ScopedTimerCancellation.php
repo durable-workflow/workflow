@@ -193,6 +193,7 @@ final class ScopedTimerCancellation
                 if ($preparation === null) {
                     throw new LogicException('cancellation_scope_delivery_not_prepared');
                 }
+                ScopedCancellationReconciliation::assertDispatchable($locked, $preparation);
                 if (! $authority['active'] || $authority['deadline_at'] === null
                     || now()
                         ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {

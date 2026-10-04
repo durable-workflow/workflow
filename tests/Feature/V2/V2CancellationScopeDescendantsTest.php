@@ -33,6 +33,8 @@ use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ScopedActivityCancellation;
 use Workflow\V2\Support\ScopedCancellationPreparation;
+use Workflow\V2\Support\ScopedChildCancellationDelivery;
+use Workflow\V2\Support\ScopedTimerCancellation;
 use Workflow\V2\Support\ScopedWaitCancellation;
 use Workflow\V2\WorkflowStub;
 
@@ -275,6 +277,197 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $this->assertSame($count, $run->historyEvents()->count());
     }
 
+    #[DataProvider('pendingChildOrderings')]
+    public function testAncestorPreservesAnEarlierPreparationUntilItsOriginalDeliveryCompletes(
+        string $timerScope,
+        bool $parentFirst,
+        int $parentGrace,
+        bool $corruptOrder = false,
+    ): void {
+        [$run, $task, $scopes] = $this->tree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prefix = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'original',
+            1,
+            'pending-independent-child',
+            7,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 3600,
+                'cancellation_scope_id' => $scopes['parent'],
+            ], [
+                'type' => 'start_timer',
+                'delay_seconds' => 3600,
+                'cancellation_scope_id' => $scopes[$timerScope],
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($prefix['checkpointed'], $prefix['reason'] ?? '');
+        $child = CancellationScopeRequests::request($run->fresh(), $scopes['child'], '1.20', 20, 'independent');
+        $childSequence = $timerScope === 'child' ? 8 : 9;
+        $childPrepared = $this->prepare($run->fresh(), $task, $scopes['child'], $childSequence);
+        $childContext = CancellationScopeRequests::context($run->fresh(), $scopes['child'])->toArray();
+        Carbon::setTestNow('2026-10-04T00:00:05Z');
+        $parent = CancellationScopeRequests::request(
+            $run->fresh(),
+            $scopes['parent'],
+            '1.20',
+            $parentGrace,
+            'ancestor'
+        );
+        $parentPrepared = $this->prepare($run->fresh(), $task, $scopes['parent'], 7);
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerScheduled)
+            ->where('payload->sequence', 8)
+            ->sole();
+        $timer = $run->timers()
+            ->whereKey($scheduled->payload['timer_id'])->sole();
+        $beforeTimers = $run->timers()
+            ->orderBy('id')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        if ($parentFirst) {
+            $before = $run->historyEvents()
+                ->count();
+            $pending = $bridge->deliverCancellationScope(
+                $task->id,
+                'original',
+                1,
+                $scopes['parent'],
+                $parent->payload['request_id'],
+                7,
+                'timer',
+                protocolVersion: '1.20'
+            );
+            $this->assertFalse($pending['delivered']);
+            $this->assertSame('cancellation_scope_descendant_delivery_pending', $pending['reason']);
+            $this->assertSame($beforeTimers, $run->timers()->orderBy('id')->get()->map->getAttributes()->all());
+            $this->assertSame($before, $run->historyEvents()->count());
+        }
+        if ($corruptOrder) {
+            // Establish the parent's own receipt before the child marker, so the
+            // only invalid future evidence below is the original child marker.
+            $parentTimer = $run->timers()
+                ->where('sequence', 7)
+                ->sole();
+            $this->assertTrue(ScopedTimerCancellation::fence(
+                $run->fresh(),
+                $task,
+                $parentTimer->id,
+                $scopes['parent'],
+                $parent->payload['request_id'],
+                '1.20',
+                $parentPrepared->id,
+            )['fenced']);
+        }
+        $childDelivery = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['child'],
+            $child->payload['request_id'],
+            $childSequence,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($childDelivery['delivered'], $childDelivery['reason'] ?? '');
+        $childMarker = CancellationScopeDelivery::recorded($run->fresh(), $scopes['child']);
+        $this->assertGreaterThan($parentPrepared->sequence, $childMarker->sequence);
+        $receipt = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerCancelled)
+            ->where('payload->timer_id', $timer->id)
+            ->sole();
+        $this->assertSame($childPrepared->id, $receipt->payload['cancellation_scope']['preparation_history_event_id']);
+        $beforeReceipt = $receipt->getAttributes();
+        $afterTimer = $timer->fresh()
+            ->getAttributes();
+        $parentDelivery = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            7,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($parentDelivery['delivered'], $parentDelivery['reason'] ?? '');
+        $this->assertSame($childDelivery['timer_cancellations'], array_values(array_filter(
+            $parentDelivery['timer_cancellations'],
+            static fn (array $receipt): bool => $receipt['timer_id'] === $timer->id,
+        )));
+        $this->assertSame($beforeReceipt, $receipt->fresh()->getAttributes());
+        $this->assertSame($afterTimer, $timer->fresh()->getAttributes());
+        $this->assertSame(
+            $childContext,
+            CancellationScopeRequests::context($run->fresh(), $scopes['child'])->toArray()
+        );
+        $parentMarker = CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']);
+        $this->assertNotNull($parentMarker);
+        if ($corruptOrder) {
+            $parentSequence = $parentMarker->sequence;
+            $childSequence = $childMarker->sequence;
+            $parentMarker->forceFill([
+                'sequence' => $run->historyEvents()
+                    ->max('sequence') + 1,
+            ])->save();
+            $childMarker->forceFill([
+                'sequence' => $parentSequence,
+            ])->save();
+            $parentMarker->forceFill([
+                'sequence' => $childSequence,
+            ])->save();
+            $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scopes['child']));
+            try {
+                CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']);
+                $this->fail('A future child marker justified an earlier ancestor marker.');
+            } catch (LogicException $exception) {
+                $this->assertSame('cancellation_scope_delivery_history_invalid', $exception->getMessage());
+                $this->assertSame(
+                    'cancellation_scope_descendant_delivery_pending',
+                    $exception->getPrevious()?->getMessage()
+                );
+            }
+            return;
+        }
+        $count = $run->historyEvents()
+            ->count();
+        $task->fresh()
+            ->forceFill([
+                'lease_owner' => 'replacement',
+                'attempt_count' => 2,
+            ])->save();
+        $this->assertSame($parentDelivery, $bridge->deliverCancellationScope(
+            $task->id,
+            'replacement',
+            2,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            7,
+            'timer',
+            protocolVersion: '1.20',
+        ));
+        Carbon::setTestNow('2026-10-04T00:02:00Z');
+        $run->forceFill([
+            'status' => RunStatus::Terminated,
+        ])->save();
+        $this->assertSame($parentMarker->id, CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent'])->id);
+        $this->assertSame($count, $run->historyEvents()->count());
+    }
+
+    public static function pendingChildOrderings(): iterable
+    {
+        foreach (['child', 'grandchild'] as $scope) {
+            yield $scope . ' finishes after ancestor preparation' => [$scope, false, 30];
+            yield $scope . ' finishes after tighter ancestor preparation' => [$scope, false, 5];
+            yield $scope . ' ancestor waits for original delivery' => [$scope, true, 30];
+            yield $scope . ' tighter ancestor waits for original delivery' => [$scope, true, 5];
+            yield $scope . ' future marker cannot justify ancestor delivery' => [$scope, true, 30, true];
+        }
+    }
+
     public static function completedChildBudgets(): iterable
     {
         yield 'child original deadline' => ['child', 5, 30];
@@ -294,6 +487,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         string $childPolicy,
         bool $activityCompleted,
         bool $childCompleted,
+        bool $parentPreparedEarly = false,
     ): void {
         [$run, $task, $scopes] = $this->tree();
         $bridge = app(DefaultWorkflowTaskBridge::class);
@@ -369,35 +563,136 @@ final class V2CancellationScopeDescendantsTest extends TestCase
                 'queue' => $run->queue,
                 'compatibility' => $run->compatibility,
             ]);
+        $parentSequence = $parentPreparedEarly ? 11 : 12;
+        $childSequence = $parentPreparedEarly ? 12 : 11;
+        if ($parentPreparedEarly) {
+            $parentPrefix = $bridge->checkpointCancellationScopePrefix(
+                $claim->id,
+                'original',
+                1,
+                'pending-mixed-parent',
+                11,
+                [[
+                    'type' => 'start_timer',
+                    'delay_seconds' => 3600,
+                    'cancellation_scope_id' => $scopes['parent'],
+                ]],
+                '1.20'
+            );
+            $this->assertTrue($parentPrefix['checkpointed'], $parentPrefix['reason'] ?? '');
+        }
         $child = CancellationScopeRequests::request($run->fresh(), $scopes['child'], '1.20', 20, 'independent');
-        $this->prepare($run->fresh(), $claim, $scopes['child'], 11);
+        $this->prepare($run->fresh(), $claim, $scopes['child'], $childSequence);
+        if ($parentPreparedEarly) {
+            Carbon::setTestNow('2026-10-04T00:00:05Z');
+            $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30, 'ancestor');
+            $parentPrepared = $this->prepare($run->fresh(), $claim, $scopes['parent'], $parentSequence);
+            $reference = ScopedCancellationPreparation::forScope($run->fresh(), $scopes['child'], $parentPrepared->id);
+            $before = [
+                ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowRun::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowTask::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                $run->historyEvents()
+                    ->count(),
+            ];
+            $pending = $bridge->deliverCancellationScope(
+                $claim->id,
+                'original',
+                1,
+                $scopes['parent'],
+                $parent->payload['request_id'],
+                $parentSequence,
+                'timer',
+                protocolVersion: '1.20',
+            );
+            $this->assertFalse($pending['delivered']);
+            $this->assertSame('cancellation_scope_descendant_delivery_pending', $pending['reason']);
+            foreach ([
+                static fn () => ScopedActivityCancellation::fence(
+                    $run->fresh(),
+                    $claim,
+                    $reference->activityMembers[0]['activity_execution_id'],
+                    $scopes['child'],
+                    $child->payload['request_id'],
+                    '1.20',
+                    $parentPrepared->id
+                ),
+                static fn () => ScopedWaitCancellation::fence(
+                    $run->fresh(),
+                    $claim,
+                    $reference->waitMembers[0]['wait_id'],
+                    $scopes['child'],
+                    $child->payload['request_id'],
+                    '1.20',
+                    $parentPrepared->id
+                ),
+                static fn () => ScopedTimerCancellation::fence(
+                    $run->fresh(),
+                    $claim,
+                    $reference->waitMembers[0]['timer_id'],
+                    $scopes['child'],
+                    $child->payload['request_id'],
+                    '1.20',
+                    $parentPrepared->id
+                ),
+                static fn () => ScopedChildCancellationDelivery::request(
+                    $run->fresh(),
+                    $claim,
+                    $reference->childMembers[0]['child_call_id'],
+                    $scopes['child'],
+                    $child->payload['request_id'],
+                    '1.20',
+                    $parentPrepared->id
+                ),
+            ] as $actor) {
+                try {
+                    $actor();
+                    $this->fail('An ancestor actor replaced an unfinished original preparation.');
+                } catch (LogicException $exception) {
+                    $this->assertSame('cancellation_scope_descendant_delivery_pending', $exception->getMessage());
+                }
+            }
+            $this->assertSame($before, [
+                ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowRun::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                WorkflowTask::query()->orderBy('id')->get()->map->getAttributes()->all(),
+                $run->historyEvents()
+                    ->count(),
+            ]);
+        }
         $childDelivery = $bridge->deliverCancellationScope(
             $claim->id,
             'original',
             1,
             $scopes['child'],
             $child->payload['request_id'],
-            11,
+            $childSequence,
             'timer',
             protocolVersion: '1.20'
         );
         $this->assertTrue($childDelivery['delivered'], $childDelivery['reason'] ?? '');
         $beforeActivities = ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all();
-        $beforeTimers = WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all();
+        $beforeTimers = WorkflowTimer::query()->where('sequence', '!=', 11)->orderBy('id')->get()
+            ->map->getAttributes()
+            ->all();
         $childRun = WorkflowRun::query()->findOrFail($childDelivery['child_cancellations'][0]['child_workflow_run_id']);
         $beforeChildRun = $childRun->getAttributes();
         $beforeClaim = $claim->fresh()
             ->getAttributes();
         Carbon::setTestNow('2026-10-04T00:00:21Z');
-        $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30, 'ancestor');
-        $this->prepare($run->fresh(), $claim, $scopes['parent'], 12);
+        if (! $parentPreparedEarly) {
+            $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30, 'ancestor');
+            $this->prepare($run->fresh(), $claim, $scopes['parent'], $parentSequence);
+        }
         $parentDelivery = $bridge->deliverCancellationScope(
             $claim->id,
             'original',
             1,
             $scopes['parent'],
             $parent->payload['request_id'],
-            12,
+            $parentSequence,
             'timer',
             protocolVersion: '1.20'
         );
@@ -409,13 +704,22 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             'child_cancellations',
         ] as $field) {
             $this->assertNotEmpty($childDelivery[$field]);
-            $this->assertSame($childDelivery[$field], $parentDelivery[$field]);
+            $actual = $parentDelivery[$field];
+            if ($parentPreparedEarly && $field === 'timer_cancellations') {
+                $actual = array_values(
+                    array_filter($actual, static fn (array $receipt): bool => $receipt['sequence'] !== 11)
+                );
+            }
+            $this->assertSame($childDelivery[$field], $actual);
         }
         $this->assertSame(
             $beforeActivities,
             ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all()
         );
-        $this->assertSame($beforeTimers, WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all());
+        $this->assertSame(
+            $beforeTimers,
+            WorkflowTimer::query()->where('sequence', '!=', 11)->orderBy('id')->get()->map->getAttributes()->all()
+        );
         $this->assertSame($beforeChildRun, $childRun->fresh()->getAttributes());
         $this->assertSame($beforeClaim, $claim->fresh()->getAttributes());
         $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']));
@@ -434,6 +738,13 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             true,
         ];
         yield 'natural activity completion' => ['signal', 'try_cancel', 'try_cancel', true, false];
+        yield 'pending signal try policies' => ['signal', 'try_cancel', 'try_cancel', false, false, true];
+        yield 'pending condition try policies' => ['condition', 'try_cancel', 'try_cancel', false, false, true];
+        yield 'pending bounded abandoned operations' => ['signal', 'abandon', 'abandon', false, false, true];
+        yield 'pending wait policies with resolved child' => [
+            'condition', 'wait_cancellation_completed', 'wait_cancellation_completed', false, true, true,
+        ];
+        yield 'pending natural activity completion' => ['signal', 'try_cancel', 'try_cancel', true, false, true];
     }
 
     #[DataProvider('invalidCompletedProofs')]

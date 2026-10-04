@@ -80,6 +80,7 @@ final class ScopedChildCancellationDelivery
                 if ($preparation === null) {
                     throw new LogicException('cancellation_scope_delivery_not_prepared');
                 }
+                ScopedCancellationReconciliation::assertDispatchable($parent, $preparation);
                 if (! $authority['active'] || now()->gte($origin->deadline())
                     || now()
                         ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {

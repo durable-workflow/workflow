@@ -20,49 +20,42 @@ final class ScopedCancellationReconciliation
     ) {
     }
 
-    public static function completed(WorkflowRun $run, ScopedCancellationPreparation $current): ?self
-    {
-        if ($current->workflowRunId !== $run->id) {
-            throw new LogicException('cancellation_scope_preparation_reference_invalid');
-        }
-        $run->loadMissing('historyEvents');
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if ($event->event_type !== HistoryEventType::CancellationScopeDelivered
-                || $event->sequence >= $current->historySequence) {
+    public static function completed(
+        WorkflowRun $run,
+        ScopedCancellationPreparation $current,
+        ?int $beforeHistorySequence = null,
+    ): ?self {
+        foreach (self::earlier($run, $current) as $candidate) {
+            $event = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::CancellationScopeDelivered
+                && ($event->payload['scope_id'] ?? null) === $candidate['scope_id']);
+            if ($event === null || ($beforeHistorySequence !== null && $event->sequence >= $beforeHistorySequence)) {
                 continue;
             }
-            $scopeId = $event->payload['scope_id'] ?? null;
-            if (! is_string($scopeId)) {
-                throw new LogicException('cancellation_scope_delivery_history_invalid');
-            }
-            $prepared = CancellationScopeDelivery::prepared($run, $scopeId);
-            if ($prepared === null) {
-                throw new LogicException('cancellation_scope_delivery_history_invalid');
-            }
-            if ($scopeId !== $current->scopeId && ! collect($prepared->payload['descendant_members'])
-                ->contains('scope_id', $current->scopeId)) {
-                continue;
-            }
-            // The canonical read proves every required receipt existed before this
-            // marker. Strictly earlier preparations make recursive proof finite.
-            $delivery = CancellationScopeDelivery::recorded($run, $scopeId);
+            // Delivery may finish after ancestor preparation, but must precede
+            // the consuming marker. Strictly earlier preparations keep reads finite.
+            $delivery = CancellationScopeDelivery::recorded($run, $candidate['scope_id']);
             if ($delivery === null || $delivery->id !== $event->id) {
                 throw new LogicException('cancellation_scope_delivery_history_invalid');
             }
-            $original = ScopedCancellationPreparation::forScope($run, $current->scopeId, $prepared->id);
-            if ($original === null || $original->requestHistoryEventId !== $current->requestHistoryEventId
-                || $original->context->toArray() !== $current->context->toArray()
-                || $original->activityMembers !== $current->activityMembers
-                || $original->timerMembers !== $current->timerMembers
-                || $original->waitMembers !== $current->waitMembers
-                || $original->childMembers !== $current->childMembers) {
-                throw new LogicException('cancellation_scope_descendant_delivery_membership_mismatch');
-            }
-            // Its captured ceiling may differ from the later parent's ceiling.
-            // This is completed history, never permission to run another actor.
-            return new self($original, $delivery);
+            return new self($candidate['reference'], $delivery);
         }
         return null;
+    }
+
+    public static function pending(
+        WorkflowRun $run,
+        ScopedCancellationPreparation $current,
+        ?int $beforeHistorySequence = null,
+    ): bool {
+        return self::earlier($run, $current) !== [] && self::completed($run, $current, $beforeHistorySequence) === null;
+    }
+
+    public static function assertDispatchable(WorkflowRun $run, ScopedCancellationPreparation $current): void
+    {
+        if (self::pending($run, $current)) {
+            throw new LogicException('cancellation_scope_descendant_delivery_pending');
+        }
     }
 
     /**
@@ -189,5 +182,51 @@ final class ScopedCancellationReconciliation
         } finally {
             $run->setRelation('historyEvents', $history);
         }
+    }
+
+    /**
+     * @return list<array{scope_id: string, reference: ScopedCancellationPreparation}>
+     */
+    private static function earlier(WorkflowRun $run, ScopedCancellationPreparation $current): array
+    {
+        if ($current->workflowRunId !== $run->id) {
+            throw new LogicException('cancellation_scope_preparation_reference_invalid');
+        }
+        $run->loadMissing('historyEvents');
+        $candidates = [];
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if ($event->event_type !== HistoryEventType::CancellationScopeDeliveryPrepared
+                || $event->sequence >= $current->historySequence) {
+                continue;
+            }
+            $scopeId = $event->payload['scope_id'] ?? null;
+            if (! is_string($scopeId)) {
+                throw new LogicException('cancellation_scope_preparation_history_invalid');
+            }
+            if ($scopeId !== $current->scopeId && ! collect($event->payload['descendant_members'] ?? [])
+                ->contains('scope_id', $current->scopeId)) {
+                continue;
+            }
+            $prepared = CancellationScopeDelivery::prepared($run, $scopeId);
+            if ($prepared === null || $prepared->id !== $event->id) {
+                throw new LogicException('cancellation_scope_preparation_history_invalid');
+            }
+            $original = ScopedCancellationPreparation::forScope($run, $current->scopeId, $prepared->id);
+            if ($original === null || $original->requestHistoryEventId !== $current->requestHistoryEventId
+                || $original->context->toArray() !== $current->context->toArray()
+                || $original->activityMembers !== $current->activityMembers
+                || $original->timerMembers !== $current->timerMembers
+                || $original->waitMembers !== $current->waitMembers
+                || $original->childMembers !== $current->childMembers) {
+                throw new LogicException('cancellation_scope_descendant_delivery_membership_mismatch');
+            }
+            // Captured ceilings can differ. Neither a later preparation nor a
+            // completed proof transfers or renews the original actor authority.
+            $candidates[] = [
+                'scope_id' => $scopeId,
+                'reference' => $original,
+            ];
+        }
+        return $candidates;
     }
 }
