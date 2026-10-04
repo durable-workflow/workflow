@@ -24,7 +24,7 @@ final class CancellationScopeDelivery
 {
     public const SCHEMA = 'durable-workflow.cancellation-scope-delivery/v1';
 
-    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v4';
+    public const PREPARATION_SCHEMA = 'durable-workflow.cancellation-scope-preparation/v5';
 
     /**
      * Commit preparation before acquiring any Activity attempt/execution locks.
@@ -148,6 +148,75 @@ final class CancellationScopeDelivery
     }
 
     /**
+     * @return list<array{sequence: int, activity_execution_id: string, descriptor_hash: string}>
+     */
+    public static function activityMembers(WorkflowRun $run, string $scopeId): array
+    {
+        $run->loadMissing('historyEvents');
+        $members = [];
+        $ids = [];
+        $sequences = [];
+        foreach ($run->historyEvents as $event) {
+            if ($event->event_type !== HistoryEventType::ActivityScheduled) {
+                continue;
+            }
+            $payload = $event->payload;
+            $activity = $payload['activity'] ?? [];
+            $nested = $activity['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID;
+            $flat = $payload['cancellation_scope_id'] ?? $nested;
+            if ($flat !== $scopeId && $nested !== $scopeId) {
+                continue;
+            }
+            if ($flat !== $scopeId || $nested !== $scopeId) {
+                throw new LogicException('cancellation_scope_delivery_membership_mismatch');
+            }
+            $id = $payload['activity_execution_id'] ?? null;
+            $sequence = $payload['sequence'] ?? null;
+            if (! is_string($id) || $id === '' || ($activity['id'] ?? null) !== $id
+                || ! is_int($sequence) || $sequence < 1 || isset($ids[$id]) || isset($sequences[$sequence])) {
+                throw new LogicException('cancellation_scope_activity_history_invalid');
+            }
+            $ids[$id] = true;
+            $sequences[$sequence] = true;
+            // Hash the cancellation-relevant scalar facts, without copying application payload bytes.
+            $members[] = [
+                'sequence' => $sequence,
+                'activity_execution_id' => $id,
+                'descriptor_hash' => hash('sha256', json_encode([
+                    $scopeId, $event->id, $activity['cancellation_policy'] ?? 'try_cancel',
+                    $payload['local_activity'] ?? false, $payload['execution_mode'] ?? null,
+                    $activity['schedule_to_close_deadline_at'] ?? null,
+                ], JSON_THROW_ON_ERROR)),
+            ];
+        }
+        return $members;
+    }
+
+    /**
+     * @return list<array{sequence: int, activity_execution_id: string, descriptor_hash: string}>
+     */
+    public static function normalizeMembers(mixed $members): array
+    {
+        if (! is_array($members) || ! array_is_list($members)) {
+            throw new LogicException('cancellation_scope_preparation_history_invalid');
+        }
+        $normalized = [];
+        foreach ($members as $member) {
+            if (! is_array($member) || count($member) !== 3 || ! is_int($member['sequence'] ?? null)
+                || ! is_string($member['activity_execution_id'] ?? null)
+                || ! is_string($member['descriptor_hash'] ?? null)) {
+                throw new LogicException('cancellation_scope_preparation_history_invalid');
+            }
+            $normalized[] = [
+                'sequence' => $member['sequence'],
+                'activity_execution_id' => $member['activity_execution_id'],
+                'descriptor_hash' => $member['descriptor_hash'],
+            ];
+        }
+        return $normalized;
+    }
+
+    /**
      * Preserve the first acknowledged boundary across response loss and replacement.
      * Re-read the authenticated claim and authority under the configured run lock.
      */
@@ -197,12 +266,7 @@ final class CancellationScopeDelivery
                 );
                 /** @var WorkflowTask|null $claim */
                 $claim = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($task->id);
-                if ($claim === null || $claim->workflow_run_id !== $locked->id || $claim->namespace !== $locked->namespace
-                    || $claim->task_type !== TaskType::Workflow || $claim->status !== TaskStatus::Leased
-                    || $claim->lease_owner === null || $claim->lease_owner === '' || $claim->attempt_count < 1
-                    || $claim->lease_owner !== $task->lease_owner || $claim->attempt_count !== $task->attempt_count
-                    || $claim->lease_expires_at === null || now()
-                        ->gte($claim->lease_expires_at)) {
+                if (! self::matchesClaim($claim, $locked, $task)) {
                     throw new LogicException('cancellation_scope_workflow_claim_mismatch');
                 }
                 $context = CancellationScopeRequests::context($locked, $scopeId);
@@ -268,6 +332,22 @@ final class CancellationScopeDelivery
                 )) {
                     throw new LogicException('cancellation_scope_authority_expired');
                 }
+                if ($preparing) {
+                    CancellationScopeDescendants::request($locked, $scopeId);
+                    // Requests and preparation commit together. Recheck after every nested
+                    // request has completed so a lost claim/budget cannot publish that tree.
+                    $authority = CancellationScopeRequests::authority($locked, $scopeId);
+                    /** @var WorkflowTask|null $claim */
+                    $claim = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                        ->lockForUpdate()
+                        ->find($task->id);
+                    if (! self::matchesClaim($claim, $locked, $task)) {
+                        throw new LogicException('cancellation_scope_workflow_claim_mismatch');
+                    }
+                    if (! $authority['active'] || $authority['deadline_at'] === null) {
+                        throw new LogicException('cancellation_scope_authority_expired');
+                    }
+                }
                 $members = $preparing ? self::activityMembers(
                     $locked,
                     $scopeId
@@ -278,6 +358,11 @@ final class CancellationScopeDelivery
                     : $preparation->payload['wait_members'];
                 $childMembers = $preparing ? ScopedChildCancellation::members($locked, $scopeId)
                     : $preparation->payload['child_members'];
+                $descendantMembers = $preparing ? CancellationScopeDescendants::members(
+                    $locked,
+                    $scopeId,
+                    $authority['deadline_at'],
+                ) : $preparation->payload['descendant_members'];
                 if ($preparing && $locked->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
                     in_array(
                         $event->event_type,
@@ -296,6 +381,24 @@ final class CancellationScopeDelivery
                     ScopedTimerCancellation::assertReady($locked, $preparation);
                     ScopedWaitCancellation::assertReady($locked, $preparation);
                     ScopedChildCancellation::assertReady($preparation, $locked);
+                    CancellationScopeDescendants::assertReady($locked, $descendantMembers);
+                }
+                /** @var WorkflowTask|null $currentClaim */
+                $currentClaim = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                    ->lockForUpdate()
+                    ->find($task->id);
+                if (! self::matchesClaim($currentClaim, $locked, $task)) {
+                    throw new LogicException('cancellation_scope_workflow_claim_mismatch');
+                }
+                $currentAuthority = CancellationScopeRequests::authority($locked, $scopeId);
+                if (! $currentAuthority['active'] || $currentAuthority['deadline_at'] === null
+                    || ($preparation !== null && now()->gte(
+                        CarbonImmutable::parse($preparation->payload['authority_deadline_at'])
+                    ))) {
+                    throw new LogicException('cancellation_scope_authority_expired');
+                }
+                if ($currentAuthority['deadline_at'] !== $authority['deadline_at']) {
+                    throw new LogicException('cancellation_scope_authority_changed');
                 }
                 return WorkflowHistoryEvent::record($locked, $preparing
                     ? HistoryEventType::CancellationScopeDeliveryPrepared : HistoryEventType::CancellationScopeDelivered, [
@@ -315,6 +418,7 @@ final class CancellationScopeDelivery
                             'timer_members' => $timerMembers,
                             'wait_members' => $waitMembers,
                             'child_members' => $childMembers,
+                            'descendant_members' => $descendantMembers,
                         ]
                             : [
                                 'preparation_history_event_id' => $preparation->id,
@@ -399,6 +503,8 @@ final class CancellationScopeDelivery
                             !== ScopedWaitCancellation::members($run, $scopeId)
                         || ScopedChildCancellation::normalizeMembers($payload['child_members'] ?? null)
                             !== ScopedChildCancellation::members($run, $scopeId)
+                        || CancellationScopeDescendants::normalizeMembers($payload['descendant_members'] ?? null)
+                            !== CancellationScopeDescendants::members($run, $scopeId, $payload['authority_deadline_at'])
                         || CooperativeCancellationDelivery::validateCallBoundary(
                             $run,
                             $request,
@@ -449,6 +555,11 @@ final class CancellationScopeDelivery
                 ScopedTimerCancellation::assertReady($run, $preparation, $event->sequence);
                 ScopedWaitCancellation::assertReady($run, $preparation, $event->sequence);
                 ScopedChildCancellation::assertReady($preparation, $run, $event->sequence);
+                CancellationScopeDescendants::assertReady(
+                    $run,
+                    $preparation->payload['descendant_members'],
+                    $event->sequence
+                );
             }
         } catch (LogicException $error) {
             throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);
@@ -470,75 +581,6 @@ final class CancellationScopeDelivery
         return $payload['sequence'] === $sequence && $payload['call_kind'] === $kind
             && $payload['sequence_span'] === $span && $payload['operation_sequence'] === $operationSequence
             && $payload['operation_sequence_span'] === $operationSpan;
-    }
-
-    /**
-     * @return list<array{sequence: int, activity_execution_id: string, descriptor_hash: string}>
-     */
-    private static function activityMembers(WorkflowRun $run, string $scopeId): array
-    {
-        $run->loadMissing('historyEvents');
-        $members = [];
-        $ids = [];
-        $sequences = [];
-        foreach ($run->historyEvents as $event) {
-            if ($event->event_type !== HistoryEventType::ActivityScheduled) {
-                continue;
-            }
-            $payload = $event->payload;
-            $activity = $payload['activity'] ?? [];
-            $nested = $activity['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID;
-            $flat = $payload['cancellation_scope_id'] ?? $nested;
-            if ($flat !== $scopeId && $nested !== $scopeId) {
-                continue;
-            }
-            if ($flat !== $scopeId || $nested !== $scopeId) {
-                throw new LogicException('cancellation_scope_delivery_membership_mismatch');
-            }
-            $id = $payload['activity_execution_id'] ?? null;
-            $sequence = $payload['sequence'] ?? null;
-            if (! is_string($id) || $id === '' || ($activity['id'] ?? null) !== $id
-                || ! is_int($sequence) || $sequence < 1 || isset($ids[$id]) || isset($sequences[$sequence])) {
-                throw new LogicException('cancellation_scope_activity_history_invalid');
-            }
-            $ids[$id] = true;
-            $sequences[$sequence] = true;
-            // Hash the cancellation-relevant scalar facts, without copying application payload bytes.
-            $members[] = [
-                'sequence' => $sequence,
-                'activity_execution_id' => $id,
-                'descriptor_hash' => hash('sha256', json_encode([
-                    $scopeId, $event->id, $activity['cancellation_policy'] ?? 'try_cancel',
-                    $payload['local_activity'] ?? false, $payload['execution_mode'] ?? null,
-                    $activity['schedule_to_close_deadline_at'] ?? null,
-                ], JSON_THROW_ON_ERROR)),
-            ];
-        }
-        return $members;
-    }
-
-    /**
-     * @return list<array{sequence: int, activity_execution_id: string, descriptor_hash: string}>
-     */
-    private static function normalizeMembers(mixed $members): array
-    {
-        if (! is_array($members) || ! array_is_list($members)) {
-            throw new LogicException('cancellation_scope_preparation_history_invalid');
-        }
-        $normalized = [];
-        foreach ($members as $member) {
-            if (! is_array($member) || count($member) !== 3 || ! is_int($member['sequence'] ?? null)
-                || ! is_string($member['activity_execution_id'] ?? null)
-                || ! is_string($member['descriptor_hash'] ?? null)) {
-                throw new LogicException('cancellation_scope_preparation_history_invalid');
-            }
-            $normalized[] = [
-                'sequence' => $member['sequence'],
-                'activity_execution_id' => $member['activity_execution_id'],
-                'descriptor_hash' => $member['descriptor_hash'],
-            ];
-        }
-        return $normalized;
     }
 
     private static function matchesMembership(WorkflowRun $run, string $scopeId, int $start, int $span): bool
@@ -572,5 +614,15 @@ final class CancellationScopeDelivery
             }
         }
         return true;
+    }
+
+    private static function matchesClaim(?WorkflowTask $claim, WorkflowRun $run, WorkflowTask $original): bool
+    {
+        return $claim !== null && $claim->workflow_run_id === $run->id && $claim->namespace === $run->namespace
+            && $claim->task_type === TaskType::Workflow && $claim->status === TaskStatus::Leased
+            && $claim->lease_owner !== null && $claim->lease_owner !== '' && $claim->attempt_count > 0
+            && $claim->lease_owner === $original->lease_owner && $claim->attempt_count === $original->attempt_count
+            && $claim->lease_expires_at !== null && now()
+                ->lt($claim->lease_expires_at);
     }
 }

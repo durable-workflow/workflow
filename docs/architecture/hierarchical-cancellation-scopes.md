@@ -111,7 +111,7 @@ the original wait occurrence, and denies stale publication into that occurrence.
 Replacement and lost-acknowledgement retries use the first receipt and deadline.
 Source qualification remains required before exposing SDK scope execution.
 
-Preparation v4 also freezes each child call's sequence, call identity, instance,
+Preparation v5 also freezes each child call's sequence, call identity, instance,
 typed-history run target and recorded cancellation policy. It selects the latest
 child start committed before preparation. Later child starts, changed current
 run pointers and missing operator projections cannot retarget a cold retry.
@@ -129,6 +129,24 @@ returns its durable request and resolution receipts, including partial progress
 when a policy barrier remains pending. A duplicate or replacement claim reconciles
 those same receipts under the original preparation and deadline. Unimplemented
 descendant delivery is diagnosed before any direct operation is changed.
+
+The same preparation freezes the original unshielded descendant tree. Inherited
+requests and that inventory commit atomically under the original run and hosting
+claim. Each descendant retains its accepted request, canonical parent, original
+root lineage and deadline, operation membership and any competing-root conflict.
+An existing independent request is preserved, and its descendants inherit that
+accepted identity. The authority ceiling remains bounded by the original parent
+preparation and every accepted ancestor budget. Shields exclude their complete
+branch from propagation without extending its authority.
+
+Cold replay validates that original history prefix, so later openings, requests,
+mutable limits or worker replacement cannot resample the inventory or deadline.
+New scopes, including new shields, cannot open inside the prepared subtree.
+Existing openings replay, and unrelated root work and sibling branches continue.
+A lost claim or expired budget rolls back the preparation and its nested requests.
+Descendant operation dispatch and SDK scope execution remain separate unfinished
+components. A parent delivery marker cannot bypass an unresolved original
+descendant operation.
 Descendant actors and SDK scope execution remain separate qualification gates.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these

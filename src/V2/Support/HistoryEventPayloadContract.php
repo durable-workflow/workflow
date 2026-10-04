@@ -32,6 +32,7 @@ final class HistoryEventPayloadContract
             'schema', 'workflow_run_id', 'scope_id', 'request_id', 'cancellation',
             'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
             'authority_deadline_at', 'activity_members', 'timer_members', 'wait_members', 'child_members',
+            'descendant_members',
         ],
         'SignalWaitCancelled' => [
             'signal_name', 'signal_wait_id', 'sequence', 'timeout_seconds', 'timer_id', 'cancelled_at', 'cancellation_scope',

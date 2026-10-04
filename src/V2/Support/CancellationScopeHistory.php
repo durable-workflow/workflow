@@ -96,6 +96,11 @@ final class CancellationScopeHistory
                 if ($parentScopeId !== self::ROOT_SCOPE_ID && ! isset($scopes[$parentScopeId])) {
                     throw new LogicException('cancellation_scope_parent_not_recorded');
                 }
+                // The original subtree has already been frozen. A new shield must
+                // not let later work escape that preparation; existing opens replay above.
+                if (CancellationScopeDelivery::admissionRefusal($lockedRun, $parentScopeId, $sequence) !== null) {
+                    throw new LogicException('cancellation_scope_parent_delivery_prepared');
+                }
                 WorkflowStepHistory::assertCompatible($lockedRun, $sequence, WorkflowStepHistory::CANCELLATION_SCOPE);
                 if ($sequence !== WorkflowStepHistory::nextDurableCommandSequence($lockedRun)) {
                     throw new LogicException('cancellation_scope_sequence_mismatch');

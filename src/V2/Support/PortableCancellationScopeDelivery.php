@@ -274,7 +274,8 @@ final class PortableCancellationScopeDelivery
             }
             $address = $event->payload['cancellation_scope_id'] ?? $descriptor['cancellation_scope_id']
                 ?? CancellationScopeHistory::ROOT_SCOPE_ID;
-            if (! is_string($address) || ! isset($scopes[$address])
+            if (! is_string($address)
+                || ($address !== CancellationScopeHistory::ROOT_SCOPE_ID && ! isset($scopes[$address]))
                 || (array_key_exists('cancellation_scope_id', $descriptor)
                     && $descriptor['cancellation_scope_id'] !== $address)) {
                 throw new LogicException('cancellation_scope_delivery_history_invalid');
