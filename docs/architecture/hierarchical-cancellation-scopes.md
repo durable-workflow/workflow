@@ -307,6 +307,51 @@ there even if it shields its parent. New normal work in an already requested
 unshielded scope is refused before callback admission. Cleanup work is explicitly
 bound to the accepted request and remaining budget.
 
+### Prepared local cleanup authority
+
+The candidate prepared-local descriptor accepts an explicit `cancellation_cleanup`
+proof containing only `scope_id`, `request_id` and `delivery_history_event_id`.
+The requested scope and delivery must belong to this run's canonical history.
+The new operation must follow that delivery's authored range and belong to its
+original prepared scope or an original unshielded descendant with the same root
+context. A shielded or unaffected address cannot borrow the proof. An earlier
+independent preparation still owns its own cleanup authority.
+
+The runtime records the original request/root identity, delivery and preparation
+IDs, operation membership, accepted cleanup deadline and captured authority
+ceiling in the execution and original start. The worker supplies no deadline.
+Both callback deadlines and retry deadlines are bounded by that ceiling. A later
+increase to a mutable run limit cannot extend it. Current run/execution limits,
+accepted ancestor deadlines, terminal state and later whole-run cancellation
+still end authority. A scoped proof grants no immunity from whole-run cancellation.
+
+A later ancestor preparation excludes these explicitly shielded cleanup calls
+from its ordinary cancellation inventory. It verifies their original scheduled
+snapshot against the earlier canonical delivery before excluding them. This also
+covers atomic group members that have been admitted but have not started.
+Corrupt cleanup history fails preparation rather than hiding ordinary work or
+rebinding cleanup to the later ancestor's identity.
+
+Scoped cleanup renews a short hosting ownership interval without using its
+subtree's absolute deadline as the hosting claim's deadline. Its own callback
+lease remains bounded by current and captured authority. An unaffected callback
+can continue renewing the same hosting claim after that subtree budget ends.
+Qualify mixed-claim lease policy and real replacement before enabling SDK scope
+execution, including every path that can renew the hosting claim.
+
+Admission validates every atomic local-group member before creating any sibling.
+Renewal and publication validate the recorded cleanup fact. Missing or rewritten
+execution/start snapshots cannot turn cleanup into normal work. A late reported
+success cannot publish its result. Replacement preserves the same original
+delivery and budget, and an old attempt cannot publish. Native lease recovery
+still reports an unknown physical callback-stop state until the original owner
+provides real stop proof.
+
+These are Native prepared-local primitives. Other durable cleanup operations,
+SDK consumption/supervision, cleanup outcomes in scope inspection and real scoped
+SIGKILL recovery remain qualification work. Scope execution stays unadvertised
+and the SDK Worker does not enable it from this internal descriptor alone.
+
 ## Delivery and operation resolution
 
 Only awaits that belong to the requested unshielded subtree receive the scoped

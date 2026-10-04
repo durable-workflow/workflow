@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use InvalidArgumentException;
+use LogicException;
 use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
@@ -22,8 +23,15 @@ final class PortableLocalActivityCleanup
      * @param array<string, mixed>|null $proof
      * @return array<string, mixed>|null
      */
-    public static function snapshot(WorkflowRun $run, ?array $proof, int $sequence): ?array
-    {
+    public static function snapshot(
+        WorkflowRun $run,
+        ?array $proof,
+        int $sequence,
+        string $operationScope = CancellationScopeHistory::ROOT_SCOPE_ID,
+    ): ?array {
+        if ($proof !== null && array_key_exists('scope_id', $proof)) {
+            return self::scopedSnapshot($run, $proof, $sequence, $operationScope);
+        }
         if ($proof === null || array_diff(array_keys($proof), ['request_id', 'delivery_history_event_id']) !== []
             || ($proof['request_id'] ?? null) !== $run->cancellation_request_command_id
             || ! is_string($proof['delivery_history_event_id'] ?? null)) {
@@ -97,7 +105,10 @@ final class PortableLocalActivityCleanup
         $snapshot = self::snapshot($run, [
             'request_id' => $stored['request_id'] ?? null,
             'delivery_history_event_id' => $stored['delivery_history_event_id'] ?? null,
-        ], $execution->sequence);
+            ...(array_key_exists('scope_id', $stored) ? [
+                'scope_id' => $stored['scope_id'],
+            ] : []),
+        ], $execution->sequence, $execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID);
         $recorded = $started->payload['local_preparation']['cancellation_cleanup'] ?? null;
         if ($snapshot === null || ! is_array($recorded)
             || $started->sequence <= $run->historyEvents()
@@ -115,15 +126,159 @@ final class PortableLocalActivityCleanup
 
     public static function deadline(ActivityExecution $execution): ?CarbonInterface
     {
-        $deadline = $execution->activity_options['cancellation_cleanup']['cleanup_deadline_at'] ?? null;
-
-        return is_string($deadline) ? \Illuminate\Support\Carbon::parse($deadline) : null;
+        return self::snapshotDeadline($execution->activity_options['cancellation_cleanup'] ?? null);
     }
 
-    public static function bound(ActivityExecution $execution, ?CarbonInterface $deadline): ?CarbonInterface
+    /**
+     * A later preparation must not recancel an original, explicitly shielded cleanup call.
+     */
+    public static function isScopedScheduled(WorkflowRun $run, WorkflowHistoryEvent $event): bool
     {
-        $cleanup = self::deadline($execution);
+        $stored = $event->payload['local_preparation']['cancellation_cleanup']
+            ?? $event->payload['local_group_admission']['cancellation_cleanup'] ?? null;
+        if (! is_array($stored) || ! array_key_exists('scope_id', $stored)) {
+            return false;
+        }
+        $sequence = $event->payload['sequence'] ?? null;
+        $scope = $event->payload['activity']['cancellation_scope_id'] ?? null;
+        $deliverySequence = $run->historyEvents()
+            ->whereKey($stored['delivery_history_event_id'] ?? null)
+            ->where('event_type', HistoryEventType::CancellationScopeDelivered)->value('sequence');
+        if ($event->event_type !== HistoryEventType::ActivityScheduled
+            || ($event->payload['local_activity'] ?? null) !== true
+            || ! is_int($sequence) || ! is_string($scope)
+            || ! is_int($deliverySequence) || $deliverySequence >= $event->sequence) {
+            throw new LogicException('cancellation_scope_cleanup_history_invalid');
+        }
+        $run->loadMissing('historyEvents');
+        $history = $run->historyEvents;
+        $run->setRelation('historyEvents', $history->filter(
+            static fn (WorkflowHistoryEvent $row): bool => $row->sequence < $event->sequence
+        ));
+        try {
+            $snapshot = self::snapshot($run, [
+                'scope_id' => $stored['scope_id'],
+                'request_id' => $stored['request_id'] ?? null,
+                'delivery_history_event_id' => $stored['delivery_history_event_id'] ?? null,
+            ], $sequence, $scope);
+        } finally {
+            $run->setRelation('historyEvents', $history);
+        }
+        if ($snapshot === null) {
+            throw new LogicException('cancellation_scope_cleanup_history_invalid');
+        }
+        ksort($stored);
+        ksort($snapshot);
+        if ($stored !== $snapshot) {
+            throw new LogicException('cancellation_scope_cleanup_history_invalid');
+        }
+        return true;
+    }
+
+    public static function isScoped(ActivityExecution $execution): bool
+    {
+        return isset($execution->activity_options['cancellation_cleanup']['scope_id']);
+    }
+
+    /**
+     * @param array<string, mixed>|null $snapshot
+     */
+    public static function snapshotDeadline(?array $snapshot): ?CarbonInterface
+    {
+        $deadline = $snapshot['cleanup_deadline_at'] ?? null;
+        if (! is_string($deadline)) {
+            return null;
+        }
+        $deadline = \Illuminate\Support\Carbon::parse($deadline);
+        $ceiling = $snapshot['authority_deadline_at'] ?? null;
+
+        return is_string($ceiling) ? $deadline->min(\Illuminate\Support\Carbon::parse($ceiling)) : $deadline;
+    }
+
+    public static function currentDeadline(WorkflowRun $run, ?array $snapshot): ?CarbonInterface
+    {
+        $deadline = self::snapshotDeadline($snapshot);
+        if ($deadline === null || ! isset($snapshot['scope_id'])) {
+            return $deadline;
+        }
+        $authority = CancellationScopeRequests::authority($run, $snapshot['operation_scope_id']);
+        $current = $authority['deadline_at'];
+
+        return $current === null ? $deadline : $deadline->min(\Illuminate\Support\Carbon::parse($current));
+    }
+
+    public static function currentAuthorityExpired(WorkflowRun $run, ActivityExecution $execution): bool
+    {
+        if (! self::isScoped($execution)) {
+            return false;
+        }
+        $deadline = self::currentDeadline($run, $execution->activity_options['cancellation_cleanup']);
+
+        return $deadline !== null && $deadline->lt(self::deadline($execution)) && now()->gte($deadline);
+    }
+
+    public static function bound(
+        ActivityExecution $execution,
+        ?CarbonInterface $deadline,
+        ?WorkflowRun $run = null
+    ): ?CarbonInterface {
+        $cleanup = $run === null ? self::deadline($execution)
+            : self::currentDeadline($run, $execution->activity_options['cancellation_cleanup'] ?? null);
 
         return $cleanup !== null && ($deadline === null || $cleanup->lt($deadline)) ? $cleanup : $deadline;
+    }
+
+    /** @param array<string, mixed> $proof
+     * @return array<string, mixed>|null
+     */
+    private static function scopedSnapshot(
+        WorkflowRun $run,
+        array $proof,
+        int $sequence,
+        string $operationScope
+    ): ?array {
+        if (count($proof) !== 3 || array_diff(
+            array_keys($proof),
+            ['scope_id', 'request_id', 'delivery_history_event_id']
+        ) !== []
+            || ! is_string($proof['scope_id'] ?? null) || $proof['scope_id'] === CancellationScopeHistory::ROOT_SCOPE_ID
+            || ! is_string($proof['request_id'] ?? null) || ! is_string($proof['delivery_history_event_id'] ?? null)) {
+            return null;
+        }
+        try {
+            $delivery = CancellationScopeDelivery::recorded($run, $proof['scope_id']);
+            if ($delivery === null || $delivery->id !== $proof['delivery_history_event_id']
+                || $delivery->payload['request_id'] !== $proof['request_id']) {
+                return null;
+            }
+            $preparation = ScopedCancellationPreparation::forScope(
+                $run,
+                $operationScope,
+                $delivery->payload['preparation_history_event_id'],
+            );
+            $context = \Workflow\V2\ScopedCancellationContext::fromArray($delivery->payload['cancellation']);
+            if ($preparation === null || $preparation->context->rootContext->toArray() !== $context->rootContext->toArray()) {
+                return null;
+            }
+        } catch (InvalidArgumentException|LogicException) {
+            return null;
+        }
+        $span = $delivery->payload['sequence_span'];
+        if ($span > PHP_INT_MAX - $delivery->payload['sequence']
+            || $sequence < $delivery->payload['sequence'] + $span) {
+            return null;
+        }
+
+        return [
+            'scope_id' => $proof['scope_id'],
+            'operation_scope_id' => $operationScope,
+            'request_id' => $context->requestId,
+            'root_request_id' => $context->rootContext->rootRequestId,
+            'delivery_history_event_id' => $delivery->id,
+            'preparation_history_event_id' => $preparation->historyEventId,
+            'cleanup_deadline_at' => $context->deadline()
+                ->toISOString(),
+            'authority_deadline_at' => $preparation->authorityDeadlineAt,
+        ];
     }
 }

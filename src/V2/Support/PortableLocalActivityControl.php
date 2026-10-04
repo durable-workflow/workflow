@@ -154,7 +154,9 @@ final class PortableLocalActivityControl
             // even after takeover. This never renews the replacement claim.
             $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
             if ($run->cancellation_request_command_id !== null
-                && (! $cleanup || now()->gte($run->cancellation_deadline_at))) {
+                && (! $cleanup || PortableLocalActivityCleanup::isScoped($execution) || now()->gte(
+                    $run->cancellation_deadline_at
+                ))) {
                 // A supervisor needs one request, not the run's entire history.
                 $requested = $run->historyEvents()
                     ->where('event_type', HistoryEventType::CooperativeCancellationRequested)
@@ -173,7 +175,9 @@ final class PortableLocalActivityControl
                     || ! $requested instanceof WorkflowHistoryEvent) {
                     return $reply('cancellation_context_not_recorded');
                 }
-                if (! $cleanup && ($started->sequence >= $requested->sequence
+                if ((! $cleanup || PortableLocalActivityCleanup::isScoped(
+                    $execution
+                )) && ($started->sequence >= $requested->sequence
                     || $started->recorded_at->gt($requested->recorded_at))) {
                     return $reply('local_activity_preparation_mismatch');
                 }
@@ -206,6 +210,9 @@ final class PortableLocalActivityControl
             if ($attempt->status !== ActivityAttemptStatus::Running || $execution->status !== ActivityStatus::Running) {
                 return $reply('stale_activity_attempt');
             }
+            if (PortableLocalActivityCleanup::currentAuthorityExpired($run, $execution)) {
+                return $reply('local_activity_cleanup_authority_expired');
+            }
             if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
                 || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
                 return $reply('workflow_claim_mismatch');
@@ -230,8 +237,18 @@ final class PortableLocalActivityControl
                 // No application heartbeat or recorded execution deadline moves.
                 $expiry = LocalActivityRuntime::renewWorkflowTask(
                     $task,
-                    PortableLocalActivityCleanup::deadline($execution)
+                    PortableLocalActivityCleanup::isScoped($execution) ? null : PortableLocalActivityCleanup::deadline(
+                        $execution
+                    ),
+                    $cleanup,
                 );
+                $deadline = PortableLocalActivityCleanup::currentDeadline(
+                    $run,
+                    $execution->activity_options['cancellation_cleanup'] ?? null
+                );
+                if ($deadline !== null && $expiry !== null && $deadline->lt($expiry)) {
+                    $expiry = $deadline;
+                }
                 $attempt->forceFill([
                     'lease_expires_at' => $expiry,
                 ])->save();
@@ -246,6 +263,7 @@ final class PortableLocalActivityControl
                         $execution,
                         is_int($timeout) && $timeout > 0 ? $heartbeatAt->copy()
                             ->addSeconds($timeout) : null,
+                        $run,
                     ),
                 ])->save();
                 $attempt->forceFill([

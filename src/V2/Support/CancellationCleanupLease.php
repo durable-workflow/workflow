@@ -28,6 +28,16 @@ final class CancellationCleanupLease
 
     public static function forDeadline(CarbonInterface $deadline): CarbonInterface
     {
+        $expiry = self::renewableExpiry();
+
+        return $deadline->lt($expiry) ? $deadline->copy() : $expiry;
+    }
+
+    /**
+     * A renewable ownership interval, never another cancellation budget.
+     */
+    public static function renewableExpiry(): CarbonInterface
+    {
         $now = now();
         $expiry = WorkflowTaskLease::expiresAt($now);
         $maximum = $now->copy()
@@ -36,6 +46,6 @@ final class CancellationCleanupLease
             $expiry = $maximum;
         }
 
-        return $deadline->lt($expiry) ? $deadline->copy() : $expiry;
+        return $expiry;
     }
 }

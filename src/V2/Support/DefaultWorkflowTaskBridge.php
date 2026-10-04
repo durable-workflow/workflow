@@ -1433,7 +1433,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $refusal = CancellationScopeDelivery::admissionRefusal(
                 $run,
                 $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                $sequence + $offset
+                $sequence + $offset,
+                $command['type'] === 'prepare_local_activity' ? ($command['cancellation_cleanup'] ?? null) : null,
             );
             if ($refusal !== null) {
                 return $refusal;
@@ -1617,11 +1618,21 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $cleanup = PortableLocalActivityCleanup::snapshot(
                     $run,
                     $command['cancellation_cleanup'] ?? null,
-                    $sequence + $offset
+                    $sequence + $offset,
+                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
                 );
-                if (($run->cancellation_request_command_id !== null && $cleanup === null)
-                    || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']))) {
+                if ((isset($command['cancellation_cleanup']) && $cleanup === null)
+                    || ($run->cancellation_request_command_id !== null && ($cleanup === null || isset($cleanup['scope_id'])))
+                    || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']) && ! isset($cleanup['scope_id']))) {
                     return $refused('local_activity_cleanup_authority_mismatch');
+                }
+                if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
+                    return $refused(isset($cleanup['scope_id']) ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired');
+                }
+                if (isset($cleanup['scope_id']) && now()->gte(
+                    PortableLocalActivityCleanup::currentDeadline($run, $cleanup)
+                )) {
+                    return $refused('local_activity_cleanup_authority_expired');
                 }
             }
             $this->recordAppliedSignalForSignalResume($run, $task);

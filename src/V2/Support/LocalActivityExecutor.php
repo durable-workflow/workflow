@@ -128,7 +128,9 @@ final class LocalActivityExecutor
             // workflow claim untouched. A separate joined-callback receipt follows.
             $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
             if ($run->cancellation_request_command_id !== null
-                && (! $cleanup || now()->gte($run->cancellation_deadline_at))) {
+                && (! $cleanup || PortableLocalActivityCleanup::isScoped($execution) || now()->gte(
+                    $run->cancellation_deadline_at
+                ))) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_execution_id', $execution->id)
@@ -146,7 +148,8 @@ final class LocalActivityExecutor
                     );
                 }
                 return [
-                    ...$refused($cleanup ? 'cancellation_deadline_expired' : 'cancellation_requested'),
+                    ...$refused($cleanup && ! PortableLocalActivityCleanup::isScoped($execution)
+                        ? 'cancellation_deadline_expired' : 'cancellation_requested'),
                     'fenced' => true,
                     'cancellation_history_event_id' => $cancelled?->id,
                 ];
@@ -157,6 +160,18 @@ final class LocalActivityExecutor
             if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
                 || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
                 return $refused('workflow_claim_mismatch');
+            }
+            if (PortableLocalActivityCleanup::isScoped($execution)) {
+                if ($run->status->isTerminal()) {
+                    return $refused('run_closed');
+                }
+                if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                    || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                    return $refused('run_deadline_expired');
+                }
+                if (PortableLocalActivityCleanup::currentAuthorityExpired($run, $execution)) {
+                    return $refused('local_activity_cleanup_authority_expired');
+                }
             }
             if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)
                 || $attempt->lease_expires_at === null || now()
@@ -613,6 +628,13 @@ final class LocalActivityExecutor
         $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
             ? $retryPolicy['heartbeat_timeout']
             : null;
+        $cleanupDeadline = PortableLocalActivityCleanup::currentDeadline(
+            $run,
+            $execution->activity_options['cancellation_cleanup'] ?? null
+        );
+        if ($cleanupDeadline !== null && $leaseExpiresAt !== null && $cleanupDeadline->lt($leaseExpiresAt)) {
+            $leaseExpiresAt = $cleanupDeadline;
+        }
 
         $execution->forceFill([
             'status' => ActivityStatus::Running,
@@ -624,11 +646,13 @@ final class LocalActivityExecutor
                 $execution,
                 $startToCloseTimeout === null ? null : $now->copy()
                     ->addSeconds($startToCloseTimeout),
+                $run,
             ),
             'heartbeat_deadline_at' => PortableLocalActivityCleanup::bound(
                 $execution,
                 $heartbeatTimeout === null ? null : $now->copy()
                     ->addSeconds($heartbeatTimeout),
+                $run,
             ),
         ])->save();
 

@@ -116,32 +116,43 @@ final class PortableLocalActivityPreparation
             )) {
                 return self::response('local_activity_scope_not_recorded');
             }
-            $scopeRefusal = CancellationScopeDelivery::admissionRefusal(
-                $run,
-                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                $sequence,
-            );
-            if ($scopeRefusal !== null) {
-                return self::response($scopeRefusal);
-            }
             $cleanup = PortableLocalActivityCleanup::snapshot(
                 $run,
                 $normalized['cancellation_cleanup'] ?? null,
                 $sequence,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
             );
-            if ($run->cancellation_request_command_id !== null && $cleanup === null) {
-                return self::response(isset($normalized['cancellation_cleanup'])
-                    ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
-            }
-            if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup'])) {
+            if (isset($normalized['cancellation_cleanup']) && $cleanup === null) {
                 return self::response('local_activity_cleanup_authority_mismatch');
             }
-            if ($cleanup !== null && now()->gte($run->cancellation_deadline_at)) {
-                return self::response('cancellation_deadline_expired');
+            $scopeRefusal = CancellationScopeDelivery::admissionRefusal(
+                $run,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence,
+                $normalized['cancellation_cleanup'] ?? null,
+            );
+            if ($scopeRefusal !== null) {
+                return self::response($scopeRefusal);
+            }
+            $scopedCleanup = isset($cleanup['scope_id']);
+            if ($run->cancellation_request_command_id !== null && ($cleanup === null || $scopedCleanup)) {
+                return self::response(isset($normalized['cancellation_cleanup'])
+                    && ! $scopedCleanup ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
+            }
+            if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup']) && ! $scopedCleanup) {
+                return self::response('local_activity_cleanup_authority_mismatch');
+            }
+            if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
+                return self::response(
+                    $scopedCleanup ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired'
+                );
             }
             if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
                 || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
                 return self::response('run_deadline_expired');
+            }
+            if ($scopedCleanup && now()->gte(PortableLocalActivityCleanup::currentDeadline($run, $cleanup))) {
+                return self::response('local_activity_cleanup_authority_expired');
             }
             $execution = $rows['execution'] ?? null;
             $attempt = $rows['attempt'] ?? null;
@@ -240,13 +251,21 @@ final class PortableLocalActivityPreparation
                 'local_activity.cancellation_scope_id' => ['Scope must be recorded in this run before its operation.'],
             ]);
         }
-        $cleanup = PortableLocalActivityCleanup::snapshot($run, $normalized['cancellation_cleanup'] ?? null, $sequence);
+        $cleanup = PortableLocalActivityCleanup::snapshot(
+            $run,
+            $normalized['cancellation_cleanup'] ?? null,
+            $sequence,
+            $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+        );
         $admission = [
             'version' => 1,
             'descriptor_fingerprint' => hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR)),
             'checkpoint_id' => $checkpointId,
             'batch_fingerprint' => $batchFingerprint,
             'workflow_task_attempt' => $task->attempt_count,
+            ...($cleanup === null ? [] : [
+                'cancellation_cleanup' => $cleanup,
+            ]),
         ];
         return self::createExecution(
             $run,
@@ -375,10 +394,13 @@ final class PortableLocalActivityPreparation
             // Accepted cancellation may fence immediately, without waiting for
             // lease expiry. The replacement claim and root budget stay intact.
             $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
-            if ($cleanup && now()->gte($run->cancellation_deadline_at)) {
-                return $refused('cancellation_deadline_expired');
+            if ($cleanup && now()->gte(PortableLocalActivityCleanup::deadline($execution))) {
+                return $refused(PortableLocalActivityCleanup::isScoped($execution)
+                    ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired');
             }
-            if ($run->cancellation_request_command_id !== null && ! $cleanup) {
+            if ($run->cancellation_request_command_id !== null && (! $cleanup || PortableLocalActivityCleanup::isScoped(
+                $execution
+            ))) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_attempt_id', $attempt->id)
@@ -409,6 +431,9 @@ final class PortableLocalActivityPreparation
             }
             if ($execution->status !== ActivityStatus::Running || $attempt->status !== ActivityAttemptStatus::Running) {
                 return $refused('local_activity_previous_attempt_unresolved');
+            }
+            if (PortableLocalActivityCleanup::currentAuthorityExpired($run, $execution)) {
+                return $refused('local_activity_cleanup_authority_expired');
             }
             if ($attempt->lease_expires_at === null || now()->lt($attempt->lease_expires_at)) {
                 return $refused('local_activity_previous_attempt_live');
@@ -515,10 +540,17 @@ final class PortableLocalActivityPreparation
         }
         if (array_key_exists('cancellation_cleanup', $descriptor)) {
             $proof = $descriptor['cancellation_cleanup'];
-            if (! is_array($proof) || array_diff(array_keys($proof), ['request_id', 'delivery_history_event_id']) !== []
+            if (! is_array($proof) || array_diff(
+                array_keys($proof),
+                ['request_id', 'delivery_history_event_id', 'scope_id']
+            ) !== []
                 || ! is_string($proof['request_id'] ?? null) || trim($proof['request_id']) === ''
                 || ! is_string($proof['delivery_history_event_id'] ?? null)
-                || trim($proof['delivery_history_event_id']) === '') {
+                || trim($proof['delivery_history_event_id']) === ''
+                || (array_key_exists('scope_id', $proof) && (! is_string($proof['scope_id'])
+                    || trim(
+                        $proof['scope_id']
+                    ) === '' || $proof['scope_id'] === CancellationScopeHistory::ROOT_SCOPE_ID))) {
                 throw ValidationException::withMessages([
                     'local_activity.cancellation_cleanup' => ['Expected canonical request and delivery identities.'],
                 ]);
@@ -526,6 +558,9 @@ final class PortableLocalActivityPreparation
             $normalized['cancellation_cleanup'] = [
                 'request_id' => $proof['request_id'],
                 'delivery_history_event_id' => $proof['delivery_history_event_id'],
+                ...(array_key_exists('scope_id', $proof) ? [
+                    'scope_id' => $proof['scope_id'],
+                ] : []),
             ];
         }
 
@@ -598,7 +633,8 @@ final class PortableLocalActivityPreparation
                 !== $execution->schedule_to_close_deadline_at?->toISOString()) {
             return null;
         }
-        if (isset($execution->activity_options['cancellation_cleanup'])
+        if ((array_key_exists('cancellation_cleanup', $execution->activity_options ?? [])
+                || array_key_exists('cancellation_cleanup', $started->payload['local_preparation']))
             && ! PortableLocalActivityCleanup::isExecution($run, $execution, $started)) {
             return null;
         }
@@ -663,10 +699,13 @@ final class PortableLocalActivityPreparation
             'schedule_to_close_deadline_at' => $cleanup === null ? ($options->scheduleToCloseTimeout === null
                 ? null : $now->copy()
                     ->addSeconds($options->scheduleToCloseTimeout))
-                : ($options->scheduleToCloseTimeout === null ? $run->cancellation_deadline_at
+                : ($options->scheduleToCloseTimeout === null ? PortableLocalActivityCleanup::currentDeadline(
+                    $run,
+                    $cleanup
+                )
                     : $now->copy()
                         ->addSeconds($options->scheduleToCloseTimeout)
-                        ->min($run->cancellation_deadline_at)),
+                        ->min(PortableLocalActivityCleanup::currentDeadline($run, $cleanup))),
         ]);
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, LocalActivityRuntime::eventPayload([
             'activity_execution_id' => $execution->id,
@@ -711,7 +750,8 @@ final class PortableLocalActivityPreparation
         $cleanup = PortableLocalActivityCleanup::snapshot(
             $run,
             $normalized['cancellation_cleanup'] ?? null,
-            $execution->sequence
+            $execution->sequence,
+            $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
         );
         $storedCleanup = $execution->activity_options['cancellation_cleanup'] ?? null;
         if (is_array($cleanup)) {

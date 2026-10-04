@@ -68,14 +68,18 @@ final class LocalActivityRuntime
         return WorkflowTaskLease::expiresAt();
     }
 
-    public static function renewWorkflowTask(WorkflowTask $task, ?CarbonInterface $deadline = null): ?CarbonInterface
-    {
+    public static function renewWorkflowTask(
+        WorkflowTask $task,
+        ?CarbonInterface $deadline = null,
+        bool $cleanup = false
+    ): ?CarbonInterface {
         if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased) {
             return null;
         }
 
         $leaseExpiresAt = $deadline === null
-            ? self::workflowTaskLeaseExpiresAt() : CancellationCleanupLease::forDeadline($deadline);
+            ? ($cleanup ? CancellationCleanupLease::renewableExpiry() : self::workflowTaskLeaseExpiresAt())
+            : CancellationCleanupLease::forDeadline($deadline);
 
         $task->forceFill([
             'lease_expires_at' => $leaseExpiresAt,

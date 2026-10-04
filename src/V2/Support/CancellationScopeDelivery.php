@@ -105,9 +105,14 @@ final class CancellationScopeDelivery
 
     /**
      * Preserve recorded-command replay while denying new work in a prepared scope.
+     * @param array<string, mixed>|null $cleanupProof
      */
-    public static function admissionRefusal(WorkflowRun $run, string $scopeId, int $sequence): ?string
-    {
+    public static function admissionRefusal(
+        WorkflowRun $run,
+        string $scopeId,
+        int $sequence,
+        ?array $cleanupProof = null
+    ): ?string {
         if ($scopeId === CancellationScopeHistory::ROOT_SCOPE_ID) {
             return self::positionReserved(
                 $run,
@@ -122,6 +127,14 @@ final class CancellationScopeDelivery
                 ->where('payload->scope_id', $address)
                 ->exists()) {
                 $preparation = self::prepared($run, $address);
+                if (($cleanupProof['scope_id'] ?? null) === $address
+                    && PortableLocalActivityCleanup::snapshot($run, $cleanupProof, $sequence, $scopeId) !== null) {
+                    return self::positionReserved(
+                        $run,
+                        $sequence,
+                        $scopeId
+                    ) ? 'operation_cancellation_delivery_reserved' : null;
+                }
                 $recorded = self::replaysOriginalOperation($run, $preparation, $scopeId, $sequence);
                 return $recorded ? null : 'operation_scope_cancellation_prepared';
             }
@@ -167,6 +180,9 @@ final class CancellationScopeDelivery
             }
             $ids[$id] = true;
             $sequences[$sequence] = true;
+            if (PortableLocalActivityCleanup::isScopedScheduled($run, $event)) {
+                continue;
+            }
             // Hash the cancellation-relevant scalar facts, without copying application payload bytes.
             $members[] = [
                 'sequence' => $sequence,
