@@ -171,6 +171,69 @@ final class V2ScopedActivityCancellationTest extends TestCase
         yield 'wait' => [CancellationPolicy::WaitCancellationCompleted->value, true];
     }
 
+    public static function authorityLockDeadlines(): iterable
+    {
+        yield 'current ancestor deadline' => [false];
+        yield 'original captured deadline' => [true];
+    }
+
+    #[DataProvider('authorityLockDeadlines')]
+    public function testRemoteTaskLockCannotExtendCancellationAuthority(bool $captured): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target] = $this->remotePair($run, $task, $scope, $sibling);
+        $activityTask = $this->activityTask($run, $target);
+        $claim = app(ActivityTaskBridge::class)->claimStatus($activityTask->id, 'activity-owner');
+        $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
+        if ($captured) {
+            $run->forceFill([
+                'run_deadline_at' => now()
+                    ->addSeconds(5),
+            ])->save();
+        }
+        $request = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 30);
+        CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            4,
+            'activity',
+            '1.20'
+        );
+        $run->forceFill([
+            'run_deadline_at' => now()
+                ->addSeconds($captured ? 100 : 5),
+        ])->save();
+        $crossed = false;
+        DB::listen(static function (QueryExecuted $query) use ($activityTask, &$crossed): void {
+            if (! $crossed && str_contains($query->sql, 'workflow_tasks')
+                && in_array($activityTask->id, $query->bindings, true)) {
+                Carbon::setTestNow('2026-10-03T00:00:05Z');
+                $crossed = true;
+            }
+        });
+        $before = $run->historyEvents()
+            ->count();
+        try {
+            ScopedActivityCancellation::fence(
+                $run->fresh(),
+                $task,
+                $target->id,
+                $scope,
+                $request->payload['request_id'],
+                '1.20'
+            );
+            $this->fail('Waiting for the Activity task lock must not extend cancellation authority.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_authority_expired', $error->getMessage());
+        }
+        $this->assertTrue($crossed);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Running, $target->fresh()->status);
+        $this->assertSame(TaskStatus::Leased, $activityTask->fresh()->status);
+    }
+
     #[DataProvider('policies')]
     public function testDeliveryRequiresCanonicalFenceAndWaitPolicyRequiresOriginalStopProof(
         string $policy,
@@ -1876,7 +1939,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
     }
 
     #[DataProvider('ancestorShielding')]
-    public function testAuthenticatedBridgePreservesShieldedDescendantsAndDiagnosesUnshieldedOnes(bool $shield): void
+    public function testAuthenticatedBridgeFencesUnshieldedDescendantsAndPreservesShieldedOnes(bool $shield): void
     {
         [, $run, $task, $parent, $scope] = $this->tree($shield);
         [$first, $descendant] = $this->remotePair($run, $task, $parent, $scope);
@@ -1893,8 +1956,6 @@ final class V2ScopedActivityCancellationTest extends TestCase
             protocolVersion: '1.20'
         );
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
-        $history = $run->historyEvents()
-            ->count();
         $result = $bridge->deliverCancellationScope(
             $task->id,
             'scope-owner',
@@ -1905,16 +1966,10 @@ final class V2ScopedActivityCancellationTest extends TestCase
             'activity',
             protocolVersion: '1.20'
         );
-        $this->assertSame($shield, $result['delivered'], $result['reason'] ?? '');
-        if (! $shield) {
-            $this->assertSame('cancellation_scope_operation_delivery_unavailable', $result['reason']);
-            $this->assertSame(['scoped_descendant_delivery'], $result['unavailable']);
-            $this->assertSame($history, $run->historyEvents()->count());
-            $this->assertSame(ActivityStatus::Pending, $first->fresh()->status);
-        } else {
-            $this->assertSame(ActivityStatus::Cancelled, $first->fresh()->status);
-        }
-        $this->assertSame(ActivityStatus::Pending, $descendant->fresh()->status);
+        $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertSame(ActivityStatus::Cancelled, $first->fresh()->status);
+        $this->assertSame($shield ? ActivityStatus::Pending : ActivityStatus::Cancelled, $descendant->fresh()->status);
+        $this->assertNull(CancellationScopeDelivery::prepared($run->fresh(), $scope));
         $this->assertSame($prepared['preparation_history_event_id'], $result['preparation_history_event_id']);
     }
 

@@ -123,25 +123,35 @@ final class CancellationScopeDescendants
      *
      * @param list<array<string, mixed>> $members
      */
-    public static function assertReady(WorkflowRun $run, array $members, ?int $beforeHistorySequence = null): void
-    {
+    public static function assertReady(
+        WorkflowRun $run,
+        array $members,
+        ?int $beforeHistorySequence = null,
+        ?string $preparationHistoryEventId = null,
+    ): void {
         foreach (self::normalizeMembers($members) as $member) {
             if ($member['activity_members'] === [] && $member['timer_members'] === []
                 && $member['wait_members'] === [] && $member['child_members'] === []) {
                 continue;
             }
-            $preparation = CancellationScopeDelivery::prepared($run, $member['scope_id']);
+            $preparation = ScopedCancellationPreparation::forScope(
+                $run,
+                $member['scope_id'],
+                $preparationHistoryEventId
+            );
             if ($preparation === null) {
                 throw new LogicException('cancellation_scope_descendant_delivery_not_prepared');
             }
             foreach (['activity_members', 'timer_members', 'wait_members', 'child_members'] as $field) {
                 $normalized = match ($field) {
-                    'activity_members' => CancellationScopeDelivery::normalizeMembers($preparation->payload[$field]),
-                    'timer_members' => ScopedTimerCancellation::normalizeMembers($preparation->payload[$field]),
-                    'wait_members' => ScopedWaitCancellation::normalizeMembers($preparation->payload[$field]),
-                    'child_members' => ScopedChildCancellation::normalizeMembers($preparation->payload[$field]),
+                    'activity_members' => $preparation->activityMembers,
+                    'timer_members' => $preparation->timerMembers,
+                    'wait_members' => $preparation->waitMembers,
+                    'child_members' => $preparation->childMembers,
                 };
-                if ($normalized !== $member[$field]) {
+                if ($normalized !== $member[$field] || $preparation->requestId !== $member['request_id']
+                    || $preparation->context->toArray() !== $member['cancellation']
+                    || $preparation->authorityDeadlineAt !== $member['authority_deadline_at']) {
                     throw new LogicException('cancellation_scope_descendant_delivery_membership_mismatch');
                 }
             }

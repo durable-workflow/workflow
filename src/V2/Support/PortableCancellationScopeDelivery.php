@@ -95,79 +95,83 @@ final class PortableCancellationScopeDelivery
             $response = [...$response, ...self::frame($run, $event->payload, $event->id)];
             if (! $preparing) {
                 $run->unsetRelation('historyEvents');
-                $unavailable = self::unavailableOperations($run, $scopeId);
-                if ($unavailable !== []) {
-                    return [
-                        ...$response,
-                        'reason' => 'cancellation_scope_operation_delivery_unavailable',
-                        'unavailable' => $unavailable,
-                    ];
+                self::assertOperationAddresses($run);
+                $references = [ScopedCancellationPreparation::fromEvent($run, $event)];
+                foreach ($event->payload['descendant_members'] as $descendant) {
+                    $references[] = ScopedCancellationPreparation::forScope($run, $descendant['scope_id'], $event->id)
+                        ?? throw new LogicException('cancellation_scope_descendant_not_prepared');
                 }
                 $response['activity_cancellations'] = [];
                 $response['timer_cancellations'] = [];
                 $response['wait_cancellations'] = [];
                 $response['child_cancellations'] = [];
-                foreach ($event->payload['wait_members'] as $member) {
-                    $receipt = ScopedWaitCancellation::fence(
-                        $run,
-                        $claim,
-                        $member['wait_id'],
-                        $scopeId,
-                        $requestId,
-                        $protocolVersion
-                    );
-                    unset($receipt['timer_cancellation']);
-                    $response['wait_cancellations'][] = $receipt;
-                }
-                foreach ($event->payload['timer_members'] as $member) {
-                    $response['timer_cancellations'][] = ScopedTimerCancellation::fence(
-                        $run,
-                        $claim,
-                        $member['timer_id'],
-                        $scopeId,
-                        $requestId,
-                        $protocolVersion
-                    );
-                }
-                foreach ($event->payload['activity_members'] as $member) {
-                    $receipt = ScopedActivityCancellation::fence(
-                        $run,
-                        $claim,
-                        $member['activity_execution_id'],
-                        $scopeId,
-                        $requestId,
-                        $protocolVersion,
-                    );
-                    // Database JSON key order must not change a retried receipt.
-                    if (isset($receipt['cancellation_scope'])) {
-                        $snapshot = $receipt['cancellation_scope'];
-                        $receipt['cancellation_scope'] = [
-                            'schema' => $snapshot['schema'],
-                            'workflow_run_id' => $snapshot['workflow_run_id'],
-                            'scope_id' => $snapshot['scope_id'],
-                            'request_id' => $snapshot['request_id'],
-                            'request_history_event_id' => $snapshot['request_history_event_id'],
-                            'cancellation' => ScopedCancellationContext::fromArray(
-                                $snapshot['cancellation']
-                            )->toArray(),
-                            'authority_deadline_at' => $snapshot['authority_deadline_at'],
+                foreach ($references as $reference) {
+                    foreach ($reference->waitMembers as $member) {
+                        $receipt = ScopedWaitCancellation::fence(
+                            $run,
+                            $claim,
+                            $member['wait_id'],
+                            $reference->scopeId,
+                            $reference->requestId,
+                            $protocolVersion,
+                            $reference->historyEventId,
+                        );
+                        unset($receipt['timer_cancellation']);
+                        $response['wait_cancellations'][] = $receipt;
+                    }
+                    foreach ($reference->timerMembers as $member) {
+                        $response['timer_cancellations'][] = ScopedTimerCancellation::fence(
+                            $run,
+                            $claim,
+                            $member['timer_id'],
+                            $reference->scopeId,
+                            $reference->requestId,
+                            $protocolVersion,
+                            $reference->historyEventId,
+                        );
+                    }
+                    foreach ($reference->activityMembers as $member) {
+                        $receipt = ScopedActivityCancellation::fence(
+                            $run,
+                            $claim,
+                            $member['activity_execution_id'],
+                            $reference->scopeId,
+                            $reference->requestId,
+                            $protocolVersion,
+                            $reference->historyEventId,
+                        );
+                        // Database JSON key order must not change a retried receipt.
+                        if (isset($receipt['cancellation_scope'])) {
+                            $snapshot = $receipt['cancellation_scope'];
+                            $receipt['cancellation_scope'] = [
+                                'schema' => $snapshot['schema'],
+                                'workflow_run_id' => $snapshot['workflow_run_id'],
+                                'scope_id' => $snapshot['scope_id'],
+                                'request_id' => $snapshot['request_id'],
+                                'request_history_event_id' => $snapshot['request_history_event_id'],
+                                'cancellation' => ScopedCancellationContext::fromArray(
+                                    $snapshot['cancellation']
+                                )->toArray(),
+                                'authority_deadline_at' => $snapshot['authority_deadline_at'],
+                            ];
+                        }
+                        $response['activity_cancellations'][] = [
+                            'sequence' => $member['sequence'],
+                            'activity_execution_id' => $member['activity_execution_id'],
+                            ...$receipt,
                         ];
                     }
-                    $response['activity_cancellations'][] = [
-                        'sequence' => $member['sequence'],
-                        'activity_execution_id' => $member['activity_execution_id'],
-                        ...$receipt,
-                    ];
-                }
-                foreach ($event->payload['child_members'] as $member) {
-                    $response['child_cancellations'][] = ScopedChildCancellationDelivery::request(
-                        $run,
-                        $claim,
-                        $member['child_call_id'],
-                        $scopeId,
-                        $requestId,
-                        $protocolVersion,
-                    );
+                    foreach ($reference->childMembers as $member) {
+                        $response['child_cancellations'][] = ScopedChildCancellationDelivery::request(
+                            $run,
+                            $claim,
+                            $member['child_call_id'],
+                            $reference->scopeId,
+                            $reference->requestId,
+                            $protocolVersion,
+                            $reference->historyEventId,
+                        );
+                    }
                 }
                 // Recording remains a barrier over every original member's policy.
                 $event = CancellationScopeDelivery::record(
@@ -251,13 +255,9 @@ final class PortableCancellationScopeDelivery
         ];
     }
 
-    /**
-     * @return list<string>
-     */
-    private static function unavailableOperations(WorkflowRun $run, string $scopeId): array
+    private static function assertOperationAddresses(WorkflowRun $run): void
     {
         $scopes = CancellationScopeHistory::forRun($run);
-        $unavailable = [];
         foreach ($run->historyEvents as $event) {
             $descriptor = match ($event->event_type) {
                 HistoryEventType::ActivityScheduled => $event->payload['activity'] ?? [],
@@ -280,18 +280,6 @@ final class PortableCancellationScopeDelivery
                     && $descriptor['cancellation_scope_id'] !== $address)) {
                 throw new LogicException('cancellation_scope_delivery_history_invalid');
             }
-            $memberScope = $address;
-            while ($address !== $scopeId && isset($scopes[$address])
-                && ! $scopes[$address]['shield_parent'] && $scopes[$address]['parent_scope_id'] !== null) {
-                $address = $scopes[$address]['parent_scope_id'];
-            }
-            if ($address !== $scopeId) {
-                continue;
-            }
-            if ($memberScope !== $scopeId) {
-                $unavailable['scoped_descendant_delivery'] = true;
-            }
         }
-        return array_keys($unavailable);
     }
 }

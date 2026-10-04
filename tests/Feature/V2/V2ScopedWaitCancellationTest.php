@@ -402,26 +402,28 @@ final class V2ScopedWaitCancellationTest extends TestCase
     }
 
     #[DataProvider('scopeTrees')]
-    public function testSiblingAndShieldedWaitsSurviveAndUnimplementedDescendantsRefuseBeforeEffects(
+    public function testSiblingAndShieldedWaitsSurviveAndInheritedWaitsShareTheOriginalBoundary(
         string $kind,
         string $mode
     ): void {
         [$workflow, $run, $claim, $scope, $prepared] = $this->wait($kind, 5, $mode);
-        $before = $run->historyEvents()
-            ->count();
         $result = $this->dispatch($claim, $scope, $prepared);
         $waits = $kind === 'signal' ? SignalWaits::forRun($run->fresh()) : ConditionWaits::forRun($run->fresh());
-        if ($mode === 'unshielded') {
-            $this->assertFalse($result['delivered']);
-            $this->assertSame(['scoped_descendant_delivery'], $result['unavailable']);
-            $this->assertSame($before, $run->historyEvents()->count());
-            $this->assertSame('open', $waits[0]['status']);
-        } else {
-            $this->assertTrue($result['delivered'], $result['reason'] ?? '');
-            $this->assertSame('cancelled', $waits[0]['status']);
-        }
-        $this->assertSame('open', $waits[1]['status']);
-        $this->assertSame(TimerStatus::Pending, $run->timers()->where('sequence', 4)->sole()->status);
+        $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertSame('cancelled', $waits[0]['status']);
+        $this->assertSame($mode === 'unshielded' ? 'cancelled' : 'open', $waits[1]['status']);
+        $this->assertSame(
+            $mode === 'unshielded' ? TimerStatus::Cancelled : TimerStatus::Pending,
+            $run->timers()
+                ->where('sequence', 4)
+                ->sole()
+->status
+        );
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+        );
+        $this->assertSame($result, $this->dispatch($claim, $scope, $prepared));
     }
 
     public static function scopeTrees(): iterable

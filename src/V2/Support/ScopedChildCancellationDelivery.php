@@ -38,6 +38,7 @@ final class ScopedChildCancellationDelivery
         string $scopeId,
         string $requestId,
         string $protocolVersion,
+        ?string $preparationHistoryEventId = null,
     ): array {
         if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
             throw new LogicException('cancellation_scope_requires_protocol_1_20');
@@ -46,7 +47,14 @@ final class ScopedChildCancellationDelivery
             throw new LogicException('cancellation_scope_child_requires_own_transaction');
         }
         return $run->getConnection()
-            ->transaction(static function () use ($run, $workflowTask, $childCallId, $scopeId, $requestId): array {
+            ->transaction(static function () use (
+                $run,
+                $workflowTask,
+                $childCallId,
+                $scopeId,
+                $requestId,
+                $preparationHistoryEventId
+            ): array {
                 /** @var WorkflowRun $parent */
                 $parent = ConfiguredV2Models::query('run_model', WorkflowRun::class)->lockForUpdate()->findOrFail(
                     $run->id
@@ -63,7 +71,7 @@ final class ScopedChildCancellationDelivery
                         ->gte($claim->lease_expires_at)) {
                     throw new LogicException('cancellation_scope_workflow_claim_mismatch');
                 }
-                $preparation = CancellationScopeDelivery::prepared($parent, $scopeId);
+                $preparation = ScopedCancellationPreparation::forScope($parent, $scopeId, $preparationHistoryEventId);
                 $origin = CancellationScopeRequests::context($parent, $scopeId);
                 $authority = CancellationScopeRequests::authority($parent, $scopeId);
                 if ($origin === null || $origin->requestId !== $requestId) {
@@ -74,10 +82,11 @@ final class ScopedChildCancellationDelivery
                 }
                 if (! $authority['active'] || now()->gte($origin->deadline())
                     || now()
-                        ->gte(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                        ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
                     throw new LogicException('cancellation_scope_authority_expired');
                 }
-                $member = collect($preparation->payload['child_members'])->firstWhere('child_call_id', $childCallId);
+                $member = collect($preparation->childMembers)
+                    ->firstWhere('child_call_id', $childCallId);
                 if ($member === null) {
                     throw new LogicException('cancellation_scope_child_target_mismatch');
                 }
@@ -104,7 +113,7 @@ final class ScopedChildCancellationDelivery
                         $request = WorkflowStub::loadRun($child->id)->attemptRequestCancellationFromScope(
                             $parent->id,
                             $scopeId,
-                            $preparation->id,
+                            $preparation->historyEventId,
                             $childCallId
                         );
                         if ($request->rejected()) {
@@ -124,7 +133,7 @@ final class ScopedChildCancellationDelivery
                         || now()
                             ->gte($claim->lease_expires_at)
                         || now()
-                            ->gte(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                            ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
                         throw new LogicException('cancellation_scope_authority_expired');
                     }
                     $receipt = WorkflowHistoryEvent::record($parent, HistoryEventType::ChildCancellationRequested, [
@@ -152,7 +161,7 @@ final class ScopedChildCancellationDelivery
                         || now()
                             ->gte($claim->lease_expires_at)
                         || now()
-                            ->gte(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                            ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
                         throw new LogicException('cancellation_scope_authority_expired');
                     }
                     $resolved = WorkflowHistoryEvent::record($parent, HistoryEventType::ChildCancellationResolved, [
@@ -181,10 +190,12 @@ final class ScopedChildCancellationDelivery
 
     public static function assertReady(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        WorkflowHistoryEvent|ScopedCancellationPreparation $preparation,
         ?int $beforeHistorySequence = null,
     ): void {
-        foreach (ScopedChildCancellation::normalizeMembers($preparation->payload['child_members']) as $member) {
+        $preparation = $preparation instanceof WorkflowHistoryEvent
+            ? ScopedCancellationPreparation::fromEvent($run, $preparation) : $preparation;
+        foreach ($preparation->childMembers as $member) {
             $receipt = self::receipt(
                 $run,
                 $preparation,
@@ -244,7 +255,7 @@ final class ScopedChildCancellationDelivery
      */
     private static function assertRequest(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        ScopedCancellationPreparation $preparation,
         array $member,
         WorkflowHistoryEvent $receipt,
     ): void {
@@ -265,7 +276,7 @@ final class ScopedChildCancellationDelivery
             throw new LogicException('cancellation_scope_child_delivery_not_established');
         }
         $context = self::context($payload['child_cancellation']);
-        $origin = ScopedCancellationContext::fromArray($preparation->payload['cancellation']);
+        $origin = $preparation->context;
         $expected = CancellationContext::fromScopeContext(
             $origin,
             $context->requestId,
@@ -280,7 +291,7 @@ final class ScopedChildCancellationDelivery
             ->where('event_type', HistoryEventType::CooperativeCancellationRequested)->get();
         if (self::canonical($context->toArray()) !== self::canonical($expected->toArray())
             || $context->deadline()
-                ->greaterThan(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))
+                ->greaterThan(CarbonImmutable::parse($preparation->authorityDeadlineAt))
             || self::canonical($canonical?->toArray()) !== self::canonical($context->toArray())
             || $command === null || $command->status !== CommandStatus::Accepted
             || $command->command_type !== CommandType::RequestCancellation
@@ -308,7 +319,7 @@ final class ScopedChildCancellationDelivery
      */
     private static function assertBase(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        ScopedCancellationPreparation $preparation,
         array $member,
         WorkflowHistoryEvent $receipt,
     ): void {
@@ -330,7 +341,7 @@ final class ScopedChildCancellationDelivery
         ])[0];
         foreach ($expected as $key => $value) {
             if (self::canonical($payload[$key] ?? null) !== self::canonical($value)
-                || $receipt->sequence <= $preparation->sequence) {
+                || $receipt->sequence <= $preparation->historySequence) {
                 throw new LogicException('cancellation_scope_child_delivery_not_established');
             }
         }
@@ -339,9 +350,9 @@ final class ScopedChildCancellationDelivery
     /** @param array<string, mixed> $member
      * @return array<string, mixed>
      */
-    private static function base(WorkflowRun $run, WorkflowHistoryEvent $preparation, array $member): array
+    private static function base(WorkflowRun $run, ScopedCancellationPreparation $preparation, array $member): array
     {
-        $origin = ScopedCancellationContext::fromArray($preparation->payload['cancellation']);
+        $origin = $preparation->context;
         return [
             'sequence' => $member['sequence'],
             'policy' => $member['cancellation_policy'],
@@ -356,8 +367,8 @@ final class ScopedChildCancellationDelivery
                 'workflow_run_id' => $run->id,
                 'scope_id' => $origin->scopeId,
                 'request_id' => $origin->requestId,
-                'preparation_history_event_id' => $preparation->id,
-                'authority_deadline_at' => $preparation->payload['authority_deadline_at'],
+                'preparation_history_event_id' => $preparation->historyEventId,
+                'authority_deadline_at' => $preparation->authorityDeadlineAt,
                 'cancellation' => $origin->toArray(),
                 'member' => $member,
             ],
@@ -366,13 +377,14 @@ final class ScopedChildCancellationDelivery
 
     private static function receipt(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        ScopedCancellationPreparation $preparation,
         string $callId,
         HistoryEventType $type,
         ?int $beforeHistorySequence = null,
     ): ?WorkflowHistoryEvent {
         $run->loadMissing('historyEvents');
-        $member = collect($preparation->payload['child_members'])->firstWhere('child_call_id', $callId);
+        $member = collect($preparation->childMembers)
+            ->firstWhere('child_call_id', $callId);
         $matches = $run->historyEvents->filter(static fn (WorkflowHistoryEvent $row): bool =>
             $row->event_type === $type
             && $row->workflow_command_id === null

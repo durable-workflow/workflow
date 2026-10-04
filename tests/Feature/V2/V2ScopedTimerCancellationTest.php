@@ -488,7 +488,7 @@ final class V2ScopedTimerCancellationTest extends TestCase
         }
     }
 
-    public function testUnsupportedDescendantChildIsDiagnosedBeforeAnyTimerOrActivityEffect(): void
+    public function testDescendantChildAndDirectOperationsShareTheOriginalPreparation(): void
     {
         [$run, $task, $scope] = $this->tree();
         $timer = $this->timer($run, $task, $scope, 3);
@@ -516,14 +516,13 @@ final class V2ScopedTimerCancellationTest extends TestCase
         );
         $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
         $prepared = $this->prepare($run, $task, $scope);
-        $before = $run->historyEvents()
-            ->count();
         $result = $this->dispatch($task, $scope, $prepared['request_id']);
-        $this->assertFalse($result['delivered']);
-        $this->assertSame(['scoped_descendant_delivery'], $result['unavailable']);
-        $this->assertSame($before, $run->historyEvents()->count());
-        $this->assertSame(TimerStatus::Pending, $timer->fresh()->status);
-        $this->assertSame(ActivityStatus::Pending, $run->activityExecutions()->sole()->status);
+        $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertSame(TimerStatus::Cancelled, $timer->fresh()->status);
+        $this->assertSame(ActivityStatus::Cancelled, $run->activityExecutions()->sole()->status);
+        $this->assertCount(1, $result['child_cancellations']);
+        $this->assertNull(CancellationScopeDelivery::prepared($run->fresh(), $descendant));
+        $this->assertSame($result, $this->dispatch($task, $scope, $prepared['request_id']));
     }
 
     /**

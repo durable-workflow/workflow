@@ -122,11 +122,13 @@ final class ScopedChildCancellation
      * A preparation snapshot is not proof that the child actor committed.
      */
     public static function assertReady(
-        WorkflowHistoryEvent $preparation,
+        WorkflowHistoryEvent|ScopedCancellationPreparation $preparation,
         ?WorkflowRun $run = null,
         ?int $beforeHistorySequence = null,
     ): void {
-        if (self::normalizeMembers($preparation->payload['child_members']) !== []) {
+        $members = $preparation instanceof ScopedCancellationPreparation
+            ? $preparation->childMembers : self::normalizeMembers($preparation->payload['child_members']);
+        if ($members !== []) {
             if ($run === null) {
                 throw new LogicException('cancellation_scope_child_delivery_not_established');
             }

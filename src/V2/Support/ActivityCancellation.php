@@ -27,6 +27,7 @@ final class ActivityCancellation
         ?WorkflowTask $task = null,
         WorkflowCommand|string|null $command = null,
         ?array $scopeCancellation = null,
+        ?ScopedCancellationPreparation $scopePreparation = null,
     ): ?WorkflowHistoryEvent {
         if ($scopeCancellation !== null) {
             $context = ActivityCancellationContext::forScopeSnapshot(
@@ -37,9 +38,22 @@ final class ActivityCancellation
             );
             $authority = is_string($scopeCancellation['scope_id'] ?? null)
                 ? CancellationScopeRequests::authority($run, $scopeCancellation['scope_id']) : null;
+            $deadlineMatches = $scopePreparation === null
+                ? ($authority['deadline_at'] ?? null) === ($scopeCancellation['authority_deadline_at'] ?? null)
+                : $scopePreparation->workflowRunId === $run->id
+                    && $scopePreparation->scopeId === ($scopeCancellation['scope_id'] ?? null)
+                    && $scopePreparation->requestId === $command
+                    && $scopePreparation->requestHistoryEventId === ($scopeCancellation['request_history_event_id'] ?? null)
+                    && $scopePreparation->context->toArray() === ($scopeCancellation['cancellation'] ?? null)
+                    && $scopePreparation->authorityDeadlineAt === ($scopeCancellation['authority_deadline_at'] ?? null)
+                    && now()
+                        ->lt(\Carbon\CarbonImmutable::parse($scopePreparation->authorityDeadlineAt))
+                    && collect($scopePreparation->activityMembers)
+                        ->contains(static fn (array $member): bool =>
+                                                $member['activity_execution_id'] === $execution->id && $member['sequence'] === $execution->sequence);
             if ($context === null || $context->requestId !== $command || $execution->workflow_run_id !== $run->id
                 || ($execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID) !== $context->scopeId
-                || ! ($authority['active'] ?? false) || ($authority['deadline_at'] ?? null) !== ($scopeCancellation['authority_deadline_at'] ?? null)) {
+                || ! ($authority['active'] ?? false) || ! $deadlineMatches) {
                 throw new \LogicException('cancellation_scope_activity_context_mismatch');
             }
         }

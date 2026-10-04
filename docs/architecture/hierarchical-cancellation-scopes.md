@@ -124,11 +124,10 @@ recorded canonical child terminal outcome. Abandon records the policy without
 changing the child. Cold delivery checks the original preparation, child command,
 typed request history and terminal receipt before accepting a delivery marker.
 The hosting claim, unrelated siblings and shielded addresses remain intact.
-Portable delivery invokes that actor for each original direct child member and
-returns its durable request and resolution receipts, including partial progress
+Portable delivery invokes that actor for each original direct or inherited child
+member and returns its durable request and resolution receipts, including partial progress
 when a policy barrier remains pending. A duplicate or replacement claim reconciles
-those same receipts under the original preparation and deadline. Unimplemented
-descendant delivery is diagnosed before any direct operation is changed.
+those same receipts under the original preparation and deadline.
 
 The same preparation freezes the original unshielded descendant tree. Inherited
 requests and that inventory commit atomically under the original run and hosting
@@ -144,10 +143,20 @@ mutable limits or worker replacement cannot resample the inventory or deadline.
 New scopes, including new shields, cannot open inside the prepared subtree.
 Existing openings replay, and unrelated root work and sibling branches continue.
 A lost claim or expired budget rolls back the preparation and its nested requests.
-Descendant operation dispatch and SDK scope execution remain separate unfinished
-components. A parent delivery marker cannot bypass an unresolved original
-descendant operation.
-Descendant actors and SDK scope execution remain separate qualification gates.
+The internal descendant actors consume an immutable reference to the original
+parent preparation. Each reference retains its actual history ID and sequence,
+the descendant's accepted request and membership, and the captured authority
+ceiling. It creates no new history event or authored command position. Activity,
+timer, wait and child receipts retain their original ownership checks. Timed
+waits and their timer fence still commit atomically. WaitCancellationCompleted
+requires the original activity owner's stop receipt before the parent delivery
+marker can commit. Portable dispatch reconciles direct and inherited receipts
+under that one preparation, preserving siblings and shielded branches.
+
+Reading an original reference or delivery marker after expiry grants no new
+effect authority. Live actors still require the current hosting claim and both
+the current and captured budget. SDK scope execution, the response contract and
+published mixed-language qualification remain separate unfinished gates.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,

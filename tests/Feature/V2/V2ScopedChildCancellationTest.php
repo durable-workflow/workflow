@@ -516,24 +516,22 @@ final class V2ScopedChildCancellationTest extends TestCase
         $this->assertSame($cold, $this->deliver($task->fresh(), $scope, $prepared['request_id']));
     }
 
-    public function testPortablePreflightRefusesDescendantsBeforeRequestingAnyChild(): void
+    public function testPortableDeliveryRequestsDirectAndDescendantChildrenUnderOneBoundary(): void
     {
         [$run, $task, $scope] = $this->tree();
         $descendant = CancellationScopeHistory::open($run, $task, 4, '1.20', $scope)->payload['scope_id'];
         $child = $this->child($run, $task, $scope, 5);
         $nested = $this->child($run, $task, $descendant, 6);
         $prepared = $this->prepare($run, $task, $scope, 5);
-        $before = $run->historyEvents()
-            ->count();
         $response = $this->deliver($task, $scope, $prepared['request_id'], 5);
-        $this->assertFalse($response['delivered']);
-        $this->assertSame(['scoped_descendant_delivery'], $response['unavailable']);
-        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertTrue($response['delivered'], $response['reason'] ?? '');
         foreach ([$child, $nested] as $untouched) {
-            $this->assertNull(
+            $this->assertNotNull(
                 WorkflowRun::query()->findOrFail($untouched['child_workflow_run_id'])->cancellation_request_command_id
             );
         }
+        $this->assertNull(CancellationScopeDelivery::prepared($run->fresh(), $descendant));
+        $this->assertSame($response, $this->deliver($task, $scope, $prepared['request_id'], 5));
     }
 
     public function testPreviouslyClosedChildHasItsOwnCanonicalResolutionReceipt(): void

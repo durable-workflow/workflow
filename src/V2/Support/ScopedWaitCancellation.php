@@ -112,9 +112,13 @@ final class ScopedWaitCancellation
     /**
      * @return array<string, mixed>|null
      */
-    public static function forTimer(WorkflowHistoryEvent $preparation, string $timerId): ?array
-    {
-        return collect(self::normalizeMembers($preparation->payload['wait_members']))->firstWhere('timer_id', $timerId);
+    public static function forTimer(
+        WorkflowHistoryEvent|ScopedCancellationPreparation $preparation,
+        string $timerId
+    ): ?array {
+        $members = $preparation instanceof ScopedCancellationPreparation
+            ? $preparation->waitMembers : self::normalizeMembers($preparation->payload['wait_members']);
+        return collect($members)->firstWhere('timer_id', $timerId);
     }
 
     /**
@@ -127,6 +131,7 @@ final class ScopedWaitCancellation
         string $scopeId,
         string $requestId,
         string $protocolVersion,
+        ?string $preparationHistoryEventId = null,
     ): array {
         if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
             throw new LogicException('cancellation_scope_requires_protocol_1_20');
@@ -134,11 +139,9 @@ final class ScopedWaitCancellation
         if ($run->getConnection()->transactionLevel() !== 0) {
             throw new LogicException('cancellation_scope_wait_requires_own_transaction');
         }
-        $original = CancellationScopeDelivery::prepared($run->fresh(), $scopeId);
-        $member = $original === null ? null : collect($original->payload['wait_members'])->firstWhere(
-            'wait_id',
-            $waitId
-        );
+        $original = ScopedCancellationPreparation::forScope($run->fresh(), $scopeId, $preparationHistoryEventId);
+        $member = $original === null ? null : collect($original->waitMembers)
+            ->firstWhere('wait_id', $waitId);
         if (! is_array($member)) {
             throw new LogicException('cancellation_scope_wait_not_prepared');
         }
@@ -159,7 +162,8 @@ final class ScopedWaitCancellation
                 $scopeId,
                 $requestId,
                 $timerId,
-                $timerTaskId
+                $timerTaskId,
+                $preparationHistoryEventId,
             ): array {
                 // Match RunTimerTask's task/run lock prefix before the hosting claim.
                 $timerTask = $timerTaskId === null ? null
@@ -181,15 +185,13 @@ final class ScopedWaitCancellation
                     throw new LogicException('cancellation_scope_workflow_claim_mismatch');
                 }
                 $context = CancellationScopeRequests::context($locked, $scopeId);
-                $preparation = CancellationScopeDelivery::prepared($locked, $scopeId);
+                $preparation = ScopedCancellationPreparation::forScope($locked, $scopeId, $preparationHistoryEventId);
                 $authority = CancellationScopeRequests::authority($locked, $scopeId);
                 if ($context === null || $context->requestId !== $requestId) {
                     throw new LogicException('cancellation_scope_request_mismatch');
                 }
-                $member = $preparation === null ? null : collect($preparation->payload['wait_members'])->firstWhere(
-                    'wait_id',
-                    $waitId
-                );
+                $member = $preparation === null ? null : collect($preparation->waitMembers)
+                    ->firstWhere('wait_id', $waitId);
                 if (! is_array($member) || $member['timer_id'] !== $timerId) {
                     throw new LogicException('cancellation_scope_wait_not_prepared');
                 }
@@ -209,7 +211,7 @@ final class ScopedWaitCancellation
                     || now()
                         ->gte(CarbonImmutable::parse($authority['deadline_at']))
                     || now()
-                        ->gte(CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                        ->gte(CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
                     throw new LogicException('cancellation_scope_authority_expired');
                 }
                 $timerTerminal = $timerId === null ? null : ScopedTimerCancellation::terminal(
@@ -256,9 +258,9 @@ final class ScopedWaitCancellation
                                 'scope_id' => $scopeId,
                                 'request_id' => $requestId,
                                 'request_history_event_id' => $request->id,
-                                'preparation_history_event_id' => $preparation->id,
+                                'preparation_history_event_id' => $preparation->historyEventId,
                                 'cancellation' => $context->toArray(),
-                                'authority_deadline_at' => $preparation->payload['authority_deadline_at'],
+                                'authority_deadline_at' => $preparation->authorityDeadlineAt,
                             ],
                             ...ParallelChildGroup::payloadForPath(
                                 ParallelChildGroup::metadataPathFromPayload($opened->payload)
@@ -284,9 +286,9 @@ final class ScopedWaitCancellation
                             'scope_id' => $scopeId,
                             'request_id' => $requestId,
                             'request_history_event_id' => $request->id,
-                            'preparation_history_event_id' => $preparation->id,
+                            'preparation_history_event_id' => $preparation->historyEventId,
                             'cancellation' => $context->toArray(),
-                            'authority_deadline_at' => $preparation->payload['authority_deadline_at'],
+                            'authority_deadline_at' => $preparation->authorityDeadlineAt,
                         ]);
                     }
                     $cancelled = $timerTerminal->event_type === HistoryEventType::TimerCancelled;
@@ -321,9 +323,11 @@ final class ScopedWaitCancellation
 
     public static function assertReady(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        WorkflowHistoryEvent|ScopedCancellationPreparation $preparation,
         ?int $beforeHistorySequence = null
     ): void {
+        $preparation = $preparation instanceof WorkflowHistoryEvent
+            ? ScopedCancellationPreparation::fromEvent($run, $preparation) : $preparation;
         $run->loadMissing('historyEvents');
         $history = $run->historyEvents;
         if ($beforeHistorySequence !== null) {
@@ -331,7 +335,7 @@ final class ScopedWaitCancellation
                 $event->sequence < $beforeHistorySequence));
         }
         try {
-            foreach ($preparation->payload['wait_members'] as $member) {
+            foreach ($preparation->waitMembers as $member) {
                 $terminal = self::terminal($run, $member);
                 if ($terminal === null) {
                     throw new LogicException('cancellation_scope_wait_fence_not_established');
@@ -345,8 +349,13 @@ final class ScopedWaitCancellation
         }
     }
 
-    public static function hasTimerWaitProof(WorkflowRun $run, WorkflowHistoryEvent $preparation, string $timerId): bool
-    {
+    public static function hasTimerWaitProof(
+        WorkflowRun $run,
+        WorkflowHistoryEvent|ScopedCancellationPreparation $preparation,
+        string $timerId,
+    ): bool {
+        $preparation = $preparation instanceof WorkflowHistoryEvent
+            ? ScopedCancellationPreparation::fromEvent($run, $preparation) : $preparation;
         $member = self::forTimer($preparation, $timerId);
         if ($member === null) {
             return false;
@@ -436,22 +445,21 @@ final class ScopedWaitCancellation
      */
     private static function assertReceipt(
         WorkflowRun $run,
-        WorkflowHistoryEvent $preparation,
+        ScopedCancellationPreparation $preparation,
         WorkflowHistoryEvent $terminal,
         array $member
     ): void {
         $snapshot = $terminal->payload['cancellation_scope'] ?? null;
-        $payload = $preparation->payload;
         $request = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
-            $event->event_type === HistoryEventType::CancellationScopeRequested && ($event->payload['scope_id'] ?? null) === $payload['scope_id']);
+            $event->event_type === HistoryEventType::CancellationScopeRequested && ($event->payload['scope_id'] ?? null) === $preparation->scopeId);
         if (! is_array($snapshot) || ($snapshot['schema'] ?? null) !== self::SCHEMA
-            || ($snapshot['workflow_run_id'] ?? null) !== $run->id || ($snapshot['scope_id'] ?? null) !== $payload['scope_id']
-            || ($snapshot['request_id'] ?? null) !== $payload['request_id']
+            || ($snapshot['workflow_run_id'] ?? null) !== $run->id || ($snapshot['scope_id'] ?? null) !== $preparation->scopeId
+            || ($snapshot['request_id'] ?? null) !== $preparation->requestId
             || ($snapshot['request_history_event_id'] ?? null) !== $request?->id
-            || ($snapshot['preparation_history_event_id'] ?? null) !== $preparation->id
-            || ($snapshot['authority_deadline_at'] ?? null) !== $payload['authority_deadline_at']
+            || ($snapshot['preparation_history_event_id'] ?? null) !== $preparation->historyEventId
+            || ($snapshot['authority_deadline_at'] ?? null) !== $preparation->authorityDeadlineAt
             || ($terminal->payload['sequence'] ?? null) !== $member['sequence']
-            || ($terminal->payload['timer_id'] ?? null) !== $member['timer_id'] || $terminal->sequence <= $preparation->sequence
+            || ($terminal->payload['timer_id'] ?? null) !== $member['timer_id'] || $terminal->sequence <= $preparation->historySequence
             || ! is_array($snapshot['cancellation'] ?? null)) {
             throw new LogicException('cancellation_scope_wait_fence_not_established');
         }
@@ -477,14 +485,14 @@ final class ScopedWaitCancellation
         try {
             $cancelledAt = $terminal->payload['cancelled_at'] ?? null;
             if (! is_string($cancelledAt) || CarbonImmutable::parse($cancelledAt)->toISOString() !== $cancelledAt
-                || CarbonImmutable::parse($cancelledAt)->lt($preparation->recorded_at ?? $preparation->created_at)
+                || CarbonImmutable::parse($cancelledAt)->lt($preparation->recordedAt)
                 || CarbonImmutable::parse($cancelledAt)->gte(
-                    CarbonImmutable::parse($payload['authority_deadline_at'])
+                    CarbonImmutable::parse($preparation->authorityDeadlineAt)
                 )) {
                 throw new LogicException('cancellation_scope_wait_fence_not_established');
             }
             if (ScopedCancellationContext::fromArray($snapshot['cancellation'])->toArray()
-                !== ScopedCancellationContext::fromArray($payload['cancellation'])->toArray()) {
+                !== $preparation->context->toArray()) {
                 throw new LogicException('cancellation_scope_wait_fence_not_established');
             }
         } catch (\InvalidArgumentException $error) {

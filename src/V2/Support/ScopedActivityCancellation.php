@@ -32,12 +32,20 @@ final class ScopedActivityCancellation
         string $scopeId,
         string $requestId,
         string $protocolVersion,
+        ?string $preparationHistoryEventId = null,
     ): array {
         if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
             throw new LogicException('cancellation_scope_requires_protocol_1_20');
         }
         return $run->getConnection()
-            ->transaction(static function () use ($run, $workflowTask, $executionId, $scopeId, $requestId): array {
+            ->transaction(static function () use (
+                $run,
+                $workflowTask,
+                $executionId,
+                $scopeId,
+                $requestId,
+                $preparationHistoryEventId,
+            ): array {
                 // Preserve the worker's activity attempt/execution lock prefix.
                 $rows = ActivityRowLockOrder::lockForExecution($executionId, true);
                 $execution = $rows['execution'];
@@ -101,7 +109,7 @@ final class ScopedActivityCancellation
                     || ($execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID) !== $scopeId) {
                     throw new LogicException('cancellation_scope_activity_membership_mismatch');
                 }
-                $preparation = CancellationScopeDelivery::prepared($locked, $scopeId);
+                $preparation = ScopedCancellationPreparation::forScope($locked, $scopeId, $preparationHistoryEventId);
                 $policy = ActivityCancellationWait::policy($locked, $execution->sequence);
                 $local = LocalActivityRuntime::isExecution($execution);
                 if ($policy === CancellationPolicy::Abandon) {
@@ -129,14 +137,14 @@ final class ScopedActivityCancellation
                 if ($preparation === null) {
                     throw new LogicException('cancellation_scope_delivery_not_prepared');
                 }
-                if (now()->gte(\Carbon\CarbonImmutable::parse($preparation->payload['authority_deadline_at']))) {
+                if (now()->gte(\Carbon\CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
                     throw new LogicException('cancellation_scope_authority_expired');
                 }
-                if (! collect($preparation->payload['activity_members'])->contains(static fn (array $member): bool =>
+                if (! collect($preparation->activityMembers)->contains(static fn (array $member): bool =>
                     $member['activity_execution_id'] === $executionId && $member['sequence'] === $execution->sequence)) {
                     throw new LogicException('cancellation_scope_activity_not_prepared');
                 }
-                $metadata['authority_deadline_at'] = $preparation->payload['authority_deadline_at'];
+                $metadata['authority_deadline_at'] = $preparation->authorityDeadlineAt;
                 $existing = $locked->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_execution_id', $executionId)
@@ -162,7 +170,19 @@ final class ScopedActivityCancellation
                     if (now()->gte($claim->lease_expires_at)) {
                         throw new LogicException('cancellation_scope_workflow_claim_mismatch');
                     }
-                    $event = ActivityCancellation::record($locked, $execution, $activityTask, $requestId, $metadata);
+                    if (now()->gte(\Carbon\CarbonImmutable::parse($authority['deadline_at']))
+                        || now()
+                            ->gte(\Carbon\CarbonImmutable::parse($preparation->authorityDeadlineAt))) {
+                        throw new LogicException('cancellation_scope_authority_expired');
+                    }
+                    $event = ActivityCancellation::record(
+                        $locked,
+                        $execution,
+                        $activityTask,
+                        $requestId,
+                        $metadata,
+                        $preparation
+                    );
                     if (! $event instanceof WorkflowHistoryEvent) {
                         throw new LogicException('cancellation_scope_activity_fence_not_recorded');
                     }

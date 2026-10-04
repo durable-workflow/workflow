@@ -51,7 +51,6 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
-use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -1961,10 +1960,22 @@ final class WorkflowStub
             $scopePreparation = null;
             $scopeDeadline = null;
             if ($scopeParent !== null && $scopeTarget !== null) {
-                $scopePreparation = CancellationScopeDelivery::prepared($scopeParent, $scopeTarget['scope_id']);
-                $member = $scopePreparation === null ? null : collect($scopePreparation->payload['child_members'])
+                try {
+                    $scopePreparation = \Workflow\V2\Support\ScopedCancellationPreparation::forScope(
+                        $scopeParent,
+                        $scopeTarget['scope_id'],
+                        $scopeTarget['preparation_history_event_id']
+                    );
+                } catch (LogicException $error) {
+                    if (! in_array($error->getMessage(), [
+                        'cancellation_scope_preparation_reference_invalid', 'cancellation_scope_descendant_not_prepared',
+                    ], true)) {
+                        throw $error;
+                    }
+                }
+                $member = $scopePreparation === null ? null : collect($scopePreparation->childMembers)
                     ->firstWhere('child_call_id', $scopeTarget['child_call_id']);
-                if ($scopePreparation === null || $scopePreparation->id !== $scopeTarget['preparation_history_event_id']
+                if ($scopePreparation === null || $scopePreparation->historyEventId !== $scopeTarget['preparation_history_event_id']
                     || $member === null || $member['child_workflow_instance_id'] !== $instance->id
                     || $member['child_workflow_run_id'] !== $run->id || $member['cancellation_policy'] === 'abandon'
                     || $scopeParent->namespace !== $run->namespace) {
@@ -1977,7 +1988,7 @@ final class WorkflowStub
                     );
                     return;
                 }
-                $scopeOrigin = ScopedCancellationContext::fromArray($scopePreparation->payload['cancellation']);
+                $scopeOrigin = $scopePreparation->context;
                 $parentContext = $scopeOrigin->rootContext;
             } elseif ($parentWorkflowRunId !== null) {
                 $linked = WorkflowLink::query()
@@ -2074,9 +2085,8 @@ final class WorkflowStub
             if ($scopeOrigin !== null && $scopeParent !== null && $scopeTarget !== null) {
                 $authority = CancellationScopeRequests::authority($scopeParent, $scopeTarget['scope_id']);
                 if (! $authority['active'] || now()->gte($scopeOrigin->deadline())
-                    || ($scopePreparation->payload['authority_deadline_at'] !== null
-                        && now()
-                            ->gte(CarbonImmutable::parse($scopePreparation->payload['authority_deadline_at'])))) {
+                    || now()
+                        ->gte(CarbonImmutable::parse($scopePreparation->authorityDeadlineAt))) {
                     $command = $this->rejectCommand(
                         $instance,
                         $run,
@@ -2086,7 +2096,7 @@ final class WorkflowStub
                     );
                     return;
                 }
-                $scopeDeadline = CarbonImmutable::parse($scopePreparation->payload['authority_deadline_at']);
+                $scopeDeadline = CarbonImmutable::parse($scopePreparation->authorityDeadlineAt);
                 if ($authority['deadline_at'] !== null && CarbonImmutable::parse($authority['deadline_at'])->lessThan(
                     $scopeDeadline
                 )) {

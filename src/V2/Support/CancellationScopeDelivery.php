@@ -426,7 +426,11 @@ final class CancellationScopeDelivery
                     ScopedTimerCancellation::assertReady($locked, $preparation);
                     ScopedWaitCancellation::assertReady($locked, $preparation);
                     ScopedChildCancellation::assertReady($preparation, $locked);
-                    CancellationScopeDescendants::assertReady($locked, $descendantMembers);
+                    CancellationScopeDescendants::assertReady(
+                        $locked,
+                        $descendantMembers,
+                        preparationHistoryEventId: $preparation->id
+                    );
                 }
                 /** @var WorkflowTask|null $currentClaim */
                 $currentClaim = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -592,7 +596,7 @@ final class CancellationScopeDelivery
                     $context,
                     $operationStart,
                     $operationSpan,
-                    $event->sequence
+                    $event->sequence,
                 );
                 foreach ($preparation->payload['activity_members'] as $member) {
                     ScopedActivityDeliveryPolicy::assertReady($run, $context, $member['sequence'], 1, $event->sequence);
@@ -603,7 +607,8 @@ final class CancellationScopeDelivery
                 CancellationScopeDescendants::assertReady(
                     $run,
                     $preparation->payload['descendant_members'],
-                    $event->sequence
+                    $event->sequence,
+                    $preparation->id,
                 );
             }
         } catch (LogicException $error) {
