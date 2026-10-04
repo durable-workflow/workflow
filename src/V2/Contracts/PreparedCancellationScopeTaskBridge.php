@@ -30,7 +30,7 @@ interface PreparedCancellationScopeTaskBridge extends CancellationScopeTaskBridg
     ): array;
 
     /**
-     * Dispatch the original scoped Activities, then record their policy barrier.
+     * Dispatch the original scoped operations, then record their policy barrier.
      * Preparation and each actor commit separately, allowing partial retry.
      * Pending stop proof retains the preparation and workflow claim.
      * @return array<string, mixed>

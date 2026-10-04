@@ -197,18 +197,6 @@ final class V2ScopedChildCancellationTest extends TestCase
         $prepared = $this->prepare($run, $task, $scope);
         $before = $run->historyEvents()
             ->count();
-        $response = app(DefaultWorkflowTaskBridge::class)->deliverCancellationScope(
-            $task->id,
-            $task->lease_owner,
-            $task->attempt_count,
-            $scope,
-            $prepared['request_id'],
-            4,
-            'child',
-            protocolVersion: '1.20'
-        );
-        $this->assertFalse($response['delivered']);
-        $this->assertSame(['scoped_child_delivery'], $response['unavailable']);
         try {
             CancellationScopeDelivery::record(
                 $run->fresh(),
@@ -441,6 +429,108 @@ final class V2ScopedChildCancellationTest extends TestCase
     {
         foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
             yield $policy => [$policy];
+        }
+    }
+
+    #[DataProvider('childPolicies')]
+    public function testPortableDeliveryReconcilesOriginalChildPolicyAndReplacementClaim(string $policy): void
+    {
+        [$run, $task, $scope, $sibling, $shield] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4, $policy);
+        $other = $this->child($run, $task, $sibling, 5);
+        $shielded = $this->child($run, $task, $shield, 6);
+        $prepared = $this->prepare($run, $task, $scope);
+        $claimBefore = $task->fresh()
+            ->getAttributes();
+        $response = $this->deliver($task, $scope, $prepared['request_id']);
+        $this->assertTrue($response['prepared']);
+        $this->assertFalse($response['claim_released']);
+        $this->assertCount(1, $response['child_cancellations']);
+        $receipt = $response['child_cancellations'][0];
+        $this->assertSame($child['child_call_id'], $receipt['child_call_id']);
+        $this->assertSame($child['child_workflow_run_id'], $receipt['child_workflow_run_id']);
+        $this->assertSame($policy, $receipt['policy']);
+        $target = WorkflowStub::loadRun($child['child_workflow_run_id']);
+        $context = CooperativeCancellationDelivery::context($target->run()->fresh());
+        $this->assertSame($policy === 'abandon', $context === null);
+        $this->assertFalse($target->run()->fresh()->status->isTerminal());
+        if ($context !== null) {
+            $this->assertSame($prepared['cancellation'], $context->scopeOrigin->toArray());
+            $this->assertSame($prepared['request_id'], $context->rootRequestId);
+            $this->assertSame($prepared['authority_deadline_at'], $context->deadline()->toISOString());
+            $this->assertSame($context->requestId, $receipt['request_id']);
+        }
+        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        foreach ([$other, $shielded] as $untouched) {
+            $this->assertNull(
+                WorkflowRun::query()->findOrFail($untouched['child_workflow_run_id'])->cancellation_request_command_id
+            );
+        }
+        $beforeRetry = $run->historyEvents()
+            ->count();
+        $this->assertSame($response, $this->deliver($task->fresh(), $scope, $prepared['request_id']));
+        $this->assertSame($beforeRetry, $run->historyEvents()->count());
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertFalse($response['delivered']);
+            $this->assertFalse($receipt['ready']);
+            $this->assertNull($receipt['resolution_history_event_id']);
+            $this->assertSame('cancellation_scope_child_completion_not_established', $response['reason']);
+            $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+            $target->attemptCancel('canonical terminal fixture');
+        } else {
+            $this->assertTrue($response['delivered']);
+            $this->assertTrue($receipt['ready']);
+        }
+        Carbon::setTestNow('2026-10-03T00:00:20Z');
+        $task->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $cold = $this->deliver($task->fresh(), $scope, $prepared['request_id']);
+        $this->assertTrue($cold['delivered'], $cold['reason'] ?? '');
+        $this->assertSame($prepared['preparation_history_event_id'], $cold['preparation_history_event_id']);
+        $this->assertSame($prepared['cancellation'], $cold['cancellation']);
+        $this->assertSame($prepared['authority_deadline_at'], $cold['authority_deadline_at']);
+        $this->assertSame($receipt['history_event_id'], $cold['child_cancellations'][0]['history_event_id']);
+        $this->assertSame($receipt['request_id'], $cold['child_cancellations'][0]['request_id']);
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertTrue($cold['child_cancellations'][0]['ready']);
+            $this->assertNotNull($cold['child_cancellations'][0]['resolution_history_event_id']);
+        } else {
+            $this->assertSame($response['history_event_id'], $cold['history_event_id']);
+        }
+        $this->assertSame(
+            $context?->toArray(),
+            CooperativeCancellationDelivery::context($target->run()->fresh())?->toArray()
+        );
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+        );
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+        );
+        $this->assertSame($cold, $this->deliver($task->fresh(), $scope, $prepared['request_id']));
+    }
+
+    public function testPortablePreflightRefusesDescendantsBeforeRequestingAnyChild(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $descendant = CancellationScopeHistory::open($run, $task, 4, '1.20', $scope)->payload['scope_id'];
+        $child = $this->child($run, $task, $scope, 5);
+        $nested = $this->child($run, $task, $descendant, 6);
+        $prepared = $this->prepare($run, $task, $scope, 5);
+        $before = $run->historyEvents()
+            ->count();
+        $response = $this->deliver($task, $scope, $prepared['request_id'], 5);
+        $this->assertFalse($response['delivered']);
+        $this->assertSame(['scoped_descendant_delivery'], $response['unavailable']);
+        $this->assertSame($before, $run->historyEvents()->count());
+        foreach ([$child, $nested] as $untouched) {
+            $this->assertNull(
+                WorkflowRun::query()->findOrFail($untouched['child_workflow_run_id'])->cancellation_request_command_id
+            );
         }
     }
 
@@ -778,7 +868,7 @@ final class V2ScopedChildCancellationTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function prepare(WorkflowRun $run, WorkflowTask $task, string $scope): array
+    private function prepare(WorkflowRun $run, WorkflowTask $task, string $scope, int $sequence = 4): array
     {
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $result = app(DefaultWorkflowTaskBridge::class)->prepareCancellationScopeDelivery(
@@ -787,7 +877,7 @@ final class V2ScopedChildCancellationTest extends TestCase
             $task->attempt_count,
             $scope,
             $request->payload['request_id'],
-            4,
+            $sequence,
             'child',
             protocolVersion: '1.20'
         );
@@ -806,5 +896,22 @@ final class V2ScopedChildCancellationTest extends TestCase
             ]),
             'child_workflow_run_id' => $childRunId,
         ], $task);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function deliver(WorkflowTask $task, string $scope, string $request, int $sequence = 4): array
+    {
+        return app(DefaultWorkflowTaskBridge::class)->deliverCancellationScope(
+            $task->id,
+            $task->lease_owner,
+            $task->attempt_count,
+            $scope,
+            $request,
+            $sequence,
+            'child',
+            protocolVersion: '1.20'
+        );
     }
 }

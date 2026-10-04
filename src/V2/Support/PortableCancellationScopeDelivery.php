@@ -79,7 +79,7 @@ final class PortableCancellationScopeDelivery
                 return $refused('cancellation_scope_delivery_not_prepared');
             }
             // Replay validates the exact original boundary before any effects.
-            // Its run/task locks are released before an Activity actor starts.
+            // Its run/task locks are released before an operation actor starts.
             $event = CancellationScopeDelivery::prepare(
                 $run,
                 $claim,
@@ -106,6 +106,7 @@ final class PortableCancellationScopeDelivery
                 $response['activity_cancellations'] = [];
                 $response['timer_cancellations'] = [];
                 $response['wait_cancellations'] = [];
+                $response['child_cancellations'] = [];
                 foreach ($event->payload['wait_members'] as $member) {
                     $receipt = ScopedWaitCancellation::fence(
                         $run,
@@ -157,6 +158,16 @@ final class PortableCancellationScopeDelivery
                         'activity_execution_id' => $member['activity_execution_id'],
                         ...$receipt,
                     ];
+                }
+                foreach ($event->payload['child_members'] as $member) {
+                    $response['child_cancellations'][] = ScopedChildCancellationDelivery::request(
+                        $run,
+                        $claim,
+                        $member['child_call_id'],
+                        $scopeId,
+                        $requestId,
+                        $protocolVersion,
+                    );
                 }
                 // Recording remains a barrier over every original member's policy.
                 $event = CancellationScopeDelivery::record(
@@ -276,13 +287,8 @@ final class PortableCancellationScopeDelivery
             if ($address !== $scopeId) {
                 continue;
             }
-            $missing = $memberScope !== $scopeId ? 'scoped_descendant_delivery'
-                : match ($event->event_type) {
-                    HistoryEventType::ChildWorkflowScheduled => 'scoped_child_delivery',
-                    default => null,
-                };
-            if ($missing !== null) {
-                $unavailable[$missing] = true;
+            if ($memberScope !== $scopeId) {
+                $unavailable['scoped_descendant_delivery'] = true;
             }
         }
         return array_keys($unavailable);

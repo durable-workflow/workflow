@@ -1917,22 +1917,23 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame($prepared['preparation_history_event_id'], $result['preparation_history_event_id']);
     }
 
-    #[DataProvider('unsupportedScopeOperations')]
-    public function testAuthenticatedBridgeDiagnosesUnimplementedOperationActors(
-        array $command,
-        string $capability
-    ): void {
+    public function testAuthenticatedBridgeDispatchesMixedChildrenAndActivitiesWithoutCancellingSiblings(): void
+    {
         [, $run, $task, , $scope, $sibling] = $this->tree();
-        $this->remotePair($run, $task, $scope, $sibling);
+        [$first, $other] = $this->remotePair($run, $task, $scope, $sibling);
         $bridge = app(DefaultWorkflowTaskBridge::class);
         $scheduled = $bridge->checkpointCancellationScopePrefix(
             $task->id,
             'scope-owner',
             1,
-            'unsupported-op',
+            'child-prefix',
             6,
             [[
-                ...$command,
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'child-scope-fixture',
+                'arguments' => Serializer::serializeWithCodec('avro', ['child']),
+                'payload_codec' => 'avro',
+                'cancellation_policy' => 'try_cancel',
                 'cancellation_scope_id' => $scope,
             ]],
             '1.20'
@@ -1950,8 +1951,8 @@ final class V2ScopedActivityCancellationTest extends TestCase
             protocolVersion: '1.20'
         );
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
-        $before = $run->historyEvents()
-            ->count();
+        $claimBefore = $task->fresh()
+            ->getAttributes();
         $result = $bridge->deliverCancellationScope(
             $task->id,
             'scope-owner',
@@ -1963,21 +1964,18 @@ final class V2ScopedActivityCancellationTest extends TestCase
             protocolVersion: '1.20'
         );
         $this->assertTrue($result['prepared']);
-        $this->assertFalse($result['delivered']);
-        $this->assertSame('cancellation_scope_operation_delivery_unavailable', $result['reason']);
-        $this->assertSame([$capability], $result['unavailable']);
-        $this->assertSame($before, $run->historyEvents()->count());
-        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
-    }
-
-    public static function unsupportedScopeOperations(): iterable
-    {
-        yield 'child' => [[
-            'type' => 'start_child_workflow',
-            'workflow_type' => 'child-scope-fixture',
-            'arguments' => Serializer::serializeWithCodec('avro', ['child']),
-            'payload_codec' => 'avro',
-        ], 'scoped_child_delivery'];
+        $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertFalse($result['claim_released']);
+        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertSame(ActivityStatus::Cancelled, $first->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+        $this->assertCount(1, $result['activity_cancellations']);
+        $this->assertCount(1, $result['child_cancellations']);
+        $receipt = $result['child_cancellations'][0];
+        $target = WorkflowRun::query()->findOrFail($receipt['child_workflow_run_id']);
+        $this->assertFalse($target->status->isTerminal());
+        $this->assertSame($receipt['request_id'], $target->cancellation_request_command_id);
+        $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
     }
 
     /**

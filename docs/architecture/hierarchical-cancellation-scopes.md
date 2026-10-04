@@ -2,15 +2,16 @@
 
 Design decision for [shared cancellation work](https://github.com/durable-workflow/.github/issues/136)
 and [the Native implementation](https://github.com/durable-workflow/workflow/pull/603).
-User-facing scopes and scoped operation delivery are not implemented or
-advertised by the current source tuple. Native has an internal canonical
+User-facing scope execution is not implemented or advertised by the current
+source tuple. Native has an internal canonical
 registration kernel: `CancellationScopeHistory` records `CancellationScopeOpened`
 at a typed durable command position under the configured storage connection
 and matching live claim. It preserves the recorded parent and shield mode on
 fresh reads and replacement-claim replay, and includes those facts in the
 history timeline. The optional internal `CancellationScopeTaskBridge` now
-exposes this kernel through `openCancellationScope()`. No Server endpoint or
-SDK scope capability is enabled by that foundation. The database tests exercise
+exposes this kernel through `openCancellationScope()`. Candidate Server endpoints
+authenticate scope opening, prefix checkpointing, preparation and delivery.
+No SDK scope capability is enabled by that foundation. The database tests exercise
 the real bridge with authoritative claim fixtures, not an end-to-end SDK scope
 execution.
 Protocol 1.20 remains unfrozen until the authority and replay contracts below
@@ -123,8 +124,12 @@ recorded canonical child terminal outcome. Abandon records the policy without
 changing the child. Cold delivery checks the original preparation, child command,
 typed request history and terminal receipt before accepting a delivery marker.
 The hosting claim, unrelated siblings and shielded addresses remain intact.
-Portable child dispatch, descendant actors and SDK scope execution remain separate
-qualification gates. Portable delivery still refuses child dispatch before effects.
+Portable delivery invokes that actor for each original direct child member and
+returns its durable request and resolution receipts, including partial progress
+when a policy barrier remains pending. A duplicate or replacement claim reconciles
+those same receipts under the original preparation and deadline. Unimplemented
+descendant delivery is diagnosed before any direct operation is changed.
+Descendant actors and SDK scope execution remain separate qualification gates.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,
@@ -186,7 +191,9 @@ Further run-to-scope-to-run propagation retains that origin. Canonical child
 requests read it from the original prepared member, never caller-supplied
 metadata or a mutable current-run pointer. Competing origins cannot replace an
 accepted child context. Existing v1 snapshots remain readable. This candidate
-encoding requires SDK qualification before portable dispatch is enabled.
+encoding is source-qualified for parsing in the PHP, Python and Rust SDK
+candidates. Authored scope execution and the published mixed-language cascade
+remain required before scope support is advertised.
 Native's internal `CancellationScopeRequests` kernel now accepts requests at
 recorded non-root addresses under the configured run lock. The accepted
 `CancellationScopeRequested` history event owns its context and identity.

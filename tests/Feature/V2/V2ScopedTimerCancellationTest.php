@@ -488,16 +488,17 @@ final class V2ScopedTimerCancellationTest extends TestCase
         }
     }
 
-    public function testUnsupportedChildIsDiagnosedBeforeAnyTimerOrActivityEffect(): void
+    public function testUnsupportedDescendantChildIsDiagnosedBeforeAnyTimerOrActivityEffect(): void
     {
         [$run, $task, $scope] = $this->tree();
         $timer = $this->timer($run, $task, $scope, 3);
+        $descendant = CancellationScopeHistory::open($run, $task, 4, '1.20', $scope)->payload['scope_id'];
         $reply = app(DefaultWorkflowTaskBridge::class)->checkpointCancellationScopePrefix(
             $task->id,
             $task->lease_owner,
             $task->attempt_count,
             'child-preflight',
-            4,
+            5,
             [[
                 'type' => 'schedule_activity',
                 'activity_type' => TestGreetingActivity::class,
@@ -509,7 +510,7 @@ final class V2ScopedTimerCancellationTest extends TestCase
                 'workflow_type' => 'child-scope-fixture',
                 'arguments' => Serializer::serializeWithCodec('avro', []),
                 'payload_codec' => 'avro',
-                'cancellation_scope_id' => $scope,
+                'cancellation_scope_id' => $descendant,
             ]],
             '1.20'
         );
@@ -519,7 +520,7 @@ final class V2ScopedTimerCancellationTest extends TestCase
             ->count();
         $result = $this->dispatch($task, $scope, $prepared['request_id']);
         $this->assertFalse($result['delivered']);
-        $this->assertSame(['scoped_child_delivery'], $result['unavailable']);
+        $this->assertSame(['scoped_descendant_delivery'], $result['unavailable']);
         $this->assertSame($before, $run->historyEvents()->count());
         $this->assertSame(TimerStatus::Pending, $timer->fresh()->status);
         $this->assertSame(ActivityStatus::Pending, $run->activityExecutions()->sole()->status);
