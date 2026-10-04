@@ -1095,7 +1095,15 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         ])->save();
         $request = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30);
         Carbon::setTestNow('2026-10-04T00:00:09Z');
-        $prepared = $this->prepare($run->fresh(), $claim, $scopes['parent'], 11);
+        $prepared = CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $claim,
+            $scopes['parent'],
+            $request->payload['request_id'],
+            10,
+            $kind,
+            '1.20'
+        );
         $reference = ScopedCancellationPreparation::forScope($run->fresh(), $scopes['child'], $prepared->id);
         $wait = $reference->waitMembers[0];
         $receipt = ScopedWaitCancellation::fence(
@@ -1151,11 +1159,13 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             2,
             $scopes['parent'],
             $request->payload['request_id'],
-            11,
-            'timer',
+            10,
+            $kind,
             protocolVersion: '1.20'
         );
         $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertSame(10, $result['sequence']);
+        $this->assertSame($kind, $result['call_kind']);
         $this->assertCount(1, $result['wait_cancellations']);
         $this->assertCount(2, $result['timer_cancellations']);
         $this->assertCount(1, $result['activity_cancellations']);
@@ -1200,8 +1210,8 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             2,
             $scopes['parent'],
             $request->payload['request_id'],
-            11,
-            'timer',
+            10,
+            $kind,
             protocolVersion: '1.20'
         ));
         $this->assertSame($count, $run->historyEvents()->count());
@@ -1215,8 +1225,8 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             2,
             $scopes['parent'],
             $request->payload['request_id'],
-            11,
-            'timer',
+            10,
+            $kind,
             protocolVersion: '1.20'
         );
         $this->assertFalse($expired['delivered']);

@@ -27,6 +27,7 @@ use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ScopedActivityCancellation;
@@ -320,7 +321,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
     }
 
     #[DataProvider('parallelBoundaries')]
-    public function testParallelAndSelectionBoundariesRequireEveryMemberInTheAddress(bool $selection, bool $mixed): void
+    public function testParallelAndSelectionBoundariesAllowUnaffectedMembers(bool $selection, bool $mixed): void
     {
         [, $run, $task, $parent, $scope] = $this->scopeTree();
         for ($index = 0; $index < 2; ++$index) {
@@ -345,15 +346,6 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             $selection ? 3 : null,
             $selection ? 2 : 1
         );
-        if ($mixed) {
-            $this->assertRefusedWithoutMutation(
-                $run,
-                $task,
-                'cancellation_scope_delivery_membership_mismatch',
-                $delivery
-            );
-            return;
-        }
         CancellationScopeDelivery::prepare(
             $run,
             $task,
@@ -370,6 +362,13 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $event = $delivery();
         $this->assertSame($selection ? 5 : 3, $event->payload['sequence']);
         $this->assertSame($selection ? 6 : 5, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
+        if ($mixed) {
+            $this->assertSame(
+                ActivityStatus::Pending,
+                $run->activityExecutions()->where('sequence', 4)->sole()->status
+            );
+            $this->assertNull(CancellationScopeRequests::context($run->fresh(), $parent));
+        }
     }
 
     public static function parallelBoundaries(): iterable
@@ -378,6 +377,292 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         yield 'parallel mixed scopes' => [false, true];
         yield 'selection same scope' => [true, false];
         yield 'selection mixed scopes' => [true, true];
+    }
+
+    #[DataProvider('descendantAwaits')]
+    public function testAncestorRequestDeliversAtAuthoredUnshieldedDescendantAwait(bool $deep): void
+    {
+        [, $run, $task, $parent, $child] = $this->scopeTree();
+        $sequence = $deep ? 4 : 3;
+        $member = $deep
+            ? CancellationScopeHistory::open($run, $task, 3, '1.20', $child)->payload['scope_id'] : $child;
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $checkpoint = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'original',
+            1,
+            'descendant-await',
+            $sequence,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 60,
+                'cancellation_scope_id' => $member,
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($checkpoint['checkpointed'], $checkpoint['reason'] ?? '');
+        $request = CancellationScopeRequests::request($run->fresh(), $parent, '1.20', 30);
+        $beforeClaim = $task->fresh()
+            ->getAttributes();
+        $prepared = $bridge->prepareCancellationScopeDelivery(
+            $task->id,
+            'original',
+            1,
+            $parent,
+            $request->payload['request_id'],
+            $sequence,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $delivered = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $parent,
+            $request->payload['request_id'],
+            $sequence,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
+        $this->assertSame(TimerStatus::Cancelled, $run->timers()->sole()->status);
+        $this->assertSame($sequence, $delivered['sequence']);
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $delivered['authority_deadline_at']);
+        $context = CancellationScopeRequests::context($run->fresh(), $member);
+        $this->assertSame($request->payload['request_id'], $context->rootContext->rootRequestId);
+        $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
+        $this->assertFalse($run->fresh()->status->isTerminal());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $marker = CancellationScopeDelivery::recorded($run->fresh(), $parent);
+        Carbon::setTestNow('2026-10-03T00:00:31Z');
+        $this->assertSame(
+            $marker->getAttributes(),
+            CancellationScopeDelivery::recorded($run->fresh(), $parent)->getAttributes()
+        );
+        $this->assertSame(
+            $prepared['preparation_history_event_id'],
+            CancellationScopeDelivery::prepared($run->fresh(), $parent)->id
+        );
+    }
+
+    public static function descendantAwaits(): iterable
+    {
+        yield 'child' => [false];
+        yield 'grandchild' => [true];
+    }
+
+    #[DataProvider('mixedShieldGroups')]
+    public function testMixedGroupCancelsOnlyRequestedSubtreeAndSurvivorsStillPublish(
+        bool $selection,
+        bool $directShield
+    ): void {
+        [, $run, $task, $parent, $child] = $this->scopeTree();
+        $shield = CancellationScopeHistory::open($run, $task, 3, '1.20', $parent, true)->payload['scope_id'];
+        $sibling = CancellationScopeHistory::open($run, $task, 4, '1.20')->payload['scope_id'];
+        $scopes = [$child, $shield, $sibling];
+        foreach ($scopes as $index => $scope) {
+            $this->schedule($run, HistoryEventType::ActivityScheduled, [
+                'sequence' => 5 + $index,
+                'activity' => [
+                    'cancellation_scope_id' => $scope,
+                ],
+                ...ParallelChildGroup::itemMetadata(5, 3, $index, 'activity'),
+            ]);
+        }
+        $target = $directShield ? $shield : $parent;
+        $request = CancellationScopeRequests::request($run, $target, '1.20', 30);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $arguments = [
+            $task->id, 'original', 1, $target, $request->payload['request_id'],
+            $selection ? 8 : 5, $selection ? 'selection_handle' : 'parallel',
+            $selection ? 1 : 3, $selection ? 5 : null, $selection ? 3 : 1, '1.20',
+        ];
+        $prepared = $bridge->prepareCancellationScopeDelivery(...$arguments);
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $beforeClaim = $task->fresh()
+            ->getAttributes();
+        $survivingExecutions = [];
+        $survivingTasks = [];
+        foreach ($run->activityExecutions()->orderBy('sequence')->get() as $execution) {
+            if ($execution->sequence !== ($directShield ? 6 : 5)) {
+                $survivingExecutions[$execution->id] = $execution->getAttributes();
+                $survivorTask = $run->tasks()
+                    ->where('payload->activity_execution_id', $execution->id)
+                    ->sole();
+                $survivingTasks[$survivorTask->id] = $survivorTask->getAttributes();
+            }
+        }
+        $delivered = $bridge->deliverCancellationScope(...$arguments);
+        $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
+        $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
+        $this->assertSame(
+            ActivityStatus::Cancelled,
+            $run->activityExecutions()->where('sequence', $directShield ? 6 : 5)->sole()->status
+        );
+        foreach ($survivingExecutions as $id => $attributes) {
+            $this->assertSame($attributes, ActivityExecution::query()->findOrFail($id)->getAttributes());
+        }
+        foreach ($survivingTasks as $id => $attributes) {
+            $this->assertSame($attributes, WorkflowTask::query()->findOrFail($id)->getAttributes());
+        }
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $sibling));
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $directShield ? $child : $shield));
+        $marker = CancellationScopeDelivery::recorded($run->fresh(), $target);
+        $beforeMarker = $marker->getAttributes();
+        $beforePreparation = CancellationScopeDelivery::prepared($run->fresh(), $target)->getAttributes();
+        $task->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $arguments[1] = 'replacement';
+        $arguments[2] = 2;
+        $replayed = $bridge->deliverCancellationScope(...$arguments);
+        $this->assertSame($delivered['history_event_id'], $replayed['history_event_id']);
+        $this->assertSame($delivered['cancellation'], $replayed['cancellation']);
+        foreach ($survivingExecutions as $attributes) {
+            $this->schedule($run, HistoryEventType::ActivityCompleted, [
+                'sequence' => $attributes['sequence'],
+            ]);
+        }
+        $this->assertSame(2, $run->activityExecutions()->where('status', ActivityStatus::Completed)->count());
+        Carbon::setTestNow('2026-10-03T00:00:31Z');
+        $this->assertSame($beforeMarker, CancellationScopeDelivery::recorded($run->fresh(), $target)->getAttributes());
+        $this->assertSame(
+            $beforePreparation,
+            CancellationScopeDelivery::prepared($run->fresh(), $target)->getAttributes()
+        );
+        $this->assertSame($selection ? 9 : 8, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
+        $this->assertFalse($run->fresh()->status->isTerminal());
+    }
+
+    public static function mixedShieldGroups(): iterable
+    {
+        yield 'parallel ancestor request' => [false, false];
+        yield 'selection ancestor request' => [true, false];
+        yield 'parallel direct shield request' => [false, true];
+        yield 'selection direct shield request' => [true, true];
+    }
+
+    public function testAncestorCannotDeliverAtShieldedDescendantAwaitButDirectShieldRequestCan(): void
+    {
+        [, $run, $task, $parent] = $this->scopeTree();
+        $shield = CancellationScopeHistory::open($run, $task, 3, '1.20', $parent, true)->payload['scope_id'];
+        $child = CancellationScopeHistory::open($run, $task, 4, '1.20', $shield)->payload['scope_id'];
+        $this->schedule($run, HistoryEventType::TimerScheduled, [
+            'sequence' => 5,
+            'cancellation_scope_id' => $child,
+        ]);
+        $ancestor = CancellationScopeRequests::request($run, $parent, '1.20', 30);
+        $this->assertRefusedWithoutMutation(
+            $run,
+            $task,
+            'cancellation_scope_delivery_membership_mismatch',
+            static fn () =>
+            CancellationScopeDelivery::prepare($run, $task, $parent, $ancestor->payload['request_id'], 5, 'timer', '1.20')
+        );
+        $this->assertSame(TimerStatus::Pending, $run->timers()->sole()->status);
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $child));
+        $direct = CancellationScopeRequests::request($run, $shield, '1.20', 30);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $arguments = [
+            $task->id,
+            'original',
+            1,
+            $shield,
+            $direct->payload['request_id'],
+            5,
+            'timer',
+            1,
+            null,
+            1,
+            '1.20',
+        ];
+        $prepared = $bridge->prepareCancellationScopeDelivery(...$arguments);
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $delivered = $bridge->deliverCancellationScope(...$arguments);
+        $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
+        $this->assertSame(TimerStatus::Cancelled, $run->timers()->sole()->status);
+        $this->assertSame(
+            $direct->payload['request_id'],
+            CancellationScopeRequests::context($run->fresh(), $child)->rootContext->rootRequestId
+        );
+        $this->assertNotSame($ancestor->payload['request_id'], $direct->payload['request_id']);
+    }
+
+    #[DataProvider('unaffectedGroupMembership')]
+    public function testMixedGroupRejectsInvalidUnaffectedMembershipBeforeAnyEffects(string $kind): void
+    {
+        [, $run, $task, $parent, $scope] = $this->scopeTree();
+        for ($index = 0; $index < 2; ++$index) {
+            $this->schedule($run, HistoryEventType::ActivityScheduled, [
+                'sequence' => 3 + $index,
+                'activity' => [
+                    'cancellation_scope_id' => $index === 0 && $kind !== 'entirely unrelated' ? $scope : $parent,
+                ],
+                ...ParallelChildGroup::itemMetadata(3, 2, $index, 'activity'),
+            ]);
+        }
+        $event = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->where('payload->sequence', 4)->sole();
+        $payload = $event->payload;
+        switch ($kind) {
+            case 'contradictory':
+                $payload['cancellation_scope_id'] = $scope;
+                break;
+            case 'null flat':
+                $payload['cancellation_scope_id'] = null;
+                break;
+            case 'null nested':
+                $payload['activity']['cancellation_scope_id'] = null;
+                break;
+            case 'unknown':
+                $payload['activity']['cancellation_scope_id'] = 'foreign-scope';
+                break;
+            case 'future opening':
+                $payload['activity']['cancellation_scope_id'] = CancellationScopeHistory::open(
+                    $run,
+                    $task,
+                    5,
+                    '1.20'
+                )->payload['scope_id'];
+                break;
+        }
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $run->refresh();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $beforeExecutions = $run->activityExecutions()
+            ->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        $this->assertRefusedWithoutMutation(
+            $run,
+            $task,
+            'cancellation_scope_delivery_membership_mismatch',
+            static fn () =>
+            CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 3, 'parallel', '1.20', 2)
+        );
+        $this->assertSame(
+            $beforeExecutions,
+            $run->activityExecutions()->orderBy('sequence')->get()->map->getAttributes()->all()
+        );
+    }
+
+    public static function unaffectedGroupMembership(): iterable
+    {
+        foreach ([
+            'entirely unrelated',
+            'contradictory',
+            'null flat',
+            'null nested',
+            'unknown',
+            'future opening',
+        ] as $kind) {
+            yield $kind => [$kind];
+        }
     }
 
     #[DataProvider('claimFailures')]

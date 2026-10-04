@@ -419,7 +419,9 @@ final class CancellationScopeDelivery
                     throw new LogicException('cancellation_scope_preparation_after_effect');
                 }
                 if (! $preparing) {
-                    ScopedActivityDeliveryPolicy::assertReady($locked, $context, $operationStart, $operationSpan);
+                    // The await range can include shields and siblings. Stop
+                    // proof belongs to each original frozen scope inventory,
+                    // including descendants with their own accepted context.
                     foreach ($members as $member) {
                         ScopedActivityDeliveryPolicy::assertReady($locked, $context, $member['sequence'], 1);
                     }
@@ -523,7 +525,7 @@ final class CancellationScopeDelivery
             || $deadline->greaterThan($context->deadline()) || $deadline->lessThan($context->requestedAt())
             || $event->sequence <= $request->sequence
             || ! CancellationScopeHistory::isRecordedBefore($run, $scopeId, $operationStart)
-            || ! self::matchesMembership($run, $scopeId, $operationStart, $operationSpan)
+            || ! self::matchesMembership($run, $scopeId, $operationStart, $operationSpan, $event->sequence)
             || ($recordedKind !== null && ! in_array($payload['call_kind'], ['parallel', 'selection_handle'], true)
                 && $payload['call_kind'] !== $recordedKind)
             || CooperativeCancellationDelivery::validateBoundarySyntax(
@@ -591,13 +593,6 @@ final class CancellationScopeDelivery
                     )) {
                     throw new LogicException('cancellation_scope_preparation_history_invalid');
                 }
-                ScopedActivityDeliveryPolicy::assertReady(
-                    $run,
-                    $context,
-                    $operationStart,
-                    $operationSpan,
-                    $event->sequence,
-                );
                 foreach ($preparation->payload['activity_members'] as $member) {
                     ScopedActivityDeliveryPolicy::assertReady($run, $context, $member['sequence'], 1, $event->sequence);
                 }
@@ -633,12 +628,33 @@ final class CancellationScopeDelivery
             && $payload['operation_sequence_span'] === $operationSpan;
     }
 
-    private static function matchesMembership(WorkflowRun $run, string $scopeId, int $start, int $span): bool
-    {
+    private static function matchesMembership(
+        WorkflowRun $run,
+        string $scopeId,
+        int $start,
+        int $span,
+        ?int $beforeHistorySequence = null,
+    ): bool {
+        $scopes = CancellationScopeHistory::forRun($run);
+        $openings = $run->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::CancellationScopeOpened
+            && ($beforeHistorySequence === null || $event->sequence < $beforeHistorySequence))->keyBy('id');
+        $included = [
+            $scopeId => true,
+        ];
+        foreach ($scopes as $id => $scope) {
+            if ($openings->has($scope['history_event_id']) && ! $scope['shield_parent']
+                && isset($included[$scope['parent_scope_id']])) {
+                $included[$id] = true;
+            }
+        }
+        $scheduled = false;
+        $affected = false;
         foreach ($run->historyEvents as $event) {
             $payload = $event->payload;
             $sequence = $payload['sequence'] ?? null;
-            if (! is_int($sequence) || $sequence < $start || $sequence - $start >= $span
+            if (($beforeHistorySequence !== null && $event->sequence >= $beforeHistorySequence)
+                || ! is_int($sequence) || $sequence < $start || $sequence - $start >= $span
                 || ! in_array(
                     $event->event_type,
                     [HistoryEventType::ActivityScheduled, HistoryEventType::TimerScheduled,
@@ -654,16 +670,33 @@ final class CancellationScopeDelivery
                 HistoryEventType::ChildWorkflowScheduled => 'child_workflow',
                 default => null,
             };
-            $descriptor = $nested !== null && is_array($payload[$nested] ?? null) ? $payload[$nested] : [];
+            if ($nested !== null && array_key_exists($nested, $payload) && ! is_array($payload[$nested])) {
+                return false;
+            }
+            $descriptor = $nested !== null ? ($payload[$nested] ?? []) : [];
             $hasFlat = array_key_exists('cancellation_scope_id', $payload);
             $hasNested = array_key_exists('cancellation_scope_id', $descriptor);
             $membership = $hasFlat ? $payload['cancellation_scope_id']
                 : ($hasNested ? $descriptor['cancellation_scope_id'] : CancellationScopeHistory::ROOT_SCOPE_ID);
-            if ($membership !== $scopeId || ($hasNested && $descriptor['cancellation_scope_id'] !== $scopeId)) {
+            if (! is_string($membership)
+                || ($hasNested && $descriptor['cancellation_scope_id'] !== $membership)) {
                 return false;
             }
+            if ($membership !== CancellationScopeHistory::ROOT_SCOPE_ID) {
+                $member = $scopes[$membership] ?? null;
+                $opening = $member === null ? null : $openings->get($member['history_event_id']);
+                if ($member === null || $opening === null || $member['sequence'] >= $sequence
+                    || $opening->sequence >= $event->sequence) {
+                    return false;
+                }
+            }
+            $scheduled = true;
+            $affected = $affected || isset($included[$membership]);
         }
-        return true;
+        // An unscheduled await keeps its authenticated scope address. A group
+        // receives cancellation when any leaf is in the unshielded subtree.
+        // Actors still reconcile only the frozen subtree inventory.
+        return ! $scheduled || $affected;
     }
 
     private static function matchesClaim(?WorkflowTask $claim, WorkflowRun $run, WorkflowTask $original): bool

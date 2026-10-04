@@ -304,6 +304,12 @@ cancellation exception. Record its request, authored boundary, operation range
 and context canonically before returning it. An unrelated await does not receive
 it. Cold replay must deliver at that same boundary even when later results exist.
 
+The receiving address can be the requested scope or any canonically recorded
+descendant reached without crossing a parent shield. Each scheduled leaf must
+retain a valid scope opened before that leaf. Conflicting flat and nested
+membership, unknown scopes and later scope openings cannot justify delivery.
+Cold reads establish membership from the original marker's history prefix.
+
 TryCancel releases the scoped await after durable fencing/request propagation.
 WaitCancellationCompleted requires the same matching original-owner callback
 stop receipt or canonical child terminal outcome used by run cancellation.
@@ -316,6 +322,14 @@ cancelled outcome while surviving handles remain available. A scope join resolve
 the requested member policies and its own cleanup, not every operation in the
 enclosing run. A caught scoped exception does not set run cancellation fields
 or force a successful enclosing workflow to end Cancelled.
+
+A parallel or selection address is eligible when at least one leaf belongs to
+the requested unshielded subtree. Other leaves retain their original scope,
+task and result authority. A group consisting entirely of unrelated or shielded
+leaves cannot receive that request. Delivery checks stop proof against the
+frozen scope inventories and their original contexts, rather than requiring
+every leaf in the await range to be stopped. These Native kernel checks do not
+yet advertise authored scope execution in the published SDKs.
 
 ## Prepared local callback ownership
 
