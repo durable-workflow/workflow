@@ -232,7 +232,8 @@ encoding is source-qualified for parsing in the PHP, Python and Rust SDK
 candidates. Authored scope execution and the published mixed-language cascade
 remain required before scope support is advertised.
 Native's internal `CancellationScopeRequests` kernel now accepts requests at
-recorded non-root addresses under the configured run lock. The accepted
+recorded non-root addresses under task-before-run locks on the configured
+storage connection. The accepted
 `CancellationScopeRequested` history event owns its context and identity.
 Duplicates return that event, including after run closure. Inheritance reads
 the immediate canonical parent's accepted context, or the run's validated
@@ -249,6 +250,19 @@ cancellation fields, release claims, wake or stop callbacks, or deliver an
 exception. Root scope requests still use the existing whole-run boundary.
 Canonical reads reject contradictory addresses or inherited contexts.
 
+Acceptance also makes shared workflow ownership recoverable before preparation.
+It projects the original scope authority ceiling on the run and shortens live
+workflow leases to at most ten seconds, honoring a smaller configured lease.
+It never extends an already shorter lease, revives an expired claim or changes
+its owner, attempt or activity leases. The run-summary lease projection changes
+with the shortened claim. A pending task acquires that interval when claimed.
+Duplicates and conflicting roots do not renew ownership or replace the accepted
+budget. While any projected original scope budget is live, claims and heartbeats
+keep the bounded ownership interval. When all those budgets expire, unrelated
+work can retain the ordinary configured lease. This projection does not grant
+callback authority or deliver cancellation. SDK scope consumers still need
+qualified supervision that renews these intervals in time.
+
 The internal `CancellationScopeDelivery` kernel records one
 `CancellationScopeDelivered` boundary per accepted exact-run scope address.
 It rechecks the live claim owner/attempt, accepted identity, current authority,
@@ -261,8 +275,9 @@ address. A mixed-scope barrier requires selective member delivery and is refused
 by this boundary kernel.
 
 Delivery consumes the interrupted durable command range even when it was not
-scheduled. It does not set whole-run cancellation fields or change the workflow
-claim. Its `authority_deadline_at` preserves the ceiling observed at delivery.
+scheduled. It does not set whole-run cancellation fields or replace the workflow
+claim. Preparation and delivery renew its bounded hosting interval while retaining
+owner and attempt. Its `authority_deadline_at` preserves the ceiling observed at delivery.
 Later ancestors can shorten live authority without rewriting this receipt, so
 the receipt never authorizes a new effect. Cold inspection remains possible
 after expiry or run closure. This is a recording kernel, not a consumer that

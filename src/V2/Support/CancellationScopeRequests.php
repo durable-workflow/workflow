@@ -13,9 +13,13 @@ use Workflow\V2\CommandResult;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\ScopedCancellationContext;
 
 /**
@@ -56,6 +60,15 @@ final class CancellationScopeRequests
                 $caller,
                 $parentScopeId
             ): WorkflowHistoryEvent {
+                // Claims and heartbeat lock task before run. Acceptance must
+                // establish recoverable ownership before a worker prepares delivery.
+                $claims = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                    ->where('workflow_run_id', $run->id)
+                    ->where('task_type', TaskType::Workflow)
+                    ->where('status', TaskStatus::Leased)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
                 /** @var WorkflowRun $locked */
                 $locked = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->lockForUpdate()
@@ -113,7 +126,7 @@ final class CancellationScopeRequests
                 if (! $authority['active'] || now()->gte($incoming->deadline())) {
                     throw new LogicException('cancellation_scope_authority_expired');
                 }
-                return WorkflowHistoryEvent::record($locked, HistoryEventType::CancellationScopeRequested, [
+                $event = WorkflowHistoryEvent::record($locked, HistoryEventType::CancellationScopeRequested, [
                     'schema' => self::SCHEMA,
                     'workflow_run_id' => $locked->id,
                     'scope_id' => $scopeId,
@@ -121,6 +134,35 @@ final class CancellationScopeRequests
                     'request_id' => $requestId,
                     'cancellation' => $incoming->toArray(),
                 ]);
+                $ceiling = $incoming->deadline();
+                if ($authority['deadline_at'] !== null) {
+                    $authorityDeadline = CarbonImmutable::parse($authority['deadline_at']);
+                    if ($authorityDeadline->lt($ceiling)) {
+                        $ceiling = $authorityDeadline;
+                    }
+                }
+                if ($locked->cancellation_scope_recovery_until === null || $ceiling->gt(
+                    $locked->cancellation_scope_recovery_until
+                )) {
+                    $locked->forceFill([
+                        'cancellation_scope_recovery_until' => $ceiling,
+                    ])->save();
+                }
+                $expiry = CancellationCleanupLease::expiresAt($locked);
+                /** @var WorkflowTask $claim */
+                foreach ($claims as $claim) {
+                    if ($claim->lease_expires_at === null || now()->gte($claim->lease_expires_at)
+                        || ! $expiry->lt($claim->lease_expires_at)) {
+                        continue;
+                    }
+                    $claim->forceFill([
+                        'lease_expires_at' => $expiry,
+                    ])->save();
+                    WorkflowRunSummary::query()->whereKey($locked->id)->where('next_task_id', $claim->id)->update([
+                        'next_task_lease_expires_at' => $expiry,
+                    ]);
+                }
+                return $event;
             }, 3);
     }
 

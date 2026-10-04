@@ -19,9 +19,13 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2CancellationScopeRequestsTest extends TestCase
@@ -41,6 +45,88 @@ final class V2CancellationScopeRequestsTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public function testAcceptedRequestRecoversBeforePreparationWithoutCreatingANewBudget(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-recovery');
+        $task = $run->tasks()
+            ->sole();
+        WorkflowRunSummary::query()->whereKey($run->id)->update([
+            'next_task_id' => $task->id,
+            'next_task_lease_expires_at' => $task->lease_expires_at,
+        ]);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $acceptedClaim = $task->fresh()
+            ->getAttributes();
+        $acceptedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+        );
+
+        Carbon::setTestNow('2026-10-03T00:00:11Z');
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
+        $replacement = $task->fresh();
+        $this->assertSame(2, $replacement->attempt_count);
+        $this->assertSame('2026-10-03T00:00:21.000000Z', $replacement->lease_expires_at->toISOString());
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $acceptedSummary->next_task_lease_expires_at->toISOString());
+        $this->assertSame($acceptedClaim['lease_owner'], $task->lease_owner);
+        $this->assertSame($acceptedClaim['attempt_count'], $task->attempt_count);
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+
+        $beforeDuplicate = $replacement->getAttributes();
+        $duplicate = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 300);
+        $this->assertSame($request->id, $duplicate->id);
+        $this->assertSameJsonObject($request->payload, $duplicate->payload);
+        $this->assertSame($beforeDuplicate, $replacement->fresh()->getAttributes());
+
+        $historyBefore = $run->historyEvents()
+            ->count();
+        try {
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            );
+            $this->fail('Replaced owner must not prepare the cancellation.');
+        } catch (LogicException $exception) {
+            $this->assertSame('cancellation_scope_workflow_claim_mismatch', $exception->getMessage());
+        }
+        $this->assertSame($historyBefore, $run->historyEvents()->count());
+        $this->assertSame($beforeDuplicate, $replacement->fresh()->getAttributes());
+        $prepared = CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $replacement,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $this->assertSame($request->payload['request_id'], $prepared->payload['request_id']);
+        $this->assertSameJsonObject($request->payload['cancellation'], $prepared->payload['cancellation']);
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $prepared->payload['authority_deadline_at']);
+        $this->assertSame('2026-10-03T00:00:11.000000Z', $prepared->recorded_at->toISOString());
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertRunCancellationUntouched($run);
     }
 
     public function testDirectRequestColdReadsAndDuplicatesPreserveOriginalMetadataWithoutCancellingRun(): void
@@ -80,7 +166,204 @@ final class V2CancellationScopeRequestsTest extends TestCase
             $run->historyEvents()
                 ->where('event_type', HistoryEventType::CancellationScopeRequested)->count()
         );
-        $this->assertSame($claimBefore, $run->tasks()->sole()->getAttributes());
+        $claimAfter = $run->tasks()
+            ->sole()
+            ->getAttributes();
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $run->tasks()->sole()->lease_expires_at->toISOString());
+        unset($claimBefore['lease_expires_at'], $claimAfter['lease_expires_at'], $claimBefore['updated_at'], $claimAfter['updated_at']);
+        $this->assertSame($claimBefore, $claimAfter);
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    #[DataProvider('requestHostingIntervals')]
+    public function testAcceptanceShortensLiveOwnershipWithoutExtendingAnExistingLease(
+        int $budget,
+        int $configuredLease,
+        int $existingLease,
+        int $expectedInterval,
+    ): void {
+        [, $run, , $scope] = $this->scopeTree('request-interval');
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', $configuredLease);
+        $task = $run->tasks()
+            ->sole();
+        $task->forceFill([
+            'lease_expires_at' => now()
+                ->addSeconds($existingLease),
+        ])->save();
+        $before = $task->getAttributes();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', $budget);
+        $after = $task->fresh()
+            ->getAttributes();
+        $this->assertSame(
+            now()
+                ->addSeconds($expectedInterval)
+                ->toISOString(),
+            $task->fresh()
+                ->lease_expires_at->toISOString()
+        );
+        unset($before['lease_expires_at'], $after['lease_expires_at'], $before['updated_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
+        $this->assertSame(
+            now()
+                ->addSeconds($budget)
+                ->toISOString(),
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        $this->assertSame(
+            now()
+                ->addSeconds($budget)
+                ->toISOString(),
+            CancellationScopeRequests::context($run->fresh(), $scope)->deadline()->toISOString()
+        );
+        $this->assertSame($request->id, CancellationScopeRequests::request($run, $scope, '1.20', 3600)->id);
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    public static function requestHostingIntervals(): iterable
+    {
+        yield 'ordinary lease' => [30, 300, 300, 10];
+        yield 'smaller configured lease' => [30, 5, 300, 5];
+        yield 'short original lease is preserved' => [30, 300, 4, 4];
+        yield 'short scope budget preserves shared hosting' => [3, 300, 300, 10];
+    }
+
+    public function testAcceptanceMakesPendingClaimRecoverableWithoutLeasingIt(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-pending');
+        $task = $run->tasks()
+            ->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Ready,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+        $before = $task->getAttributes();
+        CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'first-owner')['claimed']);
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    public function testAcceptanceDoesNotReviveAnExpiredClaim(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-expired');
+        $task = $run->tasks()
+            ->sole();
+        $task->forceFill([
+            'lease_expires_at' => now()
+                ->subSecond(),
+        ])->save();
+        $before = $task->getAttributes();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        try {
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            );
+            $this->fail('An expired owner must not prepare the cancellation.');
+        } catch (LogicException $exception) {
+            $this->assertSame('cancellation_scope_workflow_claim_mismatch', $exception->getMessage());
+        }
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+        );
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    public function testAcceptanceLeavesActivityOwnershipAndOtherRunsAlone(): void
+    {
+        [, $run, $parent, $scope] = $this->scopeTree('request-isolation');
+        $activity = $run->tasks()
+            ->sole()
+            ->replicate();
+        $activity->forceFill([
+            'task_type' => TaskType::Activity,
+        ])->save();
+        [, $other] = $this->scopeTree('request-other-run');
+        $activityBefore = $activity->fresh()
+            ->getAttributes();
+        $otherClaimBefore = $other->tasks()
+            ->sole()
+            ->getAttributes();
+        CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $this->assertSame($activityBefore, $activity->fresh()->getAttributes());
+        $this->assertSame($otherClaimBefore, $other->tasks()->sole()->getAttributes());
+        $this->assertNull($other->fresh()->cancellation_scope_recovery_until);
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $parent));
+        $this->assertSame(
+            '2026-10-03T00:00:10.000000Z',
+            $run->tasks()
+                ->where('task_type', TaskType::Workflow)->sole()->lease_expires_at->toISOString()
+        );
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    public function testAcceptanceProjectsAuthorityCeilingWithoutChangingAcceptedDeadline(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-ceiling');
+        $run->forceFill([
+            'execution_deadline_at' => now()
+                ->addSeconds(5),
+        ])->save();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $this->assertSame(
+            '2026-10-03T00:00:05.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            CancellationScopeRequests::context($run->fresh(), $scope)->deadline()->toISOString()
+        );
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $run->tasks()->sole()->lease_expires_at->toISOString());
+        $this->assertSame($request->id, CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 300)->id);
+        $this->assertRunCancellationUntouched($run);
+    }
+
+    public function testAcceptanceProjectionKeepsHeartbeatsRecoverableOnlyDuringOriginalScopeBudget(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-heartbeat');
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 300);
+        $task = $run->tasks()
+            ->sole();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 15);
+        Carbon::setTestNow('2026-10-03T00:00:05Z');
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:00:15.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->advanceWithWorkflowHeartbeats($task, now()->copy()->addSeconds(11));
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:05:16.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->assertFalse(CancellationScopeRequests::authority($run->fresh(), $scope)['active']);
+        $this->assertSame(
+            '2026-10-03T00:00:15.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        $this->assertSame($request->id, CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 300)->id);
         $this->assertRunCancellationUntouched($run);
     }
 
@@ -88,6 +371,9 @@ final class V2CancellationScopeRequestsTest extends TestCase
     {
         [, $run, $parent, $child] = $this->scopeTree('inherit');
         $first = CancellationScopeRequests::request($run, $parent, '1.20', 30, 'original reason');
+        $acceptedClaim = $run->tasks()
+            ->sole()
+            ->getAttributes();
         Carbon::setTestNow('2026-10-03T00:00:09Z');
         $inherited = CancellationScopeRequests::request(
             $run,
@@ -106,6 +392,12 @@ final class V2CancellationScopeRequestsTest extends TestCase
         $this->assertSame('2026-10-03T00:00:00.000000Z', $context->requestedAt()->toISOString());
         $this->assertSame('2026-10-03T00:00:30.000000Z', $context->deadline()->toISOString());
         $this->assertSame($context->rootDeadline()->toISOString(), $context->deadline()->toISOString());
+        $this->assertSame($acceptedClaim, $run->tasks()->sole()->getAttributes());
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
         $this->assertSame(
             $inherited->id,
             CancellationScopeRequests::request($run, $child, '1.20', 3600, parentScopeId: $parent)->id
