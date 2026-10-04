@@ -68,6 +68,7 @@ final class ScopedCancellationContext
         $requests = [];
         $addresses = [];
         $instancesByRun = [];
+        $lastRunId = null;
         $normalized = [];
         $deadline = $root->deadline();
         foreach ($lineage as $index => $entry) {
@@ -99,6 +100,10 @@ final class ScopedCancellationContext
                     'Scoped cancellation lineage assigns conflicting instances to one run.'
                 );
             }
+            if ($lastRunId !== null && $lastRunId !== $entry['workflow_run_id']
+                && isset($instancesByRun[$entry['workflow_run_id']])) {
+                throw new InvalidArgumentException('Scoped cancellation lineage cannot reenter an earlier run.');
+            }
             $deadlineSnapshot = $root->toArray();
             $deadlineSnapshot['cleanup_deadline_at'] = $entry['cleanup_deadline_at'];
             $nextDeadline = CancellationContext::fromArray($deadlineSnapshot)->deadline();
@@ -114,6 +119,7 @@ final class ScopedCancellationContext
             $requests[$entry['request_id']] = true;
             $addresses[$address] = true;
             $instancesByRun[$entry['workflow_run_id']] = $entry['workflow_instance_id'];
+            $lastRunId = $entry['workflow_run_id'];
             $deadline = $nextDeadline;
         }
         return new self($root, $normalized, $deadline);
@@ -121,6 +127,16 @@ final class ScopedCancellationContext
 
     public static function fromRunContext(CancellationContext $context): self
     {
+        if ($context->scopeOrigin !== null) {
+            $last = $context->lineage[count($context->lineage) - 1];
+            return $context->scopeOrigin->forDescendant(
+                $context->requestId,
+                $last['workflow_instance_id'],
+                $last['workflow_run_id'],
+                CancellationScopeHistory::ROOT_SCOPE_ID,
+                $context->deadline(),
+            );
+        }
         $root = $context->toArray();
         $root['request_id'] = $context->rootRequestId;
         $root['parent_request_id'] = null;

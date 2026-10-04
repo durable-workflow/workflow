@@ -295,7 +295,7 @@ final class CancellationScopeDelivery
                     }
                     ScopedTimerCancellation::assertReady($locked, $preparation);
                     ScopedWaitCancellation::assertReady($locked, $preparation);
-                    ScopedChildCancellation::assertReady($preparation);
+                    ScopedChildCancellation::assertReady($preparation, $locked);
                 }
                 return WorkflowHistoryEvent::record($locked, $preparing
                     ? HistoryEventType::CancellationScopeDeliveryPrepared : HistoryEventType::CancellationScopeDelivered, [
@@ -448,7 +448,7 @@ final class CancellationScopeDelivery
                 }
                 ScopedTimerCancellation::assertReady($run, $preparation, $event->sequence);
                 ScopedWaitCancellation::assertReady($run, $preparation, $event->sequence);
-                ScopedChildCancellation::assertReady($preparation);
+                ScopedChildCancellation::assertReady($preparation, $run, $event->sequence);
             }
         } catch (LogicException $error) {
             throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);

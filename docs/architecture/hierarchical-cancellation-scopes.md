@@ -116,9 +116,15 @@ child start committed before preparation. Later child starts, changed current
 run pointers and missing operator projections cannot retarget a cold retry.
 Natural completion leaves the original prepared membership intact. The snapshot
 is exposed through candidate worker responses and the history timeline, without
-copying application payload bytes. Child dispatch and descendant actors remain
-separate gates. Delivery refuses child members until the cooperative actor and
-its original-context receipt barrier are implemented.
+copying application payload bytes. The internal child actor now commits a genuine
+cooperative child request and its parent receipt atomically. TryCancel waits for
+that request receipt. WaitCancellationCompleted also requires a separately
+recorded canonical child terminal outcome. Abandon records the policy without
+changing the child. Cold delivery checks the original preparation, child command,
+typed request history and terminal receipt before accepting a delivery marker.
+The hosting claim, unrelated siblings and shielded addresses remain intact.
+Portable child dispatch, descendant actors and SDK scope execution remain separate
+qualification gates. Portable delivery still refuses child dispatch before effects.
 
 The optional internal `CancellationScopeAdmission` bridge role exposes these
 canonical membership checks to Server. Server preserves the optional field,
@@ -167,6 +173,20 @@ The existing v1 parser and snapshots are unchanged. This metadata parser grants
 no authority: backend consumers must verify the recorded scope, propagation
 edge and accepted root under lock. Later ancestor authority ceilings and
 competing roots are separate records, not mutations of the accepted context.
+When a scoped request enters a child run, the internal
+`durable-workflow.cancellation-context/v2` encoding retains the full accepted
+`scope_origin`. Its ordinary run lineage contains one entry per run, while the
+origin preserves every scope hop and the immediate causal parent request ID.
+The child keeps the original requester, reason, source and requested-at time,
+and uses the accepted scope budget narrowed by the original preparation and
+current parent authority ceilings. The immutable child
+`scope_authority_deadline_at` binds that limit without extending the global root
+budget or rewriting the accepted scope origin.
+Further run-to-scope-to-run propagation retains that origin. Canonical child
+requests read it from the original prepared member, never caller-supplied
+metadata or a mutable current-run pointer. Competing origins cannot replace an
+accepted child context. Existing v1 snapshots remain readable. This candidate
+encoding requires SDK qualification before portable dispatch is enabled.
 Native's internal `CancellationScopeRequests` kernel now accepts requests at
 recorded non-root addresses under the configured run lock. The accepted
 `CancellationScopeRequested` history event owns its context and identity.

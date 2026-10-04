@@ -15,16 +15,20 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ScopedChildCancellation;
+use Workflow\V2\Support\ScopedChildCancellationDelivery;
 use Workflow\V2\WorkflowStub;
 
 final class V2ScopedChildCancellationTest extends TestCase
@@ -224,6 +228,493 @@ final class V2ScopedChildCancellationTest extends TestCase
             WorkflowRun::query()->findOrFail($child['child_workflow_run_id'])->cancellation_request_command_id
         );
         $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+    }
+
+    public function testCanonicalChildRequestPreservesThePreparedScopeAndColdDuplicateAfterExpiry(): void
+    {
+        [$run, $task, $scope, $sibling] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $other = $this->child($run, $task, $sibling, 5);
+        CancellationScopeRequests::request($run, $scope, '1.20', 30, 'maintenance');
+        $prepared = $this->prepare($run, $task, $scope);
+        WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->delete();
+        WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->delete();
+        Carbon::setTestNow('2026-10-03T00:00:12Z');
+        $target = WorkflowStub::loadRun($child['child_workflow_run_id']);
+        $request = $target->attemptRequestCancellationFromScope(
+            $run->id,
+            $scope,
+            $prepared['preparation_history_event_id'],
+            $child['child_call_id']
+        );
+        $this->assertTrue($request->accepted(), $request->rejectionReason() ?? '');
+        $context = $request->cancellationContext();
+        $this->assertSame($prepared['cancellation'], $context->scopeOrigin->toArray());
+        $this->assertSame($prepared['request_id'], $context->parentRequestId);
+        $this->assertSame('maintenance', $context->reason);
+        $this->assertSame('2026-10-03T00:00:00.000000Z', $context->requestedAt()->toISOString());
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $context->deadline()->toISOString());
+        $this->assertFalse($target->run()->fresh()->status->isTerminal());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertNull(
+            WorkflowRun::query()->findOrFail($other['child_workflow_run_id'])->cancellation_request_command_id
+        );
+        $this->assertSame(
+            $context->toArray(),
+            CooperativeCancellationDelivery::context($target->run()->fresh())->toArray()
+        );
+        Carbon::setTestNow('2026-10-03T00:01:00Z');
+        $duplicate = WorkflowStub::loadRun($child['child_workflow_run_id'])->attemptRequestCancellationFromScope(
+            $run->id,
+            $scope,
+            $prepared['preparation_history_event_id'],
+            $child['child_call_id']
+        );
+        $this->assertSame($context->toArray(), $duplicate->cancellationContext()->toArray());
+        $this->assertSame(
+            1,
+            $target->run()
+                ->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested)->count()
+        );
+    }
+
+    #[DataProvider('invalidChildRequests')]
+    public function testUnpreparedOrExpiredChildRequestCannotCancelTheTarget(string $mutation): void
+    {
+        [$run, $task, $scope, $sibling] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4, $mutation === 'abandon' ? 'abandon' : 'try_cancel');
+        $prepared = $this->prepare($run, $task, $scope);
+        $preparationId = $prepared['preparation_history_event_id'];
+        $callId = $child['child_call_id'];
+        if ($mutation === 'preparation') {
+            $preparationId = 'wrong-preparation';
+        }
+        if ($mutation === 'call') {
+            $callId = 'wrong-call';
+        }
+        if ($mutation === 'scope') {
+            $scope = $sibling;
+        }
+        if ($mutation === 'expired') {
+            Carbon::setTestNow('2026-10-03T00:00:30Z');
+        }
+        if ($mutation === 'shorter run deadline') {
+            $run->forceFill([
+                'run_deadline_at' => now()
+                    ->addSecond(),
+            ])->save();
+            Carbon::setTestNow('2026-10-03T00:00:01Z');
+        }
+        $request = WorkflowStub::loadRun($child['child_workflow_run_id'])->attemptRequestCancellationFromScope(
+            $run->id,
+            $scope,
+            $preparationId,
+            $callId
+        );
+        $this->assertTrue($request->rejected());
+        $this->assertSame(in_array($mutation, ['expired', 'shorter run deadline'], true)
+            ? 'cancellation_scope_authority_expired' : 'cancellation_scope_child_target_mismatch', $request->rejectionReason());
+        $target = WorkflowRun::query()->findOrFail($child['child_workflow_run_id']);
+        $this->assertNull($target->cancellation_request_command_id);
+        $this->assertSame(
+            0,
+            $target->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested)->count()
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function invalidChildRequests(): iterable
+    {
+        foreach (['preparation', 'call', 'scope', 'abandon', 'expired', 'shorter run deadline'] as $mutation) {
+            yield $mutation => [$mutation];
+        }
+    }
+
+    #[DataProvider('childPolicies')]
+    public function testChildActorCommitsPolicyReceiptsWithoutReleasingTheParentClaim(string $policy): void
+    {
+        [$run, $task, $scope, $sibling, $shield] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4, $policy);
+        $other = $this->child($run, $task, $sibling, 5);
+        $shielded = $this->child($run, $task, $shield, 6);
+        $prepared = $this->prepare($run, $task, $scope);
+        $claimBefore = $task->fresh()
+            ->getAttributes();
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $target = WorkflowStub::loadRun($child['child_workflow_run_id']);
+        $context = CooperativeCancellationDelivery::context($target->run()->fresh());
+        $this->assertSame($policy === 'abandon', $context === null);
+        $this->assertFalse($target->run()->fresh()->status->isTerminal());
+        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        foreach ([$other, $shielded] as $untouched) {
+            $this->assertNull(
+                WorkflowRun::query()->findOrFail($untouched['child_workflow_run_id'])->cancellation_request_command_id
+            );
+        }
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertFalse($receipt['ready']);
+            try {
+                CancellationScopeDelivery::record(
+                    $run->fresh(),
+                    $task->fresh(),
+                    $scope,
+                    $prepared['request_id'],
+                    4,
+                    'child',
+                    '1.20'
+                );
+                $this->fail('WAIT delivered before canonical child terminal history.');
+            } catch (LogicException $error) {
+                $this->assertSame('cancellation_scope_child_completion_not_established', $error->getMessage());
+            }
+            $target->attemptCancel('terminal fixture');
+            $resolved = ScopedChildCancellationDelivery::request(
+                $run->fresh(),
+                $task->fresh(),
+                $child['child_call_id'],
+                $scope,
+                $prepared['request_id'],
+                '1.20'
+            );
+            $this->assertSame($receipt['history_event_id'], $resolved['history_event_id']);
+            $this->assertTrue($resolved['ready']);
+            $this->assertNotNull($resolved['resolution_history_event_id']);
+        } else {
+            $this->assertTrue($receipt['ready']);
+        }
+        $delivery = CancellationScopeDelivery::record(
+            $run->fresh(),
+            $task->fresh(),
+            $scope,
+            $prepared['request_id'],
+            4,
+            'child',
+            '1.20'
+        );
+        Carbon::setTestNow('2026-10-03T00:00:20Z');
+        $task->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $cold = ScopedChildCancellationDelivery::request(
+            $run->fresh(),
+            $task->fresh(),
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $this->assertSame($receipt['history_event_id'], $cold['history_event_id']);
+        $this->assertSame($delivery->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
+        $this->assertSame(
+            $context?->toArray(),
+            CooperativeCancellationDelivery::context($target->run()->fresh())?->toArray()
+        );
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+        );
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function childPolicies(): iterable
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            yield $policy => [$policy];
+        }
+    }
+
+    public function testPreviouslyClosedChildHasItsOwnCanonicalResolutionReceipt(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4, 'wait_cancellation_completed');
+        $prepared = $this->prepare($run, $task, $scope);
+        WorkflowStub::loadRun($child['child_workflow_run_id'])->attemptCancel('natural terminal fixture');
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $this->assertTrue($receipt['ready']);
+        $this->assertNull($receipt['request_id']);
+        $this->assertSame(
+            'already_terminal',
+            WorkflowHistoryEvent::query()->findOrFail($receipt['history_event_id'])->payload['request_outcome']
+        );
+        ScopedChildCancellation::assertReady(CancellationScopeDelivery::prepared($run->fresh(), $scope), $run->fresh());
+        $this->assertNull(
+            WorkflowRun::query()->findOrFail($child['child_workflow_run_id'])->cancellation_request_command_id
+        );
+    }
+
+    #[DataProvider('postLockDeadlines')]
+    public function testChildLockCannotExtendTheRootBudgetOrExpiredHostingLease(int $seconds): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $task->forceFill([
+            'lease_expires_at' => now()
+                ->addSeconds(5),
+        ])->save();
+        $prepared = $this->prepare($run, $task, $scope);
+        WorkflowInstance::retrieved(static function (WorkflowInstance $instance) use ($child, $seconds): void {
+            if ($instance->id === $child['child_workflow_instance_id'] && $instance->getConnection()->transactionLevel() >= 2) {
+                Carbon::setTestNow('2026-10-03T00:00:' . sprintf('%02d', $seconds) . 'Z');
+            }
+        });
+        try {
+            ScopedChildCancellationDelivery::request(
+                $run,
+                $task,
+                $child['child_call_id'],
+                $scope,
+                $prepared['request_id'],
+                '1.20'
+            );
+            $this->fail('A child request committed after its hosting authority expired.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('cancellation_scope_authority_expired', $error->getMessage());
+        }
+        $target = WorkflowRun::query()->findOrFail($child['child_workflow_run_id']);
+        $this->assertNull($target->cancellation_request_command_id);
+        $this->assertSame(
+            0,
+            $target->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested)->count()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+        );
+    }
+
+    /**
+     * @return iterable<string, array{int}>
+     */
+    public static function postLockDeadlines(): iterable
+    {
+        yield 'expired hosting lease' => [5];
+        yield 'expired root budget' => [30];
+    }
+
+    #[DataProvider('changedChildReceipts')]
+    public function testAlteredReceiptCannotAuthorizeParentDelivery(string $mutation): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $prepared = $this->prepare($run, $task, $scope);
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $event = WorkflowHistoryEvent::query()->findOrFail($receipt['history_event_id']);
+        $payload = $event->payload;
+        switch ($mutation) {
+            case 'parent': $payload['parent_request_id'] = 'wrong';
+                break;
+            case 'target': $payload['child_workflow_run_id'] = 'wrong';
+                break;
+            case 'call': $payload['cancellation_scope']['member']['child_call_id'] = 'wrong';
+                break;
+            case 'preparation': $payload['cancellation_scope']['preparation_history_event_id'] = 'wrong';
+                break;
+            case 'schema': $payload['cancellation_scope']['schema'] = 'wrong';
+                break;
+            case 'deadline': $payload['child_cleanup_deadline_at'] = '2026-10-03T00:00:40.000000Z';
+                break;
+            case 'context': $payload['child_cancellation']['scope_origin'] = [];
+                break;
+            case 'outcome': $payload['request_outcome'] = 'abandoned';
+                break;
+        }
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cancellation_scope_child_delivery_not_established');
+        CancellationScopeDelivery::record(
+            $run->fresh(),
+            $task->fresh(),
+            $scope,
+            $prepared['request_id'],
+            4,
+            'child',
+            '1.20'
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function changedChildReceipts(): iterable
+    {
+        foreach (['parent', 'target', 'call', 'preparation', 'schema', 'deadline', 'context', 'outcome'] as $mutation) {
+            yield $mutation => [$mutation];
+        }
+    }
+
+    public function testColdReceiptObjectKeyReorderingPreservesTheOriginalProof(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $prepared = $this->prepare($run, $task, $scope);
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $event = WorkflowHistoryEvent::query()->findOrFail($receipt['history_event_id']);
+        $payload = $event->payload;
+        ksort($payload['cancellation_scope']);
+        ksort($payload['cancellation_scope']['member']);
+        ksort($payload['cancellation_scope']['cancellation']['root_context']['requester']);
+        ksort($payload['child_cancellation']['requester']);
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $delivery = CancellationScopeDelivery::record(
+            $run->fresh(),
+            $task->fresh(),
+            $scope,
+            $prepared['request_id'],
+            4,
+            'child',
+            '1.20'
+        );
+        $this->assertSame($delivery->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
+    }
+
+    public function testAnotherCancellationRootCannotBeReplacedByAScopeReceipt(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $prepared = $this->prepare($run, $task, $scope);
+        $target = WorkflowStub::loadRun($child['child_workflow_run_id']);
+        $original = $target->requestCancellation('independent', 20)
+            ->cancellationContext();
+        try {
+            ScopedChildCancellationDelivery::request(
+                $run,
+                $task,
+                $child['child_call_id'],
+                $scope,
+                $prepared['request_id'],
+                '1.20'
+            );
+            $this->fail('An independent root was replaced by a parent scope.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'cancellation_scope_child_request_refused:cancellation_root_conflict',
+                $error->getMessage()
+            );
+        }
+        $this->assertSame(
+            $original->toArray(),
+            CooperativeCancellationDelivery::context($target->run()->fresh())->toArray()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+        );
+    }
+
+    public function testLateResolutionReadCannotCommitAfterTheOriginalBudget(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4, 'wait_cancellation_completed');
+        $prepared = $this->prepare($run, $task, $scope);
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        WorkflowStub::loadRun($child['child_workflow_run_id'])->attemptCancel('terminal fixture');
+        WorkflowCommand::retrieved(static function (WorkflowCommand $command) use ($receipt): void {
+            if ($command->id === $receipt['request_id'] && $command->getConnection()->transactionLevel() >= 1) {
+                Carbon::setTestNow('2026-10-03T00:00:30Z');
+            }
+        });
+        try {
+            ScopedChildCancellationDelivery::request(
+                $run->fresh(),
+                $task->fresh(),
+                $child['child_call_id'],
+                $scope,
+                $prepared['request_id'],
+                '1.20'
+            );
+            $this->fail('A late canonical read committed a child resolution receipt.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_authority_expired', $error->getMessage());
+        }
+        $this->assertSame(
+            0,
+            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
+        );
+    }
+
+    public function testChildInheritsTheEarlierPreparedParentRunDeadline(): void
+    {
+        [$run, $task, $scope] = $this->tree();
+        $child = $this->child($run, $task, $scope, 4);
+        $run->forceFill([
+            'run_deadline_at' => now()
+                ->addSeconds(10),
+        ])->save();
+        $prepared = $this->prepare($run, $task, $scope);
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $prepared['authority_deadline_at']);
+        Carbon::setTestNow('2026-10-03T00:00:05Z');
+        $receipt = ScopedChildCancellationDelivery::request(
+            $run,
+            $task,
+            $child['child_call_id'],
+            $scope,
+            $prepared['request_id'],
+            '1.20'
+        );
+        $target = WorkflowRun::query()->findOrFail($child['child_workflow_run_id']);
+        $context = CooperativeCancellationDelivery::context($target);
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $context->deadline()->toISOString());
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $context->scopeOrigin->rootDeadline()->toISOString());
+        $this->assertSame($prepared['cancellation'], $context->scopeOrigin->toArray());
+        $this->assertSame($context->requestId, $receipt['request_id']);
+        $this->assertTrue($receipt['ready']);
+        ScopedChildCancellation::assertReady(CancellationScopeDelivery::prepared($run->fresh(), $scope), $run->fresh());
     }
 
     /**

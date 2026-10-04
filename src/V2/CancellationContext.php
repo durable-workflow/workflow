@@ -36,6 +36,7 @@ final class CancellationContext
         private readonly CarbonImmutable $originalRequestedAt,
         private readonly CarbonImmutable $cleanupDeadline,
         public readonly array $lineage,
+        public readonly ?ScopedCancellationContext $scopeOrigin = null,
     ) {
     }
 
@@ -44,8 +45,22 @@ final class CancellationContext
      */
     public static function fromArray(array $snapshot): self
     {
-        if (($snapshot['schema'] ?? null) !== 'durable-workflow.cancellation-context/v1') {
+        $schema = $snapshot['schema'] ?? null;
+        if (! in_array($schema, ['durable-workflow.cancellation-context/v1',
+            'durable-workflow.cancellation-context/v2'], true)) {
             throw new InvalidArgumentException('Unsupported cancellation context schema.');
+        }
+        $scopeOrigin = null;
+        if ($schema === 'durable-workflow.cancellation-context/v2') {
+            if (! is_array($snapshot['scope_origin'] ?? null)) {
+                throw new InvalidArgumentException('Scoped run cancellation requires its original scope context.');
+            }
+            $scopeOrigin = ScopedCancellationContext::fromArray($snapshot['scope_origin']);
+        } elseif (array_key_exists('scope_origin', $snapshot) || array_key_exists(
+            'scope_authority_deadline_at',
+            $snapshot
+        )) {
+            throw new InvalidArgumentException('Legacy cancellation context cannot discard a scoped origin.');
         }
         $requester = $snapshot['requester'] ?? null;
         if (! is_array($requester) || array_is_list($requester) || $requester === []) {
@@ -90,15 +105,46 @@ final class CancellationContext
             'workflow_instance_id' => $rootInstanceId,
             'workflow_run_id' => $rootRunId,
         ] || $normalizedLineage[count($normalizedLineage) - 1]['request_id'] !== $requestId
-            || (count($normalizedLineage) === 1
+            || ($scopeOrigin === null && (count($normalizedLineage) === 1
                 ? $parentRequestId !== null
-                : $parentRequestId !== $normalizedLineage[count($normalizedLineage) - 2]['request_id'])) {
+                : $parentRequestId !== $normalizedLineage[count($normalizedLineage) - 2]['request_id']))) {
             throw new InvalidArgumentException('Cancellation lineage does not match its request identities.');
         }
         $requestedAt = self::timestamp(self::text($snapshot, 'requested_at'));
         $deadline = self::timestamp(self::text($snapshot, 'cleanup_deadline_at'));
         if ($deadline->lessThanOrEqualTo($requestedAt)) {
             throw new InvalidArgumentException('Cancellation deadline must follow the original request.');
+        }
+        if ($scopeOrigin !== null) {
+            $last = $normalizedLineage[count($normalizedLineage) - 1];
+            $expected = self::scopedDescendantSnapshot(
+                $scopeOrigin,
+                $requestId,
+                $last['workflow_instance_id'],
+                $last['workflow_run_id'],
+                self::timestamp(self::text($snapshot, 'scope_authority_deadline_at')),
+            );
+            $normalized = [
+                ...$snapshot,
+                'lineage' => $normalizedLineage,
+                'requested_at' => $requestedAt->toISOString(),
+                'cleanup_deadline_at' => $deadline->toISOString(),
+                'scope_authority_deadline_at' => self::timestamp(
+                    self::text($snapshot, 'scope_authority_deadline_at')
+                )->toISOString(),
+            ];
+            foreach ($expected as $key => $value) {
+                $actual = $normalized[$key] ?? null;
+                if ($key === 'requester') {
+                    ksort($actual);
+                    ksort($value);
+                }
+                if ($key !== 'scope_origin' && $actual !== $value) {
+                    throw new InvalidArgumentException(
+                        'Run cancellation does not preserve its original scope context.'
+                    );
+                }
+            }
         }
 
         return new self(
@@ -113,6 +159,7 @@ final class CancellationContext
             $requestedAt,
             $deadline,
             $normalizedLineage,
+            $scopeOrigin,
         );
     }
 
@@ -131,6 +178,14 @@ final class CancellationContext
      */
     public function forDescendant(string $requestId, string $workflowInstanceId, string $workflowRunId): self
     {
+        if ($this->scopeOrigin !== null) {
+            return self::fromScopeContext(
+                ScopedCancellationContext::fromRunContext($this),
+                $requestId,
+                $workflowInstanceId,
+                $workflowRunId,
+            );
+        }
         $snapshot = $this->toArray();
         $snapshot['request_id'] = $requestId;
         $snapshot['parent_request_id'] = $this->requestId;
@@ -141,6 +196,25 @@ final class CancellationContext
         ];
 
         return self::fromArray($snapshot);
+    }
+
+    /**
+     * Preserve every scope address when cooperative cancellation enters a child run.
+     */
+    public static function fromScopeContext(
+        ScopedCancellationContext $origin,
+        string $requestId,
+        string $workflowInstanceId,
+        string $workflowRunId,
+        ?CarbonImmutable $authorityDeadline = null,
+    ): self {
+        return self::fromArray(self::scopedDescendantSnapshot(
+            $origin,
+            $requestId,
+            $workflowInstanceId,
+            $workflowRunId,
+            $authorityDeadline,
+        ));
     }
 
     /**
@@ -176,7 +250,8 @@ final class CancellationContext
     public function toArray(): array
     {
         return [
-            'schema' => 'durable-workflow.cancellation-context/v1',
+            'schema' => $this->scopeOrigin === null ? 'durable-workflow.cancellation-context/v1'
+                : 'durable-workflow.cancellation-context/v2',
             'request_id' => $this->requestId,
             'root_request_id' => $this->rootRequestId,
             'root_workflow_instance_id' => $this->rootWorkflowInstanceId,
@@ -188,6 +263,62 @@ final class CancellationContext
             'requested_at' => $this->originalRequestedAt->toISOString(),
             'cleanup_deadline_at' => $this->cleanupDeadline->toISOString(),
             'lineage' => $this->lineage,
+            ...($this->scopeOrigin === null ? [] : [
+                'scope_origin' => $this->scopeOrigin->toArray(),
+                'scope_authority_deadline_at' => $this->cleanupDeadline->toISOString(),
+            ]),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function scopedDescendantSnapshot(
+        ScopedCancellationContext $origin,
+        string $requestId,
+        string $workflowInstanceId,
+        string $workflowRunId,
+        ?CarbonImmutable $authorityDeadline = null,
+    ): array {
+        if (in_array($workflowRunId, array_column($origin->lineage, 'workflow_run_id'), true)
+            || in_array($requestId, array_column($origin->lineage, 'request_id'), true)
+            || trim($requestId) === '' || trim($workflowInstanceId) === '' || trim($workflowRunId) === '') {
+            throw new InvalidArgumentException('Scoped run cancellation cannot repeat a request or run.');
+        }
+        $root = $origin->rootContext->toArray();
+        $deadline = $authorityDeadline ?? $origin->deadline();
+        if ($deadline->greaterThan($origin->deadline()) || $deadline->lessThanOrEqualTo($origin->requestedAt())) {
+            throw new InvalidArgumentException('Child cancellation authority cannot extend its original scope budget.');
+        }
+        $lineage = [$root['lineage'][0]];
+        foreach ($origin->lineage as $entry) {
+            if ($entry['workflow_run_id'] === $origin->rootContext->rootWorkflowRunId) {
+                continue;
+            }
+            $address = array_intersect_key($entry, array_flip([
+                'request_id', 'workflow_instance_id', 'workflow_run_id',
+            ]));
+            $index = count($lineage) - 1;
+            if ($lineage[$index]['workflow_run_id'] === $entry['workflow_run_id']) {
+                $lineage[$index] = $address;
+            } else {
+                $lineage[] = $address;
+            }
+        }
+        return [
+            ...$root,
+            'schema' => 'durable-workflow.cancellation-context/v2',
+            'request_id' => $requestId,
+            'parent_request_id' => $origin->requestId,
+            'cleanup_deadline_at' => $deadline
+                ->toISOString(),
+            'lineage' => [...$lineage, [
+                'request_id' => $requestId,
+                'workflow_instance_id' => $workflowInstanceId,
+                'workflow_run_id' => $workflowRunId,
+            ]],
+            'scope_origin' => $origin->toArray(),
+            'scope_authority_deadline_at' => $deadline->toISOString(),
         ];
     }
 

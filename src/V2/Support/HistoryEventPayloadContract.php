@@ -964,12 +964,14 @@ final class HistoryEventPayloadContract
             'sequence', 'policy', 'parent_request_id', 'root_request_id', 'cleanup_deadline_at',
             'child_workflow_instance_id', 'child_workflow_run_id', 'child_request_id',
             'child_root_request_id', 'child_cleanup_deadline_at', 'request_outcome', 'rejection_reason',
+            'cancellation_scope', 'child_cancellation',
         ],
         'ChildCancellationResolved' => [
             'sequence', 'policy', 'parent_request_id', 'root_request_id', 'cleanup_deadline_at',
             'child_workflow_instance_id', 'child_workflow_run_id', 'child_status',
             'child_request_id', 'child_root_request_id', 'child_cleanup_deadline_at',
             'child_terminal_history_event_id', 'child_terminal_event_type', 'reason',
+            'cancellation_scope',
         ],
         'ParentCloseCancellationRequested' => [
             'parent_terminal_history_event_id', 'parent_terminal_event_type', 'cancellation',
