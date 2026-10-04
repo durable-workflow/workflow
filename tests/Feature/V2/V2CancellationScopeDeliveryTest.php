@@ -1092,7 +1092,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $duplicate = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'cleanup-attempt', $descriptor, '1.20');
         $this->assertTrue($duplicate['duplicate']);
         $this->assertSame($prepared['activity_attempt_id'], $duplicate['activity_attempt_id']);
-        $this->assertSame($snapshot, $duplicate['cancellation_cleanup']);
+        $this->assertSameJsonObject($snapshot, $duplicate['cancellation_cleanup']);
         $run->forceFill([
             'execution_deadline_at' => now()
                 ->addMinute(),
@@ -1253,7 +1253,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
 ->cancellation_request_command_id,
             $control['cancellation_request']['request_id']
         );
-        $this->assertSame($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
+        $this->assertSameJsonObject($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
             $prepared['activity_execution_id'],
         )->activity_options['cancellation_cleanup']);
         $this->assertSame('cancellation_requested', $bridge->prepareLocalActivity(
@@ -1360,7 +1360,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertTrue($retry['prepared'], $retry['reason'] ?? '');
         $this->assertSame(2, $retry['attempt_number']);
         $this->assertNotSame($prepared['activity_attempt_id'], $retry['activity_attempt_id']);
-        $this->assertSame($prepared['cancellation_cleanup'], $retry['cancellation_cleanup']);
+        $this->assertSameJsonObject($prepared['cancellation_cleanup'], $retry['cancellation_cleanup']);
         $this->assertSame($prepared['start_to_close_deadline_at'], $retry['start_to_close_deadline_at']);
         $this->assertSame($prepared['schedule_to_close_deadline_at'], $retry['schedule_to_close_deadline_at']);
         $stale = $bridge->recordLocalActivityOutcome($prepared['activity_attempt_id'], 'original', 1, [
@@ -1436,7 +1436,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             ], '1.20');
             $this->assertTrue($outcome['recorded'], $outcome['reason'] ?? '');
         }
-        $this->assertSame($snapshots[0], $snapshots[1]);
+        $this->assertSameJsonObject($snapshots[0], $snapshots[1]);
         $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
         $this->assertNull($run->refresh()->cancellation_request_command_id);
     }
@@ -1548,7 +1548,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertFalse($outcome['recorded']);
         $this->assertSame('run_deadline_expired', $outcome['reason']);
         $this->assertSame($history, $run->historyEvents()->count());
-        $this->assertSame($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
+        $this->assertSameJsonObject($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
             $prepared['activity_execution_id'],
         )->activity_options['cancellation_cleanup']);
     }
@@ -1600,7 +1600,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertFalse($outcome['recorded']);
         $this->assertSame('local_activity_cleanup_authority_expired', $outcome['reason']);
         $this->assertSame($history, $run->historyEvents()->count());
-        $this->assertSame($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
+        $this->assertSameJsonObject($prepared['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
             $prepared['activity_execution_id'],
         )->activity_options['cancellation_cleanup']);
         $this->assertSame(
@@ -1692,7 +1692,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertTrue(
             $bridge->controlLocalActivity($cleanup['activity_attempt_id'], 'original', 1, true, '1.20')['active']
         );
-        $this->assertSame($cleanup['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
+        $this->assertSameJsonObject($cleanup['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
             $cleanup['activity_execution_id'],
         )->activity_options['cancellation_cleanup']);
         Carbon::setTestNow(now()->addSeconds(10));
