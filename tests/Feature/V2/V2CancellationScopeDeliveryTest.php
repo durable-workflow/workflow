@@ -365,7 +365,10 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         if ($mixed) {
             $this->assertSame(
                 ActivityStatus::Pending,
-                $run->activityExecutions()->where('sequence', 4)->sole()->status
+                $run->activityExecutions()
+                    ->where('sequence', 4)
+                    ->sole()
+->status
             );
             $this->assertNull(CancellationScopeRequests::context($run->fresh(), $parent));
         }
@@ -498,7 +501,10 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
         $this->assertSame(
             ActivityStatus::Cancelled,
-            $run->activityExecutions()->where('sequence', $directShield ? 6 : 5)->sole()->status
+            $run->activityExecutions()
+                ->where('sequence', $directShield ? 6 : 5)
+                ->sole()
+->status
         );
         foreach ($survivingExecutions as $id => $attributes) {
             $this->assertSame($attributes, ActivityExecution::query()->findOrFail($id)->getAttributes());
@@ -559,7 +565,15 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             $task,
             'cancellation_scope_delivery_membership_mismatch',
             static fn () =>
-            CancellationScopeDelivery::prepare($run, $task, $parent, $ancestor->payload['request_id'], 5, 'timer', '1.20')
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $parent,
+                $ancestor->payload['request_id'],
+                5,
+                'timer',
+                '1.20'
+            )
         );
         $this->assertSame(TimerStatus::Pending, $run->timers()->sole()->status);
         $this->assertNull(CancellationScopeRequests::context($run->fresh(), $child));
@@ -643,11 +657,24 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             $task,
             'cancellation_scope_delivery_membership_mismatch',
             static fn () =>
-            CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 3, 'parallel', '1.20', 2)
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'parallel',
+                '1.20',
+                2
+            )
         );
         $this->assertSame(
             $beforeExecutions,
-            $run->activityExecutions()->orderBy('sequence')->get()->map->getAttributes()->all()
+            $run->activityExecutions()
+                ->orderBy('sequence')
+                ->get()
+                ->map->getAttributes()
+                ->all()
         );
     }
 
