@@ -296,6 +296,10 @@ final class V2ScopedWaitCancellationTest extends TestCase
                 'lease_expires_at' => now()
                     ->addSeconds(5),
             ])->save();
+        } else {
+            $this->advanceWithWorkflowHeartbeats($claim, Carbon::parse('2026-10-03T00:00:25Z'));
+            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($claim->id)['renewed']);
+            $this->assertSame('2026-10-03T00:00:35.000000Z', $claim->fresh()->lease_expires_at->toISOString());
         }
         $timerId = $run->timers()
             ->sole()

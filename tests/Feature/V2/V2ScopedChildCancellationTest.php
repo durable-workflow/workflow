@@ -76,7 +76,7 @@ final class V2ScopedChildCancellationTest extends TestCase
                 WorkflowRun::query()->findOrFail($child['child_workflow_run_id'])->cancellation_request_command_id
             );
         }
-        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $this->assertFalse($run->fresh()->status->isTerminal());
         $timeline = collect(HistoryTimeline::fromHistory($run->fresh()))
@@ -183,10 +183,13 @@ final class V2ScopedChildCancellationTest extends TestCase
             'payload' => $payload,
         ])->save();
         Carbon::setTestNow('2026-10-03T00:00:20Z');
-        $task->forceFill([
-            'lease_owner' => 'replacement-child-owner',
-            'attempt_count' => 2,
-        ])->save();
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(
+            app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement-child-owner')['claimed']
+        );
+        $this->assertSame(2, $task->fresh()->attempt_count);
         $this->assertSame($prepared, $this->prepare($run->fresh(), $task->fresh(), $scope));
         $this->assertSame('2026-10-03T00:00:30.000000Z', $prepared['authority_deadline_at']);
     }
@@ -488,19 +491,10 @@ final class V2ScopedChildCancellationTest extends TestCase
             $this->assertTrue($receipt['ready']);
         }
         Carbon::setTestNow('2026-10-03T00:00:20Z');
-        if ($response['delivered']) {
-            $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
-            $this->assertSame([], $repair['existing_task_failures']);
-            $this->assertSame(1, $repair['repaired_existing_tasks']);
-            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
-        } else {
-            // This existing pending-delivery fixture transfers the epoch only
-            // to test receipt reconciliation, not physical worker recovery.
-            $task->forceFill([
-                'lease_owner' => 'replacement',
-                'attempt_count' => 2,
-            ])->save();
-        }
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
         $this->assertSame(2, $task->fresh()->attempt_count);
         $cold = $this->deliver($task->fresh(), $scope, $prepared['request_id']);
         $this->assertTrue($cold['delivered'], $cold['reason'] ?? '');
@@ -581,10 +575,8 @@ final class V2ScopedChildCancellationTest extends TestCase
     {
         [$run, $task, $scope] = $this->tree();
         $child = $this->child($run, $task, $scope, 4);
-        $task->forceFill([
-            'lease_expires_at' => now()
-                ->addSeconds(5),
-        ])->save();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 5);
         $prepared = $this->prepare($run, $task, $scope);
         WorkflowInstance::retrieved(static function (WorkflowInstance $instance) use ($child, $seconds): void {
             if ($instance->id === $child['child_workflow_instance_id'] && $instance->getConnection()->transactionLevel() >= 2) {

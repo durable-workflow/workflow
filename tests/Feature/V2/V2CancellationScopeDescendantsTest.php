@@ -36,6 +36,7 @@ use Workflow\V2\Support\ScopedCancellationPreparation;
 use Workflow\V2\Support\ScopedChildCancellationDelivery;
 use Workflow\V2\Support\ScopedTimerCancellation;
 use Workflow\V2\Support\ScopedWaitCancellation;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2CancellationScopeDescendantsTest extends TestCase
@@ -86,7 +87,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         foreach (['shield', 'shield_child', 'sibling'] as $name) {
             $this->assertNull(CancellationScopeRequests::context($run->fresh(), $scopes[$name]));
         }
-        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $this->assertSame(
             3,
@@ -103,11 +104,12 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $count = $run->historyEvents()
             ->count();
         Carbon::setTestNow('2026-10-04T00:00:20Z');
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
         $replacement = $task->fresh();
-        $replacement->forceFill([
-            'lease_owner' => 'replacement',
-            'attempt_count' => 2,
-        ])->save();
+        $this->assertSame(2, $replacement->attempt_count);
         $retry = $this->prepare($run->fresh(), $replacement, $scopes['parent']);
         $this->assertSame($first->id, $retry->id);
         $this->assertSameJsonObject($first->payload, $retry->payload);
@@ -879,7 +881,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $this->assertCount(1, $members[1]['timer_members']);
         $this->assertSame($beforeActivities, ActivityExecution::query()->get()->map->getAttributes()->all());
         $this->assertSame($beforeTimers, WorkflowTimer::query()->get()->map->getAttributes()->all());
-        $this->assertSame($beforeTask, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($beforeTask, $task);
         $this->assertSameJsonObject(
             $prepared->payload,
             CancellationScopeDelivery::prepared($run->fresh(), $scopes['parent'])->payload
@@ -1503,7 +1505,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             $prepared->payload,
             CancellationScopeDelivery::prepared($run->fresh(), $scopes['parent'])->payload
         );
-        Carbon::setTestNow('2026-10-04T00:00:10Z');
+        $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-04T00:00:10Z'));
         $this->expectExceptionMessage('cancellation_scope_authority_expired');
         $this->prepare($run->fresh(), $task, $scopes['parent']);
     }

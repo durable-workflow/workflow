@@ -90,6 +90,119 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         }
     }
 
+    public function testPreparedPendingDeliveryRecoversThroughWatchdogWithoutReplacingOriginalBoundary(): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $claim = $task->fresh()
+            ->getAttributes();
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $this->assertHostingShortenedWithoutClaimReplacement($claim, $task);
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertSame(
+            '2026-10-03T00:00:30.000000Z',
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
+        );
+        Carbon::setTestNow('2026-10-03T00:00:10Z');
+        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_workflow_claim_mismatch', static fn () =>
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            ));
+        Carbon::setTestNow('2026-10-03T00:00:11Z');
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
+        $replacement = $task->fresh();
+        $this->assertSame(2, $replacement->attempt_count);
+        $this->assertSame('2026-10-03T00:00:21.000000Z', $replacement->lease_expires_at->toISOString());
+        $replayed = CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $replacement,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $this->assertSame($prepared->id, $replayed->id);
+        $this->assertSameJsonObject($prepared->payload, $replayed->payload);
+        $this->assertSame($prepared->recorded_at->toISOString(), $replayed->recorded_at->toISOString());
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_workflow_claim_mismatch', static fn () =>
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            ));
+        $duplicate = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 300);
+        $this->assertSame($request->id, $duplicate->id);
+        $this->assertSameJsonObject($request->payload, $duplicate->payload);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+        );
+    }
+
+    #[DataProvider('preparationHostingIntervals')]
+    public function testPreparationUsesConfiguredRecoveryIntervalWithoutClampingSharedClaimToScopeBudget(
+        int $budget,
+        int $configuredLease,
+        int $expectedInterval,
+    ): void {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', $configuredLease);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', $budget);
+        $before = $task->fresh()
+            ->getAttributes();
+        $prepared = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $claim = $task->fresh();
+        $this->assertSame(now()->addSeconds($expectedInterval)->toISOString(), $claim->lease_expires_at->toISOString());
+        $after = $claim->getAttributes();
+        unset($before['lease_expires_at'], $after['lease_expires_at'], $before['updated_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
+        $this->assertSame(now()->addSeconds($budget)->toISOString(), $prepared->payload['authority_deadline_at']);
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    public static function preparationHostingIntervals(): iterable
+    {
+        yield 'ordinary lease' => [30, 60, 10];
+        yield 'smaller configured lease' => [30, 5, 5];
+        yield 'short subtree budget preserves shared ownership' => [3, 60, 10];
+    }
+
     public function testResponseLossAndReplacementClaimReplayOriginalBoundaryAndClockWithoutNewBudget(): void
     {
         [, $run, $task, , $scope] = $this->scopeTree();
@@ -2160,6 +2273,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
     ): void {
         $history = $run->historyEvents()
             ->count();
+        $runBefore = $run->fresh()
+            ->getAttributes();
         $claim = $task->fresh()
             ->getAttributes();
         try {
@@ -2169,6 +2284,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             $this->assertSame($reason, $error->getMessage());
         }
         $this->assertSame($history, $run->historyEvents()->count());
+        $this->assertSame($runBefore, $run->fresh()->getAttributes());
         $this->assertSame($claim, $task->fresh()->getAttributes());
     }
 }

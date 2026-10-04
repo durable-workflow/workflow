@@ -31,6 +31,7 @@ use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ScopedTimerCancellation;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2ScopedTimerCancellationTest extends TestCase
@@ -232,11 +233,12 @@ final class V2ScopedTimerCancellationTest extends TestCase
         $this->assertTrue($receipt['fenced']);
         $this->assertSame(TimerStatus::Pending, $second->fresh()->status);
         Carbon::setTestNow('2026-10-03T00:00:11Z');
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id, 'replacement')['claimed']);
         $replacement = $task->fresh();
-        $replacement->forceFill([
-            'lease_owner' => 'replacement',
-            'attempt_count' => 2,
-        ])->save();
+        $this->assertSame(2, $replacement->attempt_count);
         $result = $this->dispatch($replacement, $scope, $prepared['request_id']);
         $this->assertTrue($result['delivered'], $result['reason'] ?? '');
         $this->assertSame($receipt, $result['timer_cancellations'][0]);
@@ -276,7 +278,7 @@ final class V2ScopedTimerCancellationTest extends TestCase
                     'lease_expires_at' => now(),
                 ])->save();
         } elseif ($mutation === 'deadline') {
-            Carbon::setTestNow('2026-10-03T00:00:30Z');
+            $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-03T00:00:30Z'));
         } elseif ($mutation === 'request') {
             $requestId = 'another-request';
         } elseif ($mutation === 'sibling') {
@@ -384,6 +386,10 @@ final class V2ScopedTimerCancellationTest extends TestCase
                 'lease_expires_at' => now()
                     ->addSeconds(5),
             ])->save();
+        } else {
+            $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-03T00:00:25Z'));
+            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
+            $this->assertSame('2026-10-03T00:00:35.000000Z', $task->fresh()->lease_expires_at->toISOString());
         }
         $crossed = false;
         DB::listen(static function (QueryExecuted $query) use ($timer, $seconds, &$crossed): void {

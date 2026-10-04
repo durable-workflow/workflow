@@ -77,7 +77,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame($wait, $fence['waiting_for_stop']);
         $this->assertSame(ActivityStatus::Cancelled, $target->fresh()->status);
         $this->assertSame(TaskStatus::Cancelled, $this->activityTask($run, $target)->status);
-        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($claimBefore, $task);
         $this->assertSame($siblingBefore, $other->fresh()->getAttributes());
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $this->assertFalse($run->fresh()->status->isTerminal());
@@ -123,10 +123,8 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $activityTask = $this->activityTask($run, $target);
         $claim = app(ActivityTaskBridge::class)->claimStatus($activityTask->id, 'activity-owner');
         $this->assertTrue($claim['claimed'], $claim['reason'] ?? '');
-        $task->forceFill([
-            'lease_expires_at' => now()
-                ->addSeconds(5),
-        ])->save();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 5);
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         CancellationScopeDelivery::prepare(
             $run,
@@ -444,7 +442,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $fence = $this->fence($run, $task, $target, $scope);
         $this->assertSame($root->payload['request_id'], $fence['root_request_id']);
         $this->assertSame('2026-10-03T00:00:30.000000Z', $fence['cleanup_deadline_at']);
-        Carbon::setTestNow('2026-10-03T00:00:31Z');
+        $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-03T00:00:31Z'));
         $ack = ActivityCancellationAcknowledgement::recordStopped(
             $claim['activity_attempt_id'],
             'activity-owner',
@@ -502,7 +500,9 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $fence = $this->fence($run, $task, $target, $scope);
         $this->assertTrue($fence['waiting_for_stop']);
-        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($claimBefore, $task);
+        $claimAfterFence = $task->fresh()
+            ->getAttributes();
         $cancelled = WorkflowHistoryEvent::query()->findOrFail($fence['history_event_id']);
         $this->assertSame($task->id, $cancelled->payload['workflow_task_id']);
         $this->assertSame('scope-owner', $cancelled->payload['task']['lease_owner']);
@@ -522,7 +522,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame($fence['history_event_id'], $observation['cancellation_history_event_id']);
         $this->assertSame($cancelled->payload['cancellation_scope'], $observation['cancellation_scope']);
         $this->assertArrayNotHasKey('cancellation_request', $observation);
-        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertSame($claimAfterFence, $task->fresh()->getAttributes());
         $other = PortableLocalActivityPreparation::prepare(
             $task->id,
             'scope-owner',
@@ -955,7 +955,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    public function testPreparationRetainsWholeScopeWithoutDeliveringOrMutatingClaims(): void
+    public function testPreparationRetainsWholeScopeAndRecoverableClaimWithoutDelivering(): void
     {
         [, $run, $task, , $scope] = $this->tree();
         [$first, $second] = $this->remotePair($run, $task, $scope, $scope);
@@ -976,7 +976,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
             [$first->id, $second->id],
             array_column($prepared->payload['activity_members'], 'activity_execution_id')
         );
-        $this->assertSame($claim, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($claim, $task);
         $this->assertSame($next, \Workflow\V2\Support\WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
         $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
         $this->assertSame(ActivityStatus::Pending, $first->fresh()->status);
@@ -1258,7 +1258,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
             'activity',
             '1.20'
         );
-        Carbon::setTestNow('2026-10-03T00:00:31Z');
+        $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-03T00:00:31Z'));
         $this->assertSame($prepared->id, CancellationScopeDelivery::prepared($run->fresh(), $scope)->id);
         $this->expectExceptionMessage('cancellation_scope_authority_expired');
         ScopedActivityCancellation::fence(
@@ -1621,7 +1621,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         );
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
         if ($change === 'deadline') {
-            Carbon::setTestNow('2026-10-03T00:00:30Z');
+            $this->advanceWithWorkflowHeartbeats($task, Carbon::parse('2026-10-03T00:00:30Z'));
         }
         $before = $run->historyEvents()
             ->count();
@@ -2404,6 +2404,9 @@ final class V2ScopedActivityCancellationTest extends TestCase
                 );
                 $history = $run->historyEvents()
                     ->count();
+                $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
+                $before = $task->fresh()
+                    ->getAttributes();
             }
             CancellationScopeDelivery::record(
                 $run->fresh(),

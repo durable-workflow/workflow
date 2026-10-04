@@ -317,12 +317,13 @@ final class CancellationScopeDelivery
                 $operationSequenceSpan,
                 $preparing
             ): WorkflowHistoryEvent {
+                // Match workflow claims, heartbeat and repair: task before run.
+                /** @var WorkflowTask|null $claim */
+                $claim = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($task->id);
                 /** @var WorkflowRun $locked */
                 $locked = ConfiguredV2Models::query('run_model', WorkflowRun::class)->lockForUpdate()->findOrFail(
                     $run->id
                 );
-                /** @var WorkflowTask|null $claim */
-                $claim = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($task->id);
                 if (! self::matchesClaim($claim, $locked, $task)) {
                     throw new LogicException('cancellation_scope_workflow_claim_mismatch');
                 }
@@ -361,9 +362,7 @@ final class CancellationScopeDelivery
                             throw new LogicException($invalid);
                         }
                     }
-                    if (! $preparing) {
-                        self::renewHosting($locked, $claim, $existing);
-                    }
+                    self::renewHosting($locked, $claim, $existing);
                     return $existing;
                 }
                 if ($preparing && self::positionReserved($locked, $sequence)) {
@@ -511,18 +510,16 @@ final class CancellationScopeDelivery
                                 'preparation_history_event_id' => $preparation->id,
                             ]),
                     ], $claim);
-                if (! $preparing) {
-                    self::renewHosting($locked, $claim, $boundary);
-                }
+                self::renewHosting($locked, $claim, $boundary);
                 return $boundary;
             }, 3);
         $run->refresh();
         return $event;
     }
 
-    private static function renewHosting(WorkflowRun $run, WorkflowTask $task, WorkflowHistoryEvent $delivery): void
+    private static function renewHosting(WorkflowRun $run, WorkflowTask $task, WorkflowHistoryEvent $boundary): void
     {
-        $captured = CarbonImmutable::parse($delivery->payload['authority_deadline_at']);
+        $captured = CarbonImmutable::parse($boundary->payload['authority_deadline_at']);
         if ($run->cancellation_scope_recovery_until === null || $captured->gt(
             $run->cancellation_scope_recovery_until
         )) {

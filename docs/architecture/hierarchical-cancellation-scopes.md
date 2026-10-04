@@ -332,12 +332,18 @@ covers atomic group members that have been admitted but have not started.
 Corrupt cleanup history fails preparation rather than hiding ordinary work or
 rebinding cleanup to the later ancestor's identity.
 
-Scoped delivery immediately sets a hosting ownership interval of at most ten
-seconds, or the configured workflow lease when it is shorter. While any committed
-scope delivery's captured authority budget remains live, workflow heartbeats,
+Authenticated scoped preparation immediately sets a hosting ownership interval
+of at most ten seconds, or the configured workflow lease when it is shorter. While any committed
+scope preparation's captured authority budget remains live, workflow heartbeats,
 surviving callback controls, embedded local renewals and replacement claims use
-that same interval. Delivery records the latest captured scope expiry in the run
-within its transaction, so ordinary claims and renewals need no history query.
+that same interval. Preparation and delivery record the latest captured scope
+expiry in the run within their transaction, so ordinary claims and renewals need
+no history query.
+Pending child completion and activity stop receipts do not delay this recovery
+interval. A valid retry renews only the authenticated live claim and retains
+the first preparation. An expired or replaced owner cannot revive its claim.
+Preparation and delivery lock the hosting task before its run, matching worker
+claim, heartbeat and watchdog repair.
 This recovery projection grants no callback authority or new cleanup budget.
 The subtree's absolute deadline does not end the shared
 hosting claim. Its own callback lease stays bounded by current and captured
@@ -346,6 +352,8 @@ the normal configured workflow lease. Whole-run delivery still bounds shared
 ownership by its original cancellation deadline. Neither renewal nor replacement
 changes a scope's delivery record or cleanup budget. Real scoped worker SIGKILL
 recovery remains required before enabling SDK scope execution.
+Request acceptance before any authenticated preparation still uses the ordinary
+hosting lease. Qualification of that earlier recovery boundary remains required.
 
 Admission validates every atomic local-group member before creating any sibling.
 Renewal and publication validate the recorded cleanup fact. Missing or rewritten
