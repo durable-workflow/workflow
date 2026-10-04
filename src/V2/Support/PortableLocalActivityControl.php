@@ -241,6 +241,7 @@ final class PortableLocalActivityControl
                         $execution
                     ),
                     $cleanup,
+                    $run,
                 );
                 $deadline = PortableLocalActivityCleanup::currentDeadline(
                     $run,

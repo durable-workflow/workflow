@@ -29,10 +29,12 @@ use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ScopedActivityCancellation;
 use Workflow\V2\Support\ScopedTimerCancellation;
 use Workflow\V2\Support\WorkflowStepHistory;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2CancellationScopeDeliveryTest extends TestCase
@@ -55,7 +57,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
     }
 
     #[DataProvider('callKinds')]
-    public function testUnscheduledCallRecordsScopeBoundaryWithoutRunCancellationOrClaimMutation(string $kind): void
+    public function testUnscheduledCallRecordsScopeBoundaryWithoutRunCancellationOrClaimReplacement(string $kind): void
     {
         [, $run, $task, , $scope] = $this->scopeTree();
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30, 'release one scope');
@@ -69,7 +71,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame(4, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
         $this->assertSameJsonObject($request->payload['cancellation'], $event->payload['cancellation']);
         $this->assertSame('2026-10-03T00:00:30.000000Z', $event->payload['authority_deadline_at']);
-        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($claimBefore, $task);
         $this->assertSame(1, $run->tasks()->count());
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $this->assertNull($run->fresh()->cancellation_delivery_sequence);
@@ -193,6 +195,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $event = $this->deliver($run, $task, $scope);
         $this->assertSameJsonObject($accepted->payload['cancellation'], $event->payload['cancellation']);
         $this->assertSame('2026-10-03T00:00:12.000000Z', $event->payload['authority_deadline_at']);
+        Carbon::setTestNow('2026-10-03T00:00:09Z');
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
         Carbon::setTestNow('2026-10-03T00:00:12Z');
         $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_authority_expired', fn () =>
             $this->deliver($run, $task, $scope));
@@ -434,7 +438,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame('2026-10-03T00:00:30.000000Z', $delivered['authority_deadline_at']);
         $context = CancellationScopeRequests::context($run->fresh(), $member);
         $this->assertSame($request->payload['request_id'], $context->rootContext->rootRequestId);
-        $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($beforeClaim, $task);
         $this->assertFalse($run->fresh()->status->isTerminal());
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $marker = CancellationScopeDelivery::recorded($run->fresh(), $parent);
@@ -498,7 +502,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         }
         $delivered = $bridge->deliverCancellationScope(...$arguments);
         $this->assertTrue($delivered['delivered'], $delivered['reason'] ?? '');
-        $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($beforeClaim, $task);
         $this->assertSame(
             ActivityStatus::Cancelled,
             $run->activityExecutions()
@@ -1315,11 +1319,7 @@ final class V2CancellationScopeDeliveryTest extends TestCase
     {
         [, $run, $task, , $scope] = $this->scopeTree();
         config()
-            ->set('workflows.v2.workflow_task_lease_seconds', 10);
-        $task->forceFill([
-            'lease_expires_at' => now()
-                ->addSeconds(10),
-        ])->save();
+            ->set('workflows.v2.workflow_task_lease_seconds', 60);
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $delivery = $this->deliver($run, $task, $scope, 'local_activity');
         $descriptor = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery);
@@ -1330,24 +1330,25 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $bridge = app(DefaultWorkflowTaskBridge::class);
         $prepared = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'cleanup-attempt', $descriptor, '1.20');
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $task->fresh()->lease_expires_at->toISOString());
         Carbon::setTestNow(now()->addSeconds(11));
-        $task->forceFill([
-            'lease_owner' => 'replacement',
-            'attempt_count' => 2,
-            'lease_expires_at' => now()
-                ->addSeconds(10),
-        ])->save();
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$run->id]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $this->assertSame(TaskStatus::Ready, $task->fresh()->status);
+        $this->assertTrue($bridge->claimStatus($task->id, 'replacement')['claimed']);
+        $this->assertSame(2, $task->fresh()->attempt_count);
+        $this->assertSame('2026-10-03T00:00:21.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->assertSame(
+            $delivery->fresh()
+                ->getAttributes(),
+            CancellationScopeDelivery::recorded($run->fresh(), $scope)->getAttributes()
+        );
         $recovery = $bridge->recoverLocalActivity($task->id, 'replacement', 2, 4, $descriptor, '1.20');
         $this->assertTrue($recovery['recovered'], $recovery['reason'] ?? '');
         $this->assertSame('unknown', $recovery['callback_stop_state']);
         $retryTask = WorkflowTask::query()->findOrFail($recovery['created_task_ids'][0]);
-        $retryTask->forceFill([
-            'status' => TaskStatus::Leased,
-            'lease_owner' => 'replacement',
-            'attempt_count' => 1,
-            'lease_expires_at' => now()
-                ->addSeconds(10),
-        ])->save();
+        $this->assertTrue($bridge->claimStatus($retryTask->id, 'replacement')['claimed']);
         $retry = $bridge->prepareLocalActivity(
             $retryTask->id,
             'replacement',
@@ -1576,7 +1577,9 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
         Carbon::setTestNow(now()->addSecond());
         CancellationScopeRequests::request($run->fresh(), $parent, '1.20', 10);
-        Carbon::setTestNow(now()->addSeconds(11));
+        Carbon::setTestNow(now()->addSeconds(8));
+        $this->assertTrue($bridge->heartbeat($task->id)['renewed']);
+        Carbon::setTestNow(now()->addSeconds(3));
         $history = $run->historyEvents()
             ->count();
         $control = $bridge->controlLocalActivity($prepared['activity_attempt_id'], 'original', 1, true, '1.20');
@@ -1796,11 +1799,15 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertTrue($control['active'], $control['reason'] ?? '');
         $this->assertSame('2026-10-03T00:00:11.000000Z', $control['lease_expires_at']);
         $this->assertSame('2026-10-03T00:00:12.000000Z', $control['workflow_lease_expires_at']);
-        Carbon::setTestNow(now()->addSeconds(8));
+        Carbon::setTestNow(now()->addSeconds(7));
         $this->assertTrue(
             $bridge->controlLocalActivity($unaffected['activity_attempt_id'], 'original', 1, true, '1.20')['active']
         );
-        Carbon::setTestNow(now()->addSeconds(10));
+        Carbon::setTestNow(now()->addSeconds(9));
+        $this->assertTrue(
+            $bridge->controlLocalActivity($unaffected['activity_attempt_id'], 'original', 1, true, '1.20')['active']
+        );
+        Carbon::setTestNow(now()->addSeconds(2));
         $this->assertTrue(
             $bridge->controlLocalActivity($unaffected['activity_attempt_id'], 'original', 1, false, '1.20')['active']
         );
@@ -1813,6 +1820,161 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertFalse(
             $bridge->controlLocalActivity($prepared['activity_attempt_id'], 'original', 1, true, '1.20')['active']
         );
+    }
+
+    public function testScopedDeliveryImmediatelyBoundsHostingWithoutEndingTheSiblingBudget(): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 60);
+        CancellationScopeRequests::request($run, $scope, '1.20', 5);
+        $delivery = $this->deliver($run, $task, $scope, 'local_activity');
+        $claim = $task->fresh();
+        $this->assertSame('original', $claim->lease_owner);
+        $this->assertSame(1, $claim->attempt_count);
+        $this->assertSame(TaskStatus::Leased, $claim->status);
+        $this->assertSame('2026-10-03T00:00:10.000000Z', $claim->lease_expires_at->toISOString());
+        $this->assertSame('2026-10-03T00:00:05.000000Z', $delivery->payload['authority_deadline_at']);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('hostingRenewalPaths')]
+    public function testScopedCleanupCannotLoseShortHostingOwnershipThroughAnUnaffectedRenewal(string $path): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 60);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $delivery = $this->deliver($run, $task, $scope, 'local_activity');
+        $descriptor = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $cleanup = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'cleanup-attempt', $descriptor, '1.20');
+        $this->assertTrue($cleanup['prepared'], $cleanup['reason'] ?? '');
+        unset($descriptor['cancellation_cleanup']);
+        $descriptor['cancellation_scope_id'] = CancellationScopeHistory::ROOT_SCOPE_ID;
+        $sibling = $bridge->prepareLocalActivity($task->id, 'original', 1, 5, 'sibling-attempt', $descriptor, '1.20');
+        $this->assertTrue($sibling['prepared'], $sibling['reason'] ?? '');
+        Carbon::setTestNow(now()->addSeconds(2));
+        $renewal = match ($path) {
+            'workflow heartbeat' => $bridge->heartbeat($task->id)['renewed'],
+            'surviving callback control' => $bridge->controlLocalActivity(
+                $sibling['activity_attempt_id'],
+                'original',
+                1,
+                true,
+                '1.20'
+            )['active'],
+            'embedded local renewal' => LocalActivityRuntime::renewWorkflowTask($task->fresh()) !== null,
+        };
+        $this->assertTrue($renewal);
+        $this->assertSame('2026-10-03T00:00:12.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->assertTrue(
+            $bridge->controlLocalActivity($sibling['activity_attempt_id'], 'original', 1, false, '1.20')['active']
+        );
+        $this->assertSameJsonObject($cleanup['cancellation_cleanup'], ActivityExecution::query()->findOrFail(
+            $cleanup['activity_execution_id'],
+        )->activity_options['cancellation_cleanup']);
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $cleanup['cancellation_cleanup']['cleanup_deadline_at']);
+        $this->assertSame('original', $task->fresh()->lease_owner);
+        $this->assertSame(1, $task->fresh()->attempt_count);
+    }
+
+    public static function hostingRenewalPaths(): iterable
+    {
+        foreach (['workflow heartbeat', 'surviving callback control', 'embedded local renewal'] as $path) {
+            yield $path => [$path];
+        }
+    }
+
+    public function testExpiredScopeBudgetRestoresOrdinaryHostingForUnaffectedWorkWithoutRevivingCleanup(): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 60);
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 5);
+        $delivery = $this->deliver($run, $task, $scope, 'local_activity');
+        $descriptor = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $cleanup = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'cleanup-attempt', $descriptor, '1.20');
+        $this->assertTrue($cleanup['prepared'], $cleanup['reason'] ?? '');
+        unset($descriptor['cancellation_cleanup']);
+        $descriptor['cancellation_scope_id'] = CancellationScopeHistory::ROOT_SCOPE_ID;
+        $sibling = $bridge->prepareLocalActivity($task->id, 'original', 1, 5, 'sibling-attempt', $descriptor, '1.20');
+        $this->assertTrue($sibling['prepared'], $sibling['reason'] ?? '');
+        Carbon::setTestNow(now()->addSeconds(5));
+        $control = $bridge->controlLocalActivity($sibling['activity_attempt_id'], 'original', 1, true, '1.20');
+        $this->assertTrue($control['active'], $control['reason'] ?? '');
+        $this->assertSame('2026-10-03T00:01:05.000000Z', $control['workflow_lease_expires_at']);
+        $this->assertFalse(
+            $bridge->controlLocalActivity($cleanup['activity_attempt_id'], 'original', 1, true, '1.20')['active']
+        );
+        $this->assertSame('2026-10-03T00:00:05.000000Z', $cleanup['cancellation_cleanup']['cleanup_deadline_at']);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('independentHostingBudgets')]
+    public function testHostingRemainsRecoverableUntilEveryIndependentScopeBudgetExpires(
+        int $firstBudget,
+        int $secondBudget
+    ): void {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        config()
+            ->set('workflows.v2.workflow_task_lease_seconds', 60);
+        CancellationScopeRequests::request($run, $scope, '1.20', $firstBudget);
+        $first = $this->deliver($run, $task, $scope, 'local_activity');
+        $sibling = CancellationScopeHistory::open($run, $task, 4, '1.20')->payload['scope_id'];
+        $request = CancellationScopeRequests::request($run, $sibling, '1.20', $secondBudget);
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $sibling,
+            $request->payload['request_id'],
+            5,
+            'local_activity',
+            '1.20'
+        );
+        $second = CancellationScopeDelivery::record(
+            $run,
+            $task,
+            $sibling,
+            $request->payload['request_id'],
+            5,
+            'local_activity',
+            '1.20'
+        );
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertSame(
+            '2026-10-03T00:00:20.000000Z',
+            $run->fresh()->cancellation_scope_recovery_until->toISOString()
+        );
+        Carbon::setTestNow('2026-10-03T00:00:05Z');
+        $this->assertTrue($bridge->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:00:15.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        Carbon::setTestNow('2026-10-03T00:00:14Z');
+        $this->assertTrue($bridge->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:00:24.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        Carbon::setTestNow('2026-10-03T00:00:20Z');
+        $this->assertTrue($bridge->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:01:20.000000Z', $task->fresh()->lease_expires_at->toISOString());
+        $this->assertSame(
+            $first->fresh()
+                ->getAttributes(),
+            CancellationScopeDelivery::recorded($run->fresh(), $scope)->getAttributes()
+        );
+        $this->assertSame(
+            $second->fresh()
+                ->getAttributes(),
+            CancellationScopeDelivery::recorded($run->fresh(), $sibling)->getAttributes()
+        );
+        $this->assertSame('original', $task->fresh()->lease_owner);
+        $this->assertSame(1, $task->fresh()->attempt_count);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    public static function independentHostingBudgets(): iterable
+    {
+        yield 'later delivery has longer budget' => [5, 20];
+        yield 'later delivery has shorter budget' => [20, 5];
     }
 
     private function scopedCleanupDescriptor(

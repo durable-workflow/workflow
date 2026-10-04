@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use Carbon\CarbonInterface;
 use Dotenv\Dotenv;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Database\Schema\Builder as SchemaBuilder;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -26,6 +28,7 @@ use Workflow\V2\Models\WorkflowInstance as V2WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun as V2WorkflowRun;
 use Workflow\V2\Models\WorkflowTask as V2WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate as V2WorkflowUpdate;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub as V2WorkflowStub;
@@ -166,6 +169,26 @@ abstract class TestCase extends BaseTestCase
         } finally {
             parent::tearDown();
         }
+    }
+
+    protected function assertHostingShortenedWithoutClaimReplacement(array $before, V2WorkflowTask $task): void
+    {
+        $claim = $task->fresh();
+        $this->assertSame(now()->addSeconds(10)->toISOString(), $claim->lease_expires_at->toISOString());
+        $after = $claim->getAttributes();
+        unset($before['lease_expires_at'], $after['lease_expires_at'], $before['updated_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
+    }
+
+    protected function advanceWithWorkflowHeartbeats(V2WorkflowTask $task, CarbonInterface $target): void
+    {
+        $this->assertTrue($target->gte(now()));
+        while (($expiry = $task->fresh()->lease_expires_at) !== null && $expiry->lte($target)) {
+            $this->assertTrue(now()->lt($expiry), 'An expired claim cannot be kept alive by this fixture.');
+            Carbon::setTestNow(now()->addMicroseconds((int) (now()->diffInMicroseconds($expiry) / 2)));
+            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
+        }
+        Carbon::setTestNow($target);
     }
 
     protected function setUpDatabaseTruncation(): void

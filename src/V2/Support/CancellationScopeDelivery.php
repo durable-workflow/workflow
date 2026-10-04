@@ -361,6 +361,9 @@ final class CancellationScopeDelivery
                             throw new LogicException($invalid);
                         }
                     }
+                    if (! $preparing) {
+                        self::renewHosting($locked, $claim, $existing);
+                    }
                     return $existing;
                 }
                 if ($preparing && self::positionReserved($locked, $sequence)) {
@@ -484,7 +487,7 @@ final class CancellationScopeDelivery
                 if ($currentAuthority['deadline_at'] !== $authority['deadline_at']) {
                     throw new LogicException('cancellation_scope_authority_changed');
                 }
-                return WorkflowHistoryEvent::record($locked, $preparing
+                $boundary = WorkflowHistoryEvent::record($locked, $preparing
                     ? HistoryEventType::CancellationScopeDeliveryPrepared : HistoryEventType::CancellationScopeDelivered, [
                         'schema' => $preparing ? self::PREPARATION_SCHEMA : self::SCHEMA,
                         'workflow_run_id' => $locked->id,
@@ -508,9 +511,26 @@ final class CancellationScopeDelivery
                                 'preparation_history_event_id' => $preparation->id,
                             ]),
                     ], $claim);
+                if (! $preparing) {
+                    self::renewHosting($locked, $claim, $boundary);
+                }
+                return $boundary;
             }, 3);
         $run->refresh();
         return $event;
+    }
+
+    private static function renewHosting(WorkflowRun $run, WorkflowTask $task, WorkflowHistoryEvent $delivery): void
+    {
+        $captured = CarbonImmutable::parse($delivery->payload['authority_deadline_at']);
+        if ($run->cancellation_scope_recovery_until === null || $captured->gt(
+            $run->cancellation_scope_recovery_until
+        )) {
+            $run->forceFill([
+                'cancellation_scope_recovery_until' => $captured,
+            ])->save();
+        }
+        LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run), true, $run);
     }
 
     private static function readBoundary(WorkflowRun $run, string $scopeId, bool $preparing): ?WorkflowHistoryEvent

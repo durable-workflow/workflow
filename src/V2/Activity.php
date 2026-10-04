@@ -199,7 +199,7 @@ abstract class Activity
             }
 
             if ($this->ownsLocalWorkflowTask($execution, $attempt, $task)) {
-                $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask($task);
+                $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask($task, run: $run);
 
                 if ($attempt->status === ActivityAttemptStatus::Running) {
                     $attempt->forceFill([

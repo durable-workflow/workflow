@@ -267,7 +267,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
             '1.20'
         );
         $this->assertSame($event->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
-        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
         $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
         $this->assertSame(
             $request->payload['cancellation']['root_context']['cleanup_deadline_at'],
@@ -684,7 +684,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $event = $deliver();
         $this->assertTrue($event['delivered'], $event['reason'] ?? '');
         $this->assertSame($scopePreparation['preparation_history_event_id'], $event['preparation_history_event_id']);
-        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
         $this->assertSame($event['history_event_id'], CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
     }
 
@@ -1467,7 +1467,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame($prepared['preparation_history_event_id'], $delivered['preparation_history_event_id']);
         $this->assertSame($prepared['activity_members'], $delivered['activity_members']);
         $this->assertSame($delivered['history_event_id'], $deliver()['history_event_id']);
-        $this->assertSame($taskBefore, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($taskBefore, $task);
         $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
     }
 
@@ -2083,7 +2083,7 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertTrue($result['prepared']);
         $this->assertTrue($result['delivered'], $result['reason'] ?? '');
         $this->assertFalse($result['claim_released']);
-        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($claimBefore, $task);
         $this->assertSame(ActivityStatus::Cancelled, $first->fresh()->status);
         $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
         $this->assertCount(1, $result['activity_cancellations']);

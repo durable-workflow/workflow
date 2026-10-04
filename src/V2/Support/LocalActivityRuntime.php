@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -71,14 +72,19 @@ final class LocalActivityRuntime
     public static function renewWorkflowTask(
         WorkflowTask $task,
         ?CarbonInterface $deadline = null,
-        bool $cleanup = false
+        bool $cleanup = false,
+        ?WorkflowRun $run = null,
     ): ?CarbonInterface {
         if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased) {
             return null;
         }
 
+        $run ??= ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
+        if ($run !== null && $run->id !== $task->workflow_run_id) {
+            throw new \LogicException('Workflow hosting renewal requires its original run.');
+        }
         $leaseExpiresAt = $deadline === null
-            ? ($cleanup ? CancellationCleanupLease::renewableExpiry() : self::workflowTaskLeaseExpiresAt())
+            ? ($cleanup ? CancellationCleanupLease::renewableExpiry() : CancellationCleanupLease::forScopes($run))
             : CancellationCleanupLease::forDeadline($deadline);
 
         $task->forceFill([

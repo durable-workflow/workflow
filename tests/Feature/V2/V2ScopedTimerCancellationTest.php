@@ -84,7 +84,7 @@ final class V2ScopedTimerCancellationTest extends TestCase
             );
         }
         $this->assertSame($otherBefore, $other->fresh()->getAttributes());
-        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $task);
         $this->assertFalse($run->fresh()->status->isTerminal());
         $this->assertNull($run->fresh()->cancellation_request_command_id);
         $this->assertSame($result, $this->dispatch($task, $scope, $prepared['request_id']));

@@ -736,7 +736,7 @@ final class V2CancellationScopeHistoryTest extends TestCase
         $this->assertTrue($delivery['delivered'], $delivery['reason'] ?? '');
         $this->assertCount(1, $delivery['wait_cancellations']);
         $this->assertTrue($delivery['wait_cancellations'][0]['cancelled']);
-        $this->assertSame($before, $hosting->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $hosting);
         $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
         $this->assertSame(
             1,

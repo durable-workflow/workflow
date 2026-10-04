@@ -209,7 +209,10 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $beforeReceipt = $receipt->getAttributes();
         $boundary = CancellationScopeDelivery::recorded($run->fresh(), $scopes['child']);
         $beforeBoundary = $boundary->getAttributes();
-        Carbon::setTestNow(Carbon::parse('2026-10-04T00:00:00Z')->addSeconds($parentRequestedAt));
+        $this->advanceWithWorkflowHeartbeats(
+            $task,
+            Carbon::parse('2026-10-04T00:00:00Z')->addSeconds($parentRequestedAt)
+        );
         $parent = CancellationScopeRequests::request($run, $scopes['parent'], '1.20', $parentGrace, 'ancestor');
         $this->prepare($run->fresh(), $task, $scopes['parent'], 9);
         $parentDelivery = $bridge->deliverCancellationScope(
@@ -681,7 +684,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $beforeChildRun = $childRun->getAttributes();
         $beforeClaim = $claim->fresh()
             ->getAttributes();
-        Carbon::setTestNow('2026-10-04T00:00:21Z');
+        $this->advanceWithWorkflowHeartbeats($claim, Carbon::parse('2026-10-04T00:00:21Z'));
         if (! $parentPreparedEarly) {
             $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30, 'ancestor');
             $this->prepare($run->fresh(), $claim, $scopes['parent'], $parentSequence);
@@ -721,7 +724,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             WorkflowTimer::query()->where('sequence', '!=', 11)->orderBy('id')->get()->map->getAttributes()->all()
         );
         $this->assertSame($beforeChildRun, $childRun->fresh()->getAttributes());
-        $this->assertSame($beforeClaim, $claim->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($beforeClaim, $claim);
         $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']));
     }
 
@@ -1025,7 +1028,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             $first['activity_cancellations'][0]['history_event_id'],
             $retry['activity_cancellations'][0]['history_event_id']
         );
-        $this->assertSame($beforeClaim, $task->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($beforeClaim, $task);
         $this->assertNull(CancellationScopeDelivery::prepared($run->fresh(), $scopes['child']));
         $this->assertSame($prepared->id, $retry['preparation_history_event_id']);
     }
@@ -1215,7 +1218,7 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             protocolVersion: '1.20'
         ));
         $this->assertSame($count, $run->historyEvents()->count());
-        Carbon::setTestNow('2026-10-04T00:00:40Z');
+        $this->advanceWithWorkflowHeartbeats($claim, Carbon::parse('2026-10-04T00:00:40Z'));
         $cold = CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']);
         $this->assertSame($recorded->id, $cold->id);
         $this->assertSameJsonObject($recorded->payload, $cold->payload);

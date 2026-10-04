@@ -60,7 +60,7 @@ final class V2ScopedWaitCancellationTest extends TestCase
         $this->assertCount(1, $result['wait_cancellations']);
         $this->assertSame($timeout !== 0, $result['wait_cancellations'][0]['cancelled']);
         $this->assertSame($prepared['wait_members'], $result['wait_members']);
-        $this->assertSame($before, $claim->fresh()->getAttributes());
+        $this->assertHostingShortenedWithoutClaimReplacement($before, $claim);
         $this->assertFalse($run->fresh()->status->isTerminal());
         $this->assertSame($result, $this->dispatch($claim, $scope, $prepared));
         $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
