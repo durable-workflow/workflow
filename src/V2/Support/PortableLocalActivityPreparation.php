@@ -116,6 +116,14 @@ final class PortableLocalActivityPreparation
             )) {
                 return self::response('local_activity_scope_not_recorded');
             }
+            $scopeRefusal = CancellationScopeDelivery::admissionRefusal(
+                $run,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence,
+            );
+            if ($scopeRefusal !== null) {
+                return self::response($scopeRefusal);
+            }
             $cleanup = PortableLocalActivityCleanup::snapshot(
                 $run,
                 $normalized['cancellation_cleanup'] ?? null,

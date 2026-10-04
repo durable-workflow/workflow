@@ -108,6 +108,13 @@ final class CancellationScopeDelivery
      */
     public static function admissionRefusal(WorkflowRun $run, string $scopeId, int $sequence): ?string
     {
+        if ($scopeId === CancellationScopeHistory::ROOT_SCOPE_ID) {
+            return self::positionReserved(
+                $run,
+                $sequence,
+                $scopeId
+            ) ? 'operation_cancellation_delivery_reserved' : null;
+        }
         $scopes = CancellationScopeHistory::forRun($run);
         $address = $scopeId;
         while (isset($scopes[$address])) {
@@ -115,28 +122,7 @@ final class CancellationScopeDelivery
                 ->where('payload->scope_id', $address)
                 ->exists()) {
                 $preparation = self::prepared($run, $address);
-                $recorded = $run->historyEvents()
-                    ->where('sequence', '<', $preparation->sequence)
-                    ->whereIn('event_type', [HistoryEventType::ActivityScheduled, HistoryEventType::TimerScheduled,
-                        HistoryEventType::ChildWorkflowScheduled, HistoryEventType::SignalWaitOpened,
-                        HistoryEventType::ConditionWaitOpened])
-                    ->where('payload->sequence', $sequence)
-                    ->get()
-                    ->contains(static function (WorkflowHistoryEvent $row) use ($scopeId): bool {
-                        $payload = $row->payload;
-                        $descriptor = match ($row->event_type) {
-                            HistoryEventType::ActivityScheduled => $payload['activity'] ?? [],
-                            HistoryEventType::TimerScheduled => $payload['timer'] ?? [],
-                            HistoryEventType::ChildWorkflowScheduled => $payload['child_workflow'] ?? [],
-                            default => [],
-                        };
-                        $membership = array_key_exists('cancellation_scope_id', $payload)
-                            ? $payload['cancellation_scope_id']
-                            : ($descriptor['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID);
-                        return $membership === $scopeId
-                            && (! array_key_exists('cancellation_scope_id', $descriptor)
-                                || $descriptor['cancellation_scope_id'] === $scopeId);
-                    });
+                $recorded = self::replaysOriginalOperation($run, $preparation, $scopeId, $sequence);
                 return $recorded ? null : 'operation_scope_cancellation_prepared';
             }
             if ($scopes[$address]['shield_parent'] || $scopes[$address]['parent_scope_id'] === null) {
@@ -147,7 +133,7 @@ final class CancellationScopeDelivery
         // A preparation for an unscheduled await owns its exact command position.
         // Existing unrelated operations keep running, but a new command cannot
         // consume that position while delivery is still waiting on actor receipts.
-        return self::positionReserved($run, $sequence) ? 'operation_cancellation_delivery_reserved' : null;
+        return self::positionReserved($run, $sequence, $scopeId) ? 'operation_cancellation_delivery_reserved' : null;
     }
 
     /**
@@ -219,7 +205,7 @@ final class CancellationScopeDelivery
         return $normalized;
     }
 
-    private static function positionReserved(WorkflowRun $run, int $sequence): bool
+    private static function positionReserved(WorkflowRun $run, int $sequence, ?string $scopeId = null): bool
     {
         foreach ($run->historyEvents()->where(
             'event_type',
@@ -233,11 +219,42 @@ final class CancellationScopeDelivery
             if ($preparation === null) {
                 throw new LogicException('cancellation_scope_preparation_history_invalid');
             }
-            if ($preparation->payload['sequence'] === $sequence && self::recorded($run, $preparedScope) === null) {
+            if ($preparation->payload['sequence'] === $sequence && self::recorded($run, $preparedScope) === null
+                && ($scopeId === null || ! self::replaysOriginalOperation($run, $preparation, $scopeId, $sequence))) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static function replaysOriginalOperation(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $preparation,
+        string $scopeId,
+        int $sequence
+    ): bool {
+        return $run->historyEvents()
+            ->where('sequence', '<', $preparation->sequence)
+            ->whereIn('event_type', [HistoryEventType::ActivityScheduled, HistoryEventType::TimerScheduled,
+                HistoryEventType::ChildWorkflowScheduled, HistoryEventType::SignalWaitOpened,
+                HistoryEventType::ConditionWaitOpened])
+            ->where('payload->sequence', $sequence)
+            ->get()
+            ->contains(static function (WorkflowHistoryEvent $row) use ($scopeId): bool {
+                $payload = $row->payload;
+                $descriptor = match ($row->event_type) {
+                    HistoryEventType::ActivityScheduled => $payload['activity'] ?? [],
+                    HistoryEventType::TimerScheduled => $payload['timer'] ?? [],
+                    HistoryEventType::ChildWorkflowScheduled => $payload['child_workflow'] ?? [],
+                    default => [],
+                };
+                $membership = array_key_exists('cancellation_scope_id', $payload)
+                    ? $payload['cancellation_scope_id']
+                    : ($descriptor['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID);
+                return $membership === $scopeId
+                    && (! array_key_exists('cancellation_scope_id', $descriptor)
+                        || $descriptor['cancellation_scope_id'] === $scopeId);
+            });
     }
 
     /**

@@ -791,6 +791,270 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         yield 'noncanonical clock' => ['authority_deadline_at', 'tomorrow'];
     }
 
+    #[DataProvider('reservedAdmissionPaths')]
+    public function testPreparedScopeBlocksEveryNewAdmissionPathBeforeMutation(string $path, string $reason): void
+    {
+        [, $run, $task, $parent, $scope] = $this->scopeTree();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $claim = $task->fresh()
+            ->getAttributes();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $local = [
+            'type' => 'record_local_activity',
+            'activity_type' => 'tests.scope-admission',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+        ];
+        $marker = [[
+            'type' => 'record_side_effect',
+            'marker_id' => 'reserved-position',
+            'result' => Serializer::serializeWithCodec('avro', 'must not commit'),
+            'payload_codec' => 'avro',
+        ]];
+        $reply = match ($path) {
+            'scoped local' => $bridge->prepareLocalActivity(
+                $task->id,
+                'original',
+                1,
+                3,
+                'new-scoped-attempt',
+                [
+                    ...$local,
+                    'cancellation_scope_id' => $scope,
+                ],
+                '1.20'
+            ),
+            'unscoped local' => $bridge->prepareLocalActivity(
+                $task->id,
+                'original',
+                1,
+                3,
+                'new-root-attempt',
+                $local,
+                '1.20'
+            ),
+            'parent local' => $bridge->prepareLocalActivity(
+                $task->id,
+                'original',
+                1,
+                3,
+                'new-parent-attempt',
+                [
+                    ...$local,
+                    'cancellation_scope_id' => $parent,
+                ],
+                '1.20'
+            ),
+            'completion' => $bridge->complete($task->id, [[
+                ...$local,
+                'type' => 'schedule_activity',
+            ]]),
+            'local prefix' => $bridge->checkpointLocalActivityPrefix(
+                $task->id,
+                'original',
+                1,
+                'reserved',
+                3,
+                $marker,
+                '1.20'
+            ),
+            'scope prefix' => $bridge->checkpointCancellationScopePrefix(
+                $task->id,
+                'original',
+                1,
+                'reserved',
+                3,
+                $marker,
+                '1.20'
+            ),
+            'local group' => $bridge->checkpointLocalActivityGroup($task->id, 'original', 1, 'reserved', 3, [[
+                ...$local,
+                'type' => 'prepare_local_activity',
+                ...ParallelChildGroup::itemMetadata(3, 2, 0, 'mixed'),
+            ], [
+                ...$local,
+                'type' => 'schedule_activity',
+                'cancellation_scope_id' => $parent,
+                ...ParallelChildGroup::itemMetadata(3, 2, 1, 'mixed'),
+            ]], '1.20'),
+        };
+        $this->assertSame($reason, $reply['reason']);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame($claim, $task->fresh()->getAttributes());
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(1, $run->tasks()->count());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    public static function reservedAdmissionPaths(): iterable
+    {
+        yield 'direct local scope admission' => ['scoped local', 'operation_scope_cancellation_prepared'];
+        foreach ([
+            'unscoped local',
+            'parent local',
+            'completion',
+            'local prefix',
+            'scope prefix',
+            'local group',
+        ] as $path) {
+            yield $path => [$path, 'operation_cancellation_delivery_reserved'];
+        }
+    }
+
+    public function testPreparedScopeRetainsOriginalLocalAdmissionAndAllowsParentAfterDelivery(): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $descriptor = [
+            'type' => 'record_local_activity',
+            'activity_type' => 'tests.scope-admission',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            'cancellation_scope_id' => $scope,
+        ];
+        $first = $bridge->prepareLocalActivity($task->id, 'original', 1, 3, 'original-attempt', $descriptor, '1.20');
+        $this->assertTrue($first['prepared'], $first['reason'] ?? '');
+        $request = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 30);
+        $preparation = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $historyCount = $run->historyEvents()
+            ->count();
+        $duplicate = $bridge->prepareLocalActivity(
+            $task->id,
+            'original',
+            1,
+            3,
+            'original-attempt',
+            $descriptor,
+            '1.20'
+        );
+        $this->assertTrue($duplicate['prepared'], $duplicate['reason'] ?? '');
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['activity_attempt_id'], $duplicate['activity_attempt_id']);
+        $this->assertSame($historyCount, $run->historyEvents()->count());
+        $this->assertSame('operation_scope_cancellation_prepared', $bridge->prepareLocalActivity(
+            $task->id,
+            'original',
+            1,
+            4,
+            'forbidden-attempt',
+            $descriptor,
+            '1.20'
+        )['reason']);
+        $this->assertSame(1, $run->activityExecutions()->count());
+        $fence = ScopedActivityCancellation::fence(
+            $run,
+            $task,
+            $first['activity_execution_id'],
+            $scope,
+            $request->payload['request_id'],
+            '1.20'
+        );
+        $this->assertTrue($fence['fenced']);
+        $delivery = CancellationScopeDelivery::record(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'local_activity',
+            '1.20'
+        );
+        $this->assertSame($preparation->id, $delivery->payload['preparation_history_event_id']);
+        $this->assertSame('operation_scope_cancellation_prepared', $bridge->prepareLocalActivity(
+            $task->id,
+            'original',
+            1,
+            4,
+            'forbidden-after-delivery',
+            $descriptor,
+            '1.20'
+        )['reason']);
+        unset($descriptor['cancellation_scope_id']);
+        $parent = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'parent-attempt', $descriptor, '1.20');
+        $this->assertTrue($parent['prepared'], $parent['reason'] ?? '');
+        $this->assertSame(2, $run->activityExecutions()->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('unaffectedLocalStates')]
+    public function testMixedPendingDeliveryPreservesPreviouslyAdmittedRootLocalWork(bool $startedBefore): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $local = [
+            'type' => 'prepare_local_activity',
+            'activity_type' => 'tests.unaffected-root',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            ...ParallelChildGroup::itemMetadata(3, 2, 0, 'mixed'),
+        ];
+        $checkpoint = $bridge->checkpointLocalActivityGroup($task->id, 'original', 1, 'original-group', 3, [$local, [
+            ...$local,
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.cancelled-member',
+            'cancellation_scope_id' => $scope,
+            ...ParallelChildGroup::itemMetadata(3, 2, 1, 'mixed'),
+        ]], '1.20');
+        $this->assertTrue($checkpoint['checkpointed'], $checkpoint['reason'] ?? '');
+        $local['type'] = 'record_local_activity';
+        $first = $startedBefore
+            ? $bridge->prepareLocalActivity($task->id, 'original', 1, 3, 'unaffected-attempt', $local, '1.20') : null;
+        if ($first !== null) {
+            $this->assertTrue($first['prepared'], $first['reason'] ?? '');
+        }
+        $request = CancellationScopeRequests::request($run->fresh(), $scope, '1.20', 30);
+        $preparation = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            3,
+            'parallel',
+            '1.20',
+            2
+        );
+        $before = $task->fresh()
+            ->getAttributes();
+        $reply = $bridge->prepareLocalActivity($task->id, 'original', 1, 3, 'unaffected-attempt', $local, '1.20');
+        $this->assertTrue($reply['prepared'], $reply['reason'] ?? '');
+        $this->assertSame($startedBefore, $reply['duplicate']);
+        if ($first !== null) {
+            $this->assertSame($first['activity_attempt_id'], $reply['activity_attempt_id']);
+        }
+        $this->assertSame(2, $run->activityExecutions()->count());
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame($preparation->id, CancellationScopeDelivery::prepared($run->fresh(), $scope)->id);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    public static function unaffectedLocalStates(): iterable
+    {
+        yield 'previously started callback' => [true];
+        yield 'admitted before preparation but not started' => [false];
+    }
+
     /**
      * @return array{WorkflowStub, WorkflowRun, WorkflowTask, string, string}
      */

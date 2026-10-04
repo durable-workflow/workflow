@@ -1427,15 +1427,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return 'operation_scope_not_recorded';
         }
         foreach ($commands as $offset => $command) {
-            if (isset($command['cancellation_scope_id'])) {
-                $refusal = CancellationScopeDelivery::admissionRefusal(
-                    $run,
-                    $command['cancellation_scope_id'],
-                    $sequence + $offset
-                );
-                if ($refusal !== null) {
-                    return $refusal;
-                }
+            // Implicit-root commands also share the authored cursor. A pending
+            // scoped delivery must consume its reserved position before any
+            // unrelated operation or metadata write can take that position.
+            $refusal = CancellationScopeDelivery::admissionRefusal(
+                $run,
+                $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence + $offset
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
             if ($command['type'] === 'prepare_local_activity'
                 && ! CancellationScopeHistory::isRecordedBefore(

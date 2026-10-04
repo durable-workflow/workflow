@@ -169,6 +169,16 @@ These are backend admission contracts. Scope-aware authoring/replay, request
 delivery and physical sibling supervision remain separate implementation and
 qualification gates. No scope capability is enabled.
 
+Direct prepared-local admission checks the same cancellation guard as batched
+commands before creating an execution or attempt. An implicit-root command,
+including a metadata write, also cannot consume a position reserved for an
+unfinished scoped delivery. This covers ordinary completion, both retained-claim
+prefixes and atomic local groups. Previously admitted original operations retain
+their membership and can replay, including an unaffected root local member in a
+mixed group. Once delivery consumes its position, the unaffected parent can
+admit its next operation. A delivery marker alone still grants no new scoped
+durable cleanup authority.
+
 Operation policy and shielding are independent. TryCancel, WaitCancellationCompleted
 and Abandon retain their meanings. A shield blocks inherited cooperative
 delivery. It does not silently change an activity to Abandon. Prepared local
