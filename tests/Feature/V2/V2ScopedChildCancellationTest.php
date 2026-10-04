@@ -505,11 +505,13 @@ final class V2ScopedChildCancellationTest extends TestCase
         );
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationRequested)->count()
         );
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
         );
         $this->assertSame($cold, $this->deliver($task->fresh(), $scope, $prepared['request_id']));
     }
