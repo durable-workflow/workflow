@@ -684,7 +684,8 @@ final class V2ScopedChildCancellationTest extends TestCase
         }
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildCancellationResolved)->count()
         );
     }
 
