@@ -1761,7 +1761,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame($history, $run->historyEvents()->count());
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
         );
     }
 
