@@ -18,6 +18,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\ScopedCancellationContext;
 
 /**
  * @internal Supervisor control for an already prepared portable callback.
@@ -124,6 +125,30 @@ final class PortableLocalActivityControl
             );
             if ($execution->current_attempt_id !== $attemptId || $execution->attempt_count !== $attempt->attempt_number) {
                 return $reply('stale_activity_attempt');
+            }
+            // Preserve an already accepted scope fence even if a later run
+            // request or replacement claim exists. Reading this fact cannot
+            // renew the hosting claim or prove that the callback has stopped.
+            $scopeFence = $execution->status === ActivityStatus::Cancelled && $attempt->status === ActivityAttemptStatus::Cancelled
+                ? $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancelled)
+                    ->where('payload->activity_attempt_id', $attemptId)
+                    ->first()
+                : null;
+            if ($scopeFence !== null && array_key_exists('cancellation_scope', $scopeFence->payload)) {
+                $context = ActivityCancellationContext::forEvent($run, $scopeFence);
+                if (! $context instanceof ScopedCancellationContext) {
+                    return $reply('cancellation_scope_context_not_recorded');
+                }
+                $metadata = $scopeFence->payload['cancellation_scope'];
+                return [
+                    ...$reply(now()->gte(\Carbon\CarbonImmutable::parse(
+                        $metadata['authority_deadline_at']
+                    )) ? 'cancellation_scope_deadline_expired' : 'cancellation_scope_requested'),
+                    'cancellation_scope' => $metadata,
+                    'fenced' => true,
+                    'cancellation_history_event_id' => $scopeFence->id,
+                ];
             }
             // The original callback supervisor must see accepted cancellation
             // even after takeover. This never renews the replacement claim.

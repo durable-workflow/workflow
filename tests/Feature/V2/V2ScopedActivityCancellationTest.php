@@ -35,6 +35,7 @@ use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\PortableCancellationScopeDelivery;
+use Workflow\V2\Support\PortableLocalActivityControl;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\ScopedActivityCancellation;
 use Workflow\V2\WorkflowStub;
@@ -506,6 +507,22 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertSame($task->id, $cancelled->payload['workflow_task_id']);
         $this->assertSame('scope-owner', $cancelled->payload['task']['lease_owner']);
         $this->assertSame(TaskStatus::Leased->value, $cancelled->payload['task']['status']);
+        $observation = PortableLocalActivityControl::poll(
+            $prepared['activity_attempt_id'],
+            'scope-owner',
+            1,
+            true,
+            '1.20'
+        );
+        $this->assertFalse($observation['active']);
+        $this->assertTrue($observation['stop_required']);
+        $this->assertFalse($observation['renewed']);
+        $this->assertTrue($observation['fenced']);
+        $this->assertSame('cancellation_scope_requested', $observation['reason']);
+        $this->assertSame($fence['history_event_id'], $observation['cancellation_history_event_id']);
+        $this->assertSame($cancelled->payload['cancellation_scope'], $observation['cancellation_scope']);
+        $this->assertArrayNotHasKey('cancellation_request', $observation);
+        $this->assertSame($claimBefore, $task->fresh()->getAttributes());
         $other = PortableLocalActivityPreparation::prepare(
             $task->id,
             'scope-owner',
@@ -519,11 +536,39 @@ final class V2ScopedActivityCancellationTest extends TestCase
             '1.20'
         );
         $this->assertTrue($other['prepared'], $other['reason'] ?? '');
+        $survivor = PortableLocalActivityControl::poll($other['activity_attempt_id'], 'scope-owner', 1, true, '1.20');
+        $this->assertTrue($survivor['active']);
+        $this->assertTrue($survivor['renewed']);
+        $this->assertFalse($survivor['stop_required']);
+        $this->assertFalse($survivor['heartbeat_recorded']);
+        $this->assertArrayNotHasKey('cancellation_scope', $survivor);
         $task->forceFill([
             'lease_owner' => 'replacement',
             'attempt_count' => 2,
         ])->save();
         $workflow->requestCancellation('later whole run', 10);
+        $replaced = $task->fresh()
+            ->getAttributes();
+        $original = PortableLocalActivityControl::poll(
+            $prepared['activity_attempt_id'],
+            'scope-owner',
+            1,
+            true,
+            '1.20'
+        );
+        $this->assertSame($observation['cancellation_scope'], $original['cancellation_scope']);
+        $this->assertSame($observation['cancellation_history_event_id'], $original['cancellation_history_event_id']);
+        $this->assertFalse($original['renewed']);
+        $this->assertSame($replaced, $task->fresh()->getAttributes());
+        $wrongControl = PortableLocalActivityControl::poll(
+            $prepared['activity_attempt_id'],
+            'replacement',
+            2,
+            true,
+            '1.20'
+        );
+        $this->assertFalse($wrongControl['active']);
+        $this->assertArrayNotHasKey('cancellation_scope', $wrongControl);
         $wrong = ActivityCancellationAcknowledgement::recordLocalStopped(
             $prepared['activity_attempt_id'],
             'replacement',
@@ -547,6 +592,22 @@ final class V2ScopedActivityCancellationTest extends TestCase
             $fence['history_event_id'],
             $this->fence($run->fresh(), $task->fresh(), $target, $scope)['history_event_id']
         );
+        Carbon::setTestNow(now()->addSeconds(31));
+        $expired = PortableLocalActivityControl::poll($prepared['activity_attempt_id'], 'scope-owner', 1, true, '1.20');
+        $this->assertSame('cancellation_scope_deadline_expired', $expired['reason']);
+        $this->assertSame($observation['cancellation_scope'], $expired['cancellation_scope']);
+        $this->assertFalse($expired['renewed']);
+        $this->assertSame($replaced, $task->fresh()->getAttributes());
+        $corrupted = $cancelled->payload;
+        $corrupted['cancellation_scope']['scope_id'] = $sibling;
+        $cancelled->forceFill([
+            'payload' => $corrupted,
+        ])->save();
+        $invalid = PortableLocalActivityControl::poll($prepared['activity_attempt_id'], 'scope-owner', 1, true, '1.20');
+        $this->assertSame('cancellation_scope_context_not_recorded', $invalid['reason']);
+        $this->assertFalse($invalid['active']);
+        $this->assertArrayNotHasKey('cancellation_scope', $invalid);
+        $this->assertSame($replaced, $task->fresh()->getAttributes());
     }
 
     public function testLocalCallbackStopProofPrecedesScopedDeliveryWithoutReleasingTheHostingClaim(): void
