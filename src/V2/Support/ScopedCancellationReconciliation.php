@@ -25,22 +25,7 @@ final class ScopedCancellationReconciliation
         ScopedCancellationPreparation $current,
         ?int $beforeHistorySequence = null,
     ): ?self {
-        foreach (self::earlier($run, $current) as $candidate) {
-            $event = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
-                $event->event_type === HistoryEventType::CancellationScopeDelivered
-                && ($event->payload['scope_id'] ?? null) === $candidate['scope_id']);
-            if ($event === null || ($beforeHistorySequence !== null && $event->sequence >= $beforeHistorySequence)) {
-                continue;
-            }
-            // Delivery may finish after ancestor preparation, but must precede
-            // the consuming marker. Strictly earlier preparations keep reads finite.
-            $delivery = CancellationScopeDelivery::recorded($run, $candidate['scope_id']);
-            if ($delivery === null || $delivery->id !== $event->id) {
-                throw new LogicException('cancellation_scope_delivery_history_invalid');
-            }
-            return new self($candidate['reference'], $delivery);
-        }
-        return null;
+        return self::completedFrom($run, self::earlier($run, $current), $beforeHistorySequence);
     }
 
     public static function pending(
@@ -48,7 +33,8 @@ final class ScopedCancellationReconciliation
         ScopedCancellationPreparation $current,
         ?int $beforeHistorySequence = null,
     ): bool {
-        return self::earlier($run, $current) !== [] && self::completed($run, $current, $beforeHistorySequence) === null;
+        $candidates = self::earlier($run, $current);
+        return $candidates !== [] && self::completedFrom($run, $candidates, $beforeHistorySequence) === null;
     }
 
     public static function assertDispatchable(WorkflowRun $run, ScopedCancellationPreparation $current): void
@@ -182,6 +168,32 @@ final class ScopedCancellationReconciliation
         } finally {
             $run->setRelation('historyEvents', $history);
         }
+    }
+
+    /**
+     * @param list<array{scope_id: string, reference: ScopedCancellationPreparation}> $candidates
+     */
+    private static function completedFrom(
+        WorkflowRun $run,
+        array $candidates,
+        ?int $beforeHistorySequence,
+    ): ?self {
+        foreach ($candidates as $candidate) {
+            $event = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::CancellationScopeDelivered
+                && ($event->payload['scope_id'] ?? null) === $candidate['scope_id']);
+            if ($event === null || ($beforeHistorySequence !== null && $event->sequence >= $beforeHistorySequence)) {
+                continue;
+            }
+            // Delivery may finish after ancestor preparation, but must precede
+            // the consuming marker. Strictly earlier preparations keep reads finite.
+            $delivery = CancellationScopeDelivery::recorded($run, $candidate['scope_id']);
+            if ($delivery === null || $delivery->id !== $event->id) {
+                throw new LogicException('cancellation_scope_delivery_history_invalid');
+            }
+            return new self($candidate['reference'], $delivery);
+        }
+        return null;
     }
 
     /**
