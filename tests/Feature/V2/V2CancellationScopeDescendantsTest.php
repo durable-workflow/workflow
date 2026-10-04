@@ -422,7 +422,8 @@ final class V2CancellationScopeDescendantsTest extends TestCase
                 'compatibility' => $run->compatibility,
             ]);
         $run->forceFill([
-            'run_deadline_at' => now()->addSeconds(25),
+            'run_deadline_at' => now()
+                ->addSeconds(25),
         ])->save();
         $request = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30);
         Carbon::setTestNow('2026-10-04T00:00:09Z');
@@ -448,7 +449,8 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             'attempt_count' => 2,
         ])->save();
         $run->forceFill([
-            'run_deadline_at' => now()->addSeconds(100),
+            'run_deadline_at' => now()
+                ->addSeconds(100),
         ])->save();
         Carbon::setTestNow('2026-10-04T00:00:10Z');
         try {
@@ -512,11 +514,13 @@ final class V2CancellationScopeDescendantsTest extends TestCase
         $this->assertSame('2026-10-04T00:00:25.000000Z', $childContext->deadline()->toISOString());
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
         );
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
         );
         $recorded = CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']);
         $this->assertNotNull($recorded);

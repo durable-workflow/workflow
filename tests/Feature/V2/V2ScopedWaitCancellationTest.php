@@ -421,7 +421,8 @@ final class V2ScopedWaitCancellationTest extends TestCase
         );
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDeliveryPrepared)->count()
         );
         $this->assertSame($result, $this->dispatch($claim, $scope, $prepared));
     }
