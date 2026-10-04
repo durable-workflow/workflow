@@ -106,6 +106,13 @@ final class PortableCancellationScopeDelivery
                 $response['wait_cancellations'] = [];
                 $response['child_cancellations'] = [];
                 foreach ($references as $reference) {
+                    $completed = ScopedCancellationReconciliation::completed($run, $reference);
+                    if ($completed !== null) {
+                        foreach ($completed->receipts($run) as $field => $receipts) {
+                            array_push($response[$field], ...$receipts);
+                        }
+                        continue;
+                    }
                     foreach ($reference->waitMembers as $member) {
                         $receipt = ScopedWaitCancellation::fence(
                             $run,

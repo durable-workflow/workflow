@@ -18,6 +18,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -153,6 +154,362 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             ->count();
         $this->assertSame($prepared->id, $this->prepare($run->fresh(), $task, $scopes['parent'])->id);
         $this->assertSame($count, $run->historyEvents()->count());
+    }
+
+    #[DataProvider('completedChildBudgets')]
+    public function testParentReconcilesAnIndependentlyDeliveredChildWithoutRewritingItsReceipts(
+        string $timerScope,
+        int $parentRequestedAt,
+        int $parentGrace,
+        bool $timerFired = false,
+    ): void {
+        [$run, $task, $scopes] = $this->tree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prefix = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'original',
+            1,
+            'independent-child-timer',
+            7,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => $timerFired ? 1 : 3600,
+                'cancellation_scope_id' => $scopes[$timerScope],
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($prefix['checkpointed'], $prefix['reason'] ?? '');
+        if ($timerFired) {
+            Carbon::setTestNow('2026-10-04T00:00:02Z');
+            $timerTask = $run->tasks()
+                ->where('task_type', TaskType::Timer)->sole();
+            $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+        }
+        $child = CancellationScopeRequests::request($run, $scopes['child'], '1.20', 20, 'independent');
+        $childDeadline = CancellationScopeRequests::context($run, $scopes['child'])->deadline()->toISOString();
+        $this->prepare($run, $task, $scopes['child'], 8);
+        $childDelivery = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['child'],
+            $child->payload['request_id'],
+            8,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($childDelivery['delivered'], $childDelivery['reason'] ?? '');
+        $timer = $run->timers()
+            ->sole();
+        $beforeTimer = $timer->getAttributes();
+        $receipt = $run->historyEvents()
+            ->whereIn('event_type', [HistoryEventType::TimerCancelled, HistoryEventType::TimerFired])->sole();
+        $beforeReceipt = $receipt->getAttributes();
+        $boundary = CancellationScopeDelivery::recorded($run->fresh(), $scopes['child']);
+        $beforeBoundary = $boundary->getAttributes();
+        Carbon::setTestNow(Carbon::parse('2026-10-04T00:00:00Z')->addSeconds($parentRequestedAt));
+        $parent = CancellationScopeRequests::request($run, $scopes['parent'], '1.20', $parentGrace, 'ancestor');
+        $this->prepare($run->fresh(), $task, $scopes['parent'], 9);
+        $parentDelivery = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            9,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($parentDelivery['delivered'], $parentDelivery['reason'] ?? '');
+        $this->assertSame($beforeTimer, $timer->fresh()->getAttributes());
+        $this->assertSame($beforeReceipt, $receipt->fresh()->getAttributes());
+        $this->assertSame($beforeBoundary, $boundary->fresh()->getAttributes());
+        $this->assertSame($childDelivery['timer_cancellations'], $parentDelivery['timer_cancellations']);
+        $this->assertSame(
+            $child->payload['request_id'],
+            CancellationScopeRequests::context($run->fresh(), $scopes['child'])->requestId
+        );
+        $this->assertSame(
+            $childDeadline,
+            CancellationScopeRequests::context($run->fresh(), $scopes['child'])->deadline()->toISOString()
+        );
+        $parentBoundary = CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']);
+        $count = $run->historyEvents()
+            ->count();
+        $retry = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            9,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertSame($parentDelivery, $retry);
+        $replacement = $task->fresh();
+        $replacement->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $replayed = $bridge->deliverCancellationScope(
+            $task->id,
+            'replacement',
+            2,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            9,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertSame($parentDelivery, $replayed);
+        $this->assertSame($count, $run->historyEvents()->count());
+        Carbon::setTestNow('2026-10-04T00:02:00Z');
+        $run->forceFill([
+            'status' => RunStatus::Terminated,
+        ])->save();
+        $this->assertSame(
+            $parentBoundary->id,
+            CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent'])->id
+        );
+        $this->assertSame($count, $run->historyEvents()->count());
+    }
+
+    public static function completedChildBudgets(): iterable
+    {
+        yield 'child original deadline' => ['child', 5, 30];
+        yield 'child shorter parent budget' => ['child', 5, 5];
+        yield 'child already expired' => ['child', 21, 30];
+        yield 'grandchild original ancestor proof' => ['grandchild', 5, 30];
+        yield 'grandchild shorter parent budget' => ['grandchild', 5, 5];
+        yield 'grandchild already expired' => ['grandchild', 21, 30];
+        yield 'child naturally fired' => ['child', 5, 30, true];
+        yield 'grandchild naturally fired' => ['grandchild', 5, 30, true];
+    }
+
+    #[DataProvider('completedMixedPolicies')]
+    public function testCompletedMixedChildReconcilesAllFourFamiliesAfterItsDeadline(
+        string $kind,
+        string $activityPolicy,
+        string $childPolicy,
+        bool $activityCompleted,
+        bool $childCompleted,
+    ): void {
+        [$run, $task, $scopes] = $this->tree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prefix = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'original',
+            1,
+            'completed-mixed-child',
+            7,
+            [[
+                'type' => 'schedule_activity',
+                'activity_type' => 'descendant-activity',
+                'arguments' => Serializer::serializeWithCodec('avro', []),
+                'payload_codec' => 'avro',
+                'cancellation_scope_id' => $scopes['child'],
+                'cancellation_policy' => $activityPolicy,
+                'schedule_to_close_timeout' => 120,
+            ], [
+                'type' => 'start_timer',
+                'delay_seconds' => 3600,
+                'cancellation_scope_id' => $scopes['grandchild'],
+            ], [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'descendant-workflow',
+                'arguments' => Serializer::serializeWithCodec('avro', []),
+                'payload_codec' => 'avro',
+                'cancellation_policy' => $childPolicy,
+                'cancellation_scope_id' => $scopes['child'],
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($prefix['checkpointed'], $prefix['reason'] ?? '');
+        if ($activityCompleted) {
+            $activityTask = $run->tasks()
+                ->where('task_type', TaskType::Activity)->sole();
+            $activityBridge = app(ActivityTaskBridge::class);
+            $activityClaim = $activityBridge->claimStatus($activityTask->id, 'completed-activity-owner');
+            $this->assertTrue($activityBridge->complete(
+                $activityClaim['activity_attempt_id'],
+                Serializer::serializeWithCodec('avro', 'completed'),
+                'avro'
+            )['recorded']);
+        }
+        if ($childCompleted) {
+            $scheduledChild = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildWorkflowScheduled)->sole();
+            WorkflowStub::loadRun($scheduledChild->payload['child_workflow_run_id'])->attemptCancel(
+                'terminal child fixture'
+            );
+        }
+        $completed = $bridge->complete($task->id, [[
+            'type' => 'open_' . $kind . '_wait',
+            'cancellation_scope_id' => $scopes['child'],
+            'timeout_seconds' => 3600,
+            ...($kind === 'signal' ? [
+                'signal_name' => 'ready',
+            ] : [
+                'condition_key' => 'ready',
+            ]),
+        ]]);
+        $this->assertTrue($completed['completed'], $completed['reason'] ?? '');
+        $claim = $run->tasks()
+            ->create([
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow,
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'original',
+                'attempt_count' => 1,
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
+                'available_at' => now(),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+        $child = CancellationScopeRequests::request($run->fresh(), $scopes['child'], '1.20', 20, 'independent');
+        $this->prepare($run->fresh(), $claim, $scopes['child'], 11);
+        $childDelivery = $bridge->deliverCancellationScope(
+            $claim->id,
+            'original',
+            1,
+            $scopes['child'],
+            $child->payload['request_id'],
+            11,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($childDelivery['delivered'], $childDelivery['reason'] ?? '');
+        $beforeActivities = ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all();
+        $beforeTimers = WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all();
+        $childRun = WorkflowRun::query()->findOrFail($childDelivery['child_cancellations'][0]['child_workflow_run_id']);
+        $beforeChildRun = $childRun->getAttributes();
+        $beforeClaim = $claim->fresh()
+            ->getAttributes();
+        Carbon::setTestNow('2026-10-04T00:00:21Z');
+        $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30, 'ancestor');
+        $this->prepare($run->fresh(), $claim, $scopes['parent'], 12);
+        $parentDelivery = $bridge->deliverCancellationScope(
+            $claim->id,
+            'original',
+            1,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            12,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($parentDelivery['delivered'], $parentDelivery['reason'] ?? '');
+        foreach ([
+            'activity_cancellations',
+            'timer_cancellations',
+            'wait_cancellations',
+            'child_cancellations',
+        ] as $field) {
+            $this->assertNotEmpty($childDelivery[$field]);
+            $this->assertSame($childDelivery[$field], $parentDelivery[$field]);
+        }
+        $this->assertSame(
+            $beforeActivities,
+            ActivityExecution::query()->orderBy('id')->get()->map->getAttributes()->all()
+        );
+        $this->assertSame($beforeTimers, WorkflowTimer::query()->orderBy('id')->get()->map->getAttributes()->all());
+        $this->assertSame($beforeChildRun, $childRun->fresh()->getAttributes());
+        $this->assertSame($beforeClaim, $claim->fresh()->getAttributes());
+        $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scopes['parent']));
+    }
+
+    public static function completedMixedPolicies(): iterable
+    {
+        yield 'signal try policies' => ['signal', 'try_cancel', 'try_cancel', false, false];
+        yield 'condition try policies' => ['condition', 'try_cancel', 'try_cancel', false, false];
+        yield 'bounded abandoned operations' => ['signal', 'abandon', 'abandon', false, false];
+        yield 'wait policies with resolved child' => [
+            'condition',
+            'wait_cancellation_completed',
+            'wait_cancellation_completed',
+            false,
+            true,
+        ];
+        yield 'natural activity completion' => ['signal', 'try_cancel', 'try_cancel', true, false];
+    }
+
+    #[DataProvider('invalidCompletedProofs')]
+    public function testParentCannotUseMissingOrCorruptEarlierDeliveryProof(string $change): void
+    {
+        [$run, $task, $scopes] = $this->tree();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prefix = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'original',
+            1,
+            'invalid-completed-proof',
+            7,
+            [[
+                'type' => 'start_timer',
+                'delay_seconds' => 3600,
+                'cancellation_scope_id' => $scopes['child'],
+            ]],
+            '1.20'
+        );
+        $this->assertTrue($prefix['checkpointed'], $prefix['reason'] ?? '');
+        $child = CancellationScopeRequests::request($run, $scopes['child'], '1.20', 20);
+        $prepared = $this->prepare($run, $task, $scopes['child'], 8);
+        $delivery = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['child'],
+            $child->payload['request_id'],
+            8,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertTrue($delivery['delivered'], $delivery['reason'] ?? '');
+        $marker = CancellationScopeDelivery::recorded($run->fresh(), $scopes['child']);
+        Carbon::setTestNow('2026-10-04T00:00:05Z');
+        $parent = CancellationScopeRequests::request($run->fresh(), $scopes['parent'], '1.20', 30);
+        $this->prepare($run->fresh(), $task, $scopes['parent'], 9);
+        if ($change === 'missing') {
+            $marker->delete();
+        } else {
+            $event = $change === 'receipt' ? $run->historyEvents()
+                ->where('event_type', HistoryEventType::TimerCancelled)->sole() : $marker;
+            $payload = $event->payload;
+            if ($change === 'receipt') {
+                $payload['cancellation_scope']['authority_deadline_at'] = '2026-10-04T00:01:00.000000Z';
+            } else {
+                $payload['preparation_history_event_id'] = $parent->id;
+            }
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+        }
+        $before = $run->historyEvents()
+            ->count();
+        $result = $bridge->deliverCancellationScope(
+            $task->id,
+            'original',
+            1,
+            $scopes['parent'],
+            $parent->payload['request_id'],
+            9,
+            'timer',
+            protocolVersion: '1.20'
+        );
+        $this->assertFalse($result['delivered']);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count());
+        $this->assertSame($prepared->id, CancellationScopeDelivery::prepared($run->fresh(), $scopes['child'])->id);
+    }
+
+    public static function invalidCompletedProofs(): iterable
+    {
+        yield 'no completed boundary' => ['missing'];
+        yield 'wrong original preparation' => ['marker'];
+        yield 'renewed original receipt deadline' => ['receipt'];
     }
 
     public function testPreparationFreezesEveryDescendantOperationWithoutStartingCancellationEffects(): void

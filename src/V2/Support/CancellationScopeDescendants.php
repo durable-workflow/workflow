@@ -155,6 +155,9 @@ final class CancellationScopeDescendants
                     throw new LogicException('cancellation_scope_descendant_delivery_membership_mismatch');
                 }
             }
+            if (ScopedCancellationReconciliation::completed($run, $preparation) !== null) {
+                continue;
+            }
             $context = ScopedCancellationContext::fromArray($member['cancellation']);
             foreach ($member['activity_members'] as $activity) {
                 ScopedActivityDeliveryPolicy::assertReady(

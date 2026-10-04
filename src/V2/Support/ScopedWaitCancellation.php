@@ -381,7 +381,7 @@ final class ScopedWaitCancellation
     /**
      * @param array<string, mixed> $member
      */
-    private static function terminal(WorkflowRun $run, array $member): ?WorkflowHistoryEvent
+    public static function terminal(WorkflowRun $run, array $member): ?WorkflowHistoryEvent
     {
         $run->loadMissing('historyEvents');
         $cancelled = $run->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>
