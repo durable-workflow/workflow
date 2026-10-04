@@ -157,7 +157,7 @@ final class ChildRunHistory
             match ($policy) {
                 ParentClosePolicy::RequestCancel => $childCall->markCancelled(),
                 ParentClosePolicy::Terminate => $childCall->markTerminated(),
-                ParentClosePolicy::Abandon => null,
+                ParentClosePolicy::Abandon, ParentClosePolicy::RequestCancellation => null,
             };
         });
     }
@@ -666,6 +666,30 @@ final class ChildRunHistory
         );
     }
 
+    public static function terminalEventForRun(?WorkflowRun $childRun): ?WorkflowHistoryEvent
+    {
+        if (! $childRun instanceof WorkflowRun) {
+            return null;
+        }
+
+        $childRun->loadMissing('historyEvents');
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $childRun->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )
+            ->sortByDesc('sequence')
+            ->first();
+
+        return $event;
+    }
+
     private static function afterAuthoritativeCommit(callable $projection): void
     {
         $callback = static function () use ($projection): void {
@@ -714,30 +738,6 @@ final class ChildRunHistory
         }
 
         return sprintf('Child workflow %s closed as %s.', $childIdentity, $statusLabel);
-    }
-
-    private static function terminalEventForRun(?WorkflowRun $childRun): ?WorkflowHistoryEvent
-    {
-        if (! $childRun instanceof WorkflowRun) {
-            return null;
-        }
-
-        $childRun->loadMissing('historyEvents');
-
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $childRun->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
-                    HistoryEventType::WorkflowCompleted,
-                    HistoryEventType::WorkflowFailed,
-                    HistoryEventType::WorkflowCancelled,
-                    HistoryEventType::WorkflowTerminated,
-                ], true)
-            )
-            ->sortByDesc('sequence')
-            ->first();
-
-        return $event;
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent

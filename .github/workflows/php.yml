@@ -330,6 +330,18 @@ jobs:
           vendor/bin/phpunit --testdox \
           --log-junit build/test-results/pr-unit-contracts.xml
 
+    - name: Run workflow command normalizer unit cases
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/WorkflowCommandNormalizerTest.php
+        --fail-on-warning --log-junit build/test-results/pr-workflow-command-normalizer.xml
+      env:
+        REDIS_HOST: 127.0.0.1
+
+    - name: Run cancellation timeline unit cases
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php
+        --fail-on-warning --log-junit build/test-results/pr-cancellation-timeline.xml
+
   pr-feature-mysql:
     needs: preflight
     if: ${{ github.event_name == 'pull_request' }}
@@ -473,6 +485,138 @@ jobs:
         done
 
         exit "$status"
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run scoped Activity fencing and original stop receipt cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2ScopedActivityCancellationTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scoped-activities.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run scoped timer fencing and late fire cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2ScopedTimerCancellationTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scoped-timers.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run canonical operation scope delivery boundary cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2CancellationScopeDeliveryTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scope-delivery.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run canonical operation scope request authority cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2CancellationScopeRequestsTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scope-requests.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run canonical operation scope admission cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2CancellationScopeHistoryTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-scope-admission.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run activity cancellation policy and portable admission cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableCancellationDeliveryTest.php
+        --testsuite feature
+        --filter '/testInternal.*(ActivityWait|ActivityAbandon)|testPortableRemoteActivityPolicy/'
+        --fail-on-warning --log-junit build/test-results/pr-smoke-activity-cancellation-wait.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run local callback original-claim receipt cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableCancellationDeliveryTest.php
+        --testsuite feature
+        --filter '/(testLocalStopReceipt|testLocalOriginalOwner|testLateLocalReceipt)/'
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-claim.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local preparation cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityPreparationTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-preparation.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local retained-claim checkpoint cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityCheckpointTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-checkpoint.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local prepared outcome cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityOutcomeTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-outcomes.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local cold recovery cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityRecoveryTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-recovery.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local supervisor control cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityControlTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-control.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Run portable local cleanup and application heartbeat cases
+      run: >-
+        vendor/bin/phpunit tests/Feature/V2/V2PortableLocalActivityCleanupTest.php
+        --testsuite feature
+        --fail-on-warning --log-junit build/test-results/pr-smoke-local-cleanup.xml
       env:
         DB_CONNECTION: mysql
         QUEUE_CONNECTION: redis

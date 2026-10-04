@@ -9435,6 +9435,45 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($link->child_workflow_run_id, $applied->payload['child_run_id'] ?? null);
     }
 
+    public function testExternalWorkflowCompletionRequestsCooperativeChildCleanup(): void
+    {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $started = $this->bridge->complete($task->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test-greeting-workflow',
+            'arguments' => Serializer::serialize(['child-arg']),
+            'parent_close_policy' => 'request_cancellation',
+        ]]);
+        $this->assertTrue($started['completed']);
+        $parentCloseTask = $this->createLeasedTask($run->fresh());
+        $closed = $this->bridge->complete($parentCloseTask->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize([
+                'parent' => 'done',
+            ]),
+        ]]);
+        $this->assertTrue($closed['completed']);
+        $this->assertSame('completed', $closed['run_status']);
+        $link = WorkflowLink::query()->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $this->assertFalse($child->status->isTerminal());
+        $this->assertNotNull($child->cancellation_request_command_id);
+        $root = \Workflow\V2\Support\ParentCloseCancellation::context($run->fresh());
+        $context = \Workflow\V2\Support\CooperativeCancellationDelivery::context($child);
+        $this->assertSame($root->rootRequestId, $context->rootRequestId);
+        $this->assertSame($root->deadline()->toISOString(), $context->deadline()->toISOString());
+        $childCall = WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->sole();
+        $this->assertSame(ChildCallStatus::Started, $childCall->status);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertSame([], \Workflow\V2\Support\ParentClosePolicyEnforcer::enforce($run->fresh()));
+        $receipts = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied);
+        $this->assertSame(1, $receipts->count());
+    }
+
     public function testExternalWorkflowFailureAppliesTerminateParentClosePolicy(): void
     {
         $run = $this->createWaitingRun();

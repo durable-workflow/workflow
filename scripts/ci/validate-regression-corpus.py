@@ -29,6 +29,7 @@ REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
 MALFORMED_SERVICE_RESPONSE_ENVELOPE = "malformed_service_response_envelope"
 SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH = "search_attribute_type_identity_mismatch"
+WORKFLOW_HISTORY_SHAPE_MISMATCH = "workflow_history_shape_mismatch"
 UNSUPPORTED_PAYLOAD_CODEC = "unsupported_payload_codec"
 PHP_GOLDEN_REPLAY_WORKFLOW = "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow"
 PHP_REPLAY_CONSUMERS = {
@@ -162,6 +163,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestServiceResponseReplayWorkflow.php",
         "tests/Fixtures/V2/TestServiceGroupedConditionReopenWorkflow.php",
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",
+        "tests/Fixtures/V2/TestCancellationContextWorkflow.php",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
     ),
 }
@@ -1257,7 +1259,7 @@ def _replay_expected(
 
 
 def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
-    """Return the one fail-closed replay outcome supported by this corpus format."""
+    """Return an explicitly supported rejection from the official replay binding."""
 
     expected = _object(value, context)
     required = {"type", "exception"}
@@ -1267,6 +1269,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
     if failure_type not in {
         MALFORMED_SERVICE_RESPONSE_ENVELOPE,
         SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH,
+        WORKFLOW_HISTORY_SHAPE_MISMATCH,
         UNSUPPORTED_PAYLOAD_CODEC,
     }:
         raise CorpusError(f"{context}.type is unsupported")

@@ -1,0 +1,1486 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Validation\ValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\PortableLocalActivityPreparation;
+use Workflow\V2\WorkflowStub;
+
+final class V2PortableLocalActivityPreparationTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Queue::fake();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+    }
+
+    public function testPreparationPersistsAWorkerAliasAndOriginalClaimBeforeAnyApplicationInvocation(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $taskBefore = $task->getAttributes();
+        $reply = $this->prepare($task);
+        $this->assertTrue($reply['prepared']);
+        $this->assertFalse($reply['duplicate']);
+        $this->assertSame('sdk-local-attempt', $reply['worker_attempt_id']);
+        $this->assertSame('portable-worker', $reply['lease_owner']);
+        $this->assertSame(1, $reply['workflow_task_attempt']);
+        $execution = ActivityExecution::query()->findOrFail($reply['activity_execution_id']);
+        $this->assertSame('python-local-greeting', $execution->activity_type);
+        $this->assertSame(['Taylor'], $execution->activityArguments());
+        $this->assertSame('avro', $execution->payload_codec);
+        $this->assertSame(ActivityStatus::Running, $execution->status);
+        $this->assertSame($reply['activity_attempt_id'], $execution->current_attempt_id);
+        $attempt = $execution->attempts()
+            ->sole();
+        $this->assertSame(ActivityAttemptStatus::Running, $attempt->status);
+        $this->assertSame($task->id, $attempt->workflow_task_id);
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $events = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame(
+            [HistoryEventType::ActivityScheduled, HistoryEventType::ActivityStarted],
+            $events->pluck('event_type')
+                ->all()
+        );
+        $started = $events->last();
+        $this->assertSame($task->id, $started->payload['task']['id']);
+        $this->assertSame(1, $started->payload['task']['attempt_count']);
+        $this->assertSame('portable-worker', $started->payload['task']['lease_owner']);
+        $this->assertSame('sdk-local-attempt', $started->payload['activity_attempt']['worker_attempt_id']);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        foreach (HistoryTimeline::forRun($run->fresh()) as $entry) {
+            $this->assertSame('workflow', $entry['task']['type']);
+            $this->assertSame('leased', $entry['task']['status']);
+        }
+    }
+
+    public function testLostPreparationResponseReturnsTheOriginalAttemptWithoutRenewingAnyDeadline(): void
+    {
+        [, $task] = $this->newClaim();
+        $first = $this->prepare($task, [
+            'start_to_close_timeout' => 10,
+            'schedule_to_close_timeout' => 20,
+        ]);
+        $this->assertTrue($first['prepared']);
+        $taskBefore = $task->refresh()
+            ->getAttributes();
+        Carbon::setTestNow(now()->addSecond());
+        try {
+            $second = $this->prepare($task, [
+                'start_to_close_timeout' => 10,
+                'schedule_to_close_timeout' => 20,
+            ]);
+            $this->assertTrue($second['prepared']);
+            $this->assertTrue($second['duplicate']);
+            foreach (['activity_execution_id', 'activity_attempt_id', 'worker_attempt_id', 'workflow_task_id',
+                'workflow_task_attempt', 'lease_owner', 'lease_expires_at', 'start_to_close_deadline_at',
+                'schedule_to_close_deadline_at'] as $field) {
+                $this->assertSame($first[$field], $second[$field]);
+            }
+            $this->assertSame(1, ActivityExecution::query()->count());
+            $this->assertSame(2, WorkflowHistoryEvent::query()->count());
+            $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    #[DataProvider('preparedLocalCancellationPolicies')]
+    public function testPreparedLocalPolicyIsPersistedBeforeInvocationAndRetainedOnResponseLoss(?string $policy): void
+    {
+        [$run, $task] = $this->newClaim();
+        $descriptor = $policy === null ? [] : [
+            'cancellation_policy' => $policy,
+        ];
+        $first = $this->prepare($task, $descriptor);
+        $this->assertTrue($first['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($first['activity_execution_id']);
+        $this->assertSame($policy, $execution->activity_options['cancellation_policy'] ?? null);
+        foreach ($run->historyEvents()->orderBy('sequence')->get() as $event) {
+            $this->assertSame($policy, $event->payload['activity']['cancellation_policy'] ?? null);
+        }
+        $duplicate = $this->prepare($task, $descriptor);
+        $this->assertTrue($duplicate['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['activity_attempt_id'], $duplicate['activity_attempt_id']);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+    }
+
+    public static function preparedLocalCancellationPolicies(): iterable
+    {
+        yield 'historical default' => [null];
+        yield 'try cancellation' => ['try_cancel'];
+        yield 'wait for stop receipt' => ['wait_cancellation_completed'];
+    }
+
+    public function testAChangedLocalPolicyCannotRelabelAnAdmittedAttempt(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $this->assertTrue($this->prepare($task, [
+            'cancellation_policy' => 'try_cancel',
+        ])['prepared']);
+        $before = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $changed = $this->prepare($task, [
+            'cancellation_policy' => 'wait_cancellation_completed',
+        ]);
+        $this->assertFalse($changed['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $changed['reason']);
+        $this->assertSame($before, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+    }
+
+    #[DataProvider('unsupportedLocalCancellationPolicies')]
+    public function testUnsupportedLocalPolicyIsRefusedBeforeCallbackAdmission(mixed $policy): void
+    {
+        [$run, $task] = $this->newClaim();
+        $before = $task->getAttributes();
+        $change = [
+            'cancellation_policy' => $policy,
+            'schedule_to_close_timeout' => 60,
+        ];
+        try {
+            PortableLocalActivityPreparation::normalizeDescriptor([...$this->descriptor(), ...$change]);
+            $this->fail('An unsupported local policy must refuse before admission.');
+        } catch (ValidationException $error) {
+            $this->assertArrayHasKey('local_activity.cancellation_policy', $error->errors());
+        }
+        $reply = $this->prepare($task, $change);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('invalid_local_activity_preparation', $reply['reason']);
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame($before, $task->refresh()->getAttributes());
+    }
+
+    public static function unsupportedLocalCancellationPolicies(): iterable
+    {
+        foreach (['abandon', 'unknown', null, false, 1, []] as $policy) {
+            yield [$policy];
+        }
+    }
+
+    #[DataProvider('changedDescriptors')]
+    public function testAPreparedAttemptCannotBeRelabelledByARetry(array $change): void
+    {
+        [, $task] = $this->newClaim();
+        $this->assertTrue($this->prepare($task)['prepared']);
+        $reply = $this->prepare($task, $change);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $reply['reason']);
+        $this->assertSame(1, ActivityExecution::query()->count());
+        $this->assertSame(2, WorkflowHistoryEvent::query()->count());
+    }
+
+    public static function changedDescriptors(): iterable
+    {
+        yield 'different alias' => [[
+            'activity_type' => 'another-local-activity',
+        ]];
+        yield 'different input' => [[
+            'arguments' => Serializer::serializeWithCodec('avro', ['another-input']),
+        ]];
+        yield 'different timeout' => [[
+            'start_to_close_timeout' => 2,
+        ]];
+        yield 'different retry budget' => [[
+            'retry_policy' => [
+                'max_attempts' => 3,
+            ],
+        ]];
+    }
+
+    public function testChangedOwnerOrClaimAttemptCannotReuseTheOriginalPreparation(): void
+    {
+        [, $task] = $this->newClaim();
+        $this->assertTrue($this->prepare($task)['prepared']);
+        $task->forceFill([
+            'lease_owner' => 'replacement-worker',
+            'attempt_count' => 2,
+        ])->save();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
+        $this->assertSame('workflow_claim_mismatch', $this->prepare($task)['reason']);
+        $reply = PortableLocalActivityPreparation::prepare(
+            $task->id,
+            'replacement-worker',
+            2,
+            1,
+            'sdk-local-attempt',
+            $this->descriptor(),
+            '1.20',
+        );
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $reply['reason']);
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $this->assertSame(2, WorkflowHistoryEvent::query()->count());
+    }
+
+    #[DataProvider('invalidDescriptors')]
+    public function testInvalidOrTerminalReportsCannotPretendToPrepareACallback(array $change): void
+    {
+        [, $task] = $this->newClaim();
+        $reply = $this->prepare($task, $change);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('invalid_local_activity_preparation', $reply['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->count());
+    }
+
+    public static function invalidDescriptors(): iterable
+    {
+        yield 'queued routing' => [[
+            'queue' => 'another-queue',
+        ]];
+        yield 'outcome supplied before execution' => [[
+            'outcome' => 'completed',
+        ]];
+        yield 'attempt report supplied before execution' => [[
+            'attempts' => [],
+        ]];
+        yield 'negative timeout' => [[
+            'heartbeat_timeout' => -1,
+        ]];
+        yield 'inconsistent timeouts' => [[
+            'start_to_close_timeout' => 3,
+            'schedule_to_close_timeout' => 2,
+        ]];
+        yield 'wrong execution mode' => [[
+            'execution_mode' => 'remote',
+        ]];
+        yield 'invalid identifier encoding' => [[
+            'activity_type' => "invalid-\xFF",
+        ]];
+    }
+
+    public function testThePublishedProtocolDoesNotOptInToTheCandidatePreparationPath(): void
+    {
+        [, $task] = $this->newClaim();
+        $reply = PortableLocalActivityPreparation::prepare(
+            $task->id,
+            'portable-worker',
+            1,
+            1,
+            'sdk-local-attempt',
+            $this->descriptor(),
+        );
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_preparation_requires_protocol_1_20', $reply['reason']);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function testUncommittedEarlierCommandsCannotBeSkipped(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $reply = PortableLocalActivityPreparation::prepare(
+            $task->id,
+            'portable-worker',
+            1,
+            2,
+            'sdk-local-attempt',
+            $this->descriptor(),
+            '1.20',
+        );
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_command_prefix_not_recorded', $reply['reason']);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->count());
+        WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+            'sequence' => 1,
+            'result' => Serializer::serializeWithCodec('avro', 'already-recorded'),
+        ], $task);
+        $reply = PortableLocalActivityPreparation::prepare(
+            $task->id,
+            'portable-worker',
+            1,
+            2,
+            'sdk-local-attempt',
+            $this->descriptor(),
+            '1.20',
+        );
+        $this->assertTrue($reply['prepared']);
+        $this->assertSame(2, ActivityExecution::query()->sole()->sequence);
+        $this->assertSame(3, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function testCancellationAfterALostResponseCannotAuthorizeApplicationInvocation(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $first = $this->prepare($task);
+        $this->assertTrue($first['prepared']);
+        $this->assertTrue(
+            WorkflowStub::load($run->workflow_instance_id)->requestCancellation('maintenance', 30)->accepted()
+        );
+        $run->refresh();
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $before = $run->historyEvents()
+            ->count();
+        $reply = $this->prepare($task);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('cancellation_requested', $reply['reason']);
+        $this->assertSame($before, $run->historyEvents()->count());
+        $execution = ActivityExecution::query()->findOrFail($first['activity_execution_id']);
+        ActivityCancellation::record($run, $execution, command: $run->cancellation_request_command_id);
+        $task->forceFill([
+            'lease_owner' => 'replacement-worker',
+            'attempt_count' => 2,
+        ])->save();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
+        $receipt = ActivityCancellationAcknowledgement::recordLocalStopped(
+            $first['activity_attempt_id'],
+            'portable-worker',
+            $run->cancellation_request_command_id,
+            1,
+        );
+        $this->assertTrue($receipt['acknowledged']);
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+    }
+
+    public function testAnExpiredAttemptOrWorkflowClaimCannotBePreparedAgain(): void
+    {
+        [, $task] = $this->newClaim();
+        $this->assertTrue($this->prepare($task, [
+            'start_to_close_timeout' => 1,
+        ])['prepared']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        try {
+            $reply = $this->prepare($task, [
+                'start_to_close_timeout' => 1,
+            ]);
+            $this->assertFalse($reply['prepared']);
+            $this->assertSame('local_activity_deadline_expired', $reply['reason']);
+            $task->forceFill([
+                'lease_expires_at' => now()
+                    ->subSecond(),
+            ])->save();
+            $this->assertSame('workflow_claim_expired', $this->prepare($task)['reason']);
+            $this->assertSame(2, WorkflowHistoryEvent::query()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function testCompleteChildLocalGroupIsCommittedBeforeAnyLocalAttempt(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $lease = $task->lease_expires_at;
+        $commands = $this->groupCommands();
+        $reply = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $this->assertSame(3, $reply['next_sequence']);
+        $this->assertCount(1, $reply['local_activities']);
+        $this->assertSame(2, WorkflowRun::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+        $this->assertEquals($lease, $task->lease_expires_at);
+        $execution = ActivityExecution::query()->sole();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+        $this->assertSame(0, $execution->attempt_count);
+        $this->assertNull($execution->current_attempt_id);
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $scheduled->payload['parallel_group_path']);
+        $this->assertSame(1, $scheduled->payload['local_group_admission']['version']);
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityStarted)->count());
+        $prepared = $this->prepareGroupMember($task, $commands[1], 2);
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertSame($execution->id, $prepared['activity_execution_id']);
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityStarted)->sole();
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $started->payload['parallel_group_path']);
+        $this->assertSame($task->id, $started->workflow_task_id);
+    }
+
+    public function testGroupResponseLossCannotCreateAnotherChildOrExtendTheTotalBudget(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $commands[1]['schedule_to_close_timeout'] = 20;
+        $first = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($first['checkpointed'], $first['reason'] ?? '');
+        $deadline = ActivityExecution::query()->sole()->schedule_to_close_deadline_at;
+        $events = $run->historyEvents()
+            ->count();
+        Carbon::setTestNow(now()->addSeconds(5));
+        try {
+            $duplicate = $this->groupCheckpoint($task, $commands);
+            $this->assertTrue($duplicate['duplicate']);
+            $this->assertEquals([
+                ...$first,
+                'duplicate' => true,
+            ], $duplicate);
+            $this->assertSame(2, WorkflowRun::query()->count());
+            $this->assertSame($events, $run->historyEvents()->count());
+            $prepared = $this->prepareGroupMember($task, $commands[1], 2);
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $this->assertEquals($deadline, new Carbon($prepared['schedule_to_close_deadline_at']));
+            $this->assertTrue($this->prepareGroupMember($task, $commands[1], 2)['duplicate']);
+            $this->assertSame(1, ActivityAttempt::query()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testReplacementBeforeLocalPreparationCreatesOnlyItsOwnFirstAttempt(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $task->forceFill([
+            'lease_owner' => 'replacement',
+            'attempt_count' => 2,
+        ])->save();
+        $this->assertSame('workflow_claim_mismatch', $this->prepareGroupMember($task, $commands[1], 2)['reason']);
+        $prepared = $this->prepareGroupMember($task, $commands[1], 2, 'replacement', 2);
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $this->assertSame(2, $prepared['workflow_task_attempt']);
+        $this->assertSame(1, $prepared['attempt_number']);
+        $this->assertSame(1, ActivityAttempt::query()->count());
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+        );
+    }
+
+    public function testCancellationBetweenGroupCommitAndPrepareRefusesTheUnstartedCallback(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $run->forceFill([
+            'cancellation_request_command_id' => 'cancellation',
+            'cancellation_deadline_at' => now()
+                ->addSeconds(30),
+        ])->save();
+        $this->assertSame('cancellation_requested', $this->prepareGroupMember($task, $commands[1], 2)['reason']);
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityStarted)->count());
+    }
+
+    public function testElapsedAdmissionTotalBudgetRecordsTimeoutWithoutFabricatingAnAttempt(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $commands[1]['schedule_to_close_timeout'] = 2;
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        try {
+            $reply = $this->prepareGroupMember($task, $commands[1], 2);
+            $this->assertSame('local_activity_deadline_expired', $reply['reason']);
+            $this->assertSame('ActivityTimedOut', $reply['event_type']);
+            $this->assertSame(0, ActivityAttempt::query()->count());
+            $this->assertSame(ActivityStatus::Failed, ActivityExecution::query()->sole()->status);
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityTimedOut)->count()
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testPreparedGroupOutcomePreservesTheAuthoredPathAndOriginalClaim(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $prepared = $this->prepareGroupMember($task, $commands[1], 2);
+        $reply = app(DefaultWorkflowTaskBridge::class)->recordLocalActivityOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            [
+                'outcome' => 'completed',
+                'result' => Serializer::serializeWithCodec('avro', 'done'),
+                'payload_codec' => 'avro',
+            ],
+            '1.20'
+        );
+        $this->assertTrue($reply['recorded'], $reply['reason'] ?? '');
+        $this->assertFalse($reply['claim_released']);
+        $event = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCompleted)->sole();
+        $this->assertGroupPath($commands[1]['parallel_group_path'], $event->payload['parallel_group_path']);
+        $this->assertSame($task->id, $event->payload['task']['id']);
+        $this->assertSame($prepared['activity_attempt_id'], $event->payload['activity_attempt_id']);
+    }
+
+    public function testCancellationFencesBothPreparedGroupMembersAndRetainsTheirAuthoredPaths(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = [];
+        foreach ([0, 1] as $index) {
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                ...ParallelChildGroup::itemMetadata(1, 2, $index, 'activity'),
+            ];
+        }
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $bridge = app(PreparedLocalActivityTaskBridge::class);
+        $members = [];
+        foreach ($commands as $index => $descriptor) {
+            $members[] = $bridge->prepareLocalActivity(
+                $task->id,
+                'portable-worker',
+                1,
+                $index + 1,
+                'group-attempt-' . $index,
+                [
+                    ...$descriptor,
+                    'type' => 'record_local_activity',
+                ],
+                '1.20'
+            );
+            $this->assertTrue($members[$index]['prepared']);
+        }
+        $context = WorkflowStub::loadRun($run->id)->requestCancellation('stop group', 30)->cancellationContext();
+        $taskBefore = $task->refresh()
+            ->getAttributes();
+        foreach ($members as $index => $member) {
+            $control = $bridge->controlLocalActivity(
+                $member['activity_attempt_id'],
+                'portable-worker',
+                1,
+                true,
+                '1.20'
+            );
+            $this->assertSame('cancellation_requested', $control['reason']);
+            $this->assertTrue($control['stop_required']);
+            $this->assertTrue($control['fenced']);
+            $this->assertFalse($control['renewed']);
+            $this->assertSame($context->toArray(), $control['cancellation_request']);
+            $this->assertSame(
+                ActivityAttemptStatus::Cancelled,
+                ActivityAttempt::query()->findOrFail($member['activity_attempt_id'])->status
+            );
+            $event = WorkflowHistoryEvent::query()->findOrFail($control['cancellation_history_event_id']);
+            $this->assertSame(HistoryEventType::ActivityCancelled, $event->event_type);
+            $this->assertGroupPath($commands[$index]['parallel_group_path'], $event->payload['parallel_group_path']);
+            $this->assertSame($member['activity_attempt_id'], $event->payload['activity_attempt_id']);
+            $this->assertSame($task->id, $event->payload['activity_attempt']['task_id']);
+            $again = $bridge->controlLocalActivity($member['activity_attempt_id'], 'portable-worker', 1, false, '1.20');
+            $this->assertSame($control['cancellation_history_event_id'], $again['cancellation_history_event_id']);
+            $ack = $bridge->acknowledgeLocalActivityCancellation(
+                $member['activity_attempt_id'],
+                'portable-worker',
+                $context->requestId,
+                1,
+                '1.20'
+            );
+            $this->assertTrue($ack['acknowledged']);
+            $receipt = WorkflowHistoryEvent::query()->findOrFail($ack['history_event_id']);
+            $this->assertSame($context->rootRequestId, $receipt->payload['root_request_id']);
+            $this->assertSame($context->deadline()->toISOString(), $receipt->payload['cleanup_deadline_at']);
+            $this->assertFalse($receipt->payload['received_after_deadline']);
+        }
+        $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+        $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancelled)->count());
+        $this->assertSame(
+            2,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+        );
+        $this->assertSame(
+            $context->toArray(),
+            WorkflowStub::loadRun($run->id)->requestCancellation('duplicate', 600)->cancellationContext()->toArray()
+        );
+    }
+
+    #[DataProvider('groupRetryClaims')]
+    public function testColdGroupRecoveryTransfersOnlyTheRecordedSiblingRetryChain(
+        string $change,
+        ?string $reason
+    ): void {
+        Carbon::setTestNow('2026-10-02T10:00:00Z');
+        try {
+            [$run, $original] = $this->newClaim();
+            $original->forceFill([
+                'lease_expires_at' => now()
+                    ->addSeconds(10),
+            ])->save();
+            $commands = [];
+            foreach ([0, 1] as $index) {
+                $commands[] = [
+                    ...$this->descriptor(),
+                    'type' => 'prepare_local_activity',
+                    'schedule_to_close_timeout' => 120,
+                    'retry_policy' => [
+                        'max_attempts' => 2,
+                        'backoff_seconds' => [0],
+                    ],
+                    ...ParallelChildGroup::itemMetadata(1, 2, $index, 'activity'),
+                ];
+            }
+            $this->assertTrue($this->groupCheckpoint($original, $commands)['checkpointed']);
+            $bridge = app(PreparedLocalActivityTaskBridge::class);
+            $members = [];
+            foreach ($commands as $index => $descriptor) {
+                $members[] = $bridge->prepareLocalActivity(
+                    $original->id,
+                    'portable-worker',
+                    1,
+                    $index + 1,
+                    'original-' . $index,
+                    [
+                        ...$descriptor,
+                        'type' => 'record_local_activity',
+                    ],
+                    '1.20'
+                );
+                $this->assertTrue($members[$index]['prepared']);
+            }
+            Carbon::setTestNow(now()->addSeconds(11));
+            $claim = $original;
+            $claim->forceFill([
+                'attempt_count' => 2,
+                'lease_expires_at' => now()
+                    ->addSeconds(10),
+            ])->save();
+            $recoveries = [];
+            $claims = [];
+            foreach ($commands as $index => $descriptor) {
+                $recovered = $bridge->recoverLocalActivity(
+                    $claim->id,
+                    'portable-worker',
+                    $claim->attempt_count,
+                    $index + 1,
+                    [
+                        ...$descriptor,
+                        'type' => 'record_local_activity',
+                    ],
+                    '1.20'
+                );
+                $this->assertTrue($recovered['recovered'], $recovered['reason'] ?? '');
+                $this->assertTrue($recovered['claim_released']);
+                $this->assertSame('unknown', $recovered['callback_stop_state']);
+                $recoveries[] = WorkflowHistoryEvent::query()->findOrFail($recovered['event_id']);
+                $claim = WorkflowTask::query()->findOrFail($recovered['created_task_ids'][0]);
+                $claim->forceFill([
+                    'status' => TaskStatus::Leased,
+                    'lease_owner' => 'portable-worker',
+                    'attempt_count' => 1,
+                    'lease_expires_at' => now()
+                        ->addSeconds(10),
+                ])->save();
+                $claims[] = $claim;
+            }
+            if ($change === 'unrelated claim') {
+                $claim = $claim->replicate();
+                $claim->save();
+            } elseif ($change === 'different batch') {
+                $scheduled = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityScheduled)
+                    ->where('payload->sequence', 2)
+                    ->sole();
+                $payload = $scheduled->payload;
+                $payload['local_group_admission']['batch_fingerprint'] = str_repeat('0', 64);
+                $scheduled->forceFill([
+                    'payload' => $payload,
+                ])->save();
+            } elseif ($change === 'missing link') {
+                $recoveries[1]->delete();
+            } elseif ($change === 'unfinished predecessor') {
+                $claims[0]->forceFill([
+                    'status' => TaskStatus::Ready,
+                ])->save();
+            } elseif ($change === 'cycle' || $change === 'wrong source') {
+                $payload = $recoveries[1]->payload;
+                $payload[$change === 'cycle' ? 'retry_task_id' : 'retry_of_task_id'] =
+                    $change === 'cycle' ? $claims[0]->id : $original->id;
+                $recoveries[1]->forceFill([
+                    'payload' => $payload,
+                ])->save();
+            } elseif ($change === 'backoff') {
+                $payload = $recoveries[0]->payload;
+                $payload['retry_available_at'] = now()->addSecond()->toISOString();
+                $recoveries[0]->forceFill([
+                    'payload' => $payload,
+                ])->save();
+                $claim->forceFill([
+                    'available_at' => now()
+                        ->subMinute(),
+                ])->save();
+            }
+            $before = $claim->refresh()
+                ->getAttributes();
+            foreach ($commands as $index => $descriptor) {
+                $prepared = $bridge->prepareLocalActivity(
+                    $claim->id,
+                    'portable-worker',
+                    1,
+                    $index + 1,
+                    'replacement-' . $index,
+                    [
+                        ...$descriptor,
+                        'type' => 'record_local_activity',
+                    ],
+                    '1.20'
+                );
+                if ($reason !== null) {
+                    $this->assertFalse($prepared['prepared']);
+                    $this->assertSame($reason, $prepared['reason']);
+                    $this->assertSame(2, ActivityAttempt::query()->count());
+                    break;
+                }
+                $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+                $this->assertSame(2, $prepared['attempt_number']);
+                $this->assertNotSame($members[$index]['activity_attempt_id'], $prepared['activity_attempt_id']);
+                $this->assertSame(
+                    $members[$index]['schedule_to_close_deadline_at'],
+                    $prepared['schedule_to_close_deadline_at']
+                );
+            }
+            $this->assertSame($before, $claim->refresh()->getAttributes());
+            $this->assertSame(
+                0,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public static function groupRetryClaims(): iterable
+    {
+        yield 'both members on the final claim' => ['unchanged', null];
+        foreach ([
+            'unrelated claim',
+            'different batch',
+            'missing link',
+            'unfinished predecessor',
+            'cycle',
+            'wrong source',
+        ] as $change) {
+            yield $change => [$change, 'local_activity_retry_preparation_mismatch'];
+        }
+        yield 'mutable availability cannot bypass backoff' => ['backoff', 'local_activity_retry_not_due'];
+    }
+
+    #[DataProvider('invalidGroupChanges')]
+    public function testInvalidGroupCreatesNeitherTheChildNorTheLocalExecution(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        match ($change) {
+            'partial' => array_pop($commands),
+            'missing child' => array_shift($commands),
+            'wrong member index' => $commands[1]['parallel_group_path'][0]['parallel_group_index'] = 0,
+            'wrong group size' => $commands[1]['parallel_group_size'] = 3,
+            'outcome instead of admission' => $commands[1]['type'] = 'record_local_activity',
+            'routing' => $commands[1]['queue'] = 'remote',
+            'unshielded proof' => $commands[1]['cancellation_cleanup'] = [
+                'request_id' => 'invented',
+                'delivery_history_event_id' => 'invented',
+            ],
+        };
+        $reply = $this->groupCheckpoint($task, $commands);
+        $this->assertFalse($reply['checkpointed']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(1, WorkflowRun::query()->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+    }
+
+    public static function invalidGroupChanges(): iterable
+    {
+        foreach (['partial', 'missing child', 'wrong member index', 'wrong group size',
+            'outcome instead of admission', 'routing', 'unshielded proof'] as $change) {
+            yield $change => [$change];
+        }
+    }
+
+    public function testChangedGroupOrPreparationCannotRelabelTheAdmittedWork(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $before = $run->historyEvents()
+            ->count();
+        $commands[1]['activity_type'] = 'changed';
+        $this->assertSame('local_activity_checkpoint_mismatch', $this->groupCheckpoint($task, $commands)['reason']);
+        $this->assertSame(
+            'local_activity_group_admission_mismatch',
+            $this->prepareGroupMember($task, $commands[1], 2)['reason']
+        );
+        $this->assertSame($before, $run->historyEvents()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+    }
+
+    public function testIndividualPreparationCannotCreateAPartialGroup(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $local = [...$commands[1], ...ParallelChildGroup::itemMetadata(1, 2, 0, 'mixed')];
+        $this->assertSame('local_activity_group_not_admitted', $this->prepareGroupMember($task, $local, 1)['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+    }
+
+    public function testDatabaseObjectKeyOrderingPreservesGroupAdmissionButChangedScalarTypesDoNot(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $this->assertTrue($this->groupCheckpoint($task, $commands)['checkpointed']);
+        $execution = ActivityExecution::query()->sole();
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
+        $path = $execution->parallel_group_path;
+        krsort($path[0]);
+        $payload = $scheduled->payload;
+        $payload['parallel_group_path'] = $path;
+        $scheduled->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $path[0]['parallel_group_size'] = '2';
+        $execution->forceFill([
+            'parallel_group_path' => $path,
+        ])->save();
+        $this->assertSame(
+            'local_activity_group_admission_mismatch',
+            $this->prepareGroupMember($task, $commands[1], 2)['reason']
+        );
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $path[0]['parallel_group_size'] = 2;
+        $execution->forceFill([
+            'parallel_group_path' => $path,
+        ])->save();
+        $reply = $this->prepareGroupMember($task, $commands[1], 2);
+        $this->assertTrue($reply['prepared'], $reply['reason'] ?? '');
+        $this->assertSame(1, ActivityAttempt::query()->count());
+    }
+
+    public function testGroupRoleIsOptionalAndPublishedProtocolCannotUseIt(): void
+    {
+        [, $task] = $this->newClaim();
+        $bridge = app(PreparedLocalActivityGroupTaskBridge::class);
+        $this->assertSame(app(WorkflowTaskBridge::class), $bridge);
+        $reply = $bridge->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'candidate-only',
+            1,
+            $this->groupCommands()
+        );
+        $this->assertFalse($reply['checkpointed']);
+        foreach ([WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class] as $contract) {
+            $custom = \Mockery::mock($contract);
+            $this->app->instance(WorkflowTaskBridge::class, $custom);
+            $this->assertSame($custom, app(PreparedLocalActivityGroupTaskBridge::class));
+            $this->assertNotInstanceOf(PreparedLocalActivityGroupTaskBridge::class, $custom);
+        }
+    }
+
+    public function testNestedAllGroupsCommitEveryLeafAndPreserveEachCompletePath(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = $this->groupCommands();
+        $commands[0] = [...$commands[0], ...ParallelChildGroup::itemMetadata(1, 3, 0, 'mixed')];
+        for ($offset = 0; $offset < 2; ++$offset) {
+            $commands[$offset + 1] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                ...ParallelChildGroup::payloadForPath([
+                    ParallelChildGroup::groupEntry(1, 3, $offset + 1, 'mixed'),
+                    ParallelChildGroup::groupEntry(2, 2, $offset, 'activity'),
+                ]),
+            ];
+        }
+        $reply = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $this->assertCount(2, $reply['local_activities']);
+        $this->assertSame(4, $reply['next_sequence']);
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        foreach ([1, 2] as $index) {
+            $prepared = $this->prepareGroupMember($task, $commands[$index], $index + 1);
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $started = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)
+                ->where('payload->activity_attempt_id', $prepared['activity_attempt_id'])->sole();
+            $this->assertGroupPath($commands[$index]['parallel_group_path'], $started->payload['parallel_group_path']);
+        }
+    }
+
+    public function testNestedMixedGroupHeartbeatsPreserveMembershipProgressAndFixedBudgets(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $commands = [];
+        foreach ([0, 1] as $index) {
+            $path = [ParallelChildGroup::groupEntry(1, 3, $index, 'mixed')];
+            if ($index === 1) {
+                $path[] = ParallelChildGroup::groupEntry(2, 2, 0, 'mixed');
+            }
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'heartbeat_timeout' => 3,
+                'start_to_close_timeout' => 8,
+                'schedule_to_close_timeout' => 12,
+                ...ParallelChildGroup::payloadForPath($path),
+            ];
+        }
+        $commands[] = [
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+            ...ParallelChildGroup::payloadForPath([
+                ParallelChildGroup::groupEntry(1, 3, 2, 'mixed'),
+                ParallelChildGroup::groupEntry(2, 2, 1, 'mixed'),
+            ]),
+        ];
+        $checkpoint = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($checkpoint['checkpointed'], $checkpoint['reason'] ?? '');
+        $prepared = [];
+        foreach ([0, 1] as $index) {
+            $prepared[$index] = $this->prepareGroupMember($task, $commands[$index], $index + 1);
+            $this->assertTrue($prepared[$index]['prepared'], $prepared[$index]['reason'] ?? '');
+        }
+        Carbon::setTestNow(now()->addSecond());
+        try {
+            foreach ($prepared as $index => $admission) {
+                $progress = [
+                    'details' => [
+                        'phase' => $index === 0 ? 'first' : 'second',
+                    ],
+                ];
+                $reply = app(PreparedLocalActivityTaskBridge::class)->heartbeatLocalActivity(
+                    $admission['activity_attempt_id'],
+                    'portable-worker',
+                    1,
+                    $progress,
+                    '1.20'
+                );
+                $this->assertTrue($reply['active'], $reply['reason'] ?? '');
+                $this->assertTrue($reply['heartbeat_recorded']);
+                $this->assertFalse($reply['renewed']);
+                foreach ([
+                    'lease_expires_at',
+                    'start_to_close_deadline_at',
+                    'schedule_to_close_deadline_at',
+                ] as $field) {
+                    $this->assertSame($admission[$field], $reply[$field]);
+                }
+                $this->assertNotSame($admission['heartbeat_deadline_at'], $reply['heartbeat_deadline_at']);
+                $event = $run->historyEvents()
+                    ->findOrFail($reply['heartbeat_history_event_id']);
+                $this->assertSame(HistoryEventType::ActivityHeartbeatRecorded, $event->event_type);
+                $this->assertSame($admission['activity_attempt_id'], $event->payload['activity_attempt_id']);
+                $this->assertSame($index + 1, $event->payload['sequence']);
+                $this->assertSame($progress, $event->payload['progress']);
+                $this->assertGroupPath(
+                    $commands[$index]['parallel_group_path'],
+                    $event->payload['parallel_group_path']
+                );
+            }
+            $this->assertSame(
+                2,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testLocalFirstGroupStillCommitsTheChildBeforeReturningAdmission(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $original = $this->groupCommands();
+        $commands = [[...$original[1], ...ParallelChildGroup::itemMetadata(1, 2, 0, 'mixed')],
+            [...$original[0], ...ParallelChildGroup::itemMetadata(1, 2, 1, 'mixed')]];
+        $reply = $this->groupCheckpoint($task, $commands);
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        $this->assertSame(2, WorkflowRun::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(1, ActivityExecution::query()->sole()->sequence);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ChildWorkflowScheduled)->count()
+        );
+    }
+
+    public function testAdmissionRollsBackTheChildIfALaterLocalStructuralLimitFails(): void
+    {
+        [$run, $task] = $this->newClaim();
+        config()
+            ->set('workflows.v2.structural_limits.pending_activity_count', 1);
+        $commands = $this->groupCommands();
+        $commands[0] = [...$commands[0], ...ParallelChildGroup::itemMetadata(1, 3, 0, 'mixed')];
+        $commands[1] = [...$commands[1], ...ParallelChildGroup::itemMetadata(1, 3, 1, 'mixed')];
+        $commands[2] = [...$commands[1], ...ParallelChildGroup::itemMetadata(1, 3, 2, 'mixed')];
+        try {
+            $this->groupCheckpoint($task, $commands);
+            $this->fail('The second local member should exceed the structural limit.');
+        } catch (\Workflow\V2\Exceptions\StructuralLimitExceededException $exception) {
+            $this->assertStringContainsString('pending', $exception->getMessage());
+        }
+        $this->assertSame(1, WorkflowRun::query()->count());
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+    }
+
+    public function testRecordedLocalScopeSurvivesResponseLossAndCanonicalClaimInspection(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $descriptor = [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ];
+        $before = $task->fresh()
+            ->getAttributes();
+        $first = $this->prepareGroupMember($task, $descriptor, 2);
+        $duplicate = $this->prepareGroupMember($task, $descriptor, 2);
+        $this->assertTrue($first['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($first['activity_attempt_id'], $duplicate['activity_attempt_id']);
+        $this->assertSame($scope, $duplicate['cancellation_scope_id']);
+        $execution = ActivityExecution::query()->findOrFail($first['activity_execution_id']);
+        $this->assertSame($scope, $execution->activity_options['cancellation_scope_id']);
+        foreach ($run->historyEvents()->whereIn('event_type', [HistoryEventType::ActivityScheduled,
+            HistoryEventType::ActivityStarted])->get() as $event) {
+            $this->assertSame($scope, $event->payload['activity']['cancellation_scope_id']);
+            $this->assertSame($scope, ActivitySnapshot::fromEvent($event)['cancellation_scope_id']);
+        }
+        $this->assertNotNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution,
+            $execution->attempts()
+                ->sole(),
+            'portable-worker',
+            1,
+        ));
+        $this->assertSame($before, $task->fresh()->getAttributes());
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+    }
+
+    #[DataProvider('changedScopeMembership')]
+    public function testLocalScopeCannotBeChangedOrDroppedBeforeRetryOrColdRecovery(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $firstScope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $secondScope = CancellationScopeHistory::open($run, $task, 2, '1.20')->payload['scope_id'];
+        $descriptor = [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $firstScope,
+        ];
+        $first = $this->prepareGroupMember($task, $descriptor, 3);
+        $this->assertTrue($first['prepared']);
+        $changed = $this->descriptor();
+        if ($change !== 'omitted') {
+            $changed['cancellation_scope_id'] = $change === 'root' ? CancellationScopeHistory::ROOT_SCOPE_ID : $secondScope;
+        }
+        $retry = $this->prepareGroupMember($task, $changed, 3);
+        $this->assertFalse($retry['prepared']);
+        $this->assertSame('local_activity_preparation_mismatch', $retry['reason']);
+        $task->forceFill([
+            'lease_owner' => 'replacement-worker',
+            'attempt_count' => 2,
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ])->save();
+        $recovery = PortableLocalActivityPreparation::recover($task->id, 'replacement-worker', 2, 3, $changed, '1.20');
+        $this->assertFalse($recovery['recovered']);
+        $this->assertSame('local_activity_preparation_mismatch', $recovery['reason']);
+        $this->assertFalse($recovery['claim_released']);
+        $this->assertSame(1, ActivityAttempt::query()->count());
+        $this->assertSame($firstScope, ActivityExecution::query()->sole()->activity_options['cancellation_scope_id']);
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertSame('replacement-worker', $task->fresh()->lease_owner);
+    }
+
+    public static function changedScopeMembership(): iterable
+    {
+        yield 'another recorded scope' => ['other'];
+        yield 'implicit run root' => ['root'];
+        yield 'membership removed' => ['omitted'];
+    }
+
+    #[DataProvider('unrecordedScopeMembership')]
+    public function testLocalScopeMustBelongToTheExactRunBeforeAdmission(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = 'unknown-scope';
+        if ($change === 'foreign') {
+            [$foreignRun, $foreignTask] = $this->newClaim();
+            $scope = CancellationScopeHistory::open($foreignRun, $foreignTask, 1, '1.20')->payload['scope_id'];
+        } elseif ($change === 'same position') {
+            $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        }
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 1);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('local_activity_scope_not_recorded', $reply['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function unrecordedScopeMembership(): iterable
+    {
+        yield 'unknown' => ['unknown'];
+        yield 'scope in another run' => ['foreign'];
+        yield 'creation is not before operation' => ['same position'];
+    }
+
+    #[DataProvider('malformedScopeMembership')]
+    public function testMalformedLocalScopeIsRefusedWithoutCreatingAnAttempt(mixed $scope): void
+    {
+        [$run, $task] = $this->newClaim();
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 1);
+        $this->assertFalse($reply['prepared']);
+        $this->assertSame('invalid_local_activity_preparation', $reply['reason']);
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+    }
+
+    public static function malformedScopeMembership(): iterable
+    {
+        yield 'null' => [null];
+        yield 'empty' => [''];
+        yield 'whitespace' => ['  '];
+        yield 'numeric' => [7];
+        yield 'object' => [[
+            'scope_id' => 'root',
+        ]];
+        yield 'too long' => [str_repeat('x', 256)];
+        yield 'invalid UTF-8' => ["\xff"];
+    }
+
+    public function testUnscopedLocalDescriptorsKeepTheirHistoricalFingerprintAndSnapshots(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $normalized = PortableLocalActivityPreparation::normalizeDescriptor($this->descriptor());
+        $this->assertArrayNotHasKey('cancellation_scope_id', $normalized);
+        $reply = $this->prepare($task);
+        $this->assertTrue($reply['prepared']);
+        $this->assertArrayNotHasKey('cancellation_scope_id', $reply);
+        foreach ($run->historyEvents()->get() as $event) {
+            $this->assertArrayNotHasKey('cancellation_scope_id', $event->payload['activity']);
+            $this->assertArrayNotHasKey('cancellation_scope_id', ActivitySnapshot::fromEvent($event));
+        }
+        $this->assertSame(
+            hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR)),
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityStarted)->sole()
+                ->payload['local_preparation']['descriptor_fingerprint']
+        );
+    }
+
+    public function testScopedGroupAdmissionRefusesAnUnknownMemberBeforeCreatingAnySibling(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $commands = [];
+        foreach ([$scope, 'unknown-scope'] as $index => $id) {
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'cancellation_scope_id' => $id,
+                ...ParallelChildGroup::itemMetadata(2, 2, $index, 'mixed'),
+            ];
+        }
+        $before = $task->fresh()
+            ->getAttributes();
+        $reply = app(PreparedLocalActivityGroupTaskBridge::class)->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'scoped-group',
+            2,
+            $commands,
+            '1.20',
+        );
+        $this->assertFalse($reply['checkpointed']);
+        $this->assertSame('local_activity_scope_not_recorded', $reply['reason']);
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+        $this->assertSame(1, $run->historyEvents()->count());
+        $this->assertSame($before, $task->fresh()->getAttributes());
+    }
+
+    public function testScopedLocalSiblingsKeepDistinctMembershipOnTheSameHostingClaim(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scopes = [CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'],
+            CancellationScopeHistory::open($run, $task, 2, '1.20')->payload['scope_id']];
+        $commands = [];
+        foreach ($scopes as $index => $scope) {
+            $commands[] = [
+                ...$this->descriptor(),
+                'type' => 'prepare_local_activity',
+                'cancellation_scope_id' => $scope,
+                ...ParallelChildGroup::itemMetadata(3, 2, $index, 'mixed'),
+            ];
+        }
+        $reply = app(PreparedLocalActivityGroupTaskBridge::class)->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'scoped-group',
+            3,
+            $commands,
+            '1.20',
+        );
+        $this->assertTrue($reply['checkpointed'], $reply['reason'] ?? '');
+        foreach ($commands as $index => $command) {
+            $prepared = $this->prepareGroupMember($task, $command, 3 + $index);
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $this->assertSame($scopes[$index], $prepared['cancellation_scope_id']);
+            $this->assertSame($task->id, $prepared['workflow_task_id']);
+        }
+        $this->assertSame(2, ActivityAttempt::query()->count());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertSame('portable-worker', $task->fresh()->lease_owner);
+        $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Activity)->count());
+    }
+
+    #[DataProvider('changedCanonicalScopeReceipt')]
+    public function testChangedCanonicalScopeSnapshotCannotAuthorizeTheOriginalClaim(string $change): void
+    {
+        [$run, $task] = $this->newClaim();
+        $scope = CancellationScopeHistory::open($run, $task, 1, '1.20')->payload['scope_id'];
+        $reply = $this->prepareGroupMember($task, [
+            ...$this->descriptor(),
+            'cancellation_scope_id' => $scope,
+        ], 2);
+        $this->assertTrue($reply['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($reply['activity_execution_id']);
+        if ($change === 'execution') {
+            $execution->forceFill([
+                'activity_options' => [
+                    ...$execution->activity_options,
+                    'cancellation_scope_id' => CancellationScopeHistory::ROOT_SCOPE_ID,
+                ],
+            ])->save();
+        } else {
+            $event = $run->historyEvents()
+                ->where('event_type', $change === 'scheduled'
+                                ? HistoryEventType::ActivityScheduled : HistoryEventType::ActivityStarted)->sole();
+            $payload = $event->payload;
+            $payload['activity']['cancellation_scope_id'] = CancellationScopeHistory::ROOT_SCOPE_ID;
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+        }
+        $this->assertNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution->fresh(),
+            $execution->attempts()
+                ->sole(),
+            'portable-worker',
+            1,
+        ));
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function changedCanonicalScopeReceipt(): iterable
+    {
+        yield 'execution reparented' => ['execution'];
+        yield 'scheduled snapshot reparented' => ['scheduled'];
+        yield 'started snapshot reparented' => ['started'];
+    }
+
+    /** @param list<array<string, mixed>> $expected
+     * @param list<array<string, mixed>> $actual
+     */
+    private function assertGroupPath(array $expected, array $actual): void
+    {
+        foreach ($expected as &$entry) {
+            ksort($entry);
+        }
+        unset($entry);
+        foreach ($actual as &$entry) {
+            ksort($entry);
+        }
+        unset($entry);
+        $this->assertSame($expected, $actual);
+    }
+
+    /**
+     * @return list<array{type: string, ...}>
+     */
+    private function groupCommands(): array
+    {
+        return [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'python-child',
+            'arguments' => Serializer::serializeWithCodec('avro', ['child']),
+            'payload_codec' => 'avro',
+            ...ParallelChildGroup::itemMetadata(1, 2, 0, 'mixed'),
+        ], [
+            ...$this->descriptor(),
+            'type' => 'prepare_local_activity',
+            ...ParallelChildGroup::itemMetadata(1, 2, 1, 'mixed'),
+        ]];
+    }
+
+    /** @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    private function groupCheckpoint(WorkflowTask $task, array $commands): array
+    {
+        return app(PreparedLocalActivityGroupTaskBridge::class)->checkpointLocalActivityGroup(
+            $task->id,
+            'portable-worker',
+            1,
+            'group-one',
+            1,
+            $commands,
+            '1.20'
+        );
+    }
+
+    /** @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    private function prepareGroupMember(
+        WorkflowTask $task,
+        array $descriptor,
+        int $sequence,
+        string $owner = 'portable-worker',
+        int $epoch = 1
+    ): array {
+        return PortableLocalActivityPreparation::prepare(
+            $task->id,
+            $owner,
+            $epoch,
+            $sequence,
+            'group-local-attempt',
+            [
+                ...$descriptor,
+                'type' => 'record_local_activity',
+            ],
+            '1.20'
+        );
+    }
+
+    private function descriptor(): array
+    {
+        return [
+            'type' => 'record_local_activity',
+            'activity_type' => 'python-local-greeting',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'payload_codec' => 'avro',
+        ];
+    }
+
+    /** @param array<string, mixed> $change
+     * @return array<string, mixed>
+     */
+    private function prepare(WorkflowTask $task, array $change = []): array
+    {
+        return PortableLocalActivityPreparation::prepare(
+            $task->id,
+            'portable-worker',
+            1,
+            1,
+            'sdk-local-attempt',
+            [...$this->descriptor(), ...$change],
+            '1.20',
+        );
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask}
+     */
+    private function newClaim(): array
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'portable-parent',
+            'run_count' => 1,
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'portable-parent',
+            'status' => RunStatus::Waiting,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Leased,
+            'attempt_count' => 1,
+            'payload' => [],
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'portable-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        return [$run, $task->refresh()];
+    }
+}

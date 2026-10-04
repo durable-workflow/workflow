@@ -15,6 +15,137 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
 {
+    public function testOperationScopeMembershipRequiresTheCandidateProtocolAndPreservesExactAddresses(): void
+    {
+        foreach ($this->scopedOperationCommands() as $command) {
+            $normalized = WorkflowCommandNormalizer::normalize([$command], '1.20')[0];
+            $this->assertSame('recorded-scope', $normalized['cancellation_scope_id']);
+            foreach (['1.19', '2.0', '1.20.extra'] as $protocol) {
+                try {
+                    WorkflowCommandNormalizer::normalize([$command], $protocol);
+                    $this->fail('Unqualified protocol accepted operation scope membership.');
+                } catch (ValidationException $error) {
+                    $this->assertArrayHasKey('commands.0.cancellation_scope_id', $error->errors());
+                }
+            }
+        }
+        $this->assertTrue(WorkerProtocolVersion::supportsCancellationScopeMembership('1.20'));
+        $this->assertFalse(WorkerProtocolVersion::supportsCancellationScopeMembership(WorkerProtocolVersion::VERSION));
+    }
+
+    public function testMalformedScopeAddressesCannotBeDroppedDuringOperationNormalization(): void
+    {
+        foreach ($this->scopedOperationCommands() as $command) {
+            foreach ([null, '', ' ', 7, [], str_repeat('x', 256), "\xff"] as $id) {
+                $command['cancellation_scope_id'] = $id;
+                try {
+                    WorkflowCommandNormalizer::normalize([$command], '1.20');
+                    $this->fail('Invalid operation scope was silently omitted.');
+                } catch (ValidationException $error) {
+                    $this->assertArrayHasKey('commands.0.cancellation_scope_id', $error->errors());
+                }
+            }
+        }
+    }
+
+    public function testScopeMembershipCannotBeAttachedToTerminalOrUnrelatedCommands(): void
+    {
+        foreach ([[
+            'type' => 'complete_workflow',
+        ], [
+            'type' => 'fail_workflow',
+            'message' => 'failed',
+        ],
+            [
+                'type' => 'record_side_effect',
+                'result' => Serializer::serializeWithCodec('avro', 1),
+            ]] as $command) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    ...$command,
+                    'cancellation_scope_id' => 'recorded-scope',
+                ]], '1.20');
+                $this->fail('Unrelated command accepted operation scope membership.');
+            } catch (ValidationException $error) {
+                $this->assertArrayHasKey('commands.0.cancellation_scope_id', $error->errors());
+            }
+        }
+    }
+
+    public function testUnscopedOperationsKeepTheirPublishedCommandShape(): void
+    {
+        foreach ($this->scopedOperationCommands() as $command) {
+            unset($command['cancellation_scope_id']);
+            $published = WorkflowCommandNormalizer::normalize([$command], '1.19');
+            $candidate = WorkflowCommandNormalizer::normalize([$command], '1.20');
+            $this->assertSame($published, $candidate);
+            $this->assertArrayNotHasKey('cancellation_scope_id', $published[0]);
+        }
+    }
+
+    public function testExplicitRemoteActivityPoliciesPreserveTheirAuthoredPolicyOnlyOnTheSourceProtocol(): void
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            $command = [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote',
+                'cancellation_policy' => $policy,
+                'schedule_to_close_timeout' => 30,
+            ];
+            $normalized = WorkflowCommandNormalizer::normalize([$command], '1.20')[0];
+            $this->assertSame($policy, $normalized['cancellation_policy']);
+            $this->assertSame(30, $normalized['schedule_to_close_timeout']);
+            foreach (['1.19', '2.0'] as $protocol) {
+                try {
+                    WorkflowCommandNormalizer::normalize([$command], $protocol);
+                    $this->fail('Explicit remote policies require the cooperative Source protocol.');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+                }
+            }
+        }
+        $historical = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote',
+            ],
+        ], '1.19')[0];
+        $this->assertArrayNotHasKey('cancellation_policy', $historical);
+    }
+
+    public function testRemoteAbandonRefusesAnAbsentInvalidOrUnlimitedTotalLifetime(): void
+    {
+        foreach ([null, 0, -1, '30', [], 1.5] as $timeout) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'remote',
+                    'cancellation_policy' => 'abandon',
+                    'schedule_to_close_timeout' => $timeout,
+                ]], '1.20');
+                $this->fail('Remote Abandon must have a finite positive integer total timeout.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.schedule_to_close_timeout', $exception->errors());
+            }
+        }
+    }
+
+    public function testRemoteActivityPolicyRefusesUnknownAndNonStringValues(): void
+    {
+        foreach (['unknown', [], 1, true] as $policy) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'remote',
+                    'cancellation_policy' => $policy,
+                ]], '1.20');
+                $this->fail('Remote activity policy must be a known policy string.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+            }
+        }
+    }
+
     public function testPayloadEnvelopeFieldContractNamesCodecBearingCommandPayloads(): void
     {
         $this->assertSame([
@@ -1093,6 +1224,71 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             'workflow_type' => 'Child',
             'parent_close_policy' => 'abandon',
         ]], $out);
+    }
+
+    public function testCooperativeChildPoliciesSurviveNormalizationAtTheirProtocolFloor(): void
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            $command = [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'parent_close_policy' => 'request_cancellation',
+                'cancellation_policy' => $policy,
+            ];
+            $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command], '1.20'));
+        }
+    }
+
+    public function testCooperativeChildPoliciesRejectOldAndWrongMajorProtocols(): void
+    {
+        foreach (['1.19', '2.20', 'invalid'] as $version) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'Child',
+                    'parent_close_policy' => 'request_cancellation',
+                    'cancellation_policy' => 'wait_cancellation_completed',
+                ]], $version);
+                $this->fail('Unsupported protocol accepted cooperative child policies.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.parent_close_policy', $exception->errors());
+                $this->assertArrayHasKey('commands.0.cancellation_policy', $exception->errors());
+            }
+        }
+    }
+
+    public function testExplicitAbandonKeepsLegacyNormalization(): void
+    {
+        $command = [
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'Child',
+            'parent_close_policy' => 'request_cancel',
+            'cancellation_policy' => 'abandon',
+        ];
+        $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command], '1.19'));
+    }
+
+    public function testInvalidAndMisplacedChildCancellationPoliciesAreRejected(): void
+    {
+        foreach ([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'cancellation_policy' => 'unknown',
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'cancellation_policy' => [],
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 1,
+                'cancellation_policy' => 'try_cancel',
+            ],
+        ] as $command) {
+            $this->assertArrayHasKey('commands.0.cancellation_policy', $this->normalizeAndCaptureErrors([$command]));
+        }
     }
 
     public function testStartChildWorkflowPreservesRetryPolicyAndTimeouts(): void
@@ -2359,6 +2555,40 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             'parallel_group_path' => [$entry],
         ]]);
         $this->assertArrayHasKey('commands.0.parallel_group_path', $errors);
+    }
+
+    /**
+     * @return list<array{type: string, cancellation_scope_id: string, ...}>
+     */
+    private function scopedOperationCommands(): array
+    {
+        return [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'remote',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 5,
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'child',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'ready',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'ready',
+                'cancellation_scope_id' => 'recorded-scope',
+            ],
+        ];
     }
 
     /**

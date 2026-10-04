@@ -107,6 +107,44 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame('Tests\\Fixtures\\V2\\TestRetryActivity', $resumed->commands[0]['activity_type']);
     }
 
+    public function testSynchronousMemoPersistencePreservesCancellationBudgetDuringColdReplay(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(
+                __DIR__ . '/../../Fixtures/V2/ReplayRegression/cancellation-context-original-budget-cold-replay.json'
+            ),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $workflow = $fixture['workflow'];
+        $runner = static fn (array $history): WorkflowFiberRunner => WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            'root-instance',
+            'root-run',
+            [],
+            'avro',
+        )->withHistoryEvents($history);
+
+        $first = $runner($fixture['history'])->step();
+        $this->assertSame('upsert_memo', $first->commands[0]['type']);
+        $this->assertSame(1, $first->commands[1]['delay_seconds']);
+        $fixture['history'][] = [
+            'sequence' => 6,
+            'event_type' => 'MemoUpserted',
+            'payload' => [
+                'sequence' => 2,
+                'entries' => $first->commands[0]['entries'],
+            ],
+            'recorded_at' => '2026-10-01T00:00:12Z',
+        ];
+
+        $cold = $runner($fixture['history'])->step();
+        $this->assertSame([[
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+        ]], $cold->commands);
+    }
+
     public function testRunnerAuthorsNestedSelectionAsOneExactFlattenedCommandBatchAndThenWaits(): void
     {
         $scheduled = $this->runnerFor(WorkerProtocolRunnerNestedSelectionWorkflow::class)->step();

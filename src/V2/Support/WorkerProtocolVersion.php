@@ -287,6 +287,21 @@ final class WorkerProtocolVersion
         return $capabilities;
     }
 
+    public static function supportsChildCancellationPolicies(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, '1.20');
+    }
+
+    public static function supportsActivityCancellationPolicies(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, '1.20');
+    }
+
+    public static function supportsCancellationScopeMembership(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, CancellationScopeHistory::MINIMUM_PROTOCOL_VERSION);
+    }
+
     public static function supportsMessageStreams(string $protocolVersion): bool
     {
         return self::supportsFeatureVersion($protocolVersion, self::MESSAGE_STREAMS_MINIMUM_PROTOCOL_VERSION);

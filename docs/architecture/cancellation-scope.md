@@ -71,18 +71,17 @@ It does not cover:
 
 ## Terminology
 
-- **Cancel** — the cooperative close path. The engine throws
-  `Workflow\V2\Exceptions\WorkflowCancelledException` on the parent
-  fiber, records a `CancelRequested` event when the command is
-  received, and a terminal `WorkflowCancelled` event when the run
-  closes. `WorkflowCancelledException` extends `Error` rather than
-  `Exception` so a generic `catch (\Exception)` block cannot
-  accidentally swallow a cancellation.
-- **Terminate** — the forceful close path. The engine throws
-  `Workflow\V2\Exceptions\WorkflowTerminatedException`, records
-  `TerminateRequested`, and a terminal `WorkflowTerminated` event.
-  Terminate does not give authoring code or activities a chance to
-  cooperate; it closes the run immediately.
+- **Cancel** — terminal closure with a Cancelled outcome. The engine
+  records `CancelRequested` and `WorkflowCancelled`, closes the run
+  immediately and revokes open work. The recorded failure uses
+  `Workflow\V2\Exceptions\WorkflowCancelledException`. This does
+  not execute workflow-code `finally` cleanup. Use the separate
+  `requestCancellation()` path for bounded cooperative cleanup.
+- **Terminate** — immediate terminal closure with a Terminated
+  outcome. The engine records `TerminateRequested` and
+  `WorkflowTerminated`, with a
+  `Workflow\V2\Exceptions\WorkflowTerminatedException` failure.
+  It does not wait for workflow or activity cleanup.
 - **Run-level scope** — the property that a cancel or terminate
   command closes the entire workflow run. Propagation to child
   runs follows the per-call `ParentClosePolicy`; there is no
@@ -101,7 +100,7 @@ It does not cover:
 `Workflow\V2\Enums\CommandType` names the two close-driven command
 types that enter this contract:
 
-- `CommandType::Cancel` (`'cancel'`) — cooperative close request.
+- `CommandType::Cancel` (`'cancel'`) — terminal close with a Cancelled outcome.
 - `CommandType::Terminate` (`'terminate'`) — forceful close request.
 
 Both command types flow through the same external-command ingress
@@ -344,7 +343,7 @@ The typed history events used by this contract:
 
 ### On the parent run
 
-- `CancelRequested` — command ingress for a cooperative close.
+- `CancelRequested` — command ingress for terminal cancellation.
   Payload: `workflow_command_id`, `workflow_instance_id`,
   `workflow_run_id`, `command_type = 'cancel'`, optional
   `reason`.

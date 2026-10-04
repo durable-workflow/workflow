@@ -9,18 +9,23 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use JsonException;
 use LogicException;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecDecodeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\FailureCategory;
@@ -50,7 +55,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, PreparedCancellationScopeTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -316,7 +321,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             }
 
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
-            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+            $leaseExpiresAt = CancellationCleanupLease::expiresAt($run);
             $stickyReplayMode = StickyExecution::claimReplayMode($task, $resolvedLeaseOwner);
 
             $task->forceFill([
@@ -688,6 +693,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         });
     }
 
+    /**
+     * @internal Portable remote policy admission marker for an installed bridge.
+     */
+    public function supportsRemoteActivityCancellationPolicies(): bool
+    {
+        return true;
+    }
+
+    /**
+     * @internal Policy admission supported by this installed prepared-local bridge.
+     * @return list<string>
+     */
+    public function supportedLocalActivityCancellationPolicies(): array
+    {
+        return [CancellationPolicy::TryCancel->value, CancellationPolicy::WaitCancellationCompleted->value];
+    }
+
     public function deliverCancellation(
         string $taskId,
         string $requestId,
@@ -719,6 +741,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 'operation_sequence' => $event?->payload['operation_sequence'] ?? null,
                 'operation_sequence_span' => $event === null ? null : ($event->payload['operation_sequence_span'] ?? 1),
                 'reason' => $reason,
+                ...(in_array($reason, ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity'], true) ? [
+                    'claim_released' => true,
+                ] : []),
             ];
             if ($task === null || $task->task_type !== TaskType::Workflow) {
                 return $response($task === null ? 'task_not_found' : 'task_not_workflow');
@@ -763,9 +788,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 $operationSequence,
                 $operationSequenceSpan,
             );
+            if ($event instanceof WorkflowHistoryEvent) {
+                LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run));
+            }
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return $response(null, $run, $event);
+            return $response($event === null ? (
+                isset($task->payload['cancellation_activity_wait'])
+                    ? 'cancellation_waiting_for_activity' : 'cancellation_waiting_for_child'
+            ) : null, $run, $event);
         });
     }
 
@@ -825,7 +856,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 ];
             }
 
-            $leaseExpiresAt = WorkflowTaskLease::expiresAt();
+            $leaseExpiresAt = CancellationCleanupLease::expiresAt($run);
 
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
@@ -912,6 +943,276 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'attempt_count' => $attemptCount,
             'reason' => null,
         ];
+    }
+
+    /**
+     * @internal Candidate scope registration before workflow body execution.
+     * @return array<string, mixed>
+     */
+    public function openCancellationScope(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $parentScopeId = 'root',
+        bool $shieldParent = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeOpening::open(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $parentScopeId,
+            $shieldParent,
+            $protocolVersion
+        );
+    }
+
+    public function prepareCancellationScopeDelivery(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $scopeId,
+        string $requestId,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeDelivery::mutate(
+            true,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $scopeId,
+            $requestId,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+            $protocolVersion
+        );
+    }
+
+    public function deliverCancellationScope(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $scopeId,
+        string $requestId,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableCancellationScopeDelivery::mutate(
+            false,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $scopeId,
+            $requestId,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+            $protocolVersion
+        );
+    }
+
+    /**
+     * @internal Candidate prepared local callback admission.
+     * @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    public function prepareLocalActivity(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $workerAttemptId,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityPreparation::prepare(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $workerAttemptId,
+            $descriptor,
+            $protocolVersion
+        );
+    }
+
+    public function recordLocalActivityOutcome(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $report,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return app(LocalActivityExecutor::class)->recordPortableOutcome(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $report,
+            $protocolVersion
+        );
+    }
+
+    public function controlLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityControl::poll(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $renewLease,
+            $protocolVersion,
+        );
+    }
+
+    public function recoverLocalActivity(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityPreparation::recover(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $descriptor,
+            $protocolVersion
+        );
+    }
+
+    public function heartbeatLocalActivity(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $progress = [],
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return PortableLocalActivityControl::heartbeat(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $progress,
+            $protocolVersion,
+        );
+    }
+
+    public function acknowledgeLocalActivityCancellation(
+        string $attemptId,
+        string $leaseOwner,
+        string $requestId,
+        int $workflowTaskAttempt,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return [
+                'acknowledged' => false,
+                'duplicate' => false,
+                'reason' => 'local_activity_stop_receipt_requires_protocol_1_20',
+            ];
+        }
+        return ActivityCancellationAcknowledgement::recordLocalStopped(
+            $attemptId,
+            $leaseOwner,
+            $requestId,
+            $workflowTaskAttempt
+        );
+    }
+
+    /**
+     * @internal Candidate local callback prefix checkpoint. This retains the
+     * claim and is not callback admission. Preparation must follow separately.
+     * The SDK must replay committed history before submitting later commands.
+     *
+     * Only the latest sequential checkpoint receipt is retained on the claim.
+     * An SDK must acknowledge it before sending a subsequent checkpoint.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    public function checkpointLocalActivityPrefix(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->checkpointCommands(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $commands,
+            $protocolVersion,
+            'local'
+        );
+    }
+
+    public function checkpointLocalActivityGroup(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->checkpointCommands(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $commands,
+            $protocolVersion,
+            'local_group'
+        );
+    }
+
+    public function checkpointCancellationScopePrefix(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->checkpointCommands(
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $commands,
+            $protocolVersion,
+            'cancellation_scope'
+        );
     }
 
     public function complete(string $taskId, array $commands): array
@@ -1029,6 +1330,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
 
             $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
             $createdTaskIds = [];
+            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+            if ($scopeError !== null) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => $scopeError,
+                ];
+            }
             $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
 
             if ($invalidUpdateCommands !== null) {
@@ -1104,6 +1416,343 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
                 'reason' => null,
             ];
         });
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    public function validateCancellationScopeMembership(WorkflowRun $run, array $commands, int $sequence): ?string
+    {
+        if (! self::operationScopesAreRecorded($run, $commands, $sequence)) {
+            return 'operation_scope_not_recorded';
+        }
+        foreach ($commands as $offset => $command) {
+            if (isset($command['cancellation_scope_id'])) {
+                $refusal = CancellationScopeDelivery::admissionRefusal(
+                    $run,
+                    $command['cancellation_scope_id'],
+                    $sequence + $offset
+                );
+                if ($refusal !== null) {
+                    return $refusal;
+                }
+            }
+            if ($command['type'] === 'prepare_local_activity'
+                && ! CancellationScopeHistory::isRecordedBefore(
+                    $run,
+                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                    $sequence + $offset,
+                )) {
+                return 'local_activity_scope_not_recorded';
+            }
+        }
+        return null;
+    }
+
+    /** @param list<array{type: string, ...}> $commands
+     * @return array<string, mixed>
+     */
+    private function checkpointCommands(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        string $checkpointId,
+        int $startSequence,
+        array $commands,
+        string $protocolVersion,
+        string $kind,
+    ): array {
+        $group = $kind === 'local_group';
+        $scopePrefix = $kind === 'cancellation_scope';
+        $checkpointName = $scopePrefix ? 'cancellation_scope' : 'local_activity';
+        $refused = static fn (string $reason): array => [
+            'checkpointed' => false,
+            'duplicate' => false,
+            'task_id' => $taskId,
+            'reason' => $reason,
+        ];
+        if (($scopePrefix && ! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion))
+            || preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return $refused($checkpointName . '_checkpoint_requires_protocol_1_20');
+        }
+        if ($startSequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
+            || trim($checkpointId) === '' || strlen($checkpointId) > 255
+            || preg_match('//u', $checkpointId) !== 1 || ! array_is_list($commands)
+            || count($commands) > 100) {
+            return $refused('invalid_' . $checkpointName . '_checkpoint');
+        }
+        $parsed = $group ? self::parsePreparedLocalGroupCommands($commands) : ($commands === [] ? [
+            'non_terminal' => [],
+            'terminal' => null,
+        ] : self::parseCommands($commands));
+        if ($parsed === null || $parsed['terminal'] !== null) {
+            return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
+        }
+        foreach ($parsed['non_terminal'] as $command) {
+            if (isset($command['cancellation_scope_id'])
+                && ! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
+                return $refused('operation_scope_requires_protocol_1_20');
+            }
+            // A wait closes a turn, a local report reconstructs an executed
+            // callback, and selection cancellation requires activity fencing.
+            // None belongs in this retained-claim preparation prefix.
+            if (in_array($command['type'], ['record_local_activity', 'open_condition_wait',
+                'open_signal_wait', 'cancel_selection_operation'], true)) {
+                return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
+            }
+        }
+        try {
+            $fingerprint = hash('sha256', json_encode($parsed['non_terminal'], JSON_THROW_ON_ERROR));
+        } catch (JsonException) {
+            return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
+        }
+        /** @var WorkflowTask|null $snapshot */
+        $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        if ($snapshot === null) {
+            return $refused('task_not_found');
+        }
+
+        return DB::transaction(function () use (
+            $snapshot,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $checkpointId,
+            $startSequence,
+            $parsed,
+            $fingerprint,
+            $refused,
+            $group,
+            $scopePrefix,
+            $checkpointName,
+        ): array {
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($snapshot->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
+            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                return $refused('workflow_claim_not_found');
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return $refused('workflow_claim_mismatch');
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return $refused('workflow_claim_expired');
+            }
+            if ($run->status->isTerminal()) {
+                return $refused('run_closed');
+            }
+            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                return $refused('run_deadline_expired');
+            }
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receiptKey = $scopePrefix ? 'portable_scope_checkpoint'
+                : ($group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint');
+            $receipt = $payload[$receiptKey] ?? null;
+            if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
+                if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+                    || ($receipt['lease_owner'] ?? null) !== $leaseOwner
+                    || ($receipt['start_sequence'] ?? null) !== $startSequence
+                    || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
+                    return $refused($checkpointName . '_checkpoint_mismatch');
+                }
+                // This receipt proves prefix commit, not permission to start
+                // application code. Preparation still checks cancellation.
+                return [
+                    ...$receipt,
+                    'checkpointed' => true,
+                    'duplicate' => true,
+                    'reason' => null,
+                ];
+            }
+            if ($run->cancellation_request_command_id !== null) {
+                $delivery = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
+                    ->where('workflow_command_id', $run->cancellation_request_command_id)
+                    ->first();
+                $cleanup = PortableLocalActivityCleanup::snapshot($run, [
+                    'request_id' => $run->cancellation_request_command_id,
+                    'delivery_history_event_id' => $delivery?->id,
+                ], $startSequence);
+                if ($cleanup === null) {
+                    return $refused('cancellation_requested');
+                }
+                if (now()->gte($run->cancellation_deadline_at)) {
+                    return $refused('cancellation_deadline_expired');
+                }
+            }
+            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+            if ($sequence !== $startSequence) {
+                return $refused($checkpointName . '_checkpoint_sequence_mismatch');
+            }
+            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+            if ($scopeError !== null) {
+                return $refused($scopeError);
+            }
+            $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+            if ($invalidUpdate !== null) {
+                return $refused($invalidUpdate);
+            }
+            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
+                return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
+            }
+            // Validate every local scope/cleanup member before creating any sibling.
+            foreach ($parsed['non_terminal'] as $offset => $command) {
+                if ($command['type'] !== 'prepare_local_activity') {
+                    continue;
+                }
+                if (! CancellationScopeHistory::isRecordedBefore(
+                    $run,
+                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                    $sequence + $offset,
+                )) {
+                    return $refused('local_activity_scope_not_recorded');
+                }
+                $cleanup = PortableLocalActivityCleanup::snapshot(
+                    $run,
+                    $command['cancellation_cleanup'] ?? null,
+                    $sequence + $offset
+                );
+                if (($run->cancellation_request_command_id !== null && $cleanup === null)
+                    || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']))) {
+                    return $refused('local_activity_cleanup_authority_mismatch');
+                }
+            }
+            $this->recordAppliedSignalForSignalResume($run, $task);
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+            $createdTaskIds = [];
+            $localActivities = [];
+            foreach ($parsed['non_terminal'] as $command) {
+                if ($command['type'] === 'prepare_local_activity') {
+                    $execution = PortableLocalActivityPreparation::admitGroupMember(
+                        $run,
+                        $task,
+                        $sequence,
+                        [
+                            ...$command,
+                            'type' => 'record_local_activity',
+                        ],
+                        $checkpointId,
+                        $fingerprint
+                    );
+                    $localActivities[] = [
+                        'sequence' => $sequence,
+                        'activity_execution_id' => $execution->id,
+                    ];
+                    ++$sequence;
+                    continue;
+                }
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+            }
+            // Command application can update task payload (for example signal
+            // consumption). Preserve that state rather than the old snapshot.
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $receipt = [
+                'checkpoint_id' => $checkpointId,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'lease_owner' => $leaseOwner,
+                'lease_expires_at' => $task->lease_expires_at->toISOString(),
+                'start_sequence' => $startSequence,
+                'next_sequence' => $sequence,
+                'fingerprint' => $fingerprint,
+                'created_task_ids' => $createdTaskIds,
+                'recorded_at' => now()
+                    ->toISOString(),
+                ...($group ? [
+                    'local_activities' => $localActivities,
+                ] : []),
+            ];
+            $task->forceFill([
+                'payload' => [
+                    ...$payload,
+                    $receiptKey => $receipt,
+                ],
+            ])->save();
+
+            return [
+                ...$receipt,
+                'checkpointed' => true,
+                'duplicate' => false,
+                'reason' => null,
+            ];
+        }, 5);
+    }
+
+    /**
+     * Local descriptors have no fabricated outcomes. Validate their common
+     * activity grammar with a scheduling shadow, then restore admission-only
+     * descriptors. Ordinary task completion does not recognize this command.
+     * Selection groups remain refused until their stop-policy path is qualified.
+     * @param list<array{type: string, ...}> $commands
+     * @return array{non_terminal: list<array{type: string, ...}>, terminal: null}|null
+     */
+    private static function parsePreparedLocalGroupCommands(array $commands): ?array
+    {
+        $shadows = [];
+        $locals = [];
+        try {
+            foreach ($commands as $offset => $command) {
+                if (! is_array($command)) {
+                    return null;
+                }
+                if (($command['type'] ?? null) === 'prepare_local_activity') {
+                    $local = PortableLocalActivityPreparation::normalizeDescriptor([
+                        ...$command,
+                        'type' => 'record_local_activity',
+                    ]);
+                    if (($local['parallel_group_path'] ?? []) === []) {
+                        return null;
+                    }
+                    foreach ($local['parallel_group_path'] as $entry) {
+                        if (($entry['parallel_group_mode'] ?? 'all') !== 'all') {
+                            return null;
+                        }
+                    }
+                    $locals[$offset] = [
+                        ...$local,
+                        'type' => 'prepare_local_activity',
+                    ];
+                    unset($local['execution_mode'], $local['cancellation_cleanup'], $local['cancellation_scope_id']);
+                    $command = [
+                        ...$local,
+                        'type' => 'schedule_activity',
+                    ];
+                }
+                $shadows[] = $command;
+            }
+            if ($locals === []) {
+                return null;
+            }
+            $normalized = WorkflowCommandNormalizer::normalize(
+                $shadows,
+                PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION
+            );
+            foreach ($normalized as $command) {
+                foreach ($command['parallel_group_path'] ?? [] as $entry) {
+                    if (($entry['parallel_group_mode'] ?? 'all') !== 'all') {
+                        return null;
+                    }
+                }
+            }
+        } catch (ValidationException|InvalidArgumentException) {
+            return null;
+        }
+        $parsed = self::parseCommands($normalized);
+        if ($parsed === null || $parsed['terminal'] !== null
+            || count($parsed['non_terminal']) !== count($commands)) {
+            return null;
+        }
+        foreach ($locals as $offset => $local) {
+            $parsed['non_terminal'][$offset] = $local;
+        }
+        return $parsed;
     }
 
     /**
@@ -1475,6 +2124,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             : null;
 
         if ($sequence === null && ! self::canApplyUnprojectedExternalSignal($run, $signal)) {
+            return;
+        }
+
+        if ($signalWaitId !== null && ScopedWaitCancellation::cancelled($run, 'signal', $signalWaitId)) {
+            // Keep the received signal bytes, but deny this cancelled occurrence.
             return;
         }
 
@@ -2679,6 +3333,18 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
             $options,
         );
+        $activityOptions = $options?->toSnapshot();
+        if (isset($command['cancellation_policy']) || isset($command['cancellation_scope_id'])) {
+            $activityOptions = [
+                ...($activityOptions ?? []),
+                ...(isset($command['cancellation_policy']) ? [
+                    'cancellation_policy' => $command['cancellation_policy'],
+                ] : []),
+                ...(isset($command['cancellation_scope_id']) ? [
+                    'cancellation_scope_id' => $command['cancellation_scope_id'],
+                ] : []),
+            ];
+        }
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -2693,7 +3359,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'connection' => $connection,
             'queue' => $queue,
             'retry_policy' => $retryPolicy,
-            'activity_options' => $options?->toSnapshot(),
+            'activity_options' => $activityOptions,
             'schedule_deadline_at' => $scheduleDeadlineAt,
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
@@ -2757,6 +3423,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'sequence' => $sequence,
             'delay_seconds' => $delaySeconds,
             'fire_at' => $fireAt->toJSON(),
+            ...self::operationScopeMetadata($command),
             ...self::parallelMetadataForCommand($command),
         ], $task);
 
@@ -2769,6 +3436,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'available_at' => $fireAt,
             'payload' => [
                 'timer_id' => $timer->id,
+                ...self::operationScopeMetadata($command),
                 ...self::parallelMetadataForCommand($command),
             ],
             'connection' => $run->connection,
@@ -3115,7 +3783,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
             ? (int) $command['timeout_seconds']
             : null;
-        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelMetadata = [...self::parallelMetadataForCommand($command), ...self::operationScopeMetadata($command)];
         $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
 
         $waitId = (string) Str::ulid();
@@ -3229,7 +3897,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
             ? (int) $command['timeout_seconds']
             : null;
-        $parallelMetadata = self::parallelMetadataForCommand($command);
+        $parallelMetadata = [...self::parallelMetadataForCommand($command), ...self::operationScopeMetadata($command)];
         $parallelPath = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
         $pendingSignalWaitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName);
         $waitId = $pendingSignalWaitId ?? (string) Str::ulid();
@@ -3351,6 +4019,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
             'fired_at' => $timer->fired_at?->toJSON(),
+            ...(isset($parallelMetadata['cancellation_scope_id']) ? [
+                'fire_at' => $recordedAt->toJSON(),
+            ] : []),
             'timer_kind' => 'signal_timeout',
             'signal_wait_id' => $waitId,
             'signal_name' => $signalName,
@@ -3401,6 +4072,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
             ...$payload,
             'fired_at' => $recordedAt->toJSON(),
+            ...(isset($parallelMetadata['cancellation_scope_id']) ? [
+                'fire_at' => $recordedAt->toJSON(),
+            ] : []),
         ], $task);
     }
 
@@ -3452,6 +4126,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      *     connection?: string|null,
      *     queue?: string|null,
      *     parent_close_policy?: string|null,
+     *     cancellation_policy?: string,
      *     retry_policy?: array<string, mixed>,
      *     execution_timeout_seconds?: int,
      *     run_timeout_seconds?: int
@@ -3538,6 +4213,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $childCallId = (string) Str::ulid();
 
         $parentClosePolicy = $command['parent_close_policy'] ?? ParentClosePolicy::Abandon->value;
+        $cancellationPolicy = CancellationPolicy::from(
+            $command['cancellation_policy'] ?? CancellationPolicy::Abandon->value
+        );
 
         ChildRunHistory::recordChildCallStarted([
             'parent_workflow_run_id' => $run->id,
@@ -3551,7 +4229,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'compatibility' => $childRun->compatibility,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
-            'cancellation_propagation' => false,
+            'cancellation_propagation' => $cancellationPolicy !== CancellationPolicy::Abandon,
             'status' => ChildCallStatus::Started,
             'scheduled_at' => $now,
             'started_at' => $now,
@@ -3561,6 +4239,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'metadata' => [
                 'child_call_id' => $childCallId,
                 'attempt_count' => 1,
+                'cancellation_policy' => $cancellationPolicy->value,
+                ...self::operationScopeMetadata($command),
             ],
             'resolved_child_instance_id' => $childInstance->id,
             'resolved_child_run_id' => $childRun->id,
@@ -3589,8 +4269,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'child_workflow_class' => $workflowType,
             'child_workflow_type' => $workflowType,
             'parent_close_policy' => $parentClosePolicy,
+            'cancellation_policy' => $cancellationPolicy->value,
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
+            ...self::operationScopeMetadata($command),
             ...self::parallelMetadataForCommand($command),
         ], $task);
 
@@ -3604,6 +4286,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'child_workflow_type' => $workflowType,
             'child_run_number' => 1,
             'parent_close_policy' => $parentClosePolicy,
+            'cancellation_policy' => $cancellationPolicy->value,
+            ...self::operationScopeMetadata($command),
             'retry_policy' => $retryPolicy,
             'timeout_policy' => $timeoutPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,
@@ -4981,7 +5665,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             return null;
         }
 
-        return match ($type) {
+        $scopeMetadata = self::operationScopeMetadata($command);
+        if (array_key_exists('cancellation_scope_id', $command)
+            && ($scopeMetadata === [] || ! in_array(
+                $type,
+                ['schedule_activity', 'start_timer', 'start_child_workflow', 'open_signal_wait', 'open_condition_wait'],
+                true
+            ))) {
+            return null;
+        }
+        $normalized = match ($type) {
             'cancel_selection_operation' => self::normalizeCancelSelectionOperationCommand($command),
             'complete_workflow' => self::normalizeCompleteWorkflowCommand($command),
             'fail_workflow' => self::normalizeFailWorkflowCommand($command),
@@ -5001,6 +5694,38 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'open_signal_wait' => self::normalizeOpenSignalWaitCommand($command),
             default => null,
         };
+        return $normalized === null ? null : [...$normalized, ...$scopeMetadata];
+    }
+
+    /** @param array<string, mixed> $command
+     * @return array{cancellation_scope_id?: string}
+     */
+    private static function operationScopeMetadata(array $command): array
+    {
+        $scopeId = $command['cancellation_scope_id'] ?? null;
+        return is_string($scopeId) && trim($scopeId) !== '' && strlen($scopeId) <= 255
+            && preg_match('//u', $scopeId) === 1 ? [
+                'cancellation_scope_id' => $scopeId,
+            ] : [];
+    }
+
+    /**
+     * Scope opening is checkpointed separately. Every operation in this batch
+     * must already have its exact-run scope before the first admission.
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function operationScopesAreRecorded(WorkflowRun $run, array $commands, int $sequence): bool
+    {
+        foreach ($commands as $command) {
+            if (isset($command['cancellation_scope_id']) && in_array(
+                $command['type'],
+                ['schedule_activity', 'start_timer', 'start_child_workflow', 'open_signal_wait', 'open_condition_wait'],
+                true,
+            ) && ! CancellationScopeHistory::isRecordedBefore($run, $command['cancellation_scope_id'], $sequence)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -5199,6 +5924,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      *     schedule_to_start_timeout?: int,
      *     schedule_to_close_timeout?: int,
      *     heartbeat_timeout?: int,
+     *     cancellation_policy?: string,
      *     worker_session?: array<string, mixed>
      * }|null
      */
@@ -5210,6 +5936,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $scheduleToStartTimeout = self::normalizePositiveInt($command['schedule_to_start_timeout'] ?? null);
         $scheduleToCloseTimeout = self::normalizePositiveInt($command['schedule_to_close_timeout'] ?? null);
         $heartbeatTimeout = self::normalizePositiveInt($command['heartbeat_timeout'] ?? null);
+        $cancellationPolicy = self::normalizeOptionalString($command['cancellation_policy'] ?? null);
         $arguments = self::normalizeCommandPayloadString($command, 'arguments');
 
         if ($activityType === null) {
@@ -5221,6 +5948,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         }
 
         if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        if (($command['cancellation_policy'] ?? null) !== null
+            && ($cancellationPolicy === null || CancellationPolicy::tryFrom($cancellationPolicy) === null
+                || ($cancellationPolicy === CancellationPolicy::Abandon->value && $scheduleToCloseTimeout === null))) {
             return null;
         }
 
@@ -5254,6 +5987,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'schedule_to_start_timeout' => $scheduleToStartTimeout,
             'schedule_to_close_timeout' => $scheduleToCloseTimeout,
             'heartbeat_timeout' => $heartbeatTimeout,
+            'cancellation_policy' => $cancellationPolicy,
             'worker_session' => self::normalizeWorkerSessionCommand($command['worker_session'] ?? null),
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null);
@@ -5351,6 +6085,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
      *     connection?: string|null,
      *     queue?: string|null,
      *     parent_close_policy?: string|null,
+     *     cancellation_policy?: string,
      *     retry_policy?: array<string, mixed>,
      *     execution_timeout_seconds?: int,
      *     run_timeout_seconds?: int
@@ -5363,6 +6098,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
         $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
         $runTimeoutSeconds = self::normalizePositiveInt($command['run_timeout_seconds'] ?? null);
         $arguments = self::normalizeCommandPayloadString($command, 'arguments');
+        $cancellationPolicy = $command['cancellation_policy'] ?? null;
+        if ($cancellationPolicy !== null && (! is_string($cancellationPolicy) || CancellationPolicy::tryFrom(
+            $cancellationPolicy
+        ) === null)) {
+            return null;
+        }
 
         if ($workflowType === null) {
             return null;
@@ -5400,6 +6141,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
+            'cancellation_policy' => $cancellationPolicy,
             'retry_policy' => $retryPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,
             'run_timeout_seconds' => $runTimeoutSeconds,

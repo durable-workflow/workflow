@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Fiber;
 use Throwable;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
 use Workflow\V2\Workflow;
 
@@ -94,14 +95,19 @@ final class WorkflowExecution
         return false;
     }
 
-    public function send(mixed $value, ?CarbonInterface $eventTime = null): mixed
-    {
+    public function send(
+        mixed $value,
+        ?CarbonInterface $eventTime = null,
+        bool $advanceCancellationTime = true,
+    ): mixed {
         if (! $this->fiber instanceof Fiber) {
             return null;
         }
 
         if ($eventTime !== null) {
-            WorkflowFiberContext::setTime($eventTime, $this->fiber);
+            WorkflowFiberContext::setTime($eventTime, $this->fiber, $advanceCancellationTime);
+        } elseif ($advanceCancellationTime) {
+            WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
         $result = $this->fiber->resume($value);
@@ -118,14 +124,24 @@ final class WorkflowExecution
         return null;
     }
 
-    public function throw(Throwable $throwable, ?CarbonInterface $eventTime = null): mixed
-    {
+    public function throw(
+        Throwable $throwable,
+        ?CarbonInterface $eventTime = null,
+        bool $advanceCancellationTime = true,
+    ): mixed {
         if (! $this->fiber instanceof Fiber) {
             throw $throwable;
         }
 
+        if ($throwable instanceof WorkflowCancellationRequestedException && $throwable->cancellation !== null) {
+            $throwable->cancellation->bindToReplayFiber($this->fiber);
+            WorkflowFiberContext::startCancellationTime($eventTime, $this->fiber);
+        }
+
         if ($eventTime !== null) {
-            WorkflowFiberContext::setTime($eventTime, $this->fiber);
+            WorkflowFiberContext::setTime($eventTime, $this->fiber, $advanceCancellationTime);
+        } elseif ($advanceCancellationTime) {
+            WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
         $result = $this->fiber->throw($throwable);

@@ -21,6 +21,7 @@ final class ConditionWaits
         HistoryEventType::TimerFired,
         HistoryEventType::ConditionWaitSatisfied,
         HistoryEventType::ConditionWaitTimedOut,
+        HistoryEventType::ConditionWaitCancelled,
         HistoryEventType::SelectionOperationCancelled,
         HistoryEventType::WorkflowCompleted,
         HistoryEventType::WorkflowFailed,
@@ -140,6 +141,10 @@ final class ConditionWaits
 
                 $timerId = self::stringValue($event->payload['timer_id'] ?? null);
 
+                if (($waits[$waitId]['status'] ?? null) === 'cancelled') {
+                    continue;
+                }
+
                 $waits[$waitId]['source_status'] = 'timeout_fired';
                 $waits[$waitId]['sequence'] = self::intValue($waits[$waitId]['sequence'] ?? null)
                     ?? self::intValue($event->payload['sequence'] ?? null);
@@ -166,6 +171,24 @@ final class ConditionWaits
                     $waits[$waitId]['resume_source_id'] = $waits[$waitId]['timer_id'];
                 }
 
+                continue;
+            }
+
+            if ($event->event_type === HistoryEventType::ConditionWaitCancelled) {
+                $waitId = self::waitIdForEvent($event);
+                if ($waitId !== null && isset($waits[$waitId]) && $waits[$waitId]['status'] === 'open') {
+                    $waits[$waitId]['status'] = 'cancelled';
+                    $waits[$waitId]['source_status'] = 'scope_cancelled';
+                    $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+                    $waits[$waitId]['resume_source_kind'] = 'scope_cancellation';
+                    $waits[$waitId]['resume_source_id'] = self::stringValue(
+                        $event->payload['cancellation_scope']['request_id'] ?? null
+                    );
+                    $index = array_search($waitId, $openWaitIds, true);
+                    if ($index !== false) {
+                        array_splice($openWaitIds, $index, 1);
+                    }
+                }
                 continue;
             }
 
@@ -198,6 +221,10 @@ final class ConditionWaits
 
             if (! isset($waits[$waitId])) {
                 $waits[$waitId] = self::wait($waitId, $event);
+            }
+
+            if (($waits[$waitId]['status'] ?? null) === 'cancelled') {
+                continue;
             }
 
             $waits[$waitId]['status'] = 'resolved';

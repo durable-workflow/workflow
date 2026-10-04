@@ -344,7 +344,9 @@ final class RunLineageView
      *     parent_close_policy: ?string,
      *     parent_close_policy_outcome: ?string,
      *     parent_close_policy_reason: ?string,
-     *     parent_close_policy_error: ?string
+     *     parent_close_policy_error: ?string,
+     *     parent_close_cancellation: ?array<string, mixed>,
+     *     parent_close_request_diagnostics: ?array<string, mixed>
      * }|null $parentClosePolicy
      * @return array<string, mixed>
      */
@@ -400,6 +402,11 @@ final class RunLineageView
             'parent_close_policy_outcome' => $parentClosePolicy['parent_close_policy_outcome'] ?? null,
             'parent_close_policy_reason' => $parentClosePolicy['parent_close_policy_reason'] ?? null,
             'parent_close_policy_error' => $parentClosePolicy['parent_close_policy_error'] ?? null,
+            ...(isset($parentClosePolicy['parent_close_cancellation'])
+                || isset($parentClosePolicy['parent_close_request_diagnostics']) ? [
+                    'parent_close_cancellation' => $parentClosePolicy['parent_close_cancellation'] ?? null,
+                    'parent_close_request_diagnostics' => $parentClosePolicy['parent_close_request_diagnostics'] ?? null,
+                ] : []),
         ];
     }
 
@@ -415,7 +422,9 @@ final class RunLineageView
      *     parent_close_policy: ?string,
      *     parent_close_policy_outcome: ?string,
      *     parent_close_policy_reason: ?string,
-     *     parent_close_policy_error: ?string
+     *     parent_close_policy_error: ?string,
+     *     parent_close_cancellation: ?array<string, mixed>,
+     *     parent_close_request_diagnostics: ?array<string, mixed>
      * }|null
      */
     private static function parentClosePolicyForChild(
@@ -447,6 +456,10 @@ final class RunLineageView
             'parent_close_policy_outcome' => $outcome,
             'parent_close_policy_reason' => $reason,
             'parent_close_policy_error' => $error,
+            'parent_close_cancellation' => is_array($eventPayload['cancellation'] ?? null)
+                ? $eventPayload['cancellation'] : null,
+            'parent_close_request_diagnostics' => is_array($eventPayload['request_diagnostics'] ?? null)
+                ? $eventPayload['request_diagnostics'] : null,
         ];
     }
 

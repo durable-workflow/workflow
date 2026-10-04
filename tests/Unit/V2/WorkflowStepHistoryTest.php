@@ -16,6 +16,19 @@ use Workflow\V2\Support\WorkflowStepHistory;
 
 final class WorkflowStepHistoryTest extends TestCase
 {
+    public function testScopeOpeningReservesItsOwnDurableCommandPosition(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::CancellationScopeOpened, [
+                'sequence' => 1,
+            ]),
+        ]);
+        $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
+        WorkflowStepHistory::assertCompatible($run, 1, WorkflowStepHistory::CANCELLATION_SCOPE);
+        $this->expectException(HistoryEventShapeMismatchException::class);
+        WorkflowStepHistory::assertCompatible($run, 1, WorkflowStepHistory::ACTIVITY);
+    }
+
     public function testCancellationDeliveryReservesTheInterruptedDurableCallSequence(): void
     {
         $run = $this->runWithHistoryEvents([

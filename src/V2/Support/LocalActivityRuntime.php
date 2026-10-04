@@ -34,9 +34,11 @@ final class LocalActivityRuntime
      */
     public static function eventPayload(array $payload = []): array
     {
+        $path = $payload['activity']['parallel_group_path'] ?? [];
         return [
             'execution_mode' => self::EXECUTION_MODE,
             'local_activity' => true,
+            ...ParallelChildGroup::payloadForPath(is_array($path) ? $path : []),
             ...$payload,
         ];
     }
@@ -56,6 +58,7 @@ final class LocalActivityRuntime
             'activity_type' => $execution->activity_type ?? $execution->activity_class,
             'workflow_sequence' => $execution->sequence,
             'execution_mode' => self::EXECUTION_MODE,
+            ...ParallelChildGroup::payloadForPath($execution->parallel_group_path ?? []),
             ...$payload,
         ];
     }
@@ -65,13 +68,14 @@ final class LocalActivityRuntime
         return WorkflowTaskLease::expiresAt();
     }
 
-    public static function renewWorkflowTask(WorkflowTask $task): ?CarbonInterface
+    public static function renewWorkflowTask(WorkflowTask $task, ?CarbonInterface $deadline = null): ?CarbonInterface
     {
         if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased) {
             return null;
         }
 
-        $leaseExpiresAt = self::workflowTaskLeaseExpiresAt();
+        $leaseExpiresAt = $deadline === null
+            ? self::workflowTaskLeaseExpiresAt() : CancellationCleanupLease::forDeadline($deadline);
 
         $task->forceFill([
             'lease_expires_at' => $leaseExpiresAt,

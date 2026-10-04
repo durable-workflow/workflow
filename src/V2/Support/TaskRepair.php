@@ -35,14 +35,21 @@ final class TaskRepair
 
     public static function recoverExistingTask(WorkflowTask $task, WorkflowRun $run): ?WorkflowTask
     {
+        $execution = $run->status->isTerminal() && $task->task_type === TaskType::Activity
+            ? self::activityExecutionForTask($task) : null;
+        $abandoned = $execution instanceof ActivityExecution && ActivityAbandonment::allows($run, $execution);
         if (in_array($run->status, [
             RunStatus::Completed,
             RunStatus::Failed,
             RunStatus::Cancelled,
             RunStatus::Terminated,
-        ], true)) {
+        ], true) && ! $abandoned) {
             self::settleTerminalTask($task, $run);
 
+            return null;
+        }
+        if ($abandoned && ActivityTimeoutEnforcer::hasExpiredDeadline($execution, now())) {
+            // Timeout enforcement owns the canonical terminal outcome.
             return null;
         }
 

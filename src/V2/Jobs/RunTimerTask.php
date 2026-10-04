@@ -124,12 +124,21 @@ final class RunTimerTask implements ShouldQueue
                 return null;
             }
 
+            $cancelledInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::TimerCancelled
+                && ($event->payload['timer_id'] ?? null) === $timerId);
+            $firedInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_id'] ?? null) === $timerId);
             if (
                 in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
                 || $timer->status === TimerStatus::Cancelled
+                || $cancelledInHistory
             ) {
                 $task->forceFill([
-                    'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : TaskStatus::Completed,
+                    'status' => $task->status === TaskStatus::Cancelled || $cancelledInHistory
+                        ? TaskStatus::Cancelled : TaskStatus::Completed,
+                    'lease_owner' => null,
                     'lease_expires_at' => null,
                 ])->save();
 
@@ -141,6 +150,19 @@ final class RunTimerTask implements ShouldQueue
 
                 $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
+                return null;
+            }
+
+            if ($firedInHistory) {
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_owner' => null,
+                    'lease_expires_at' => null,
+                ])->save();
+                $timer->forceFill([
+                    'status' => TimerStatus::Fired,
+                ])->save();
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
                 return null;
             }
 

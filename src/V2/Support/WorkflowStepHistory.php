@@ -22,6 +22,8 @@ final class WorkflowStepHistory
 
     public const CHILD_WORKFLOW = 'child workflow';
 
+    public const CANCELLATION_SCOPE = 'cancellation scope';
+
     public const CONDITION_WAIT = 'condition wait';
 
     public const CONTINUE_AS_NEW = 'continue as new';
@@ -48,6 +50,7 @@ final class WorkflowStepHistory
      * @var list<HistoryEventType>
      */
     private const WORKFLOW_STEP_EVENT_TYPES = [
+        HistoryEventType::CancellationScopeOpened,
         HistoryEventType::ActivityScheduled,
         HistoryEventType::ActivityStarted,
         HistoryEventType::ActivityHeartbeatRecorded,
@@ -102,6 +105,7 @@ final class WorkflowStepHistory
                 self::WORKFLOW_STEP_EVENT_TYPES,
             );
             $stepTypes[] = HistoryEventType::CooperativeCancellationDelivered->value;
+            $stepTypes[] = HistoryEventType::CancellationScopeDelivered->value;
 
             return self::nextSequenceFromEvents(
                 $run->historyEvents()
@@ -251,7 +255,8 @@ final class WorkflowStepHistory
         foreach ($events as $event) {
             if (! $event instanceof WorkflowHistoryEvent || (
                 ! self::isWorkflowStepEvent($event)
-                && $event->event_type !== HistoryEventType::CooperativeCancellationDelivered
+                && ! in_array($event->event_type, [HistoryEventType::CooperativeCancellationDelivered,
+                    HistoryEventType::CancellationScopeDelivered], true)
             )) {
                 continue;
             }
@@ -259,7 +264,8 @@ final class WorkflowStepHistory
             $sequence = self::intValue($event->payload['sequence'] ?? null);
 
             if ($sequence !== null) {
-                if ($event->event_type === HistoryEventType::CooperativeCancellationDelivered) {
+                if (in_array($event->event_type, [HistoryEventType::CooperativeCancellationDelivered,
+                    HistoryEventType::CancellationScopeDelivered], true)) {
                     $span = self::intValue($event->payload['sequence_span'] ?? null) ?? 1;
                     if ($span > 1 && $sequence <= PHP_INT_MAX - $span) {
                         $sequence += $span - 1;
@@ -413,6 +419,7 @@ final class WorkflowStepHistory
     private static function eventMatchesShape(WorkflowHistoryEvent $event, string $expectedShape): bool
     {
         return match ($expectedShape) {
+            self::CANCELLATION_SCOPE => $event->event_type === HistoryEventType::CancellationScopeOpened,
             self::ACTIVITY => in_array($event->event_type, [
                 HistoryEventType::ActivityScheduled,
                 HistoryEventType::ActivityStarted,

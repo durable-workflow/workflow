@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Tests\TestCase;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -76,6 +77,20 @@ class ChildCallServiceTest extends TestCase
 
         $this->assertEquals('redis', $childCall->connection);
         $this->assertEquals('high-priority', $childCall->queue);
+    }
+
+    public function testCancellationPolicyIsRecordedSeparatelyFromParentClosePolicy(): void
+    {
+        foreach (CancellationPolicy::cases() as $policy) {
+            $childCall = $this->service->scheduleChild(
+                $this->createRun(),
+                new ChildWorkflowCall('TestChildWorkflow', [], new ChildWorkflowOptions(cancellationPolicy: $policy)),
+                10,
+            );
+            $this->assertSame(ParentClosePolicy::Abandon, $childCall->parent_close_policy);
+            $this->assertSame($policy !== CancellationPolicy::Abandon, $childCall->cancellation_propagation);
+            $this->assertSame($policy->value, $childCall->metadata['cancellation_policy']);
+        }
     }
 
     public function testItInheritsRoutingFromParentWhenNotOverridden(): void
