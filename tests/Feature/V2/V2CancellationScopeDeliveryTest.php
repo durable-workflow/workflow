@@ -1945,7 +1945,8 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $bridge = app(DefaultWorkflowTaskBridge::class);
         $this->assertSame(
             '2026-10-03T00:00:20.000000Z',
-            $run->fresh()->cancellation_scope_recovery_until->toISOString()
+            $run->fresh()
+                ->cancellation_scope_recovery_until->toISOString()
         );
         Carbon::setTestNow('2026-10-03T00:00:05Z');
         $this->assertTrue($bridge->heartbeat($task->id)['renewed']);
