@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestParentChildPolicyWorkflow;
 use Tests\Fixtures\V2\TestParentCloseCooperativeWorkflow;
 use Tests\TestCase;
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -18,6 +19,7 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\ScopedCancellationContext;
 use Workflow\V2\Support\CancellationCascadeView;
 use Workflow\V2\WorkflowStub;
 
@@ -122,6 +124,142 @@ final class V2CancellationCascadeViewTest extends TestCase
         $this->assertStringNotContainsString($foreign->id(), $encoded);
         $this->assertStringNotContainsString('DO_NOT_EXPOSE_PRIVATE_REQUEST', $encoded);
         $this->assertCount(2, $view['runs']);
+    }
+
+    public function testScopedChildKeepsTheOriginalRootAndItsNarrowerAuthorityInOneView(): void
+    {
+        [$parent, $child] = $this->start();
+        $root = $parent->requestCancellation('maintenance', 30)
+            ->cancellationContext();
+        $this->assertNotNull($root);
+        $scope = ScopedCancellationContext::fromRunContext($root)->forDescendant(
+            'inner-request',
+            $parent->id(),
+            $parent->runId(),
+            'inner',
+            $root->requestedAt()
+                ->addSeconds(20)
+        );
+        $context = $this->recordScopedChild($child, $scope);
+
+        foreach ([$parent, $child] as $selected) {
+            $view = CancellationCascadeView::forRun($selected->run()->fresh());
+            $this->assertNotNull($view);
+            $this->assertTrue($view['inspection_complete']);
+            $this->assertSame([], $view['findings']);
+            $this->assertSame($root->rootRequestId, $view['root']['root_request_id']);
+            $this->assertSame($root->deadline()->toISOString(), $view['root']['cleanup_deadline_at']);
+            $node = collect($view['runs'])->firstWhere('run_id', $child->runId());
+            $this->assertTrue($node['same_root_budget']);
+            $this->assertSame($context->deadline()->toISOString(), $node['request']['cleanup_deadline_at']);
+            $this->assertSame(
+                $root->deadline()
+                    ->toISOString(),
+                $node['request']['scope_origin']['root_context']['cleanup_deadline_at']
+            );
+            $this->assertSame(['root', 'inner'], array_column($node['request']['scope_origin']['lineage'], 'scope_id'));
+        }
+    }
+
+    public function testScopedOriginCannotExposeAnUnavailableAncestorAddress(): void
+    {
+        [$parent, $child] = $this->start();
+        $root = $parent->requestCancellation('maintenance', 30)
+            ->cancellationContext();
+        $this->assertNotNull($root);
+        [$foreign] = $this->start();
+        $foreign->run()
+            ->forceFill([
+                'namespace' => 'foreign',
+            ])->save();
+        $foreign->run()
+            ->instance->forceFill([
+                'namespace' => 'foreign',
+            ])->save();
+        $scope = ScopedCancellationContext::fromRunContext($root)->forDescendant(
+            'DO_NOT_EXPOSE_PRIVATE_SCOPE_REQUEST',
+            $foreign->id(),
+            $foreign->runId(),
+            'DO_NOT_EXPOSE_PRIVATE_SCOPE',
+            $root->requestedAt()
+                ->addSeconds(20)
+        );
+        $this->recordScopedChild($child, $scope);
+
+        $view = CancellationCascadeView::forRun($parent->run()->fresh());
+        $this->assertNotNull($view);
+        $this->assertFalse($view['inspection_complete']);
+        $this->assertContains('scope_origin_unavailable', array_column($view['findings'], 'code'));
+        $node = collect($view['runs'])->firstWhere('run_id', $child->runId());
+        $this->assertNull($node['request']['scope_origin']);
+        $encoded = json_encode($view, JSON_THROW_ON_ERROR);
+        foreach ([$foreign->id(), $foreign->runId(), 'DO_NOT_EXPOSE_PRIVATE_SCOPE'] as $hidden) {
+            $this->assertStringNotContainsString($hidden, $encoded);
+        }
+    }
+
+    public function testScopedOriginUsesTheSameRequestTextLimitAsItsVisibleRoot(): void
+    {
+        [$parent, $child] = $this->start();
+        $root = $parent->requestCancellation(str_repeat('x', 8193), 30)
+            ->cancellationContext();
+        $this->assertNotNull($root);
+        $this->recordScopedChild($child, ScopedCancellationContext::fromRunContext($root));
+
+        $view = CancellationCascadeView::forRun($parent->run()->fresh());
+        $this->assertNotNull($view);
+        $node = collect($view['runs'])->firstWhere('run_id', $child->runId());
+        $this->assertSame(8192, strlen($node['request']['scope_origin']['root_context']['reason']));
+        $this->assertFalse($view['inspection_complete']);
+        $this->assertTrue($view['truncated']);
+        $this->assertContains('request_text_limit', array_column($view['findings'], 'code'));
+    }
+
+    public function testAnExceededScopePathLimitRemainsAnIncompleteInspection(): void
+    {
+        [$parent, $child] = $this->start();
+        $root = $parent->requestCancellation('maintenance', 30)
+            ->cancellationContext();
+        $this->assertNotNull($root);
+        $scope = ScopedCancellationContext::fromRunContext($root);
+        for ($index = 1; $index <= 100; ++$index) {
+            $scope = $scope->forDescendant(
+                'scope-request-' . $index,
+                $parent->id(),
+                $parent->runId(),
+                'scope-' . $index
+            );
+        }
+        $this->recordScopedChild($child, $scope);
+
+        $view = CancellationCascadeView::forRun($parent->run()->fresh());
+        $this->assertNotNull($view);
+        $node = collect($view['runs'])->firstWhere('run_id', $child->runId());
+        $this->assertNull($node['request']['scope_origin']);
+        $this->assertFalse($view['inspection_complete']);
+        $this->assertTrue($view['truncated']);
+        $this->assertContains('scope_origin_limit', array_column($view['findings'], 'code'));
+        $this->assertSame(100, $view['limits']['scope_origin_addresses']);
+    }
+
+    public function testScopedOriginCannotSubstituteADifferentOriginalRootBudget(): void
+    {
+        [$parent, $child] = $this->start();
+        $root = $parent->requestCancellation('maintenance', 30)
+            ->cancellationContext();
+        $this->assertNotNull($root);
+        $snapshot = $root->toArray();
+        $snapshot['cleanup_deadline_at'] = $root->requestedAt()->addSeconds(25)->toISOString();
+        $changed = CancellationContext::fromArray($snapshot);
+        $this->recordScopedChild($child, ScopedCancellationContext::fromRunContext($changed));
+
+        $view = CancellationCascadeView::forRun($child->run()->fresh());
+        $this->assertNotNull($view);
+        $this->assertNull($view['root']);
+        $this->assertFalse($view['inspection_complete']);
+        $this->assertContains('root_request_mismatch', array_column($view['findings'], 'code'));
+        $node = collect($view['runs'])->firstWhere('run_id', $child->runId());
+        $this->assertFalse($node['same_root_budget']);
     }
 
     public function testMissingRequestHistoryRemainsAnIncompleteInspection(): void
@@ -308,6 +446,45 @@ final class V2CancellationCascadeViewTest extends TestCase
         $child = WorkflowStub::loadRun($link->child_workflow_run_id);
         $this->runTask($child, TaskType::Workflow);
         return [$parent, $child];
+    }
+
+    private function recordScopedChild(WorkflowStub $child, ScopedCancellationContext $scope): CancellationContext
+    {
+        $context = CancellationContext::fromScopeContext(
+            $scope,
+            'scoped-child-request',
+            $child->id(),
+            $child->runId(),
+            $scope->requestedAt()
+                ->addSeconds(15)
+        );
+        $child->run()
+            ->historyEvents()
+            ->create([
+                'sequence' => $child->run()
+                    ->historyEvents()
+                    ->max('sequence') + 1,
+                'event_type' => HistoryEventType::CooperativeCancellationRequested,
+                'workflow_command_id' => $context->requestId,
+                'recorded_at' => now(),
+                'payload' => [
+                    'workflow_command_id' => $context->requestId,
+                    'workflow_run_id' => $child->runId(),
+                    'workflow_instance_id' => $child->id(),
+                    'reason' => $context->reason,
+                    'cleanup_deadline_at' => $context->deadline()
+                        ->toISOString(),
+                    'cancellation' => $context->toArray(),
+                ],
+            ]);
+        $child->run()
+            ->forceFill([
+                'cancellation_request_command_id' => $context->requestId,
+                'cancellation_requested_at' => now(),
+                'cancellation_deadline_at' => $context->deadline(),
+            ])->save();
+
+        return $context;
     }
 
     private function runTask(WorkflowStub $workflow, TaskType $type): void

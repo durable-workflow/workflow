@@ -146,6 +146,7 @@ final class CancellationCascadeView
                 'history_events_per_run' => self::HISTORY_LIMIT,
                 'history_events_total' => self::TOTAL_HISTORY_LIMIT,
                 'request_text_bytes' => self::REQUEST_TEXT_BYTES,
+                'scope_origin_addresses' => self::EDGE_LIMIT,
             ],
         ];
     }
@@ -440,6 +441,7 @@ final class CancellationCascadeView
 
     private function sameOrigin(CancellationContext $root, CancellationContext $child): bool
     {
+        $child = $child->scopeOrigin?->rootContext ?? $child;
         return $root->rootRequestId === $child->rootRequestId
             && $root->rootWorkflowRunId === $child->rootWorkflowRunId
             && $root->rootWorkflowInstanceId === $child->rootWorkflowInstanceId
@@ -460,6 +462,38 @@ final class CancellationCascadeView
         $metadata = array_diff_key($context->toArray(), [
             'lineage' => true,
         ]);
+        if ($context->scopeOrigin !== null) {
+            $metadata['scope_origin'] = null;
+            $lineage = $context->scopeOrigin->lineage;
+            $available = count($lineage) <= self::EDGE_LIMIT;
+            if (! $available) {
+                $this->truncate(
+                    'scope_origin_limit',
+                    $context->lineage[count($context->lineage) - 1]['workflow_run_id']
+                );
+            } else {
+                foreach ($lineage as $entry) {
+                    $run = $this->visibleRun($entry['workflow_run_id']);
+                    if ($run === null || $run->workflow_instance_id !== $entry['workflow_instance_id']) {
+                        $available = false;
+                        $this->incomplete(
+                            'scope_origin_unavailable',
+                            $context->lineage[count($context->lineage) - 1]['workflow_run_id']
+                        );
+                        break;
+                    }
+                }
+            }
+            if ($available) {
+                $metadata['scope_origin'] = [
+                    'schema' => $context->scopeOrigin::SCHEMA,
+                    'root_context' => $this->metadata($context->scopeOrigin->rootContext),
+                    'lineage' => $lineage,
+                ];
+            } else {
+                $metadata['parent_request_id'] = null;
+            }
+        }
         foreach ($metadata as $key => $value) {
             if (is_string($value) && strlen($value) > self::REQUEST_TEXT_BYTES) {
                 $metadata[$key] = mb_strcut($value, 0, self::REQUEST_TEXT_BYTES, 'UTF-8');
@@ -562,6 +596,8 @@ final class CancellationCascadeView
             'edge_limit' => 'Some relations are omitted because this view reached its relation limit.',
             'history_limit' => 'Some history is omitted. Open the run history for additional evidence.',
             'request_text_limit' => 'Some request text is omitted because it exceeds the inspection text limit.',
+            'scope_origin_limit' => 'The originating scope path exceeds this view\'s inspection limit. Its details are omitted.',
+            'scope_origin_unavailable' => 'An originating scope run is unavailable in this namespace. Its path is omitted.',
             'root_unavailable', 'request_root_unavailable' => 'The root run is unavailable. Its original cascade budget cannot be verified.',
             'related_run_unavailable' => 'A related run is unavailable in this namespace. Its details are omitted.',
             'selected_run_not_reachable' => 'The selected run has no retained path from the root. It is shown separately.',
