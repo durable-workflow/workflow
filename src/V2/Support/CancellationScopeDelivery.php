@@ -144,7 +144,10 @@ final class CancellationScopeDelivery
             }
             $address = $scopes[$address]['parent_scope_id'];
         }
-        return null;
+        // A preparation for an unscheduled await owns its exact command position.
+        // Existing unrelated operations keep running, but a new command cannot
+        // consume that position while delivery is still waiting on actor receipts.
+        return self::positionReserved($run, $sequence) ? 'operation_cancellation_delivery_reserved' : null;
     }
 
     /**
@@ -214,6 +217,27 @@ final class CancellationScopeDelivery
             ];
         }
         return $normalized;
+    }
+
+    private static function positionReserved(WorkflowRun $run, int $sequence): bool
+    {
+        foreach ($run->historyEvents()->where(
+            'event_type',
+            HistoryEventType::CancellationScopeDeliveryPrepared
+        )->get() as $event) {
+            $preparedScope = $event->payload['scope_id'] ?? null;
+            if (! is_string($preparedScope) || $preparedScope === '') {
+                throw new LogicException('cancellation_scope_preparation_history_invalid');
+            }
+            $preparation = self::prepared($run, $preparedScope);
+            if ($preparation === null) {
+                throw new LogicException('cancellation_scope_preparation_history_invalid');
+            }
+            if ($preparation->payload['sequence'] === $sequence && self::recorded($run, $preparedScope) === null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -286,7 +310,28 @@ final class CancellationScopeDelivery
                         || $payload['operation_sequence_span'] !== $operationSequenceSpan) {
                         throw new LogicException('cancellation_scope_delivery_mismatch');
                     }
+                    if ($preparing && self::recorded($locked, $scopeId) === null) {
+                        $request = $locked->historyEvents()
+                            ->where('event_type', HistoryEventType::CancellationScopeRequested)
+                            ->where('payload->scope_id', $scopeId)
+                            ->sole();
+                        $invalid = CooperativeCancellationDelivery::validateCallBoundary(
+                            $locked,
+                            $request,
+                            $sequence,
+                            $callKind,
+                            $sequenceSpan,
+                            $operationSequence,
+                            $operationSequenceSpan
+                        );
+                        if ($invalid !== null) {
+                            throw new LogicException($invalid);
+                        }
+                    }
                     return $existing;
+                }
+                if ($preparing && self::positionReserved($locked, $sequence)) {
+                    throw new LogicException('cancellation_scope_command_sequence_reserved');
                 }
                 $request = $locked->historyEvents()
                     ->where('event_type', HistoryEventType::CancellationScopeRequested)

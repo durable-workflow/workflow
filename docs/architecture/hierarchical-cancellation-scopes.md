@@ -317,6 +317,15 @@ because it has acquired the workflow lease.
 
 ## Inspectable states and admission
 
+An unfinished preparation reserves its authored delivery position, including
+an interrupted await that has no scheduled operation yet. A new scope opening,
+operation prefix or another scope's preparation cannot consume that position.
+Recorded commands still replay, and already scheduled unrelated or shielded
+operations continue under their own authority. The delivered marker consumes
+the original position before workflow authoring advances to another new command.
+Reusing a preparation revalidates its live command shape before dispatching
+actors. Historical delivery replay keeps the original boundary and clock.
+
 Extend the existing cascade inventory with scope nodes and parent edges. For each
 node show accepted/conflicting requests, deferred shield propagation, delivered
 boundary, pending stop receipts, cleanup progress and final outcome. Keep callback

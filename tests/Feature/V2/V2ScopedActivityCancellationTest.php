@@ -34,6 +34,7 @@ use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\PortableCancellationScopeDelivery;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\ScopedActivityCancellation;
 use Workflow\V2\WorkflowStub;
@@ -1202,9 +1203,9 @@ final class V2ScopedActivityCancellationTest extends TestCase
             CancellationScopeDelivery::admissionRefusal($run->fresh(), $scope, 6)
         );
         $this->assertNull(CancellationScopeDelivery::admissionRefusal($run->fresh(), $sibling, 6));
-        // The original parent command cannot be replayed under another scope.
+        // Shielding does not let a new command consume the pending delivery position.
         $this->assertSame(
-            $shield ? null : 'operation_scope_cancellation_prepared',
+            $shield ? 'operation_cancellation_delivery_reserved' : 'operation_scope_cancellation_prepared',
             CancellationScopeDelivery::admissionRefusal($run->fresh(), $scope, 4)
         );
     }
@@ -1976,6 +1977,163 @@ final class V2ScopedActivityCancellationTest extends TestCase
         $this->assertFalse($target->status->isTerminal());
         $this->assertSame($receipt['request_id'], $target->cancellation_request_command_id);
         $this->assertNotNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+    }
+
+    public function testConflictingNewScopeCannotFenceWorkBeforeTheOriginalDeliveryBoundaryIsRejected(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target, $other] = $this->remotePair($run, $task, $scope, $sibling, 'try_cancel');
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        CancellationScopeDelivery::prepare($run, $task, $scope, $request->payload['request_id'], 6, 'timer', '1.20');
+        // Simulate an already corrupted command history to qualify the actor preflight,
+        // independently of the admission guard exercised by the following test.
+        $opened = $run->historyEvents()
+            ->where('event_type', HistoryEventType::CancellationScopeOpened)
+            ->where('payload->scope_id', $sibling)
+            ->sole();
+        $openingPayload = $opened->payload;
+        unset($openingPayload['task']);
+        WorkflowHistoryEvent::record($run->fresh(), HistoryEventType::CancellationScopeOpened, [
+            ...$openingPayload,
+            'sequence' => 6,
+            'scope_id' => 'conflicting-unrelated-scope',
+            'parent_scope_id' => $sibling,
+        ], $task);
+        $result = PortableCancellationScopeDelivery::mutate(
+            false,
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'timer',
+            1,
+            null,
+            1,
+            '1.20'
+        );
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_delivery_shape_mismatch', $result['reason']);
+        $this->assertSame(ActivityStatus::Pending, $target->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+        $this->assertSame(TaskStatus::Ready, $this->activityTask($run, $target)->status);
+        $this->assertNull(CancellationScopeDelivery::recorded($run->fresh(), $scope));
+    }
+
+    public function testPendingDeliveryReservesItsFutureCommandWhileExistingSiblingWorkAndReplayContinue(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        [$target, $other] = $this->remotePair($run, $task, $scope, $sibling, 'try_cancel');
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $preparation = CancellationScopeDelivery::prepare(
+            $run,
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'timer',
+            '1.20'
+        );
+        $count = $run->historyEvents()
+            ->count();
+        try {
+            CancellationScopeHistory::open($run->fresh(), $task, 6, '1.20', $sibling);
+            $this->fail('A new unrelated scope consumed the prepared future boundary.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_command_sequence_reserved', $error->getMessage());
+        }
+        $this->assertSame($count, $run->historyEvents()->count());
+        $this->assertSame(ActivityStatus::Pending, $target->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+        $conflictingPrefix = app(DefaultWorkflowTaskBridge::class)->checkpointCancellationScopePrefix(
+            $task->id,
+            'scope-owner',
+            1,
+            'conflicting-outside-prefix',
+            6,
+            [[
+                'type' => 'schedule_activity',
+                'activity_type' => TestGreetingActivity::class,
+                'arguments' => Serializer::serializeWithCodec('avro', ['another']),
+                'payload_codec' => 'avro',
+                'cancellation_scope_id' => $sibling,
+                'cancellation_policy' => 'try_cancel',
+                'schedule_to_close_timeout' => 120,
+            ]],
+            '1.20'
+        );
+        $this->assertFalse($conflictingPrefix['checkpointed']);
+        $this->assertSame('operation_cancellation_delivery_reserved', $conflictingPrefix['reason']);
+        $this->assertSame($count, $run->historyEvents()->count());
+        $this->assertSame($preparation->id, CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'timer',
+            '1.20'
+        )->id);
+        $this->assertSame(
+            $sibling,
+            CancellationScopeHistory::open($run->fresh(), $task, 3, '1.20')->payload['scope_id']
+        );
+        $result = PortableCancellationScopeDelivery::mutate(
+            false,
+            $task->id,
+            'scope-owner',
+            1,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'timer',
+            1,
+            null,
+            1,
+            '1.20'
+        );
+        $this->assertTrue($result['delivered'], $result['reason'] ?? '');
+        $this->assertSame(ActivityStatus::Cancelled, $target->fresh()->status);
+        $this->assertSame(ActivityStatus::Pending, $other->fresh()->status);
+        $later = CancellationScopeHistory::open($run->fresh(), $task, 7, '1.20', $sibling);
+        $this->assertSame($sibling, $later->payload['parent_scope_id']);
+        $this->assertSame($preparation->id, CancellationScopeDelivery::prepare(
+            $run->fresh(),
+            $task,
+            $scope,
+            $request->payload['request_id'],
+            6,
+            'timer',
+            '1.20'
+        )->id);
+    }
+
+    public function testAnotherAcceptedScopeCannotPrepareTheSameFutureAuthoredPosition(): void
+    {
+        [, $run, $task, , $scope, $sibling] = $this->tree();
+        $this->remotePair($run, $task, $scope, $sibling, 'try_cancel');
+        $first = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $second = CancellationScopeRequests::request($run, $sibling, '1.20', 30);
+        CancellationScopeDelivery::prepare($run, $task, $scope, $first->payload['request_id'], 6, 'timer', '1.20');
+        $count = $run->historyEvents()
+            ->count();
+        try {
+            CancellationScopeDelivery::prepare(
+                $run->fresh(),
+                $task,
+                $sibling,
+                $second->payload['request_id'],
+                6,
+                'timer',
+                '1.20'
+            );
+            $this->fail('Two scopes prepared the same future authored position.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_command_sequence_reserved', $error->getMessage());
+        }
+        $this->assertSame($count, $run->historyEvents()->count());
+        $this->assertNull(CancellationScopeDelivery::prepared($run->fresh(), $sibling));
     }
 
     /**

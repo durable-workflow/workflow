@@ -229,7 +229,23 @@ final class V2CancellationScopeDescendantsTest extends TestCase
             $this->assertSame('cancellation_scope_parent_delivery_prepared', $error->getMessage());
         }
         $this->assertSame($count, $run->historyEvents()->count());
-        CancellationScopeHistory::open($run->fresh(), $task, 7, '1.20', $scopes['sibling']);
+        try {
+            CancellationScopeHistory::open($run->fresh(), $task, 7, '1.20', $scopes['sibling']);
+            $this->fail('An unrelated opening consumed the reserved delivery position.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_command_sequence_reserved', $error->getMessage());
+        }
+        $this->assertSame($count, $run->historyEvents()->count());
+        CancellationScopeDelivery::record(
+            $run->fresh(),
+            $task,
+            $scopes['parent'],
+            $prepared->payload['request_id'],
+            7,
+            'timer',
+            '1.20'
+        );
+        CancellationScopeHistory::open($run->fresh(), $task, 8, '1.20', $scopes['sibling']);
         $this->assertSameJsonObject(
             $prepared->payload,
             CancellationScopeDelivery::prepared($run->fresh(), $scopes['parent'])->payload

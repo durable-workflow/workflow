@@ -98,8 +98,10 @@ final class CancellationScopeHistory
                 }
                 // The original subtree has already been frozen. A new shield must
                 // not let later work escape that preparation; existing opens replay above.
-                if (CancellationScopeDelivery::admissionRefusal($lockedRun, $parentScopeId, $sequence) !== null) {
-                    throw new LogicException('cancellation_scope_parent_delivery_prepared');
+                $refusal = CancellationScopeDelivery::admissionRefusal($lockedRun, $parentScopeId, $sequence);
+                if ($refusal !== null) {
+                    throw new LogicException($refusal === 'operation_cancellation_delivery_reserved'
+                        ? 'cancellation_scope_command_sequence_reserved' : 'cancellation_scope_parent_delivery_prepared');
                 }
                 WorkflowStepHistory::assertCompatible($lockedRun, $sequence, WorkflowStepHistory::CANCELLATION_SCOPE);
                 if ($sequence !== WorkflowStepHistory::nextDurableCommandSequence($lockedRun)) {
