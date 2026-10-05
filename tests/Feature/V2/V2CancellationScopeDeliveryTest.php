@@ -90,6 +90,87 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         }
     }
 
+    #[DataProvider('rootDeliveryScopes')]
+    public function testRunDeliveryCannotBypassScopedOperationMembership(
+        bool $shield,
+        string $kind,
+        string $boundary
+    ): void {
+        [, $run, $task, , $scope] = $this->scopeTree($shield);
+        $type = $kind === 'activity' ? HistoryEventType::ActivityScheduled : HistoryEventType::TimerScheduled;
+        $this->schedule($run, $type, [
+            'sequence' => 3,
+            ...($kind === 'activity' ? [
+                'activity' => [
+                    'cancellation_scope_id' => $scope,
+                ],
+            ]
+                : [
+                    'cancellation_scope_id' => $scope,
+                ]),
+            ...ParallelChildGroup::itemMetadata(3, 2, 0, $kind),
+        ]);
+        $this->schedule($run, $type, [
+            'sequence' => 4,
+            ...ParallelChildGroup::itemMetadata(3, 2, 1, $kind),
+        ]);
+        $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('stop the run', 30)->accepted());
+        $run->refresh();
+        $before = [
+            $run->getAttributes(), $run->historyEvents()
+                ->get()
+                ->toArray(),
+            $run->tasks()
+                ->get()
+                ->toArray(), $run->activityExecutions()
+                ->get()
+                ->toArray(),
+            $run->timers()
+                ->get()
+                ->toArray(),
+        ];
+        $result = app(DefaultWorkflowTaskBridge::class)->deliverCancellation(
+            $task->id,
+            $run->cancellation_request_command_id,
+            $boundary === 'selection_handle' ? 5 : 3,
+            $boundary === 'scalar' ? $kind : $boundary,
+            $boundary === 'parallel' ? 2 : 1,
+            $boundary === 'selection_handle' ? 3 : null,
+            $boundary === 'selection_handle' ? 2 : 1,
+        );
+        $this->assertFalse($result['delivered']);
+        $this->assertSame('cancellation_delivery_requires_scope', $result['reason']);
+        $this->assertSame($before, [
+            $run->fresh()
+                ->getAttributes(), $run->historyEvents()
+                ->get()
+                ->toArray(),
+            $run->tasks()
+                ->get()
+                ->toArray(), $run->activityExecutions()
+                ->get()
+                ->toArray(),
+            $run->timers()
+                ->get()
+                ->toArray(),
+        ]);
+    }
+
+    public static function rootDeliveryScopes(): iterable
+    {
+        foreach ([false, true] as $shield) {
+            foreach (['activity', 'timer'] as $kind) {
+                foreach (['scalar', 'parallel', 'selection_handle'] as $boundary) {
+                    yield ($shield ? 'shielded ' : 'unshielded ') . $kind . ' ' . $boundary => [
+                        $shield,
+                        $kind,
+                        $boundary,
+                    ];
+                }
+            }
+        }
+    }
+
     public function testPreparedPendingDeliveryRecoversThroughWatchdogWithoutReplacingOriginalBoundary(): void
     {
         [, $run, $task, , $scope] = $this->scopeTree();

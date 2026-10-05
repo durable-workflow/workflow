@@ -40,6 +40,150 @@ final class CooperativeCancellationDeliveryTest extends TestCase
         $this->assertSame('cancellation_request_history_missing', $this->validate($run));
     }
 
+    #[DataProvider('operationScopeMembership')]
+    public function testRootDeliveryRequiresCanonicalRootOperationMembership(array $payload, ?string $expected): void
+    {
+        $run = $this->runWithHistory([
+            $this->event(HistoryEventType::ActivityScheduled, [
+                'sequence' => 1,
+                ...$payload,
+            ]),
+            $this->request(),
+        ]);
+        $this->assertSame($expected, $this->validate($run));
+    }
+
+    public static function operationScopeMembership(): iterable
+    {
+        yield 'historical omission' => [[], null];
+        yield 'explicit root' => [[
+            'cancellation_scope_id' => 'root',
+        ], null];
+        yield 'nested root' => [[
+            'activity' => [
+                'cancellation_scope_id' => 'root',
+            ],
+        ], null];
+        yield 'both root' => [[
+            'cancellation_scope_id' => 'root',
+            'activity' => [
+                'cancellation_scope_id' => 'root',
+            ],
+        ], null];
+        yield 'application value' => [[
+            'arguments' => [
+                'cancellation_scope_id' => 'app-value',
+            ],
+        ], null];
+        yield 'flat scope' => [[
+            'cancellation_scope_id' => 'scope-1',
+        ], 'cancellation_delivery_requires_scope'];
+        yield 'nested scope' => [[
+            'activity' => [
+                'cancellation_scope_id' => 'scope-1',
+            ],
+        ], 'cancellation_delivery_requires_scope'];
+        yield 'conflicting snapshots' => [[
+            'cancellation_scope_id' => 'root',
+            'activity' => [
+                'cancellation_scope_id' => 'scope-1',
+            ],
+        ], 'cancellation_delivery_scope_membership_invalid'];
+        yield 'null descriptor' => [[
+            'activity' => null,
+        ], 'cancellation_delivery_scope_membership_invalid'];
+        yield 'scalar descriptor' => [[
+            'activity' => 'root',
+        ], 'cancellation_delivery_scope_membership_invalid'];
+        foreach ([null, false, 1, '', ['root']] as $index => $invalid) {
+            yield 'invalid flat ' . $index => [[
+                'cancellation_scope_id' => $invalid,
+            ], 'cancellation_delivery_scope_membership_invalid'];
+            yield 'invalid nested ' . $index => [[
+                'activity' => [
+                    'cancellation_scope_id' => $invalid,
+                ],
+            ], 'cancellation_delivery_scope_membership_invalid'];
+        }
+    }
+
+    public function testScopeMembershipIsCheckedAgainWhenReplayingAnExistingRootReceipt(): void
+    {
+        $run = $this->runWithHistory([
+            $this->event(HistoryEventType::ActivityScheduled, [
+                'sequence' => 1,
+            ]),
+            $this->request(),
+            $this->event(HistoryEventType::CooperativeCancellationDelivered, [
+                'workflow_command_id' => 'request-1',
+                'sequence' => 1,
+                'call_kind' => 'activity',
+            ]),
+        ]);
+        $run->cancellation_delivery_sequence = 1;
+        $this->assertNull($this->validate($run));
+        $run->historyEvents[0]->payload = [
+            'sequence' => 1,
+            'activity' => [
+                'cancellation_scope_id' => 'scope-1',
+            ],
+        ];
+        $this->assertSame('cancellation_delivery_requires_scope', $this->validate($run));
+    }
+
+    #[DataProvider('scopedCallKinds')]
+    public function testEveryRecordedScopedWaitRequiresScopeDelivery(
+        HistoryEventType $type,
+        string $kind,
+        array $membership
+    ): void {
+        $run = $this->runWithHistory([
+            $this->event($type, [
+                'sequence' => 1,
+                ...$membership,
+            ]),
+            $this->request(),
+        ]);
+        $this->assertSame('cancellation_delivery_requires_scope', $this->validate($run, 1, $kind));
+    }
+
+    public static function scopedCallKinds(): iterable
+    {
+        yield 'remote activity' => [
+            HistoryEventType::ActivityScheduled, 'activity', [
+                'activity' => [
+                    'cancellation_scope_id' => 'scope-1',
+                ],
+            ]];
+        yield 'local activity' => [
+            HistoryEventType::ActivityScheduled, 'local_activity', [
+                'local_activity' => true,
+                'activity' => [
+                    'cancellation_scope_id' => 'scope-1',
+                ],
+            ]];
+        yield 'timer' => [
+            HistoryEventType::TimerScheduled, 'timer', [
+                'timer' => [
+                    'cancellation_scope_id' => 'scope-1',
+                ],
+            ]];
+        yield 'child' => [
+            HistoryEventType::ChildWorkflowScheduled, 'child', [
+                'child_workflow' => [
+                    'cancellation_scope_id' => 'scope-1',
+                ],
+            ]];
+        yield 'condition' => [
+            HistoryEventType::ConditionWaitOpened, 'condition', [
+                'cancellation_scope_id' => 'scope-1',
+            ]];
+        yield 'signal' => [
+            HistoryEventType::SignalWaitOpened, 'signal', [
+                'cancellation_scope_id' => 'scope-1',
+            ]];
+    }
+
     public function testASequenceHoleCannotBeUsedToMoveDeliveryEarlier(): void
     {
         $run = $this->runWithHistory([

@@ -81,6 +81,15 @@ final class CooperativeCancellationDelivery
             return 'cancellation_request_history_missing';
         }
 
+        $membership = self::validateRootOperationMembership(
+            $run,
+            $operationSequence ?? $sequence,
+            $operationSequence === null ? $sequenceSpan : $operationSequenceSpan,
+        );
+        if ($membership !== null) {
+            return $membership;
+        }
+
         $existing = self::recorded($run);
         if ($existing instanceof WorkflowHistoryEvent) {
             return ($existing->workflow_command_id === $requestId
@@ -305,6 +314,52 @@ final class CooperativeCancellationDelivery
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Root delivery actors have no frozen scoped inventory. Recorded scoped
+     * operations must use scope preparation and delivery, including a group
+     * containing both root and scoped leaves. Check before receipt replay so
+     * a changed membership cannot reuse an earlier root delivery marker.
+     */
+    private static function validateRootOperationMembership(WorkflowRun $run, int $start, int $span): ?string
+    {
+        foreach ($run->historyEvents as $event) {
+            $payload = $event->payload;
+            $sequence = $payload['sequence'] ?? null;
+            if (! is_int($sequence) || $sequence < $start || $sequence - $start >= $span) {
+                continue;
+            }
+            $descriptorKey = match ($event->event_type) {
+                HistoryEventType::ActivityScheduled => 'activity',
+                HistoryEventType::TimerScheduled => 'timer',
+                HistoryEventType::ChildWorkflowScheduled => 'child_workflow',
+                HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => '',
+                default => null,
+            };
+            if ($descriptorKey === null) {
+                continue;
+            }
+            $descriptor = [];
+            if ($descriptorKey !== '' && array_key_exists($descriptorKey, $payload)) {
+                $descriptor = $payload[$descriptorKey];
+                if (! is_array($descriptor) || ($descriptor !== [] && array_is_list($descriptor))) {
+                    return 'cancellation_delivery_scope_membership_invalid';
+                }
+            }
+            $hasFlat = array_key_exists('cancellation_scope_id', $payload);
+            $hasNested = array_key_exists('cancellation_scope_id', $descriptor);
+            $scope = $hasFlat ? $payload['cancellation_scope_id']
+                : ($hasNested ? $descriptor['cancellation_scope_id'] : CancellationScopeHistory::ROOT_SCOPE_ID);
+            if (! is_string($scope) || $scope === ''
+                || ($hasNested && $descriptor['cancellation_scope_id'] !== $scope)) {
+                return 'cancellation_delivery_scope_membership_invalid';
+            }
+            if ($scope !== CancellationScopeHistory::ROOT_SCOPE_ID) {
+                return 'cancellation_delivery_requires_scope';
+            }
+        }
         return null;
     }
 
