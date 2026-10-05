@@ -391,8 +391,9 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame('2026-10-03T00:00:12.000000Z', $event->payload['authority_deadline_at']);
         Carbon::setTestNow('2026-10-03T00:00:09Z');
         $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->heartbeat($task->id)['renewed']);
+        $this->assertSame('2026-10-03T00:00:12.000000Z', $task->fresh()->lease_expires_at->toISOString());
         Carbon::setTestNow('2026-10-03T00:00:12Z');
-        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_authority_expired', fn () =>
+        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_workflow_claim_mismatch', fn () =>
             $this->deliver($run, $task, $scope));
         $this->assertSame($event->id, CancellationScopeDelivery::recorded($run->fresh(), $scope)->id);
     }
@@ -411,8 +412,9 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             '2026-10-03T00:00:06.000000Z',
             CancellationScopeRequests::authority($run, $scope)['deadline_at']
         );
+        $this->assertSame('2026-10-03T00:00:06.000000Z', $task->fresh()->lease_expires_at->toISOString());
         Carbon::setTestNow('2026-10-03T00:00:06Z');
-        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_authority_expired', fn () =>
+        $this->assertRefusedWithoutMutation($run, $task, 'cancellation_scope_workflow_claim_mismatch', fn () =>
             $this->deliver($run, $task, $scope));
     }
 
