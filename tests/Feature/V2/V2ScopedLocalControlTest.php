@@ -55,7 +55,7 @@ final class V2ScopedLocalControlTest extends TestCase
         $this->assertFalse($control['renewed']);
         $this->assertTrue($control['fenced']);
         $this->assertArrayNotHasKey('_scope_control', $control);
-        $this->assertSame($context->toArray(), $control['cancellation_scope']['cancellation']);
+        $this->assertSameJsonObject($context->toArray(), $control['cancellation_scope']['cancellation']);
         $this->assertSame($scope, $control['cancellation_scope']['scope_id']);
         $this->assertSame($before, $task->fresh()->getAttributes());
         $preparation = $run->historyEvents()
