@@ -52,6 +52,7 @@ final class TaskRepair
             }
 
             $task->forceFill([
+                'namespace' => $task->namespace ?? $run->namespace,
                 'repair_count' => $task->repair_count + 1,
                 'repair_available_at' => null,
                 'last_error' => null,
@@ -69,6 +70,7 @@ final class TaskRepair
 
             $task->forceFill([
                 'status' => TaskStatus::Ready,
+                'namespace' => $task->namespace ?? $run->namespace,
                 'leased_at' => null,
                 'lease_owner' => null,
                 'lease_expires_at' => null,
@@ -85,6 +87,7 @@ final class TaskRepair
 
             $task->forceFill([
                 'status' => TaskStatus::Ready,
+                'namespace' => $task->namespace ?? $run->namespace,
                 'payload' => $payload,
                 'leased_at' => null,
                 'lease_owner' => null,
@@ -167,6 +170,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Activity->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $taskAttributes['available_at'],
@@ -189,6 +193,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Timer->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $timer->fire_at ?? now(),
@@ -220,6 +225,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $timeoutFiredAt ?? now(),
@@ -250,6 +256,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Timer->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $availableAt->isFuture() ? $availableAt : now(),
@@ -286,6 +293,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $timeoutFiredAt ?? now(),
@@ -313,6 +321,7 @@ final class TaskRepair
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Timer->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $availableAt->isFuture() ? $availableAt : now(),
@@ -334,6 +343,7 @@ final class TaskRepair
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => now(),

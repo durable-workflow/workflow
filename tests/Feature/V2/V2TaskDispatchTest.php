@@ -18,6 +18,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -41,6 +42,7 @@ use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2TaskDispatchTest extends TestCase
@@ -1163,6 +1165,179 @@ final class V2TaskDispatchTest extends TestCase
             RunWorkflowTask::class,
             static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
         );
+    }
+
+    #[DataProvider('missingTaskNamespaces')]
+    public function testMissingTaskRepairPreservesRunNamespace(string $kind, ?string $namespace): void
+    {
+        Queue::fake();
+        $instance = WorkflowInstance::query()->create([
+            'namespace' => $namespace,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'tests.namespace-repair',
+            'run_count' => 1,
+            'started_at' => now(),
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'namespace' => $namespace,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'tests.namespace-repair',
+            'run_number' => 1,
+            'status' => RunStatus::Waiting,
+            'connection' => 'redis',
+            'queue' => 'namespace-recovery',
+            'started_at' => now(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $summary = new WorkflowRunSummary([
+            'workflow_run_id' => $run->id,
+            'liveness_state' => 'repair_needed',
+            'wait_kind' => $kind,
+        ]);
+        $expectedType = TaskType::Workflow;
+        if ($kind === 'activity') {
+            $execution = ActivityExecution::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => 1,
+                'activity_class' => TestGreetingActivity::class,
+                'activity_type' => TestGreetingActivity::class,
+                'status' => ActivityStatus::Pending,
+                'connection' => 'redis',
+                'queue' => $run->queue,
+            ]);
+            $summary->resume_source_id = $execution->id;
+            $expectedType = TaskType::Activity;
+        } elseif ($kind !== 'workflow-task') {
+            [$waitKind, $state] = explode('-', $kind);
+            $fired = $state === 'fired';
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => 1,
+                'status' => $fired ? TimerStatus::Fired : TimerStatus::Pending,
+                'delay_seconds' => 60,
+                'fire_at' => $fired ? now()
+                    ->subSecond() : now()
+                    ->addMinute(),
+                'fired_at' => $fired ? now()
+                    ->subSecond() : null,
+            ]);
+            $summary->wait_kind = $waitKind;
+            $summary->resume_source_kind = 'timer';
+            $summary->resume_source_id = $timer->id;
+            $expectedType = $fired ? TaskType::Workflow : TaskType::Timer;
+        }
+        $run->load(['tasks', 'activityExecutions', 'timers', 'historyEvents']);
+        $task = TaskRepair::repairRun($run, $summary);
+        $this->assertInstanceOf(WorkflowTask::class, $task);
+        $this->assertSame($expectedType, $task->task_type);
+        $this->assertSame($namespace, $task->fresh()->namespace);
+        $this->assertSame($run->queue, $task->queue);
+        $this->assertSame(1, WorkflowTask::query()->where('namespace', $namespace)->count());
+        $this->assertSame(0, WorkflowTask::query()->where('namespace', 'another-tenant')->count());
+        if ($expectedType === TaskType::Workflow) {
+            $bridge = $this->app->make(WorkflowTaskBridge::class);
+            $this->assertSame([$task->id], array_column($bridge->poll(
+                'redis',
+                $run->queue,
+                namespace: $namespace,
+                workflowTypes: [$run->workflow_type],
+            ), 'task_id'));
+            $this->assertSame([], $bridge->poll('redis', $run->queue, namespace: 'another-tenant'));
+        }
+    }
+
+    public static function missingTaskNamespaces(): iterable
+    {
+        foreach (['workflow-task', 'activity', 'timer-pending', 'condition-pending', 'condition-fired',
+            'signal-pending', 'signal-fired'] as $kind) {
+            foreach ([null, 'default', 'tenant-a'] as $namespace) {
+                yield $kind . ' / ' . ($namespace ?? 'legacy NULL') => [$kind, $namespace];
+            }
+        }
+    }
+
+    #[DataProvider('existingTaskNamespaces')]
+    public function testEligibleExistingTaskRepairRestoresOnlyMissingNamespace(
+        TaskStatus $status,
+        ?string $namespace,
+        ?string $taskNamespace
+    ): void {
+        Queue::fake();
+        $run = $this->createWaitingRun('01J00000000000000000000001');
+        $run->forceFill([
+            'namespace' => $namespace,
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $taskNamespace,
+            'task_type' => TaskType::Workflow,
+            'status' => $status,
+            'available_at' => now()
+                ->subMinute(),
+            'last_dispatched_at' => now()
+                ->subMinute(),
+            'lease_owner' => $status === TaskStatus::Leased ? 'original-owner' : null,
+            'lease_expires_at' => $status === TaskStatus::Leased ? now()->subSecond() : null,
+            'payload' => $status === TaskStatus::Failed ? [
+                'replay_blocked' => true,
+            ] : [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'repair_count' => 0,
+        ]);
+        $repaired = TaskRepair::recoverExistingTask($task, $run);
+        $this->assertInstanceOf(WorkflowTask::class, $repaired);
+        $this->assertSame($task->id, $repaired->id);
+        $this->assertSame($taskNamespace ?? $namespace, $repaired->fresh()->namespace);
+        $this->assertSame(TaskStatus::Ready, $repaired->status);
+        $this->assertSame(1, $repaired->repair_count);
+        $this->assertSame([], $repaired->payload);
+    }
+
+    public static function existingTaskNamespaces(): iterable
+    {
+        foreach ([TaskStatus::Ready, TaskStatus::Leased, TaskStatus::Failed] as $status) {
+            foreach ([null, 'default', 'tenant-a'] as $namespace) {
+                yield $status->value . ' / ' . ($namespace ?? 'legacy NULL') => [$status, $namespace, null];
+            }
+            yield $status->value . ' / existing namespace' => [$status, 'tenant-a', 'original-namespace'];
+        }
+    }
+
+    #[DataProvider('healthyUnscopedTasks')]
+    public function testNamespaceRepairDoesNotAlterAFreshTaskOrCurrentLease(TaskStatus $status): void
+    {
+        $run = $this->createWaitingRun('01J00000000000000000000001');
+        $run->forceFill([
+            'namespace' => 'tenant-a',
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => null,
+            'task_type' => TaskType::Workflow,
+            'status' => $status,
+            'available_at' => now(),
+            'last_dispatched_at' => now(),
+            'lease_owner' => $status === TaskStatus::Leased ? 'current-owner' : null,
+            'lease_expires_at' => $status === TaskStatus::Leased ? now()->addMinute() : null,
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'repair_count' => 0,
+        ]);
+        $before = $task->fresh()
+            ->getAttributes();
+        $this->assertNull(TaskRepair::recoverExistingTask($task, $run));
+        $this->assertSame($before, $task->fresh()->getAttributes());
+    }
+
+    public static function healthyUnscopedTasks(): iterable
+    {
+        yield 'fresh ready' => [TaskStatus::Ready];
+        yield 'unexpired lease' => [TaskStatus::Leased];
     }
 
     private function createWaitingRun(string $instanceId): WorkflowRun
