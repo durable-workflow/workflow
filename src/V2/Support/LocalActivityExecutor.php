@@ -127,10 +127,12 @@ final class LocalActivityExecutor
             // takeover. This grants no result authority and leaves the hosting
             // workflow claim untouched. A separate joined-callback receipt follows.
             $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            $runCleanup = $cleanup && PortableLocalActivityCleanup::belongsToRunRequest(
+                $run,
+                $execution->activity_options['cancellation_cleanup'],
+            );
             if ($run->cancellation_request_command_id !== null
-                && (! $cleanup || PortableLocalActivityCleanup::isScoped($execution) || now()->gte(
-                    $run->cancellation_deadline_at
-                ))) {
+                && (! $runCleanup || now()->gte($run->cancellation_deadline_at))) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_execution_id', $execution->id)
@@ -148,7 +150,7 @@ final class LocalActivityExecutor
                     );
                 }
                 return [
-                    ...$refused($cleanup && ! PortableLocalActivityCleanup::isScoped($execution)
+                    ...$refused($runCleanup
                         ? 'cancellation_deadline_expired' : 'cancellation_requested'),
                     'fenced' => true,
                     'cancellation_history_event_id' => $cancelled?->id,

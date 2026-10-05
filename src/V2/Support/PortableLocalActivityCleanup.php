@@ -12,6 +12,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\ScopedCancellationContext;
 
 /** @internal Authority for an explicitly shielded portable cleanup call. */
 final class PortableLocalActivityCleanup
@@ -178,6 +179,44 @@ final class PortableLocalActivityCleanup
     public static function isScoped(ActivityExecution $execution): bool
     {
         return isset($execution->activity_options['cancellation_cleanup']['scope_id']);
+    }
+
+    /**
+     * A validated cleanup snapshot may continue under the run request from
+     * which it inherited. A shared root ID alone does not identify that hop.
+     * Callers must first validate the snapshot or its recorded execution.
+     *
+     * @param array<string, mixed>|null $snapshot
+     */
+    public static function belongsToRunRequest(WorkflowRun $run, ?array $snapshot): bool
+    {
+        if ($snapshot === null || ! is_string($run->cancellation_request_command_id)) {
+            return false;
+        }
+        try {
+            $request = CooperativeCancellationDelivery::context($run);
+            if ($request === null || $request->requestId !== $run->cancellation_request_command_id
+                || $run->cancellation_deadline_at === null
+                || ! $request->deadline()
+                    ->equalTo($run->cancellation_deadline_at)) {
+                return false;
+            }
+            if (! isset($snapshot['scope_id'])) {
+                return ($snapshot['request_id'] ?? null) === $request->requestId
+                    && ($snapshot['root_request_id'] ?? null) === $request->rootRequestId;
+            }
+            $preparation = ScopedCancellationPreparation::forScope(
+                $run,
+                $snapshot['operation_scope_id'],
+                $snapshot['preparation_history_event_id'],
+            );
+            $runRoot = ScopedCancellationContext::fromRunContext($request);
+            return $preparation !== null
+                && $preparation->context->rootContext->toArray() === $runRoot->rootContext->toArray()
+                && array_slice($preparation->context->lineage, 0, count($runRoot->lineage)) === $runRoot->lineage;
+        } catch (InvalidArgumentException|LogicException) {
+            return false;
+        }
     }
 
     /**

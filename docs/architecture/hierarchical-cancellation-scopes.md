@@ -340,6 +340,13 @@ increase to a mutable run limit cannot extend it. Current run/execution limits,
 accepted ancestor deadlines, terminal state and later whole-run cancellation
 still end authority. A scoped proof grants no immunity from whole-run cancellation.
 
+When a scope inherited the current whole-run request, its delivered cleanup can
+continue before root delivery. The runtime verifies the exact root context and
+lineage prefix for this run's request. Sharing an ancestor's root ID is insufficient.
+Recovery, atomic group admission, control and publication retain that authority
+and the original deadline. Its hosting lease is also bounded by that deadline.
+An independent scope request remains subject to later whole-run cancellation.
+
 A later ancestor preparation excludes these explicitly shielded cleanup calls
 from its ordinary cancellation inventory. It verifies their original scheduled
 snapshot against the earlier canonical delivery before excluding them. This also
@@ -363,8 +370,9 @@ This recovery projection grants no callback authority or new cleanup budget.
 The subtree's absolute deadline does not end the shared
 hosting claim. Its own callback lease stays bounded by current and captured
 authority. Once every captured scope budget expires, unaffected work can renew
-the normal configured workflow lease. Whole-run delivery still bounds shared
-ownership by its original cancellation deadline. Neither renewal nor replacement
+the normal configured workflow lease. An accepted whole-run request bounds shared
+ownership by its original cancellation deadline, including before root delivery.
+Neither renewal nor replacement
 changes a scope's delivery record or cleanup budget. Real scoped worker SIGKILL
 recovery remains required before enabling SDK scope execution.
 Accepted scope requests also bound shared hosting ownership before preparation,

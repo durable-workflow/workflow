@@ -15,7 +15,6 @@ final class CancellationCleanupLease
     public static function deadline(?WorkflowRun $run): ?CarbonInterface
     {
         return $run?->cancellation_request_command_id !== null
-            && $run?->cancellation_delivered_at !== null
             ? $run->cancellation_deadline_at : null;
     }
 
@@ -32,15 +31,17 @@ final class CancellationCleanupLease
 
     public static function forScopes(?WorkflowRun $run): CarbonInterface
     {
+        $deadline = self::deadline($run);
+        if ($deadline !== null) {
+            return self::forDeadline($deadline);
+        }
         // A scoped budget bounds callback authority, not the lifetime of its
         // unaffected siblings. Keep shared ownership recoverable while that
         // original budget is live without ending the whole claim at its deadline.
         if ($run?->cancellation_scope_recovery_until !== null
             && now()
                 ->lt($run->cancellation_scope_recovery_until)) {
-            $deadline = self::deadline($run);
-
-            return $deadline === null ? self::renewableExpiry() : self::forDeadline($deadline);
+            return self::renewableExpiry();
         }
 
         return WorkflowTaskLease::expiresAt();

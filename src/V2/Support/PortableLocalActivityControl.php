@@ -153,10 +153,12 @@ final class PortableLocalActivityControl
             // The original callback supervisor must see accepted cancellation
             // even after takeover. This never renews the replacement claim.
             $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            $runCleanup = $cleanup && PortableLocalActivityCleanup::belongsToRunRequest(
+                $run,
+                $execution->activity_options['cancellation_cleanup'],
+            );
             if ($run->cancellation_request_command_id !== null
-                && (! $cleanup || PortableLocalActivityCleanup::isScoped($execution) || now()->gte(
-                    $run->cancellation_deadline_at
-                ))) {
+                && (! $runCleanup || now()->gte($run->cancellation_deadline_at))) {
                 // A supervisor needs one request, not the run's entire history.
                 $requested = $run->historyEvents()
                     ->where('event_type', HistoryEventType::CooperativeCancellationRequested)
@@ -175,9 +177,7 @@ final class PortableLocalActivityControl
                     || ! $requested instanceof WorkflowHistoryEvent) {
                     return $reply('cancellation_context_not_recorded');
                 }
-                if ((! $cleanup || PortableLocalActivityCleanup::isScoped(
-                    $execution
-                )) && ($started->sequence >= $requested->sequence
+                if (! $runCleanup && ($started->sequence >= $requested->sequence
                     || $started->recorded_at->gt($requested->recorded_at))) {
                     return $reply('local_activity_preparation_mismatch');
                 }
@@ -237,9 +237,9 @@ final class PortableLocalActivityControl
                 // No application heartbeat or recorded execution deadline moves.
                 $expiry = LocalActivityRuntime::renewWorkflowTask(
                     $task,
-                    PortableLocalActivityCleanup::isScoped($execution) ? null : PortableLocalActivityCleanup::deadline(
+                    ! $runCleanup && PortableLocalActivityCleanup::isScoped(
                         $execution
-                    ),
+                    ) ? null : PortableLocalActivityCleanup::deadline($execution),
                     $cleanup,
                     $run,
                 );

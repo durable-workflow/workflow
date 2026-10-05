@@ -135,7 +135,8 @@ final class PortableLocalActivityPreparation
                 return self::response($scopeRefusal);
             }
             $scopedCleanup = isset($cleanup['scope_id']);
-            if ($run->cancellation_request_command_id !== null && ($cleanup === null || $scopedCleanup)) {
+            if ($run->cancellation_request_command_id !== null
+                && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup)) {
                 return self::response(isset($normalized['cancellation_cleanup'])
                     && ! $scopedCleanup ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
             }
@@ -398,9 +399,11 @@ final class PortableLocalActivityPreparation
                 return $refused(PortableLocalActivityCleanup::isScoped($execution)
                     ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired');
             }
-            if ($run->cancellation_request_command_id !== null && (! $cleanup || PortableLocalActivityCleanup::isScoped(
-                $execution
-            ))) {
+            if ($run->cancellation_request_command_id !== null && (! $cleanup
+                || ! PortableLocalActivityCleanup::belongsToRunRequest(
+                    $run,
+                    $execution->activity_options['cancellation_cleanup']
+                ))) {
                 $cancelled = $run->historyEvents()
                     ->where('event_type', HistoryEventType::ActivityCancelled)
                     ->where('payload->activity_attempt_id', $attempt->id)

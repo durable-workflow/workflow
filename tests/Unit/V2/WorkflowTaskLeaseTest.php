@@ -6,6 +6,8 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\CancellationCleanupLease;
 use Workflow\V2\Support\WorkflowTaskLease;
 
 final class WorkflowTaskLeaseTest extends TestCase
@@ -35,5 +37,22 @@ final class WorkflowTaskLeaseTest extends TestCase
         config()
             ->set(WorkflowTaskLease::CONFIG_KEY, 'invalid');
         $this->assertSame(WorkflowTaskLease::DEFAULT_SECONDS, WorkflowTaskLease::seconds());
+    }
+
+    public function testAcceptedCancellationBoundsOwnershipBeforeRootDelivery(): void
+    {
+        Carbon::setTestNow('2026-10-05T00:00:24Z');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+        config()
+            ->set(WorkflowTaskLease::CONFIG_KEY, 60);
+        $run = new WorkflowRun([
+            'cancellation_request_command_id' => 'original-request',
+            'cancellation_deadline_at' => '2026-10-05T00:00:30Z',
+            'cancellation_delivered_at' => null,
+        ]);
+        $this->assertSame('2026-10-05T00:00:30.000000Z', CancellationCleanupLease::expiresAt($run)->toISOString());
+        $this->assertSame('2026-10-05T00:00:30.000000Z', CancellationCleanupLease::forScopes($run)->toISOString());
     }
 }

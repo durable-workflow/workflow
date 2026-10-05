@@ -1257,13 +1257,19 @@ final class V2CancellationScopeDeliveryTest extends TestCase
      * @return array{WorkflowStub, WorkflowRun, WorkflowTask, string, string}
      */
     #[DataProvider('scopedCleanupAddresses')]
-    public function testScopedCleanupRetainsOriginalAuthorityAndLetsItsParentFinish(bool $ancestor): void
-    {
+    public function testScopedCleanupRetainsOriginalAuthorityAndLetsItsParentFinish(
+        bool $ancestor,
+        bool $runRequest = false
+    ): void {
         [, $run, $task, $parent, $scope] = $this->scopeTree();
         $run->forceFill([
             'execution_deadline_at' => now()
                 ->addSeconds(15),
         ])->save();
+        if ($runRequest) {
+            $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('clean up the run', 30)->accepted());
+            $run->refresh();
+        }
         $address = $ancestor ? $parent : $scope;
         $request = CancellationScopeRequests::request($run, $address, '1.20', 30, 'clean up this subtree');
         $delivery = $this->deliver($run, $task, $address, 'local_activity');
@@ -1309,13 +1315,20 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         ], '1.20');
         $this->assertTrue($outcome['recorded'], $outcome['reason'] ?? '');
         $this->assertFalse($outcome['claim_released']);
-        $this->assertNull($run->refresh()->cancellation_request_command_id);
+        $run->refresh();
+        if ($runRequest) {
+            $this->assertTrue(
+                $bridge->deliverCancellation($task->id, $run->cancellation_request_command_id, 5, 'timer')['delivered']
+            );
+        } else {
+            $this->assertNull($run->cancellation_request_command_id);
+        }
         $this->assertTrue($bridge->complete($task->id, [[
             'type' => 'complete_workflow',
             'output' => Serializer::serializeWithCodec('avro', 'parent survived'),
             'payload_codec' => 'avro',
         ]])['completed']);
-        $this->assertSame(RunStatus::Completed, $run->refresh()->status);
+        $this->assertSame($runRequest ? RunStatus::Cancelled : RunStatus::Completed, $run->refresh()->status);
     }
 
     #[DataProvider('invalidScopedCleanupProofs')]
@@ -1509,11 +1522,16 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $this->assertSame($parentRequest->payload['request_id'], $prepared['cancellation_cleanup']['root_request_id']);
     }
 
-    public function testScopedCleanupReplacementRetainsTheOriginalDeliveryAndDeadline(): void
+    #[DataProvider('scopedCleanupRunRequests')]
+    public function testScopedCleanupReplacementRetainsTheOriginalDeliveryAndDeadline(bool $runRequest): void
     {
         [, $run, $task, , $scope] = $this->scopeTree();
         config()
             ->set('workflows.v2.workflow_task_lease_seconds', 60);
+        if ($runRequest) {
+            $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('clean up the run', 30)->accepted());
+            $run->refresh();
+        }
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $delivery = $this->deliver($run, $task, $scope, 'local_activity');
         $descriptor = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery);
@@ -1580,13 +1598,41 @@ final class V2CancellationScopeDeliveryTest extends TestCase
             $request->payload['request_id'],
             CancellationScopeRequests::context($run->fresh(), $scope)->requestId
         );
-        $this->assertNull($run->refresh()->cancellation_request_command_id);
+        $run->refresh();
+        if ($runRequest) {
+            $requestId = $run->cancellation_request_command_id;
+            $deadline = $run->cancellation_deadline_at->toISOString();
+            $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('duplicate', 300)->accepted());
+            $this->assertSame($requestId, $run->refresh()->cancellation_request_command_id);
+            $this->assertSame($deadline, $run->cancellation_deadline_at->toISOString());
+            $this->assertTrue($bridge->deliverCancellation($retryTask->id, $requestId, 5, 'timer')['delivered']);
+            $this->assertTrue($bridge->complete($retryTask->id, [[
+                'type' => 'complete_workflow',
+                'output' => Serializer::serializeWithCodec('avro', 'cleaned'),
+                'payload_codec' => 'avro',
+            ]])['completed']);
+            $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        } else {
+            $this->assertNull($run->cancellation_request_command_id);
+        }
+    }
+
+    public static function scopedCleanupRunRequests(): iterable
+    {
+        yield 'independent scope request' => [false];
+        yield 'inherited run request' => [true];
     }
 
     #[DataProvider('scopedCleanupGroups')]
-    public function testScopedCleanupGroupAdmitsEveryValidMemberAtomically(bool $invalidSecond): void
-    {
+    public function testScopedCleanupGroupAdmitsEveryValidMemberAtomically(
+        bool $invalidSecond,
+        bool $runRequest = false
+    ): void {
         [, $run, $task, , $scope] = $this->scopeTree();
+        if ($runRequest) {
+            $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('clean up the run', 30)->accepted());
+            $run->refresh();
+        }
         $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
         $delivery = $this->deliver($run, $task, $scope, 'local_activity');
         $commands = [];
@@ -1606,7 +1652,10 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         $reply = $bridge->checkpointLocalActivityGroup($task->id, 'original', 1, 'cleanup-group', 4, $commands, '1.20');
         if ($invalidSecond) {
             $this->assertFalse($reply['checkpointed']);
-            $this->assertSame('operation_scope_cancellation_prepared', $reply['reason']);
+            $this->assertSame(
+                $runRequest ? 'cancellation_requested' : 'operation_scope_cancellation_prepared',
+                $reply['reason']
+            );
             $this->assertSame($history, $run->historyEvents()->count());
             $this->assertSame(0, $run->activityExecutions()->count());
             return;
@@ -1633,13 +1682,84 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         }
         $this->assertSameJsonObject($snapshots[0], $snapshots[1]);
         $this->assertSame(2, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
-        $this->assertNull($run->refresh()->cancellation_request_command_id);
+        $run->refresh();
+        if ($runRequest) {
+            $this->assertTrue(
+                $bridge->deliverCancellation($task->id, $run->cancellation_request_command_id, 6, 'timer')['delivered']
+            );
+            $this->assertTrue($bridge->complete($task->id, [[
+                'type' => 'complete_workflow',
+                'output' => Serializer::serializeWithCodec('avro', 'group cleaned'),
+                'payload_codec' => 'avro',
+            ]])['completed']);
+            $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        } else {
+            $this->assertNull($run->cancellation_request_command_id);
+        }
     }
 
     public static function scopedCleanupGroups(): iterable
     {
-        yield 'both original proofs' => [false];
-        yield 'bad second member leaves no first effect' => [true];
+        yield 'both original proofs' => [false, false];
+        yield 'bad second member leaves no first effect' => [true, false];
+        yield 'inherited run request' => [false, true];
+        yield 'inherited run request with bad second member' => [true, true];
+    }
+
+    #[DataProvider('hostingRenewalPaths')]
+    public function testRunInheritedScopeCleanupCannotExtendTheOriginalDeadline(string $path): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        $this->assertTrue(WorkflowStub::loadRun($run->id)->requestCancellation('clean up the run', 30)->accepted());
+        $run->refresh();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 300);
+        $delivery = $this->deliver($run, $task, $scope, 'local_activity');
+        $descriptor = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $prepared = $bridge->prepareLocalActivity($task->id, 'original', 1, 4, 'bounded-cleanup', $descriptor, '1.20');
+        $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+        $snapshot = $prepared['cancellation_cleanup'];
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $snapshot['cleanup_deadline_at']);
+        foreach ([8, 8, 8] as $seconds) {
+            Carbon::setTestNow(now()->addSeconds($seconds));
+            $control = $bridge->controlLocalActivity($prepared['activity_attempt_id'], 'original', 1, true, '1.20');
+            $this->assertTrue($control['active'], $control['reason'] ?? '');
+        }
+        $renewal = match ($path) {
+            'workflow heartbeat' => $bridge->heartbeat($task->id)['renewed'],
+            'surviving callback control' => $bridge->controlLocalActivity(
+                $prepared['activity_attempt_id'],
+                'original',
+                1,
+                true,
+                '1.20'
+            )['active'],
+            'embedded local renewal' => LocalActivityRuntime::renewWorkflowTask($task->fresh()) !== null,
+        };
+        $this->assertTrue($renewal);
+        $this->assertSame($snapshot['cleanup_deadline_at'], $task->fresh()->lease_expires_at->toISOString());
+        Carbon::setTestNow(now()->addSeconds(7));
+        $control = $bridge->controlLocalActivity($prepared['activity_attempt_id'], 'original', 1, true, '1.20');
+        $this->assertFalse($control['active']);
+        $this->assertFalse($control['renewed']);
+        $this->assertTrue($control['fenced']);
+        $this->assertSame('cancellation_deadline_expired', $control['reason']);
+        $outcome = $bridge->recordLocalActivityOutcome($prepared['activity_attempt_id'], 'original', 1, [
+            'outcome' => 'completed',
+            'result' => Serializer::serializeWithCodec('avro', 'late'),
+            'payload_codec' => 'avro',
+        ], '1.20');
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('cancellation_deadline_expired', $outcome['reason']);
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+        );
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        $this->assertSameJsonObject($snapshot, ActivityExecution::query()->findOrFail(
+            $prepared['activity_execution_id'],
+        )->activity_options['cancellation_cleanup']);
     }
 
     public function testScopedCleanupCannotBorrowAnOriginalShieldedDescendant(): void
@@ -1756,8 +1876,10 @@ final class V2CancellationScopeDeliveryTest extends TestCase
 
     public static function scopedCleanupAddresses(): iterable
     {
-        yield 'direct scope' => [false];
-        yield 'original unshielded descendant' => [true];
+        yield 'direct scope' => [false, false];
+        yield 'original unshielded descendant' => [true, false];
+        yield 'run request in direct scope' => [false, true];
+        yield 'run request in original unshielded descendant' => [true, true];
     }
 
     public function testLaterAncestorBudgetStopsScopedCleanupWithoutChangingItsOriginalSnapshot(): void

@@ -14,6 +14,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
@@ -29,8 +30,12 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\CancellationScopeDelivery;
+use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ConditionWaits;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -110,6 +115,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'portable-cooperative-cleanup-deadline-cold-reload') {
                 $this->assertPortableCleanupDeadlineAfterColdReload($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'run-inherited-scoped-cleanup-cold-reload') {
+                $this->assertRunInheritedScopedCleanupAfterColdReload($fixture);
             }
 
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
@@ -1345,6 +1354,152 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     ->where('workflow_command_id', $requestCommandId)
                     ->count());
             }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * The portable bridge resumes the frozen scope prefix. Embedded scope
+     * authoring remains unavailable, as the fixture's cold replay asserts.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertRunInheritedScopedCleanupAfterColdReload(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        Carbon::setTestNow(Carbon::parse($fixture['history'][0]['recorded_at']));
+        try {
+            $stub = WorkflowStub::make(
+                $fixture['workflow']['type'],
+                sprintf('regression-corpus-inherited-cleanup-%d', ++$this->workflowNumber),
+            );
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            foreach (array_slice($fixture['history'], 1) as $event) {
+                // Only the synthetic run identity changes on import.
+                WorkflowHistoryEvent::record($run, HistoryEventType::CancellationScopeOpened, [
+                    ...$event['payload'],
+                    'workflow_run_id' => $run->id,
+                ]);
+            }
+            $scope = $fixture['history'][1]['payload']['scope_id'];
+            $child = $fixture['history'][2]['payload']['scope_id'];
+            DB::purge();
+            DB::reconnect();
+            $run = $run->fresh();
+            $this->assertSame([$scope, $child], array_keys(CancellationScopeHistory::forRun($run)));
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Workflow)->sole();
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'cold-scoped-cleanup',
+                'attempt_count' => 1,
+                'lease_expires_at' => now()
+                    ->addSeconds(60),
+            ])->save();
+            $this->assertTrue($stub->requestCancellation('clean up the run', 30)->accepted());
+            $run->refresh();
+            $originalRequest = $run->cancellation_request_command_id;
+            $originalDeadline = $run->cancellation_deadline_at->toISOString();
+            $request = CancellationScopeRequests::request($run, $scope, '1.20', 300);
+            CancellationScopeDelivery::prepare(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            );
+            $delivery = CancellationScopeDelivery::record(
+                $run,
+                $task,
+                $scope,
+                $request->payload['request_id'],
+                3,
+                'local_activity',
+                '1.20'
+            );
+            $descriptor = [
+                'type' => 'record_local_activity',
+                'activity_type' => 'tests.scoped-cleanup',
+                'arguments' => Serializer::serializeWithCodec('avro', []),
+                'payload_codec' => 'avro',
+                'cancellation_scope_id' => $child,
+                'cancellation_cleanup' => [
+                    'scope_id' => $scope,
+                    'request_id' => $request->payload['request_id'],
+                    'delivery_history_event_id' => $delivery->id,
+                ],
+            ];
+            $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+            $prepared = $bridge->prepareLocalActivity(
+                $task->id,
+                'cold-scoped-cleanup',
+                1,
+                4,
+                'inherited-cleanup',
+                $descriptor,
+                '1.20'
+            );
+            $this->assertTrue($prepared['prepared'], $prepared['reason'] ?? '');
+            $snapshot = $prepared['cancellation_cleanup'];
+            $this->assertSame($originalRequest, $snapshot['root_request_id']);
+            $this->assertSame($originalDeadline, $snapshot['cleanup_deadline_at']);
+            DB::purge();
+            DB::reconnect();
+            foreach ([8, 8, 8] as $seconds) {
+                Carbon::setTestNow(now()->addSeconds($seconds));
+                $control = $bridge->controlLocalActivity(
+                    $prepared['activity_attempt_id'],
+                    'cold-scoped-cleanup',
+                    1,
+                    true,
+                    '1.20'
+                );
+                $this->assertTrue($control['active'], $control['reason'] ?? '');
+            }
+            $this->assertSame($originalDeadline, $task->fresh()->lease_expires_at->toISOString());
+            $completed = $bridge->recordLocalActivityOutcome(
+                $prepared['activity_attempt_id'],
+                'cold-scoped-cleanup',
+                1,
+                [
+                    'outcome' => 'completed',
+                    'result' => Serializer::serializeWithCodec('avro', 'cleaned'),
+                    'payload_codec' => 'avro',
+                ],
+                '1.20'
+            );
+            $this->assertTrue($completed['recorded'], $completed['reason'] ?? '');
+            $this->assertTrue($stub->requestCancellation('duplicate with longer budget', 300)->accepted());
+            $run->refresh();
+            $this->assertSame($originalRequest, $run->cancellation_request_command_id);
+            $this->assertSame($originalDeadline, $run->cancellation_deadline_at->toISOString());
+            $this->assertTrue($bridge->deliverCancellation($task->id, $originalRequest, 5, 'timer')['delivered']);
+            $this->assertTrue($bridge->complete($task->id, [[
+                'type' => 'complete_workflow',
+                'output' => Serializer::serializeWithCodec('avro', 'cleaned'),
+                'payload_codec' => 'avro',
+            ]])['completed']);
+            $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+            $this->assertTrue(now()->lt($run->cancellation_deadline_at));
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+            );
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->count()
+            );
+            $this->assertSame(
+                0,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count()
+            );
         } finally {
             Carbon::setTestNow();
         }

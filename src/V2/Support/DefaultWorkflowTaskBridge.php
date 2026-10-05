@@ -1582,7 +1582,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'delivery_history_event_id' => $delivery?->id,
                 ], $startSequence);
                 if ($cleanup === null) {
-                    return $refused('cancellation_requested');
+                    // An atomic local group can prove scoped cleanup on every
+                    // member. Ordinary prefixes still need root delivery.
+                    if (! $group || $parsed['non_terminal'] === []) {
+                        return $refused('cancellation_requested');
+                    }
+                    foreach ($parsed['non_terminal'] as $offset => $command) {
+                        if ($command['type'] !== 'prepare_local_activity') {
+                            return $refused('cancellation_requested');
+                        }
+                        $memberCleanup = PortableLocalActivityCleanup::snapshot(
+                            $run,
+                            $command['cancellation_cleanup'] ?? null,
+                            $startSequence + $offset,
+                            $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                        );
+                        if (! PortableLocalActivityCleanup::belongsToRunRequest($run, $memberCleanup)) {
+                            return $refused('cancellation_requested');
+                        }
+                    }
                 }
                 if (now()->gte($run->cancellation_deadline_at)) {
                     return $refused('cancellation_deadline_expired');
@@ -1622,7 +1640,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
                 );
                 if ((isset($command['cancellation_cleanup']) && $cleanup === null)
-                    || ($run->cancellation_request_command_id !== null && ($cleanup === null || isset($cleanup['scope_id'])))
+                    || ($run->cancellation_request_command_id !== null
+                        && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup))
                     || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']) && ! isset($cleanup['scope_id']))) {
                     return $refused('local_activity_cleanup_authority_mismatch');
                 }
