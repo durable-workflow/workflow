@@ -43,6 +43,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
 
@@ -456,6 +457,73 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame($receipt['history_event_id'], $duplicate['history_event_id']);
         $this->assertSame(0, $run->tasks()->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)->count());
+    }
+
+    public function testRepairBeforeOriginalStopReceiptKeepsCancellationResumeDiscoverable(): void
+    {
+        [$run, $initial] = $this->newRun();
+        $run->forceFill([
+            'namespace' => 'default',
+        ])->save();
+        $run->instance->forceFill([
+            'namespace' => 'default',
+        ])->save();
+        [$execution, $activityTask, $attempt] = $this->scheduleInternalWaitingActivity($run, $initial, 1);
+        $run->tasks()
+            ->update([
+                'namespace' => 'default',
+            ]);
+        $initial->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+        $this->request($run);
+        $requestId = $run->cancellation_request_command_id;
+        $deadline = $run->cancellation_deadline_at->toISOString();
+        $waiting = $this->deliver($run, $this->leaseReadyTask($run));
+        $this->assertFalse($waiting['delivered']);
+        $this->assertTrue($waiting['claim_released']);
+        $this->assertSame(0, $this->stopReceiptCount($run));
+
+        // The scheduler can run after claim release and before physical stop is
+        // acknowledged. Force that order instead of depending on wall-clock luck.
+        $repair = TaskWatchdog::runPass(runIds: [$run->id]);
+        $this->assertSame(1, $repair['repaired_missing_tasks']);
+        $repaired = $run->tasks()
+            ->where('task_type', TaskType::Workflow)
+            ->where('status', TaskStatus::Ready)->sole();
+        $this->assertSame('default', $repaired->namespace);
+        $this->assertSame([$repaired->id], array_column(
+            $this->bridge->poll(null, $run->queue, namespace: 'default', workflowTypes: [$run->workflow_type]),
+            'task_id',
+        ));
+        $this->assertSame([], $this->bridge->poll(null, $run->queue, namespace: 'another-tenant'));
+        $this->assertSame(0, $this->deliveryCount($run));
+
+        $receipt = ActivityCancellationAcknowledgement::recordStopped($attempt->id, $attempt->lease_owner, $requestId);
+        $this->assertTrue($receipt['acknowledged']);
+        $this->assertSame(1, $run->tasks()->where('task_type', TaskType::Workflow)
+            ->where('status', TaskStatus::Ready)->count());
+        $next = $this->leaseReadyTask($run);
+        $this->assertSame($repaired->id, $next->id);
+        $this->assertTrue($this->deliver($run, $next)['delivered']);
+        $duplicate = ActivityCancellationAcknowledgement::recordStopped(
+            $attempt->id,
+            $attempt->lease_owner,
+            $requestId
+        );
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($receipt['history_event_id'], $duplicate['history_event_id']);
+        $this->assertTrue($this->bridge->complete($next->id, [[
+            'type' => 'complete_workflow',
+        ]])['completed']);
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+        $this->assertSame($requestId, $run->cancellation_request_command_id);
+        $this->assertSame($deadline, $run->cancellation_deadline_at->toISOString());
+        $this->assertTrue(now()->lt($run->cancellation_deadline_at));
+        $this->assertSame(ActivityStatus::Cancelled, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Cancelled, $activityTask->refresh()->status);
+        $this->assertFalse($this->app->make(ActivityTaskBridge::class)->complete($attempt->id, 'late')['recorded']);
     }
 
     public function testInternalParallelActivityWaitWakesOnlyAfterAllOriginalCallbacksAreAcknowledged(): void
