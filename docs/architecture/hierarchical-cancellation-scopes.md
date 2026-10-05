@@ -431,6 +431,14 @@ yet advertise authored scope execution in the published SDKs.
 
 ## Prepared local callback ownership
 
+Control of a running scalar callback now follows its accepted original ancestor
+request. It releases SQL locks, commits the original local delivery preparation,
+then fences that exact callback under the preparation. A run request cannot
+replace the scope's cancellation identity. Preparation and fencing keep their
+own transactions, and a takeover between them cannot grant the old supervisor
+the replacement claim. Physical exit still requires the original supervisor's
+joined stop receipt. This source path does not enable general SDK scope support.
+
 Today's callbacks share a hosting workflow claim. Run-level waiting can release
 that whole claim. Reusing that release for a partial scope would revoke unrelated
 local siblings and is not a valid implementation.

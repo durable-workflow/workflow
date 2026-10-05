@@ -71,6 +71,92 @@ final class PortableLocalActivityControl
         ?array $progress,
         string $protocolVersion,
     ): array {
+        $reply = self::lockedObservation(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $renewLease,
+            $applicationHeartbeat,
+            $progress,
+            $protocolVersion
+        );
+        $pending = $reply['_scope_control'] ?? null;
+        if (! is_array($pending)) {
+            return $reply;
+        }
+        unset($reply['_scope_control']);
+        // Release Activity/run/task locks before canonical preparation. Its
+        // original scalar call and ancestor tree commit before the fence actor.
+        $prepared = PortableCancellationScopeDelivery::mutate(
+            true,
+            $reply['workflow_task_id'],
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $pending['delivery_scope_id'],
+            $pending['delivery_request_id'],
+            $pending['sequence'],
+            'local_activity',
+            1,
+            null,
+            1,
+            $protocolVersion
+        );
+        if (! ($prepared['prepared'] ?? false)) {
+            return [
+                ...$reply,
+                'reason' => $prepared['reason'] ?? 'cancellation_scope_control_preparation_refused',
+            ];
+        }
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($pending['workflow_run_id']);
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($reply['workflow_task_id']);
+        if ($run === null || $task === null || $task->lease_owner !== $leaseOwner
+            || $task->attempt_count !== $workflowTaskAttempt) {
+            return [
+                ...$reply,
+                'reason' => 'cancellation_scope_workflow_claim_mismatch',
+            ];
+        }
+        try {
+            ScopedActivityCancellation::fence(
+                $run,
+                $task,
+                $reply['activity_execution_id'],
+                $pending['scope_id'],
+                $pending['request_id'],
+                $protocolVersion,
+                $prepared['preparation_history_event_id']
+            );
+        } catch (LogicException $error) {
+            return [
+                ...$reply,
+                'reason' => $error->getMessage(),
+            ];
+        }
+        return self::lockedObservation(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $renewLease,
+            $applicationHeartbeat,
+            $progress,
+            $protocolVersion
+        );
+    }
+
+    /** @param array<string, mixed>|null $progress
+     * @return array<string, mixed>
+     */
+    private static function lockedObservation(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease,
+        bool $applicationHeartbeat,
+        ?array $progress,
+        string $protocolVersion,
+    ): array {
         if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
             return self::response('local_activity_control_requires_protocol_1_20');
@@ -157,6 +243,50 @@ final class PortableLocalActivityControl
                 $run,
                 $execution->activity_options['cancellation_cleanup'],
             );
+            $scopeId = $execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID;
+            $scope = ! $cleanup && $scopeId !== CancellationScopeHistory::ROOT_SCOPE_ID
+                ? CancellationScopeRequests::context($run, $scopeId) : null;
+            if ($scope !== null) {
+                if (($execution->parallel_group_path ?? []) !== []) {
+                    return $reply('cancellation_scope_local_group_control_not_supported');
+                }
+                if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                    || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                    return $reply('workflow_claim_mismatch');
+                }
+                if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)
+                    || $attempt->lease_expires_at === null || now()
+                        ->gte($attempt->lease_expires_at)) {
+                    return $reply('workflow_claim_expired');
+                }
+                $delivery = $scope;
+                $scopes = CancellationScopeHistory::forRun($run);
+                $address = $scopeId;
+                while (isset($scopes[$address]) && ! $scopes[$address]['shield_parent']) {
+                    $address = $scopes[$address]['parent_scope_id'];
+                    $ancestor = $address === CancellationScopeHistory::ROOT_SCOPE_ID ? null
+                        : CancellationScopeRequests::context($run, $address);
+                    if ($ancestor === null || CancellationScopeDelivery::recorded($run, $address) !== null) {
+                        continue;
+                    }
+                    if ($ancestor->rootContext->toArray() !== $scope->rootContext->toArray()
+                        || array_slice($scope->lineage, 0, count($ancestor->lineage)) !== $ancestor->lineage) {
+                        return $reply('cancellation_scope_control_lineage_mismatch');
+                    }
+                    $delivery = $ancestor;
+                }
+                return [
+                    ...$reply('cancellation_scope_control_preparation_pending'),
+                    '_scope_control' => [
+                        'workflow_run_id' => $run->id,
+                        'sequence' => $execution->sequence,
+                        'scope_id' => $scope->scopeId,
+                        'request_id' => $scope->requestId,
+                        'delivery_scope_id' => $delivery->scopeId,
+                        'delivery_request_id' => $delivery->requestId,
+                    ],
+                ];
+            }
             if ($run->cancellation_request_command_id !== null
                 && (! $runCleanup || now()->gte($run->cancellation_deadline_at))) {
                 // A supervisor needs one request, not the run's entire history.
