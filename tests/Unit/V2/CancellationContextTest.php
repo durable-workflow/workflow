@@ -35,6 +35,27 @@ final class CancellationContextTest extends TestCase
         $this->assertSame($context->toArray(), CancellationContext::fromArray($context->toArray())->toArray());
     }
 
+    public function testRequesterObjectKeyOrderCannotChangeCanonicalIdentityOrDescendantContext(): void
+    {
+        $original = $this->snapshot();
+        $original['requester']['label'] = 'Operator';
+        $reordered = $original;
+        $reordered['requester'] = array_reverse($original['requester'], true);
+        $context = CancellationContext::fromArray($original);
+        $copy = CancellationContext::fromArray($reordered);
+
+        $this->assertSame($context->toArray(), $copy->toArray());
+        $this->assertSame($context->requester, $copy->requester);
+        $this->assertSame(
+            $context->forDescendant('child', 'instance-child', 'run-child')
+                ->toArray(),
+            $copy->forDescendant('child', 'instance-child', 'run-child')
+                ->toArray()
+        );
+        $this->assertSame($context->toArray(), CancellationContext::fromArray($copy->toArray())->toArray());
+        $this->assertSame($context->deadline()->toISOString(), $copy->deadline()->toISOString());
+    }
+
     public function testRemainingUsesRecordedWorkflowTimeDespiteAChangedHostClock(): void
     {
         $context = CancellationContext::fromArray($this->snapshot());

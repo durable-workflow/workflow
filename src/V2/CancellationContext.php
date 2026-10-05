@@ -71,6 +71,14 @@ final class CancellationContext
                 throw new InvalidArgumentException('Cancellation requester contains unsupported metadata.');
             }
         }
+        // JSON databases may reorder object keys. Identity comparisons must
+        // preserve the values without depending on their storage order.
+        $normalizedRequester = [];
+        foreach (['type', 'id', 'label'] as $key) {
+            if (isset($requester[$key])) {
+                $normalizedRequester[$key] = $requester[$key];
+            }
+        }
         $lineage = $snapshot['lineage'] ?? null;
         if (! is_array($lineage) || ! array_is_list($lineage) || $lineage === []) {
             throw new InvalidArgumentException('Cancellation lineage must contain the root request.');
@@ -154,7 +162,7 @@ final class CancellationContext
             $rootRunId,
             $parentRequestId,
             $reason,
-            $requester,
+            $normalizedRequester,
             self::text($snapshot, 'source'),
             $requestedAt,
             $deadline,
