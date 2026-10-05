@@ -194,7 +194,12 @@ final class PortableLocalActivityCleanup
             return false;
         }
         try {
-            $request = CooperativeCancellationDelivery::context($run);
+            $event = $run->historyEvents()
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested)
+                ->where('workflow_command_id', $run->cancellation_request_command_id)
+                ->first();
+            $context = $event?->payload['cancellation'] ?? null;
+            $request = is_array($context) ? CancellationContext::fromArray($context) : null;
             if ($request === null || $request->requestId !== $run->cancellation_request_command_id
                 || $run->cancellation_deadline_at === null
                 || ! $request->deadline()

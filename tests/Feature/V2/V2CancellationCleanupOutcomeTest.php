@@ -53,7 +53,7 @@ final class V2CancellationCleanupOutcomeTest extends TestCase
             $this->assertSame($deadline, $outcome['cleanup_deadline_at']);
             $started = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
                 ->where('event_type', HistoryEventType::ActivityStarted)->sole();
-            $this->assertSame('2026-10-03T08:05:00.000000Z', $started->payload['lease_expires_at']);
+            $this->assertSame($deadline, $started->payload['lease_expires_at']);
             $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
                 ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
             $this->assertSame('2026-10-03T08:00:11.000000Z', now()->toISOString());

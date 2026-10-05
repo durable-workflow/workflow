@@ -54,5 +54,8 @@ final class WorkflowTaskLeaseTest extends TestCase
         ]);
         $this->assertSame('2026-10-05T00:00:30.000000Z', CancellationCleanupLease::expiresAt($run)->toISOString());
         $this->assertSame('2026-10-05T00:00:30.000000Z', CancellationCleanupLease::forScopes($run)->toISOString());
+        Carbon::setTestNow('2026-10-05T00:00:00Z');
+        $this->assertSame('2026-10-05T00:00:10.000000Z', CancellationCleanupLease::expiresAt($run)->toISOString());
+        $this->assertSame('2026-10-05T00:00:30.000000Z', CancellationCleanupLease::forScopes($run)->toISOString());
     }
 }

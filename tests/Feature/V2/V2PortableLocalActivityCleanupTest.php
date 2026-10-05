@@ -23,6 +23,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\PortableLocalActivityCleanup;
 use Workflow\V2\WorkflowStub;
 
 final class V2PortableLocalActivityCleanupTest extends TestCase
@@ -65,6 +66,12 @@ final class V2PortableLocalActivityCleanupTest extends TestCase
             $prepared['cancellation_cleanup'],
             $started->payload['local_preparation']['cancellation_cleanup']
         );
+        $inspection = $run->fresh();
+        $this->assertTrue(PortableLocalActivityCleanup::belongsToRunRequest(
+            $inspection,
+            $prepared['cancellation_cleanup'],
+        ));
+        $this->assertFalse($inspection->relationLoaded('historyEvents'));
         $this->assertTrue(
             $this->bridge()
                 ->controlLocalActivity($prepared['activity_attempt_id'], 'owner', 7, true, '1.20')['active']

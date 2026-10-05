@@ -375,6 +375,9 @@ ownership by its original cancellation deadline, including before root delivery.
 Neither renewal nor replacement
 changes a scope's delivery record or cleanup budget. Real scoped worker SIGKILL
 recovery remains required before enabling SDK scope execution.
+Synchronous embedded callbacks outside scoped recovery use the configured
+ownership interval, clipped to the original run deadline. They cannot renew
+during execution. Supervised portable callbacks retain short renewable ownership.
 Accepted scope requests also bound shared hosting ownership before preparation,
 using the recovery projection described above. Replacement can therefore reach
 the first preparation while the original cleanup budget remains live.
