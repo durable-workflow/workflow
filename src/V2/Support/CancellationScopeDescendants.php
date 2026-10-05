@@ -16,7 +16,8 @@ use Workflow\V2\ScopedCancellationContext;
 final class CancellationScopeDescendants
 {
     /**
-     * The caller holds the original preparation's run/claim locks and commits all requests with that preparation.
+     * Commit descendants with the original run request or scoped preparation.
+     * The caller holds the owning transaction and run/claim locks.
      */
     public static function request(WorkflowRun $run, string $scopeId): void
     {
@@ -181,7 +182,7 @@ final class CancellationScopeDescendants
         $run->loadMissing('historyEvents');
         $prefix = $run->historyEvents->keyBy('id');
         $scopes = CancellationScopeHistory::forRun($run);
-        if (! isset($scopes[$scopeId])) {
+        if ($scopeId !== CancellationScopeHistory::ROOT_SCOPE_ID && ! isset($scopes[$scopeId])) {
             throw new LogicException('cancellation_scope_not_recorded');
         }
         $included = [

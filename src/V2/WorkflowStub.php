@@ -51,6 +51,8 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\CancellationScopeDescendants;
+use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -2179,6 +2181,10 @@ final class WorkflowStub
                 'cleanup_deadline_at' => $deadline->toISOString(),
                 'cancellation' => $context,
             ], static fn (mixed $value): bool => $value !== null), null, $command);
+
+            // Accept the unshielded subtree in this same transaction. Replay
+            // and replacement workers inherit this request's original budget.
+            CancellationScopeDescendants::request($run, CancellationScopeHistory::ROOT_SCOPE_ID);
 
             if (! $this->hasOpenWorkflowTask($run->id)) {
                 /** @var WorkflowTask $task */

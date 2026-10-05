@@ -465,6 +465,143 @@ final class V2CancellationScopeRequestsTest extends TestCase
         );
     }
 
+    public function testRunRequestPropagatesOriginalIdentityAndDeadlineToUnshieldedScopes(): void
+    {
+        [$workflow, $run, $parent, $child] = $this->scopeTree('run-propagation');
+        $root = $workflow->withCommandContext(
+            CommandContext::phpApi()->withPrincipal('operator', 'operator-fixture', 'Operator')
+        )->requestCancellation('release the whole tree', 30)
+            ->cancellationContext();
+
+        $parentContext = CancellationScopeRequests::context($run->fresh(), $parent);
+        $childContext = CancellationScopeRequests::context($run->fresh(), $child);
+        $this->assertNotNull($parentContext);
+        $this->assertNotNull($childContext);
+        $this->assertSame(['root', $parent, $child], array_column($childContext->lineage, 'scope_id'));
+        $this->assertSame($parentContext->requestId, $childContext->parentRequestId);
+        foreach ([$parentContext, $childContext] as $context) {
+            $this->assertSame($root->toArray(), $context->rootContext->toArray());
+            $this->assertSame($root->deadline()->toISOString(), $context->deadline()->toISOString());
+            $this->assertSame($root->requestedAt()->toISOString(), $context->requestedAt()->toISOString());
+        }
+        $this->assertSame(
+            2,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeRequested)->count()
+        );
+        $this->assertSame(
+            0,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeDelivered)->count()
+        );
+        $this->assertFalse($run->fresh()->status->isTerminal());
+
+        $historyCount = $run->historyEvents()
+            ->count();
+        Carbon::setTestNow(now()->addSeconds(10));
+        $duplicate = $workflow->requestCancellation('replacement reason', 300)
+            ->cancellationContext();
+        $this->assertSame($root->toArray(), $duplicate->toArray());
+        $this->assertSame($historyCount, $run->historyEvents()->count());
+        $this->assertSame(
+            $childContext->toArray(),
+            CancellationScopeRequests::context($run->fresh(), $child)->toArray()
+        );
+    }
+
+    public function testRunRequestDoesNotPropagateThroughAShield(): void
+    {
+        [$workflow, $run, $parent, $shield] = $this->scopeTree('run-shield', true);
+        $task = $run->tasks()
+            ->sole();
+        $shieldChild = CancellationScopeHistory::open($run, $task, 3, '1.20', $shield)->payload['scope_id'];
+        $sibling = CancellationScopeHistory::open($run, $task, 4, '1.20')->payload['scope_id'];
+        $root = $workflow->requestCancellation('whole run', 30)
+            ->cancellationContext();
+
+        foreach ([$parent, $sibling] as $scope) {
+            $context = CancellationScopeRequests::context($run->fresh(), $scope);
+            $this->assertNotNull($context);
+            $this->assertSame($root->requestId, $context->rootContext->rootRequestId);
+            $this->assertSame($root->deadline()->toISOString(), $context->deadline()->toISOString());
+        }
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $shield));
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $shieldChild));
+        $this->assertSame(
+            $root->deadline()
+                ->toISOString(),
+            CancellationScopeRequests::authority($run->fresh(), $shieldChild)['deadline_at']
+        );
+        $this->assertSame(
+            2,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeRequested)->count()
+        );
+    }
+
+    public function testRunRequestPreservesAnIndependentScopeRequestAndCapsItsAuthority(): void
+    {
+        [$workflow, $run, $parent, $child] = $this->scopeTree('run-conflict');
+        $accepted = CancellationScopeRequests::request($run, $child, '1.20', 300, 'independent cleanup');
+        $original = CancellationScopeRequests::context($run->fresh(), $child)->toArray();
+        $root = $workflow->requestCancellation('whole run', 30)
+            ->cancellationContext();
+
+        $this->assertSame($original, CancellationScopeRequests::context($run->fresh(), $child)->toArray());
+        $this->assertSame($accepted->id, CancellationScopeRequests::request($run->fresh(), $child, '1.20', 3600)->id);
+        $conflict = $run->historyEvents()
+            ->where('event_type', HistoryEventType::CancellationScopeRequestConflicted)->sole();
+        $this->assertSameJsonObject($original, $conflict->payload['accepted_cancellation']);
+        $this->assertSame($parent, $conflict->payload['parent_scope_id']);
+        $this->assertSame(
+            $root->requestId,
+            $conflict->payload['incoming_cancellation']['root_context']['root_request_id']
+        );
+        $this->assertSame(
+            $root->deadline()
+                ->toISOString(),
+            CancellationScopeRequests::authority($run->fresh(), $child)['deadline_at']
+        );
+        Carbon::setTestNow(now()->addSeconds(30));
+        $this->assertFalse(CancellationScopeRequests::authority($run->fresh(), $child)['active']);
+        $this->assertSame($original, CancellationScopeRequests::context($run->fresh(), $child)->toArray());
+        $duplicate = $workflow->requestCancellation('duplicate', 3600)
+            ->cancellationContext();
+        $this->assertSame($root->requestId, $duplicate->requestId);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeRequestConflicted)->count()
+        );
+    }
+
+    public function testRunRequestRollsBackTheWholePropagationWhenADescendantIsInvalid(): void
+    {
+        [$workflow, $run, $parent, $child] = $this->scopeTree('run-atomicity');
+        $accepted = CancellationScopeRequests::request($run, $child, '1.20', 300);
+        $payload = $accepted->payload;
+        $payload['cancellation']['lineage'][0]['scope_id'] = 'fabricated';
+        $accepted->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $historyCount = $run->historyEvents()
+            ->count();
+        $claimBefore = $run->tasks()
+            ->sole()
+            ->getAttributes();
+
+        try {
+            $workflow->requestCancellation('whole run', 30);
+            $this->fail('Invalid descendant authority must not leave a partial run request.');
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_request_history_invalid', $error->getMessage());
+        }
+        $this->assertSame($historyCount, $run->historyEvents()->count());
+        $this->assertNull(CancellationScopeRequests::context($run->fresh(), $parent));
+        $this->assertSame($claimBefore, $run->tasks()->sole()->getAttributes());
+        $this->assertRunCancellationUntouched($run);
+    }
+
     #[DataProvider('authorityCeilings')]
     public function testShieldedIndependentScopeCannotOutliveRunAuthority(string $ceiling): void
     {
