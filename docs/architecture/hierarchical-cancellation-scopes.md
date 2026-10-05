@@ -367,8 +367,9 @@ the normal configured workflow lease. Whole-run delivery still bounds shared
 ownership by its original cancellation deadline. Neither renewal nor replacement
 changes a scope's delivery record or cleanup budget. Real scoped worker SIGKILL
 recovery remains required before enabling SDK scope execution.
-Request acceptance before any authenticated preparation still uses the ordinary
-hosting lease. Qualification of that earlier recovery boundary remains required.
+Accepted scope requests also bound shared hosting ownership before preparation,
+using the recovery projection described above. Replacement can therefore reach
+the first preparation while the original cleanup budget remains live.
 
 Admission validates every atomic local-group member before creating any sibling.
 Renewal and publication validate the recorded cleanup fact. Missing or rewritten
