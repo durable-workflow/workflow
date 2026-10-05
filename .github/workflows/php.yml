@@ -1045,16 +1045,34 @@ jobs:
         name: v2-coverage-summary
         path: build/coverage/v2-coverage-summary.json
 
-    - name: Upload coverage to Codecov
+    - name: Verify pinned Codecov CLI
       if: ${{ github.server_url == 'https://github.com' }}
+      run: |
+        curl --fail --location --retry 3 --connect-timeout 10 --max-time 60 \
+          https://github.com/codecov/codecov-cli/releases/download/v11.3.1/codecovcli_linux \
+          --output "$RUNNER_TEMP/codecovcli"
+        printf '%s  %s\n' \
+          ca1d64196d2d34771084afe76ea657d581bf628e31d993ff8e52ea09cc88a56d \
+          "$RUNNER_TEMP/codecovcli" | sha256sum --check --strict
+        chmod +x "$RUNNER_TEMP/codecovcli"
+
+    - name: Upload coverage to Codecov
+      id: codecov
+      if: ${{ github.server_url == 'https://github.com' }}
+      continue-on-error: true
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
       with:
+        binary: ${{ runner.temp }}/codecovcli
         flags: v2
         files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}
         override_commit: ${{ env.COVERAGE_COMMIT }}
+
+    - name: Report unavailable external coverage upload
+      if: ${{ steps.codecov.outcome == 'failure' }}
+      run: echo '::warning title=Codecov upload unavailable::Runtime tests and coverage thresholds remain required. Raw coverage evidence is retained in this run.'
 
     - name: Remove SQLite database from tmpfs
       if: ${{ always() }}
