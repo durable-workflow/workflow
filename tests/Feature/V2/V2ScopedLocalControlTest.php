@@ -45,6 +45,7 @@ final class V2ScopedLocalControlTest extends TestCase
     public function testOriginalScalarControlPreparesThenFencesTheAcceptedScope(bool $runRequest, bool $nested): void
     {
         [$workflow, $run, $task, $parent, $scope, $sequence, $local, $context] = $this->claim($runRequest, $nested);
+        Carbon::setTestNow(now()->addSecond());
         $before = $task->fresh()
             ->getAttributes();
         $control = $this->bridge()

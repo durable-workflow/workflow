@@ -40,6 +40,7 @@ final class CancellationScopeDelivery
         int $sequenceSpan = 1,
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
+        bool $renewWorkflowLease = true,
     ): WorkflowHistoryEvent {
         if ($run->getConnection()->transactionLevel() !== 0) {
             throw new LogicException('cancellation_scope_preparation_requires_own_transaction');
@@ -55,7 +56,8 @@ final class CancellationScopeDelivery
             $sequenceSpan,
             $operationSequence,
             $operationSequenceSpan,
-            true
+            true,
+            $renewWorkflowLease
         );
     }
 
@@ -289,6 +291,7 @@ final class CancellationScopeDelivery
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
         bool $preparing = false,
+        bool $renewWorkflowLease = true,
     ): WorkflowHistoryEvent {
         if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
             throw new LogicException('cancellation_scope_requires_protocol_1_20');
@@ -315,7 +318,8 @@ final class CancellationScopeDelivery
                 $sequenceSpan,
                 $operationSequence,
                 $operationSequenceSpan,
-                $preparing
+                $preparing,
+                $renewWorkflowLease
             ): WorkflowHistoryEvent {
                 // Match workflow claims, heartbeat and repair: task before run.
                 /** @var WorkflowTask|null $claim */
@@ -362,7 +366,7 @@ final class CancellationScopeDelivery
                             throw new LogicException($invalid);
                         }
                     }
-                    self::renewHosting($locked, $claim, $existing);
+                    self::renewHosting($locked, $claim, $existing, $renewWorkflowLease);
                     return $existing;
                 }
                 if ($preparing && self::positionReserved($locked, $sequence)) {
@@ -510,15 +514,19 @@ final class CancellationScopeDelivery
                                 'preparation_history_event_id' => $preparation->id,
                             ]),
                     ], $claim);
-                self::renewHosting($locked, $claim, $boundary);
+                self::renewHosting($locked, $claim, $boundary, $renewWorkflowLease);
                 return $boundary;
             }, 3);
         $run->refresh();
         return $event;
     }
 
-    private static function renewHosting(WorkflowRun $run, WorkflowTask $task, WorkflowHistoryEvent $boundary): void
-    {
+    private static function renewHosting(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowHistoryEvent $boundary,
+        bool $renewWorkflowLease
+    ): void {
         $captured = CarbonImmutable::parse($boundary->payload['authority_deadline_at']);
         if ($run->cancellation_scope_recovery_until === null || $captured->gt(
             $run->cancellation_scope_recovery_until
@@ -527,7 +535,9 @@ final class CancellationScopeDelivery
                 'cancellation_scope_recovery_until' => $captured,
             ])->save();
         }
-        LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run), true, $run);
+        if ($renewWorkflowLease) {
+            LocalActivityRuntime::renewWorkflowTask($task, CancellationCleanupLease::deadline($run), true, $run);
+        }
     }
 
     private static function readBoundary(WorkflowRun $run, string $scopeId, bool $preparing): ?WorkflowHistoryEvent

@@ -99,7 +99,8 @@ final class PortableLocalActivityControl
             1,
             null,
             1,
-            $protocolVersion
+            $protocolVersion,
+            renewWorkflowLease: false
         );
         if (! ($prepared['prepared'] ?? false)) {
             return [

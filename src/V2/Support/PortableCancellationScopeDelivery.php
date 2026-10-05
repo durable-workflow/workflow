@@ -34,6 +34,7 @@ final class PortableCancellationScopeDelivery
         ?int $operationSequence,
         int $operationSequenceSpan,
         string $protocolVersion,
+        bool $renewWorkflowLease = true,
     ): array {
         $response = [
             'prepared' => false,
@@ -91,6 +92,7 @@ final class PortableCancellationScopeDelivery
                 $sequenceSpan,
                 $operationSequence,
                 $operationSequenceSpan,
+                $renewWorkflowLease,
             );
             $response = [...$response, ...self::frame($run, $event->payload, $event->id)];
             if (! $preparing) {
