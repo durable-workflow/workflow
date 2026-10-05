@@ -1057,7 +1057,9 @@ jobs:
         chmod +x "$RUNNER_TEMP/codecovcli"
 
     - name: Upload coverage to Codecov
+      id: codecov
       if: ${{ github.server_url == 'https://github.com' }}
+      continue-on-error: true
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
       with:
         binary: ${{ runner.temp }}/codecovcli
@@ -1067,6 +1069,10 @@ jobs:
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}
         override_commit: ${{ env.COVERAGE_COMMIT }}
+
+    - name: Report unavailable external coverage upload
+      if: ${{ steps.codecov.outcome == 'failure' }}
+      run: echo '::warning title=Codecov upload unavailable::Runtime tests and coverage thresholds remain required. Raw coverage evidence is retained in this run.'
 
     - name: Remove SQLite database from tmpfs
       if: ${{ always() }}
