@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Unit\Middleware;
 
 use Exception;
+use Illuminate\Bus\UniqueLock;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
@@ -42,7 +44,8 @@ final class ActivityMiddlewareTest extends TestCase
             'status' => WorkflowWaitingStatus::class,
         ]);
 
-        Cache::flush();
+        // Queue::fake does not run Laravel's processing-time unique unlock.
+        (new UniqueLock(app(CacheRepository::class)))->release(new TestWorkflow($storedWorkflow));
 
         $activity = $this->mock(TestActivity::class);
         $activity->index = 0;
