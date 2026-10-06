@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "worker-session-routing-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestWorkerSessionWorkflow",
+    "arguments": ["Ada"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity": {
+          "queue": "gpu-activities",
+          "worker_session": {
+            "session_id": "gpu-render",
+            "connection": null,
+            "queue": "gpu-activities",
+            "requirements": ["gpu:nvidia-l4"],
+            "lease_seconds": 120,
+            "ttl_seconds": 600,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true
+          }
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {"greeting": "Hello, Ada!"},
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

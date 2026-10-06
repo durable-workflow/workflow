@@ -13,6 +13,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\WorkflowStub;
 
@@ -144,6 +145,22 @@ final class V2ActivityOptionsTest extends TestCase
         $this->assertSame(120, $execution->activity_options['worker_session']['lease_seconds']);
         $this->assertSame(600, $execution->activity_options['worker_session']['ttl_seconds']);
         $this->assertSame(1, $execution->activity_options['worker_session']['max_concurrent_activities']);
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->whereIn('event_type', [HistoryEventType::ActivityScheduled, HistoryEventType::ActivityCompleted])
+            ->get();
+        $this->assertCount(2, $events);
+        $original = $execution->activity_options['worker_session'];
+
+        // Cold replay and diagnostics use immutable history, not the current row.
+        $execution->forceFill([
+            'activity_options' => [],
+        ])->save();
+        foreach ($events as $event) {
+            $this->assertSame($original, $event->payload['activity']['worker_session']);
+            $this->assertSame($original, ActivitySnapshot::fromEvent($event)['worker_session']);
+        }
     }
 
     public function testActivityOptionsExposeWorkerSessionRoutingOverrides(): void
