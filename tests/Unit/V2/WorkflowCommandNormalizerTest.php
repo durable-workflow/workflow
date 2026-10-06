@@ -68,7 +68,7 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             }
         }
         $this->assertTrue(WorkerProtocolVersion::supportsCancellationScopeMembership('1.20'));
-        $this->assertFalse(WorkerProtocolVersion::supportsCancellationScopeMembership(WorkerProtocolVersion::VERSION));
+        $this->assertFalse(WorkerProtocolVersion::supportsCancellationScopeMembership('1.19'));
     }
 
     public function testMalformedScopeAddressesCannotBeDroppedDuringOperationNormalization(): void

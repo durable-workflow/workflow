@@ -558,10 +558,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         foreach ($expectedVersions as $version) {
             $this->assertContains($version, $negotiation['accepted_request_versions_by_default']);
         }
-        $this->assertSame(
-            '1.19',
-            $openApi['components']['schemas']['AdvertisedWorkerProtocolVersion']['const'],
-        );
+        $this->assertSame('1.19', $openApi['components']['schemas']['AdvertisedWorkerProtocolVersion']['const']);
         $this->assertSame(
             '1.19',
             $asyncApi['components']['schemas']['ProtocolEnvelope']['properties']['protocol_version']['const'],
