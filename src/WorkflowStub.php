@@ -463,7 +463,7 @@ final class WorkflowStub
         } catch (TransitionNotFound $exception) {
             $this->storedWorkflow->refresh();
 
-            if ($this->status() !== WorkflowPendingStatus::class) {
+            if ($this->storedWorkflow->status::class !== WorkflowPendingStatus::class) {
                 throw $exception;
             }
         }
