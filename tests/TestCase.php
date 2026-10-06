@@ -32,30 +32,11 @@ abstract class TestCase extends BaseTestCase
         }
 
         self::flushRedis();
-
-        $workerEnvironment = self::currentSuite() === 'feature'
-            ? [
-                'WORKFLOW_WATCHDOG_ENABLED' => 'false',
-            ]
-            : null;
-
-        for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-            self::$workers[$i] = new Process(
-                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
-                env: $workerEnvironment,
-            );
-            self::$workers[$i]->disableOutput();
-            self::$workers[$i]->start();
-        }
     }
 
     public static function tearDownAfterClass(): void
     {
-        foreach (self::$workers as $worker) {
-            $worker->stop();
-        }
-
-        self::$workers = [];
+        self::stopWorkers();
 
         self::flushRedis();
     }
@@ -68,11 +49,38 @@ abstract class TestCase extends BaseTestCase
             Dotenv::createImmutable(__DIR__, '.env.unit')->safeLoad();
         }
 
+        // No worker may hold a previous test's job while IDs and tables reset.
+        self::stopWorkers();
+        self::flushRedis();
+
         parent::setUp();
 
         Cache::flush();
 
         self::flushRedis();
+
+        if (self::currentSuite() === 'feature') {
+            self::startWorkers();
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            self::stopWorkers();
+            self::flushRedis();
+        } finally {
+            parent::tearDown();
+        }
+    }
+
+    protected static function stopWorkers(): void
+    {
+        foreach (self::$workers as $worker) {
+            $worker->stop();
+        }
+
+        self::$workers = [];
     }
 
     protected function defineDatabaseMigrations()
@@ -130,6 +138,24 @@ abstract class TestCase extends BaseTestCase
             $workflow->exceptions()
                 ->count(),
         ));
+    }
+
+    private static function startWorkers(): void
+    {
+        $workerEnvironment = self::currentSuite() === 'feature'
+            ? [
+                'WORKFLOW_WATCHDOG_ENABLED' => 'false',
+            ]
+            : null;
+
+        for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
+            self::$workers[$i] = new Process(
+                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
+                env: $workerEnvironment,
+            );
+            self::$workers[$i]->disableOutput();
+            self::$workers[$i]->start();
+        }
     }
 
     private static function flushRedis(): void
