@@ -932,6 +932,25 @@ roadmap and are tracked as follow-on roadmap issues:
   semantics; this contract describes the engine's requirements,
   not per-backend tuning.
 
+## Bounded relationship observations
+
+`DefaultOperatorObservabilityRepository::runRelationshipsPage()` reads a page of
+declared parent or child links and the corresponding run metadata in the selected
+run's namespace. The default limit is 50 and the permitted range is 1 through 100.
+It fetches at most `limit + 1` links and `limit` related runs. It loads no child
+histories, application inputs or outputs, summaries, or projection audits.
+
+The response includes link types, exact instance/run references, independently
+observed related-run statuses, metadata availability, pruning and continuation
+fields. Pass `next_link_id` and the original `through_link_id` to continue within
+the first link boundary. That boundary fixes membership, while related-run status
+continues to reflect its live row. A coordinator's completion does not determine
+its children's outcomes. The response identifies both data sources and leaves
+historical parent-recorded outcome audits unevaluated. Missing metadata is unknown.
+
+These bounded observer reads retain configured model scopes and connection
+selection, while disabling their default eager loads to preserve the read bound.
+
 ## Bounded current wait observations
 
 `DefaultOperatorObservabilityRepository::runCurrentWaits($run, $limit, $now)`

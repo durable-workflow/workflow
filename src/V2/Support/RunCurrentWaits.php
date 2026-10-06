@@ -246,6 +246,7 @@ final class RunCurrentWaits
 
         return (new $model())->setConnection($run->getConnectionName())
             ->newQuery()
+            ->setEagerLoads([])
             ->where('workflow_run_id', $run->id);
     }
 

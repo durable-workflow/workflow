@@ -34,6 +34,7 @@ final class RunHistoryPage
         $eventModel = ConfiguredV2Models::resolve('history_event_model', WorkflowHistoryEvent::class);
         $query = (new $eventModel())->setConnection($run->getConnectionName())
             ->newQuery()
+            ->setEagerLoads([])
             ->where('workflow_run_id', $run->id);
         $throughSequence ??= (int) (clone $query)->max('sequence');
         $rows = $query

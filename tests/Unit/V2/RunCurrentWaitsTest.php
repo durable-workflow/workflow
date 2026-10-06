@@ -74,7 +74,7 @@ final class RunCurrentWaitsTest extends TestCase
                     'id' => $historyRun->id . '-' . $i,
                     'workflow_run_id' => $historyRun->id,
                     'sequence' => $i,
-                    'event_type' => 'signal_received',
+                    'event_type' => 'SignalReceived',
                     'payload' => '{}',
                     'recorded_at' => now(),
                 ];
@@ -435,11 +435,16 @@ final class RunCurrentWaitsTest extends TestCase
         ]);
         config()
             ->set('workflows.v2.run_wait_model', ScopedCurrentWait::class);
+        $runs = 0;
+        WorkflowRun::retrieved(static function () use (&$runs): void {
+            ++$runs;
+        });
 
         $snapshot = RunCurrentWaits::forRun($run);
 
         $this->assertSame(['included'], array_column($snapshot['waits'], 'id'));
         $this->assertFalse($snapshot['has_more']);
+        $this->assertSame(0, $runs);
     }
 
     #[DataProvider('invalidLimits')]
@@ -540,6 +545,8 @@ final class RunCurrentWaitsTest extends TestCase
 
 final class ScopedCurrentWait extends WorkflowRunWait
 {
+    protected $with = ['run.historyEvents'];
+
     protected static function booted(): void
     {
         static::addGlobalScope('wait-fixture', static function ($query): void {

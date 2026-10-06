@@ -43,6 +43,19 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
+    public function runRelationshipsPage(
+        WorkflowRun $run,
+        string $direction = 'children',
+        int $limit = 50,
+        string $afterLinkId = '',
+        ?string $throughLinkId = null,
+    ): array {
+        return RunRelationshipsPage::forRun($run, $direction, $limit, $afterLinkId, $throughLinkId);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function listItem(WorkflowRunSummary $summary): array
     {
         return RunListItemView::fromSummary($summary);
