@@ -123,7 +123,7 @@ jobs:
 
     - name: Run workflow and activity dependency injection smoke
       timeout-minutes: 2
-      run: vendor/bin/phpunit --testdox --testsuite feature --filter '/::testDependencyInjection$/'
+      run: vendor/bin/phpunit --testdox --testsuite feature --filter '/(::testDependencyInjection$|ContinuedSignalRetirementTest)/'
       env:
         APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
         DB_CONNECTION: sqlite
@@ -435,7 +435,7 @@ jobs:
     - name: Run bounded MySQL review smoke
       if: github.event_name == 'pull_request'
       timeout-minutes: 3
-      run: vendor/bin/phpunit --testdox --debug tests/Feature/AsyncWorkflowTest.php
+      run: vendor/bin/phpunit --testdox --debug --testsuite feature --filter '/(AsyncWorkflowTest|ContinuedSignalRetirementTest)/'
       env:
         DB_CONNECTION: mysql
         QUEUE_CONNECTION: redis
@@ -593,7 +593,7 @@ jobs:
     - name: Run bounded PostgreSQL review smoke
       if: github.event_name == 'pull_request'
       timeout-minutes: 3
-      run: vendor/bin/phpunit --testdox --debug tests/Feature/AsyncWorkflowTest.php
+      run: vendor/bin/phpunit --testdox --debug --testsuite feature --filter '/(AsyncWorkflowTest|ContinuedSignalRetirementTest)/'
       env:
         DB_CONNECTION: pgsql
         QUEUE_CONNECTION: redis
