@@ -436,7 +436,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         );
     }
 
-    public function testRuntimeAndCurrentWorkerSpecsCannotDriftOnMessageStreamContract(): void
+    public function testRuntimePreservesTheFrozenProtocol119MessageStreamContract(): void
     {
         $root = dirname(__DIR__, 3) . '/resources/conformance/suite-v47/platform-protocol-specs';
         $openApi = Yaml::parseFile($root . '/worker-protocol-api.openapi.yaml');
@@ -451,7 +451,7 @@ final class PlatformProtocolSpecsTest extends TestCase
 
         foreach ([$openApi, $asyncApi] as $spec) {
             $this->assertSame(
-                WorkerProtocolVersion::VERSION,
+                '1.19',
                 $spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version'],
             );
             $this->assertSame(
@@ -555,13 +555,15 @@ final class PlatformProtocolSpecsTest extends TestCase
         }
 
         $this->assertSame(WorkerProtocolVersion::VERSION, $negotiation['default_advertised_version']);
-        $this->assertSame($expectedVersions, $negotiation['accepted_request_versions_by_default']);
+        foreach ($expectedVersions as $version) {
+            $this->assertContains($version, $negotiation['accepted_request_versions_by_default']);
+        }
         $this->assertSame(
-            WorkerProtocolVersion::VERSION,
+            '1.19',
             $openApi['components']['schemas']['AdvertisedWorkerProtocolVersion']['const'],
         );
         $this->assertSame(
-            WorkerProtocolVersion::VERSION,
+            '1.19',
             $asyncApi['components']['schemas']['ProtocolEnvelope']['properties']['protocol_version']['const'],
         );
 
