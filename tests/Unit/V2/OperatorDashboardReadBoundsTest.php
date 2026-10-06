@@ -91,7 +91,9 @@ final class OperatorDashboardReadBoundsTest extends TestCase
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            DB::table('workflow_run_summaries')->where('id', $id)->update(['exception_count' => 1]);
+            DB::table('workflow_run_summaries')->where('id', $id)->update([
+                'exception_count' => 1,
+            ]);
         }
 
         $retrieved = 0;
@@ -128,7 +130,11 @@ final class OperatorDashboardReadBoundsTest extends TestCase
         $this->assertLessThan(10, $retrieved);
         $this->assertSame(0, $historyRetrieved);
 
-        $global = OperatorDashboardSummary::snapshot($now, includeHistoryAudits: false, workflowTypes: ['orders.import']);
+        $global = OperatorDashboardSummary::snapshot(
+            $now,
+            includeHistoryAudits: false,
+            workflowTypes: ['orders.import']
+        );
         $this->assertSame(4, $global['flows']);
         $all = OperatorDashboardSummary::snapshot($now, 'bounded-dashboard', includeHistoryAudits: false);
         $this->assertSame(504, $all['flows']);
@@ -151,6 +157,35 @@ final class OperatorDashboardReadBoundsTest extends TestCase
         $this->assertSame(0, array_sum($dashboard['fleet_trends_series']['completed']));
         $this->assertSame([], $dashboard['workflow_scope']['workflow_types']);
         $this->assertFalse($dashboard['workflow_scope']['all_workflow_types']);
+    }
+
+    public function testWorkerAlertsKeepNamespaceScopeIndependentlyOfWorkflowTypeSelection(): void
+    {
+        $now = Carbon::parse('2026-10-06T12:34:56Z');
+        foreach (['bounded-dashboard', 'outside'] as $namespace) {
+            DB::table('workflow_worker_compatibility_heartbeats')->insert([
+                'worker_id' => 'worker-' . $namespace,
+                'scope_key' => $namespace,
+                'namespace' => $namespace,
+                'supported' => '[]',
+                'recorded_at' => $now->copy()->subMinutes(10),
+                'expires_at' => $now->copy()->subMinutes(5),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+        $scoped = OperatorDashboardSummary::snapshot(
+            $now,
+            'bounded-dashboard',
+            includeHistoryAudits: false,
+            workflowTypes: [],
+        );
+        $alert = collect($scoped['needs_attention']['alerts'])->firstWhere('type', 'stuck_workers');
+        $this->assertSame(1, $alert['count']);
+        $this->assertSame('operator_workers', $alert['scope']);
+        $this->assertSame(0, $scoped['flows']);
+        $global = OperatorDashboardSummary::snapshot($now, includeHistoryAudits: false, workflowTypes: []);
+        $this->assertSame(2, collect($global['needs_attention']['alerts'])->firstWhere('type', 'stuck_workers')['count']);
     }
 
     /**

@@ -54,12 +54,21 @@ final class OperatorDashboardSummary
                 'generated_at' => $now->toIso8601String(),
                 'total_runs' => 'all_retained_runs',
                 'current_status' => 'current',
-                'recent_hour_from' => $now->copy()->subHour()->toIso8601String(),
-                'recent_day_from' => $now->copy()->subDay()->toIso8601String(),
-                'recent_week_from' => $now->copy()->subWeek()->toIso8601String(),
+                'recent_hour_from' => $now->copy()
+                    ->subHour()
+                    ->toIso8601String(),
+                'recent_day_from' => $now->copy()
+                    ->subDay()
+                    ->toIso8601String(),
+                'recent_week_from' => $now->copy()
+                    ->subWeek()
+                    ->toIso8601String(),
                 'trends_resolution' => 'hour',
             ],
-            'operator_metrics_scope' => ['namespace' => $namespace, 'workflow_types' => null],
+            'operator_metrics_scope' => [
+                'namespace' => $namespace,
+                'workflow_types' => null,
+            ],
             'operator_metrics' => OperatorMetrics::snapshot($now, $namespace, $includeHistoryAudits),
         ];
     }
@@ -75,8 +84,7 @@ final class OperatorDashboardSummary
         ?CarbonInterface $now = null,
         ?string $namespace = null,
         ?array $workflowTypes = null,
-    ): array
-    {
+    ): array {
         $now ??= now();
         $namespace = self::normalizeNamespace($namespace);
         $weekAgo = $now->copy()
@@ -293,6 +301,7 @@ final class OperatorDashboardSummary
         $staleHeartbeatThreshold = $now->copy()
             ->subMinutes(5);
         $stuckWorkers = WorkerCompatibilityHeartbeat::query()
+            ->when($namespace !== null, static fn ($query) => $query->where('namespace', $namespace))
             ->where('recorded_at', '<', $staleHeartbeatThreshold)
             ->where('recorded_at', '>', $now->copy()->subHour()) // Still recently active
             ->count();
@@ -300,6 +309,7 @@ final class OperatorDashboardSummary
         if ($stuckWorkers > 0) {
             $alerts[] = [
                 'type' => 'stuck_workers',
+                'scope' => 'operator_workers',
                 'severity' => 'warning',
                 'message' => "{$stuckWorkers} worker(s) have not sent heartbeat in 5+ minutes",
                 'count' => $stuckWorkers,
