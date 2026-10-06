@@ -97,6 +97,19 @@ final class RunHistoryPageTest extends TestCase
         $this->assertSame(5, $refreshed['through_sequence']);
     }
 
+    public function testConfiguredHistoryModelKeepsItsQueryScope(): void
+    {
+        $run = $this->createRun('configured');
+        $this->events($run, 1, 3);
+        config()
+            ->set('workflows.v2.history_event_model', ScopedHistoryPageEvent::class);
+
+        $page = RunHistoryPage::forRun($run);
+
+        $this->assertSame([2, 3], array_column($page['events'], 'sequence'));
+        $this->assertSame(3, $page['through_sequence']);
+    }
+
     public function testPrunedAndEmptyWindowsAreExplicitAndDoNotResolveStoredValues(): void
     {
         $run = $this->createRun('pruned');
@@ -195,5 +208,15 @@ final class RunHistoryPageTest extends TestCase
         foreach (array_chunk($rows, 100) as $batch) {
             DB::table('workflow_history_events')->insert($batch);
         }
+    }
+}
+
+final class ScopedHistoryPageEvent extends WorkflowHistoryEvent
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('page-fixture', static function ($query): void {
+            $query->where('sequence', '>', 1);
+        });
     }
 }
