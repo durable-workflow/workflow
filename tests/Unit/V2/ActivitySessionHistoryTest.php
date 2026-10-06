@@ -45,5 +45,12 @@ final class ActivitySessionHistoryTest extends TestCase
             'activity_type' => 'render',
         ];
         $this->assertArrayNotHasKey('worker_session', ActivitySnapshot::fromEvent($event));
+        foreach ([null, 'not-a-session'] as $invalidSession) {
+            $event->payload = [
+                'activity_type' => 'render',
+                'worker_session' => $invalidSession,
+            ];
+            $this->assertArrayNotHasKey('worker_session', ActivitySnapshot::fromEvent($event));
+        }
     }
 }

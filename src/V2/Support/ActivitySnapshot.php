@@ -104,7 +104,9 @@ final class ActivitySnapshot
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
-            'worker_session' => self::arrayValue($payload['worker_session'] ?? null),
+            ...(is_array($payload['worker_session'] ?? null) ? [
+                'worker_session' => $payload['worker_session'],
+            ] : []),
             'cancellation_policy' => self::stringValue($payload['cancellation_policy'] ?? null),
             ...(isset($payload['cancellation_scope_id']) ? [
                 'cancellation_scope_id' => self::stringValue($payload['cancellation_scope_id']),
