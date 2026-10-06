@@ -12,7 +12,7 @@ final class TaskCompatibility
     public static function resolve(WorkflowTask $task, ?WorkflowRun $run = null): ?string
     {
         return self::normalize($task->compatibility)
-            ?? self::normalize($run?->compatibility ?? $task->run?->compatibility);
+            ?? self::normalize($run !== null ? $run->compatibility : $task->run?->compatibility);
     }
 
     public static function sync(WorkflowTask $task, ?WorkflowRun $run = null): ?string
