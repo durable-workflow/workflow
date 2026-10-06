@@ -348,22 +348,42 @@ final class OperatorDashboardSummary
             }
         }
 
-        // 5. Workflows waiting too long (wait > 30 minutes)
-        $longWaitThreshold = $now->copy()
+        // A long wait can be planned or indefinite. Require a recorded problem,
+        // an elapsed operation deadline, or scheduled work overdue for dispatch.
+        // Timer fire times are resume boundaries, so allow dispatch grace.
+        $dispatchOverdueThreshold = $now->copy()
             ->subMinutes(30);
         $longWaits = self::summaryQuery($namespace)
             ->where('status_bucket', 'running')
             ->whereNotNull('wait_started_at')
-            ->where('wait_started_at', '<', $longWaitThreshold)
+            ->where(static function ($query) use ($now, $dispatchOverdueThreshold): void {
+                $query->where('task_problem', true)
+                    ->orWhere('repair_attention', true)
+                    ->orWhere(static function ($deadline) use ($now): void {
+                        $deadline->whereIn('wait_kind', ['activity', 'child', 'signal', 'condition', 'update'])
+                            ->where('wait_deadline_at', '<=', $now);
+                    })
+                    ->orWhere(static function ($ready) use ($dispatchOverdueThreshold): void {
+                        $ready->where('next_task_status', 'ready')
+                            ->where('next_task_at', '<', $dispatchOverdueThreshold);
+                    })
+                    ->orWhere(static function ($timer) use ($dispatchOverdueThreshold): void {
+                        $timer->where('wait_kind', 'timer')
+                            ->where('wait_deadline_at', '<', $dispatchOverdueThreshold)
+                            ->where(static function ($task): void {
+                                $task->whereNull('next_task_status')->orWhere('next_task_status', '!=', 'leased');
+                            });
+                    });
+            })
             ->count();
 
         if ($longWaits > 0) {
             $alerts[] = [
                 'type' => 'long_waits',
                 'severity' => 'warning',
-                'message' => "{$longWaits} workflow(s) waiting longer than 30 minutes",
+                'message' => "{$longWaits} workflow(s) with blocked or overdue waits",
                 'count' => $longWaits,
-                'action' => 'Check if signals/updates are being delivered',
+                'action' => 'Inspect wait deadlines and task dispatch before recovering work',
             ];
         }
 

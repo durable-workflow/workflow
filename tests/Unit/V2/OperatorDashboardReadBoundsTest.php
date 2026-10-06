@@ -100,6 +100,72 @@ final class OperatorDashboardReadBoundsTest extends TestCase
         ];
     }
 
+    /**
+     * @param array<string, mixed> $wait
+     */
+    #[DataProvider('waitAttentionCases')]
+    public function testWaitAttentionUsesScheduledWorkAndDeadlinesInsteadOfElapsedAge(array $wait, int $expected): void
+    {
+        $now = Carbon::parse('2026-10-06T12:00:00Z');
+        $this->seedRuns([null], $now->copy()->subHours(2), status: 'waiting');
+        DB::table('workflow_run_summaries')->where('id', 'dashboard-00001')->update([
+            'status_bucket' => 'running',
+            'closed_at' => null,
+            'wait_kind' => 'signal',
+            'wait_started_at' => '2026-10-06 10:00:00',
+            ...$wait,
+        ]);
+        $this->seedRuns([null], $now->copy()->subHours(2), namespace: 'outside-scope', status: 'waiting');
+        DB::table('workflow_run_summaries')->where('id', 'dashboard-00002')->update([
+            'status_bucket' => 'running',
+            'closed_at' => null,
+            'wait_started_at' => '2026-10-06 10:00:00',
+            'task_problem' => true,
+        ]);
+        $dashboard = OperatorDashboardSummary::snapshot($now, 'bounded-dashboard', includeHistoryAudits: false);
+        $alerts = collect($dashboard['needs_attention']['alerts'])->where('type', 'long_waits');
+        $this->assertSame($expected, $alerts->sum('count'));
+        $global = OperatorDashboardSummary::snapshot($now, includeHistoryAudits: false);
+        $this->assertSame($expected + 1, collect($global['needs_attention']['alerts'])->where('type', 'long_waits')->sum('count'));
+    }
+
+    /**
+     * @return array<string, array{array<string, mixed>, int}>
+     */
+    public static function waitAttentionCases(): array
+    {
+        return [
+            'future activity retry' => [[
+                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 13:00:00', 'next_task_status' => 'ready',
+            ], 0],
+            'future timer' => [['wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 13:00:00'], 0],
+            'indefinite signal' => [[], 0],
+            'future condition deadline' => [[
+                'wait_kind' => 'condition', 'wait_deadline_at' => '2026-10-06 13:00:00',
+            ], 0],
+            'eligible timer within dispatch grace' => [[
+                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 11:59:00',
+            ], 0],
+            'task currently leased' => [[
+                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 10:30:00', 'next_task_status' => 'leased',
+            ], 0],
+            'timer resume currently leased' => [[
+                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 10:30:00', 'next_task_status' => 'leased',
+            ], 0],
+            'overdue ready resume' => [[
+                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 11:29:00', 'next_task_status' => 'ready',
+            ], 1],
+            'overdue timer delivery' => [[
+                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 11:29:00',
+            ], 1],
+            'elapsed condition deadline' => [[
+                'wait_kind' => 'condition', 'wait_deadline_at' => '2026-10-06 11:59:00',
+            ], 1],
+            'recorded task problem' => [['task_problem' => true], 1],
+            'recorded repair need' => [['repair_attention' => true], 1],
+        ];
+    }
+
     public function testTrendBucketsKeepHourBoundariesAndZeroFill(): void
     {
         $now = Carbon::parse('2026-10-06T12:34:56Z');
