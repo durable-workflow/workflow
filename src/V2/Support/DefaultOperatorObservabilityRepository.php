@@ -23,6 +23,22 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
+    public function runObservation(WorkflowRun $run, ?CarbonInterface $now = null): array
+    {
+        return RunObservation::forRun($run, $now);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function runRecentFailures(WorkflowRun $run, int $limit = 10): array
+    {
+        return RunRecentFailures::forRun($run, $limit);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function runHistoryPage(
         WorkflowRun $run,
         int $limit = 200,

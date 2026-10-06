@@ -974,6 +974,33 @@ from a terminal run with no current waits. `history_audit` remains
 `not_evaluated`. The complete detail and audit contracts remain available for
 callers that need to inspect or rebuild historical evidence.
 
+## Bounded initial run observation
+
+`DefaultOperatorObservabilityRepository::runObservation($run, $now)` combines
+the selected run's scalar state with one summary, one stored current-run
+pointer and at most one matching current-run row. It reads only the selected
+run's first `WorkflowStarted` event for its command contract and recorded
+definition fingerprint. It never resolves all runs of the instance, repairs
+the pointer, loads child histories, decodes application values or fetches
+external payloads. The original model's relations remain untouched.
+
+The response includes the bounded current-wait and parent/child relationship
+observations above, plus ten recent diagnostic failure rows. Inputs, outputs
+and memos are omitted. Missing summary counters are unknown. The current-run
+pointer is labelled `observed`, with `current_run_audit: not_evaluated`. Missing,
+cross-instance or cross-namespace pointers are unavailable. Consumers must keep
+canonical lineage validation at command and repair boundaries.
+
+`runRecentFailures($run, $limit)` accepts limits from 1 through 50 and reads
+at most `limit + 1` failure rows. It locates their primary retained failure
+events with a scalar aggregate, then fetches at most `limit` event headers.
+It does not read event payloads or reconstruct exceptions. Supporting event
+references include the exact sequence and the preceding sequence for a direct
+history-page read. Handled state identifies the failure table as its source.
+This diagnostic window remains partial, with an unknown total and an
+unevaluated history audit. Missing or pruned supporting evidence is explicit,
+including when the window contains no failure rows.
+
 ## Changing this contract
 
 A change to any guarantee named here MUST ship alongside:
