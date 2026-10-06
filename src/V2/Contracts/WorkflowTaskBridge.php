@@ -303,7 +303,8 @@ interface WorkflowTaskBridge
      *     payload_codec?: string|null,
      *     connection?: string|null,
      *     queue?: string|null,
-     *     parent_close_policy?: 'abandon'|'request_cancel'|'terminate',
+     *     parent_close_policy?: 'abandon'|'request_cancel'|'request_cancellation'|'terminate',
+     *     cancellation_policy?: 'try_cancel'|'wait_cancellation_completed'|'abandon',
      *     retry_policy?: array,
      *     execution_timeout_seconds?: int,
      *     run_timeout_seconds?: int

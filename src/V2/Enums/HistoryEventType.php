@@ -11,6 +11,8 @@ enum HistoryEventType: string
     case WorkflowStarted = 'WorkflowStarted';
     case WorkflowContinuedAsNew = 'WorkflowContinuedAsNew';
     case ChildWorkflowScheduled = 'ChildWorkflowScheduled';
+    case ChildCancellationRequested = 'ChildCancellationRequested';
+    case ChildCancellationResolved = 'ChildCancellationResolved';
     case ChildRunStarted = 'ChildRunStarted';
     case ChildRunCompleted = 'ChildRunCompleted';
     case ChildRunFailed = 'ChildRunFailed';
@@ -23,7 +25,9 @@ enum HistoryEventType: string
     case ConditionWaitOpened = 'ConditionWaitOpened';
     case ConditionWaitSatisfied = 'ConditionWaitSatisfied';
     case ConditionWaitTimedOut = 'ConditionWaitTimedOut';
+    case ConditionWaitCancelled = 'ConditionWaitCancelled';
     case SignalWaitOpened = 'SignalWaitOpened';
+    case SignalWaitCancelled = 'SignalWaitCancelled';
     case SignalReceived = 'SignalReceived';
     case SignalApplied = 'SignalApplied';
     case UpdateAccepted = 'UpdateAccepted';
@@ -34,6 +38,11 @@ enum HistoryEventType: string
     case CancelRequested = 'CancelRequested';
     case CooperativeCancellationRequested = 'CooperativeCancellationRequested';
     case CooperativeCancellationDelivered = 'CooperativeCancellationDelivered';
+    case CancellationScopeOpened = 'CancellationScopeOpened';
+    case CancellationScopeRequested = 'CancellationScopeRequested';
+    case CancellationScopeDeliveryPrepared = 'CancellationScopeDeliveryPrepared';
+    case CancellationScopeDelivered = 'CancellationScopeDelivered';
+    case CancellationScopeRequestConflicted = 'CancellationScopeRequestConflicted';
     case WorkflowCancelled = 'WorkflowCancelled';
     case TerminateRequested = 'TerminateRequested';
     case WorkflowTerminated = 'WorkflowTerminated';
@@ -46,6 +55,7 @@ enum HistoryEventType: string
     case ActivityCompleted = 'ActivityCompleted';
     case ActivityFailed = 'ActivityFailed';
     case ActivityCancelled = 'ActivityCancelled';
+    case ActivityCancellationAcknowledged = 'ActivityCancellationAcknowledged';
     case ActivityTimedOut = 'ActivityTimedOut';
     case FailureHandled = 'FailureHandled';
     case SideEffectRecorded = 'SideEffectRecorded';
@@ -62,6 +72,7 @@ enum HistoryEventType: string
     case WorkflowFailed = 'WorkflowFailed';
     case ParentClosePolicyApplied = 'ParentClosePolicyApplied';
     case ParentClosePolicyFailed = 'ParentClosePolicyFailed';
+    case ParentCloseCancellationRequested = 'ParentCloseCancellationRequested';
     case MessageCursorAdvanced = 'MessageCursorAdvanced';
     case ScheduleCreated = 'ScheduleCreated';
     case SchedulePaused = 'SchedulePaused';

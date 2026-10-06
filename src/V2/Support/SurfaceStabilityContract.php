@@ -28,7 +28,7 @@ final class SurfaceStabilityContract
 {
     public const SCHEMA = 'durable-workflow.v2.surface-stability.contract';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/compatibility';
 

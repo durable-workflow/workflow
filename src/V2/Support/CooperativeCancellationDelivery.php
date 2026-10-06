@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -56,16 +57,15 @@ final class CooperativeCancellationDelivery
             return 'cancellation_request_mismatch';
         }
 
-        $limit = StructuralLimits::commandBatchSizeLimit();
-        if ($sequence < 1 || $sequenceSpan < 1 || $operationSequenceSpan < 1
-            || $sequence > PHP_INT_MAX - $sequenceSpan
-            || ($limit > 0 && $sequenceSpan > $limit)
-            || ($limit > 0 && $operationSequenceSpan > $limit)
-            || (! isset(self::CALL_SHAPES[$callKind]) && ! in_array($callKind, ['parallel', 'selection_handle'], true))
-            || ($callKind !== 'parallel' && $sequenceSpan !== 1)
-            || ($callKind === 'selection_handle') !== ($operationSequence !== null)
-            || ($callKind !== 'selection_handle' && $operationSequenceSpan !== 1)) {
-            return 'invalid_cancellation_delivery';
+        $invalid = self::validateBoundarySyntax(
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+        if ($invalid !== null) {
+            return $invalid;
         }
 
         if (! $run->relationLoaded('historyEvents')) {
@@ -79,6 +79,15 @@ final class CooperativeCancellationDelivery
         );
         if (! $request instanceof WorkflowHistoryEvent) {
             return 'cancellation_request_history_missing';
+        }
+
+        $membership = self::validateRootOperationMembership(
+            $run,
+            $operationSequence ?? $sequence,
+            $operationSequence === null ? $sequenceSpan : $operationSequenceSpan,
+        );
+        if ($membership !== null) {
+            return $membership;
         }
 
         $existing = self::recorded($run);
@@ -96,6 +105,67 @@ final class CooperativeCancellationDelivery
             return 'cancellation_delivery_history_missing';
         }
 
+        $waitingBoundary = ActivityCancellationWait::validateBoundary(
+            $run,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+        if ($waitingBoundary !== null) {
+            return $waitingBoundary;
+        }
+
+        return self::validateCallBoundary(
+            $run,
+            $request,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan
+        );
+    }
+
+    /**
+     * @internal Shared syntax gate for run and scoped delivery.
+     */
+    public static function validateBoundarySyntax(
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): ?string {
+        $limit = StructuralLimits::commandBatchSizeLimit();
+        return ($sequence < 1 || $sequenceSpan < 1 || $operationSequenceSpan < 1
+            || $sequence > PHP_INT_MAX - $sequenceSpan
+            || ($limit > 0 && $sequenceSpan > $limit)
+            || ($limit > 0 && $operationSequenceSpan > $limit)
+            || (! isset(self::CALL_SHAPES[$callKind]) && ! in_array($callKind, ['parallel', 'selection_handle'], true))
+            || ($callKind !== 'parallel' && $sequenceSpan !== 1)
+            || ($callKind === 'selection_handle') !== ($operationSequence !== null)
+            || ($callKind !== 'selection_handle' && $operationSequenceSpan !== 1))
+            ? 'invalid_cancellation_delivery' : null;
+    }
+
+    /**
+     * @internal Validate durable call ordering against the selected canonical request.
+     * Identity, syntax, scope membership, claim and authority are separate gates.
+     */
+    public static function validateCallBoundary(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $request,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): ?string {
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
         $nextSequence = WorkflowStepHistory::nextDurableCommandSequence($run);
         if ($sequence > $nextSequence) {
             return 'cancellation_delivery_sequence_mismatch';
@@ -151,6 +221,21 @@ final class CooperativeCancellationDelivery
         );
     }
 
+    public static function context(WorkflowRun $run): ?CancellationContext
+    {
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->loadMissing('historyEvents');
+        }
+        $request = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type
+                === HistoryEventType::CooperativeCancellationRequested
+                && $event->workflow_command_id === $run->cancellation_request_command_id,
+        );
+        $snapshot = $request?->payload['cancellation'] ?? null;
+
+        return is_array($snapshot) ? CancellationContext::fromArray($snapshot) : null;
+    }
+
     public static function record(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -177,6 +262,10 @@ final class CooperativeCancellationDelivery
             'sequence' => $sequence,
             'call_kind' => $callKind,
         ];
+        $context = self::context($run);
+        if ($context !== null) {
+            $payload['cancellation'] = $context->toArray();
+        }
         if ($sequenceSpan !== 1) {
             $payload['sequence_span'] = $sequenceSpan;
         }
@@ -225,6 +314,52 @@ final class CooperativeCancellationDelivery
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Root delivery actors have no frozen scoped inventory. Recorded scoped
+     * operations must use scope preparation and delivery, including a group
+     * containing both root and scoped leaves. Check before receipt replay so
+     * a changed membership cannot reuse an earlier root delivery marker.
+     */
+    private static function validateRootOperationMembership(WorkflowRun $run, int $start, int $span): ?string
+    {
+        foreach ($run->historyEvents as $event) {
+            $payload = $event->payload;
+            $sequence = $payload['sequence'] ?? null;
+            if (! is_int($sequence) || $sequence < $start || $sequence - $start >= $span) {
+                continue;
+            }
+            $descriptorKey = match ($event->event_type) {
+                HistoryEventType::ActivityScheduled => 'activity',
+                HistoryEventType::TimerScheduled => 'timer',
+                HistoryEventType::ChildWorkflowScheduled => 'child_workflow',
+                HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => '',
+                default => null,
+            };
+            if ($descriptorKey === null) {
+                continue;
+            }
+            $descriptor = [];
+            if ($descriptorKey !== '' && array_key_exists($descriptorKey, $payload)) {
+                $descriptor = $payload[$descriptorKey];
+                if (! is_array($descriptor) || ($descriptor !== [] && array_is_list($descriptor))) {
+                    return 'cancellation_delivery_scope_membership_invalid';
+                }
+            }
+            $hasFlat = array_key_exists('cancellation_scope_id', $payload);
+            $hasNested = array_key_exists('cancellation_scope_id', $descriptor);
+            $scope = $hasFlat ? $payload['cancellation_scope_id']
+                : ($hasNested ? $descriptor['cancellation_scope_id'] : CancellationScopeHistory::ROOT_SCOPE_ID);
+            if (! is_string($scope) || $scope === ''
+                || ($hasNested && $descriptor['cancellation_scope_id'] !== $scope)) {
+                return 'cancellation_delivery_scope_membership_invalid';
+            }
+            if ($scope !== CancellationScopeHistory::ROOT_SCOPE_ID) {
+                return 'cancellation_delivery_requires_scope';
+            }
+        }
         return null;
     }
 

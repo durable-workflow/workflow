@@ -76,7 +76,8 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
 
-            if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)) {
+            $abandoned = ActivityAbandonment::allows($run, $lockedExecution);
+            if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true) && ! $abandoned) {
                 $reason = $run->status === RunStatus::Terminated
                     ? 'run_terminated'
                     : 'run_cancelled';
@@ -111,6 +112,10 @@ final class ActivityOutcomeRecorder
                 self::closeAttemptIfStale($run, $attemptId);
 
                 return self::ignored('stale_attempt');
+            }
+
+            if ($abandoned && ActivityTimeoutEnforcer::hasExpiredDeadline($lockedExecution, now())) {
+                return self::ignored('activity_deadline_elapsed');
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -230,6 +235,10 @@ final class ActivityOutcomeRecorder
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
 
+                // Preserve the callback owner's completed failure as a history
+                // fact. A timeout-created retry has no such stop evidence.
+                $closedAttempt = ActivityAttempt::query()->findOrFail($attemptId);
+
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Pending,
                     'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
@@ -278,6 +287,14 @@ final class ActivityOutcomeRecorder
                     'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
                     'retry_policy' => $lockedExecution->retry_policy,
                     'exception_type' => $exceptionPayload['type'] ?? null,
+                    'activity_attempt' => [
+                        'id' => $closedAttempt->id,
+                        'activity_execution_id' => $closedAttempt->activity_execution_id,
+                        'task_id' => $closedAttempt->workflow_task_id,
+                        'status' => $closedAttempt->status->value,
+                        'lease_owner' => $closedAttempt->lease_owner,
+                        'closed_at' => $closedAttempt->closed_at?->toJSON(),
+                    ],
                     'exception_class' => $exceptionPayload['class'] ?? get_class($throwable),
                     'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
                     'code' => $throwable->getCode(),
@@ -384,6 +401,11 @@ final class ActivityOutcomeRecorder
             ) {
                 self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
+                return self::recorded(null);
+            }
+
+            if ($abandoned && $run->status->isTerminal()) {
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
                 return self::recorded(null);
             }
 

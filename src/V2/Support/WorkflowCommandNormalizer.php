@@ -146,6 +146,24 @@ final class WorkflowCommandNormalizer
             'allowed' => ['start_child_workflow'],
             'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
         ],
+        'cancellation_policy' => [
+            'allowed' => ['start_child_workflow', 'schedule_activity'],
+            'guidance' => 'cancellation_policy declares how an awaiting workflow handles child or remote activity cancellation. Explicit activity policies require protocol 1.20 and remote abandon requires a finite schedule_to_close_timeout.',
+        ],
+        'cancellation_scope_id' => [
+            'allowed' => [
+                'schedule_activity',
+                'start_timer',
+                'start_child_workflow',
+                'open_signal_wait',
+                'open_condition_wait',
+            ],
+            'guidance' => 'cancellation_scope_id records activity, timer, child or wait membership and requires candidate protocol 1.20.',
+        ],
+        'cancellation_cleanup' => [
+            'allowed' => ['start_timer'],
+            'guidance' => 'Shielded scoped timers require the original scope, request and delivery identities under candidate protocol 1.20.',
+        ],
         'delay_seconds' => [
             'allowed' => ['start_timer'],
             'guidance' => 'delay_seconds is the timer delay and only applies to a start_timer command.',
@@ -396,6 +414,7 @@ final class WorkflowCommandNormalizer
 
             self::assertCommandFieldScope($type, is_array($command) ? $command : [], $index, $errors);
             self::assertParallelMetadataScope($type, is_array($command) ? $command : [], $index, $errors);
+            $scopeMetadata = self::optionalOperationScopeMetadata($command, $index, $errors, $protocolVersion);
 
             if ($type === 'cancel_selection_operation') {
                 $groupId = $command['selection_group_id'] ?? null;
@@ -515,9 +534,32 @@ final class WorkflowCommandNormalizer
                 $scheduleToClose = self::optionalPositiveInt($command, 'schedule_to_close_timeout', $index, $errors);
                 $heartbeat = self::optionalPositiveInt($command, 'heartbeat_timeout', $index, $errors);
                 $workerSession = self::optionalWorkerSession($command, $index, $errors);
+                $cancellationPolicy = self::optionalCommandString($command, 'cancellation_policy', $index, $errors);
                 $parallelMetadata = self::optionalParallelMetadataForCommand($command, $type, $index, $errors);
 
                 self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
+
+                if ($cancellationPolicy !== null) {
+                    if (! in_array(
+                        $cancellationPolicy,
+                        ['try_cancel', 'wait_cancellation_completed', 'abandon'],
+                        true
+                    )) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'The cancellation_policy must be one of: try_cancel, wait_cancellation_completed, abandon.',
+                        ];
+                    }
+                    if (! WorkerProtocolVersion::supportsActivityCancellationPolicies($protocolVersion)) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'Explicit activity cancellation policies require worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
+                    if ($cancellationPolicy === 'abandon' && $scheduleToClose === null) {
+                        $errors["commands.{$index}.schedule_to_close_timeout"] = [
+                            'An abandoned remote activity requires a finite schedule_to_close_timeout.',
+                        ];
+                    }
+                }
 
                 $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
                 $payloadCodec = self::payloadCodecForResolvedPayload(
@@ -541,6 +583,8 @@ final class WorkflowCommandNormalizer
                     'schedule_to_close_timeout' => $scheduleToClose,
                     'heartbeat_timeout' => $heartbeat,
                     'worker_session' => $workerSession,
+                    'cancellation_policy' => $cancellationPolicy,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -665,6 +709,16 @@ final class WorkflowCommandNormalizer
             }
 
             if ($type === 'start_timer') {
+                $cleanupMetadata = ScopedCancellationCleanup::metadata($command);
+                if ($cleanupMetadata === null
+                    || ($cleanupMetadata !== [] && ! WorkerProtocolVersion::supportsCancellationScopeMembership(
+                        $protocolVersion
+                    ))) {
+                    $errors["commands.{$index}.cancellation_cleanup"] = [
+                        'Scoped cleanup timers require exactly the original scope, request and delivery identities under protocol 1.20.',
+                    ];
+                    continue;
+                }
                 if (! is_int($command['delay_seconds'] ?? null) || (int) $command['delay_seconds'] < 0) {
                     $errors["commands.{$index}.delay_seconds"] = [
                         'Start timer commands require a non-negative integer delay_seconds.',
@@ -676,6 +730,8 @@ final class WorkflowCommandNormalizer
                 $normalized[] = [
                     'type' => $type,
                     'delay_seconds' => (int) $command['delay_seconds'],
+                    ...$scopeMetadata,
+                    ...$cleanupMetadata,
                     ...self::optionalParallelMetadataForCommand($command, $type, $index, $errors),
                 ];
 
@@ -692,19 +748,44 @@ final class WorkflowCommandNormalizer
                 }
 
                 $parentClosePolicy = self::optionalCommandString($command, 'parent_close_policy', $index, $errors);
+                $cancellationPolicy = self::optionalCommandString($command, 'cancellation_policy', $index, $errors);
                 $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Child workflow');
                 $parallelMetadata = self::optionalParallelMetadataForCommand($command, $type, $index, $errors);
 
                 if ($parentClosePolicy !== null && ! in_array(
                     $parentClosePolicy,
-                    ['abandon', 'request_cancel', 'terminate'],
+                    ['abandon', 'request_cancel', 'request_cancellation', 'terminate'],
                     true
                 )) {
                     $errors["commands.{$index}.parent_close_policy"] = [
-                        'The parent_close_policy must be one of: abandon, request_cancel, terminate.',
+                        'The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate.',
                     ];
 
                     continue;
+                }
+
+                if ($cancellationPolicy !== null && ! in_array(
+                    $cancellationPolicy,
+                    ['try_cancel', 'wait_cancellation_completed', 'abandon'],
+                    true,
+                )) {
+                    $errors["commands.{$index}.cancellation_policy"] = [
+                        'The cancellation_policy must be one of: try_cancel, wait_cancellation_completed, abandon.',
+                    ];
+
+                    continue;
+                }
+                if (! WorkerProtocolVersion::supportsChildCancellationPolicies($protocolVersion)) {
+                    if ($parentClosePolicy === 'request_cancellation') {
+                        $errors["commands.{$index}.parent_close_policy"] = [
+                            'Cooperative parent-close cancellation requires worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
+                    if (in_array($cancellationPolicy, ['try_cancel', 'wait_cancellation_completed'], true)) {
+                        $errors["commands.{$index}.cancellation_policy"] = [
+                            'Cooperative child cancellation policies require worker protocol 1.20 or newer in the same major.',
+                        ];
+                    }
                 }
 
                 $executionTimeout = self::optionalPositiveInt($command, 'execution_timeout_seconds', $index, $errors);
@@ -729,9 +810,11 @@ final class WorkflowCommandNormalizer
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
+                    'cancellation_policy' => $cancellationPolicy,
                     'retry_policy' => $retryPolicy,
                     'execution_timeout_seconds' => $executionTimeout,
                     'run_timeout_seconds' => $runTimeout,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -1130,6 +1213,7 @@ final class WorkflowCommandNormalizer
                     'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                     'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
                     'timeout_seconds' => $timeoutSeconds,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -1164,6 +1248,7 @@ final class WorkflowCommandNormalizer
                     'type' => $type,
                     'signal_name' => trim((string) $command['signal_name']),
                     'timeout_seconds' => $timeoutSeconds,
+                    ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -2106,6 +2191,37 @@ final class WorkflowCommandNormalizer
     /**
      * @param  array<string, mixed>  $command
      * @param  array<string, list<string>>  $errors
+     * @return array{cancellation_scope_id?: string}
+     */
+    private static function optionalOperationScopeMetadata(
+        array $command,
+        int $index,
+        array &$errors,
+        string $protocolVersion,
+    ): array {
+        if (! array_key_exists('cancellation_scope_id', $command)) {
+            return [];
+        }
+        $scopeId = $command['cancellation_scope_id'];
+        if (! is_string($scopeId) || trim($scopeId) === '' || strlen($scopeId) > 255
+            || preg_match('//u', $scopeId) !== 1) {
+            $errors["commands.{$index}.cancellation_scope_id"] = ['Expected a nonempty canonical scope identity.'];
+            return [];
+        }
+        if (! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
+            $errors["commands.{$index}.cancellation_scope_id"] = [
+                'Operation scope membership requires candidate protocol 1.20.',
+            ];
+            return [];
+        }
+        return [
+            'cancellation_scope_id' => $scopeId,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, list<string>> $errors
      */
     private static function optionalCommandString(array $command, string $field, int $index, array &$errors): ?string
     {

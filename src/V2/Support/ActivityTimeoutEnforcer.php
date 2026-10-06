@@ -118,7 +118,7 @@ final class ActivityTimeoutEnforcer
                     ->lockForUpdate()
                     ->findOrFail($execution->workflow_run_id);
 
-                if ($run->status->isTerminal()) {
+                if ($run->status->isTerminal() && ! ActivityAbandonment::allows($run, $execution)) {
                     return self::skipped('run_already_terminal');
                 }
 
@@ -420,6 +420,15 @@ final class ActivityTimeoutEnforcer
             $exceptionClass,
             $message,
         );
+
+        if ($run->status->isTerminal() && ActivityAbandonment::allows($run, $execution)) {
+            self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            return [
+                'enforced' => true,
+                'reason' => null,
+                'next_task' => null,
+            ];
+        }
 
         // A standalone-activity host run has no workflow code to resume:
         // close the host run as Failed instead of scheduling a workflow-task

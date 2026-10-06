@@ -49,6 +49,7 @@ class WorkflowRun extends Model
         'cancellation_deadline_at' => 'datetime',
         'cancellation_delivered_at' => 'datetime',
         'cancellation_delivery_sequence' => 'integer',
+        'cancellation_scope_recovery_until' => UtcScheduleTimestamp::class,
         'sticky_until' => 'datetime',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',

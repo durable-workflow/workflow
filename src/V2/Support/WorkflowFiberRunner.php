@@ -12,7 +12,9 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Contracts\YieldedCommand;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\DurableOperationCancelledException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
@@ -90,9 +92,14 @@ final class WorkflowFiberRunner
     private array $recordedSignalOutcomes = [];
 
     /**
-     * @var array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     * @var array<int, array{call_kind: string, recorded_at: CarbonInterface|null, context: CancellationContext|null}>
      */
     private array $recordedCancellationDeliveries = [];
+
+    /**
+     * @var array<int, true>
+     */
+    private array $recordedScopeSequences = [];
 
     /**
      * @var array<int, array{signal_name: string, signal_wait_id: string|null}>
@@ -321,11 +328,20 @@ final class WorkflowFiberRunner
 
                 $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
                 $this->execution->throw(
-                    new WorkflowCancellationRequestedException('Cooperative cancellation requested.'),
+                    new WorkflowCancellationRequestedException(cancellation: $cancellation['context']),
                     $cancellation['recorded_at'],
                 );
 
                 continue;
+            }
+
+            if ($historySequence !== null && isset($this->recordedScopeSequences[$historySequence])) {
+                throw new HistoryEventShapeMismatchException(
+                    $historySequence,
+                    get_debug_type($current),
+                    [HistoryEventType::CancellationScopeOpened->value],
+                    'A recorded cancellation scope must replay at its original creation boundary before operation admission.',
+                );
             }
 
             if ($current instanceof CancelDurableOperationCall) {
@@ -478,7 +494,11 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+                    $this->execution->send(
+                        $recorded['result'],
+                        $recorded['recorded_at'],
+                        advanceCancellationTime: false
+                    );
 
                     continue;
                 }
@@ -488,7 +508,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send($result);
+                $this->execution->send($result, advanceCancellationTime: false);
 
                 continue;
             }
@@ -516,6 +536,7 @@ final class WorkflowFiberRunner
                 $this->execution->send(
                     $current->resolveValue($resolution->version),
                     $versionMarkerEvent?->recorded_at,
+                    advanceCancellationTime: false,
                 );
 
                 continue;
@@ -535,7 +556,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at']);
+                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -544,7 +565,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null);
+                $this->execution->send(null, advanceCancellationTime: false);
 
                 continue;
             }
@@ -563,7 +584,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at']);
+                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -572,7 +593,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null);
+                $this->execution->send(null, advanceCancellationTime: false);
 
                 continue;
             }
@@ -1320,6 +1341,17 @@ final class WorkflowFiberRunner
             $this->namespace,
         );
         $this->recordedCancellationDeliveries = self::indexRecordedCancellationDeliveries($this->historyEvents);
+        $this->recordedScopeSequences = [];
+        foreach ($this->historyEvents as $event) {
+            if (self::eventType($event) !== HistoryEventType::CancellationScopeOpened->value) {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+            if ($sequence !== null) {
+                $this->recordedScopeSequences[$sequence] = true;
+            }
+        }
         $this->openSignalWaits = array_diff_key(
             self::indexOpenSignalWaits($this->historyEvents),
             $this->recordedSignalOutcomes,
@@ -1544,6 +1576,7 @@ final class WorkflowFiberRunner
     private static function hasWorkflowCommandSequence(?string $type): bool
     {
         return in_array($type, [
+            'CancellationScopeOpened',
             'ActivityScheduled',
             'ActivityStarted',
             'ActivityHeartbeatRecorded',
@@ -1778,11 +1811,26 @@ final class WorkflowFiberRunner
 
     /**
      * @param list<array<string, mixed>> $historyEvents
-     * @return array<int, array{call_kind: string, recorded_at: CarbonInterface|null}>
+     * @return array<int, array{call_kind: string, recorded_at: CarbonInterface|null, context: CancellationContext|null}>
      */
     private static function indexRecordedCancellationDeliveries(array $historyEvents): array
     {
         $deliveries = [];
+        $contexts = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'CooperativeCancellationRequested') {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            if (is_array($payload['cancellation'] ?? null)) {
+                $context = CancellationContext::fromArray($payload['cancellation']);
+                if ($context->requestId !== ($payload['workflow_command_id'] ?? null)) {
+                    throw new RuntimeException('Cancellation context changes its canonical request identity.');
+                }
+                $contexts[$context->requestId] = $context;
+            }
+        }
 
         foreach ($historyEvents as $event) {
             if (self::eventType($event) !== 'CooperativeCancellationDelivered') {
@@ -1797,6 +1845,7 @@ final class WorkflowFiberRunner
                 $deliveries[$sequence] = [
                     'call_kind' => $callKind,
                     'recorded_at' => self::eventRecordedAt($event, $payload),
+                    'context' => $contexts[$payload['workflow_command_id'] ?? ''] ?? null,
                 ];
             }
         }

@@ -141,6 +141,17 @@ final class SignalWaits
                 continue;
             }
 
+            if ($event->event_type === HistoryEventType::SignalWaitCancelled) {
+                $waitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
+                if ($waitId !== null && isset($waits[$waitId]) && $waits[$waitId]['status'] === 'open') {
+                    $waits[$waitId]['status'] = 'cancelled';
+                    $waits[$waitId]['source_status'] = 'scope_cancelled';
+                    $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+                    self::consumeOpenWaitId($openWaitIdsByName, $waits[$waitId]['signal_name'], $waitId);
+                }
+                continue;
+            }
+
             if ($event->event_type === HistoryEventType::SelectionOperationCancelled) {
                 self::closeCancelledSelectionWaits($waits, $openWaitIdsByName, $event);
 

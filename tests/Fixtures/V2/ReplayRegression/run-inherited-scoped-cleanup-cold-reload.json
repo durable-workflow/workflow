@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "run-inherited-scoped-cleanup-cold-reload",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+    "arguments": ["Ada"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-05T00:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "regression-corpus-run-run-inherited-scoped-cleanup-cold-reload",
+        "sequence": 1,
+        "scope_id": "parent-scope-1",
+        "parent_scope_id": "root",
+        "shield_parent": false
+      },
+      "recorded_at": "2026-10-05T00:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "regression-corpus-run-run-inherited-scoped-cleanup-cold-reload",
+        "sequence": 2,
+        "scope_id": "child-scope-2",
+        "parent_scope_id": "parent-scope-1",
+        "shield_parent": false
+      },
+      "recorded_at": "2026-10-05T00:00:02Z"
+    }
+  ],
+  "expected_failure": {
+    "type": "workflow_history_shape_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException"
+  }
+}

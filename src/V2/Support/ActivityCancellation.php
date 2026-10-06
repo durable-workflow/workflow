@@ -8,6 +8,7 @@ use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -17,12 +18,45 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ActivityCancellation
 {
+    /**
+     * @param array<string, mixed>|null $scopeCancellation
+     */
     public static function record(
         WorkflowRun $run,
         ActivityExecution $execution,
         ?WorkflowTask $task = null,
         WorkflowCommand|string|null $command = null,
+        ?array $scopeCancellation = null,
+        ?ScopedCancellationPreparation $scopePreparation = null,
     ): ?WorkflowHistoryEvent {
+        if ($scopeCancellation !== null) {
+            $context = ActivityCancellationContext::forScopeSnapshot(
+                $run,
+                $scopeCancellation,
+                $execution->id,
+                $execution->sequence
+            );
+            $authority = is_string($scopeCancellation['scope_id'] ?? null)
+                ? CancellationScopeRequests::authority($run, $scopeCancellation['scope_id']) : null;
+            $deadlineMatches = $scopePreparation === null
+                ? ($authority['deadline_at'] ?? null) === ($scopeCancellation['authority_deadline_at'] ?? null)
+                : $scopePreparation->workflowRunId === $run->id
+                    && $scopePreparation->scopeId === ($scopeCancellation['scope_id'] ?? null)
+                    && $scopePreparation->requestId === $command
+                    && $scopePreparation->requestHistoryEventId === ($scopeCancellation['request_history_event_id'] ?? null)
+                    && $scopePreparation->context->toArray() === ($scopeCancellation['cancellation'] ?? null)
+                    && $scopePreparation->authorityDeadlineAt === ($scopeCancellation['authority_deadline_at'] ?? null)
+                    && now()
+                        ->lt(\Carbon\CarbonImmutable::parse($scopePreparation->authorityDeadlineAt))
+                    && collect($scopePreparation->activityMembers)
+                        ->contains(static fn (array $member): bool =>
+                                                $member['activity_execution_id'] === $execution->id && $member['sequence'] === $execution->sequence);
+            if ($context === null || $context->requestId !== $command || $execution->workflow_run_id !== $run->id
+                || ($execution->activity_options['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID) !== $context->scopeId
+                || ! ($authority['active'] ?? false) || ! $deadlineMatches) {
+                throw new \LogicException('cancellation_scope_activity_context_mismatch');
+            }
+        }
         $cancelledAt = now();
 
         if ($execution->status !== ActivityStatus::Cancelled || $execution->closed_at === null) {
@@ -34,7 +68,12 @@ final class ActivityCancellation
 
         $attempt = self::currentAttempt($execution);
 
-        if ($attempt instanceof ActivityAttempt && $attempt->status !== ActivityAttemptStatus::Cancelled) {
+        if ($attempt instanceof ActivityAttempt && $attempt->status !== ActivityAttemptStatus::Cancelled
+            && ($scopeCancellation === null || ! in_array(
+                $attempt->status,
+                [ActivityAttemptStatus::Completed, ActivityAttemptStatus::Failed],
+                true
+            ))) {
             $attempt->forceFill([
                 'status' => ActivityAttemptStatus::Cancelled,
                 'lease_expires_at' => null,
@@ -42,7 +81,10 @@ final class ActivityCancellation
             ])->save();
         }
 
-        if ($task instanceof WorkflowTask && ($task->status !== TaskStatus::Cancelled || $task->lease_expires_at !== null)) {
+        $retainWorkflowClaim = $scopeCancellation !== null && LocalActivityRuntime::isExecution($execution)
+            && $task?->task_type === TaskType::Workflow;
+        if ($task instanceof WorkflowTask && ! $retainWorkflowClaim
+            && ($task->status !== TaskStatus::Cancelled || $task->lease_expires_at !== null)) {
             $task->forceFill([
                 'status' => TaskStatus::Cancelled,
                 'lease_expires_at' => null,
@@ -69,6 +111,9 @@ final class ActivityCancellation
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => self::attemptSnapshot($attempt),
         ];
+        if ($scopeCancellation !== null) {
+            $payload['cancellation_scope'] = $scopeCancellation;
+        }
 
         if (LocalActivityRuntime::isExecution($execution)) {
             $payload = LocalActivityRuntime::eventPayload($payload);
@@ -118,6 +163,7 @@ final class ActivityCancellation
 
         return array_filter([
             'id' => $attempt->id,
+            'worker_attempt_id' => $attempt->worker_attempt_id,
             'activity_execution_id' => $attempt->activity_execution_id,
             'task_id' => $attempt->workflow_task_id,
             'attempt_number' => $attempt->attempt_number,

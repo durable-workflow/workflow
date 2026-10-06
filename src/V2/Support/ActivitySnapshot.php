@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -34,6 +35,11 @@ final class ActivitySnapshot
             'payload_codec' => self::stringValue($execution->payload_codec),
             'attempt_count' => self::executionAttemptCount($execution),
             'retry_policy' => self::arrayValue($execution->retry_policy),
+            'cancellation_policy' => self::stringValue($execution->activity_options['cancellation_policy'] ?? null),
+            'cancellation_scope_id' => self::stringValue($execution->activity_options['cancellation_scope_id'] ?? null),
+            'schedule_to_close_deadline_at' => ($execution->activity_options['cancellation_policy'] ?? null)
+                === CancellationPolicy::Abandon->value
+                ? self::timestamp($execution->schedule_to_close_deadline_at) : null,
             'connection' => $execution->connection,
             'queue' => $execution->queue,
             'last_heartbeat_at' => self::timestamp($execution->last_heartbeat_at),
@@ -86,6 +92,7 @@ final class ActivitySnapshot
             'sequence' => self::intValue($payload['sequence'] ?? null),
             'type' => self::stringValue($payload['activity_type'] ?? null),
             'class' => self::stringValue($payload['activity_class'] ?? null),
+            'attempt_count' => self::intValue($payload['attempt_number'] ?? null),
             'execution_mode' => self::stringValue($payload['execution_mode'] ?? null),
             'local_activity' => ($payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
                 || ($payload['local_activity'] ?? null) === true,
@@ -96,6 +103,10 @@ final class ActivitySnapshot
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
+            'cancellation_policy' => self::stringValue($payload['cancellation_policy'] ?? null),
+            ...(isset($payload['cancellation_scope_id']) ? [
+                'cancellation_scope_id' => self::stringValue($payload['cancellation_scope_id']),
+            ] : []),
             'result' => self::payloadValue($payload['result'] ?? null),
             'reused_from_run_id' => self::stringValue($payload['reused_from_run_id'] ?? null),
             'reused_activity_execution_id' => self::stringValue($payload['reused_activity_execution_id'] ?? null),
@@ -155,8 +166,13 @@ final class ActivitySnapshot
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
             'execution_mode' => self::stringValue($snapshot['execution_mode'] ?? null),
-            'local_activity' => ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
-                || ($snapshot['local_activity'] ?? null) === true,
+            'local_activity' => array_key_exists('execution_mode', $snapshot) || array_key_exists(
+                'local_activity',
+                $snapshot
+            )
+                ? (($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                    || ($snapshot['local_activity'] ?? null) === true)
+                : null,
             'parallel_group_kind' => self::stringValue($snapshot['parallel_group_kind'] ?? null),
             'parallel_group_id' => self::stringValue($snapshot['parallel_group_id'] ?? null),
             'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),
@@ -168,6 +184,9 @@ final class ActivitySnapshot
             'payload_codec' => self::stringValue($snapshot['payload_codec'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
+            'cancellation_policy' => self::stringValue($snapshot['cancellation_policy'] ?? null),
+            'cancellation_scope_id' => self::stringValue($snapshot['cancellation_scope_id'] ?? null),
+            'schedule_to_close_deadline_at' => self::stringValue($snapshot['schedule_to_close_deadline_at'] ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null),
             'queue' => self::stringValue($snapshot['queue'] ?? null),
             'last_heartbeat_at' => self::stringValue($snapshot['last_heartbeat_at'] ?? null),
@@ -208,7 +227,12 @@ final class ActivitySnapshot
         array $snapshot,
         array $taskSnapshot,
     ): int {
-        $taskAttemptCount = in_array($eventType, [
+        // A local callback attempt and its hosting workflow claim have
+        // independent retry counters. The workflow counter is not an
+        // activity attempt, including on a repaired workflow claim.
+        $local = ($snapshot['local_activity'] ?? null) === true
+            || ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE;
+        $taskAttemptCount = ! $local && in_array($eventType, [
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityRetryScheduled,

@@ -455,8 +455,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         ?WorkflowRun $run,
         ?WorkflowTask $task,
     ): array {
+        $abandoned = $run instanceof WorkflowRun && $execution instanceof ActivityExecution
+            && ActivityAbandonment::allows($run, $execution);
         if ($attempt->status !== ActivityAttemptStatus::Running) {
-            if ($run instanceof WorkflowRun && $run->status === RunStatus::Cancelled) {
+            if ($run instanceof WorkflowRun && $run->status === RunStatus::Cancelled && ! $abandoned) {
                 return [false, true, 'run_cancelled'];
             }
 
@@ -475,7 +477,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             return [false, false, 'workflow_run_missing'];
         }
 
-        if ($run->status === RunStatus::Cancelled) {
+        if ($run->status === RunStatus::Cancelled && ! $abandoned) {
             return [false, true, 'run_cancelled'];
         }
 
@@ -491,8 +493,12 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             return [false, true, 'task_cancelled'];
         }
 
-        if ($run->status->isTerminal()) {
+        if ($run->status->isTerminal() && ! $abandoned) {
             return [false, false, 'run_closed'];
+        }
+
+        if ($abandoned && ActivityTimeoutEnforcer::hasExpiredDeadline($execution, now())) {
+            return [false, false, 'activity_deadline_elapsed'];
         }
 
         if ($execution->status !== ActivityStatus::Running) {

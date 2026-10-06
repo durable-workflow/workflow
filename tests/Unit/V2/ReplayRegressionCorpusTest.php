@@ -15,6 +15,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStep;
@@ -63,6 +64,21 @@ final class ReplayRegressionCorpusTest extends TestCase
     public function testFixtureExecutesThroughColdReplayRunner(array $fixture): void
     {
         $this->assertHistoryPayloadContract($fixture);
+
+        if ($fixture['id'] === 'root-delivery-scoped-operation-membership') {
+            $run = new WorkflowRun([
+                'cancellation_request_command_id' => 'request-1',
+            ]);
+            $run->setRelation('historyEvents', collect($fixture['history'])->map(
+                static fn (array $event): WorkflowHistoryEvent => new WorkflowHistoryEvent($event),
+            ));
+            $this->assertSame('cancellation_delivery_requires_scope', CooperativeCancellationDelivery::validate(
+                $run,
+                'request-1',
+                2,
+                'activity',
+            ));
+        }
 
         $workflow = $fixture['workflow'];
         $workflowClass = $workflow['type'];

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -43,7 +44,10 @@ class ChildCallService
             'connection' => $options->connection ?? $parentRun->connection,
             'queue' => $options->queue ?? $parentRun->queue,
             'compatibility' => $parentRun->compatibility,
-            'cancellation_propagation' => false, // Future expansion
+            'cancellation_propagation' => $options->cancellationPolicy !== CancellationPolicy::Abandon,
+            'metadata' => [
+                'cancellation_policy' => $options->cancellationPolicy->value,
+            ],
             'retry_policy' => null, // Future expansion
             'timeout_policy' => null, // Future expansion
             'arguments' => $call->arguments,
@@ -204,7 +208,10 @@ class ChildCallService
         foreach ($openChildren as $childCall) {
             match ($childCall->parent_close_policy) {
                 ParentClosePolicy::Abandon => $this->handleAbandon($childCall, $stats),
-                ParentClosePolicy::RequestCancel => $this->handleRequestCancel($childCall, $stats),
+                ParentClosePolicy::RequestCancel, ParentClosePolicy::RequestCancellation => $this->handleRequestCancel(
+                    $childCall,
+                    $stats,
+                ),
                 ParentClosePolicy::Terminate => $this->handleTerminate($childCall, $stats),
             };
         }

@@ -211,7 +211,37 @@ final class HistoryTimeline
             'command_outcome' => $commandMetadata['outcome'] ?? null,
             'command_rejection_reason' => $commandMetadata['rejection_reason'] ?? null,
             'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
+            ...($event->event_type === HistoryEventType::CancellationScopeOpened ? [
+                'cancellation_scope' => [
+                    'schema' => self::stringValue($payload['schema'] ?? null),
+                    'scope_id' => self::stringValue($payload['scope_id'] ?? null),
+                    'parent_scope_id' => self::stringValue($payload['parent_scope_id'] ?? null),
+                    'shield_parent' => is_bool($payload['shield_parent'] ?? null) ? $payload['shield_parent'] : null,
+                ],
+            ] : []),
+            ...(in_array(
+                $event->event_type,
+                [HistoryEventType::CancellationScopeRequested, HistoryEventType::CancellationScopeDeliveryPrepared,
+                    HistoryEventType::CancellationScopeDelivered,
+                    HistoryEventType::CancellationScopeRequestConflicted],
+                true
+            ) ? [
+                'cancellation_scope' => array_intersect_key($payload, array_flip([
+                    'schema', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
+                    'reason', 'accepted_cancellation', 'incoming_cancellation',
+                    'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span',
+                    'authority_deadline_at', 'activity_members', 'timer_members', 'wait_members', 'child_members', 'preparation_history_event_id',
+                ])),
+            ] : []),
             'service_call_id' => self::stringValue($payload['service_call_id'] ?? null),
+            ...(in_array(
+                $event->event_type,
+                [HistoryEventType::SignalWaitCancelled, HistoryEventType::ConditionWaitCancelled],
+                true
+            )
+                ? [
+                    'cancellation_scope' => $payload['cancellation_scope'] ?? null,
+                ] : []),
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
@@ -265,6 +295,67 @@ final class HistoryTimeline
             'activity' => $activityMetadata,
             'timer' => $timerMetadata,
             'child' => $childMetadata,
+            ...(is_array($payload['local_recovery'] ?? null) ? [
+                'local_recovery' => [
+                    'original_workflow_task_id' => self::stringValue(
+                        $payload['local_recovery']['original_workflow_task_id'] ?? null
+                    ),
+                    'original_workflow_task_attempt' => self::intValue(
+                        $payload['local_recovery']['original_workflow_task_attempt'] ?? null
+                    ),
+                    'original_lease_owner' => self::stringValue(
+                        $payload['local_recovery']['original_lease_owner'] ?? null
+                    ),
+                    'original_lease_expires_at' => self::timestamp(
+                        $payload['local_recovery']['original_lease_expires_at'] ?? null
+                    ),
+                    'workflow_task_id' => self::stringValue($payload['local_recovery']['workflow_task_id'] ?? null),
+                    'workflow_task_attempt' => self::intValue(
+                        $payload['local_recovery']['workflow_task_attempt'] ?? null
+                    ),
+                    'lease_owner' => self::stringValue($payload['local_recovery']['lease_owner'] ?? null),
+                    'callback_stop_state' => self::stringValue(
+                        $payload['local_recovery']['callback_stop_state'] ?? null
+                    ),
+                ],
+            ] : []),
+            ...($event->event_type === HistoryEventType::ActivityCancellationAcknowledged ? [
+                'cancellation_acknowledgement' => [
+                    'activity_attempt_id' => self::stringValue($payload['activity_attempt_id'] ?? null),
+                    'cancellation_history_event_id' => self::stringValue(
+                        $payload['cancellation_history_event_id'] ?? null
+                    ),
+                    'request_id' => self::stringValue($payload['request_id'] ?? null),
+                    'root_request_id' => self::stringValue($payload['root_request_id'] ?? null),
+                    'cleanup_deadline_at' => self::timestamp($payload['cleanup_deadline_at'] ?? null),
+                    'callback_state' => self::stringValue($payload['callback_state'] ?? null),
+                    'evidence_source' => self::stringValue($payload['evidence_source'] ?? null),
+                    'acknowledged_at' => self::timestamp($payload['acknowledged_at'] ?? null),
+                    'received_after_deadline' => $payload['received_after_deadline'] ?? null,
+                ],
+            ] : []),
+            ...(in_array($event->event_type, [
+                HistoryEventType::ParentCloseCancellationRequested,
+                HistoryEventType::ParentClosePolicyApplied,
+                HistoryEventType::ParentClosePolicyFailed,
+            ], true) ? [
+                'parent_close' => [
+                    'policy' => self::stringValue($payload['policy'] ?? null),
+                    'child_instance_id' => self::stringValue($payload['child_instance_id'] ?? null),
+                    'child_run_id' => self::stringValue($payload['child_run_id'] ?? null),
+                    'request_id' => self::stringValue($payload['request_id'] ?? null),
+                    'cancellation' => $payload['cancellation'] ?? null,
+                    'error' => self::stringValue($payload['error'] ?? null),
+                    'request_diagnostics' => $payload['request_diagnostics'] ?? null,
+                    'parent_terminal_history_event_id' => self::stringValue(
+                        $payload['parent_terminal_history_event_id'] ?? null,
+                    ),
+                ],
+            ] : []),
+            ...($event->event_type === HistoryEventType::WorkflowCancelled
+                && is_array($payload['cancellation_cleanup'] ?? null) ? [
+                    'cancellation_cleanup' => $payload['cancellation_cleanup'],
+                ] : []),
             'failure' => $failureMetadata,
         ];
     }
@@ -283,6 +374,7 @@ final class HistoryTimeline
             HistoryEventType::TerminateRequested,
             HistoryEventType::ArchiveRequested => 'command',
             HistoryEventType::SignalWaitOpened,
+            HistoryEventType::SignalWaitCancelled,
             HistoryEventType::SignalApplied => 'signal',
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
@@ -291,6 +383,8 @@ final class HistoryTimeline
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
+            HistoryEventType::ChildCancellationRequested,
+            HistoryEventType::ChildCancellationResolved,
             HistoryEventType::ChildRunTerminated => 'child',
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
@@ -298,7 +392,8 @@ final class HistoryTimeline
             HistoryEventType::ServiceCallCancelled => 'service_call',
             HistoryEventType::ConditionWaitOpened,
             HistoryEventType::ConditionWaitSatisfied,
-            HistoryEventType::ConditionWaitTimedOut => 'condition',
+            HistoryEventType::ConditionWaitTimedOut,
+            HistoryEventType::ConditionWaitCancelled => 'condition',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
@@ -306,12 +401,18 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::FailureHandled => 'failure',
             HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::VersionMarkerRecorded => 'version',
             HistoryEventType::SelectionResolved => 'selection',
             HistoryEventType::SelectionOperationCancelled => 'selection',
+            HistoryEventType::CancellationScopeOpened,
+            HistoryEventType::CancellationScopeRequested,
+            HistoryEventType::CancellationScopeDeliveryPrepared,
+            HistoryEventType::CancellationScopeDelivered,
+            HistoryEventType::CancellationScopeRequestConflicted => 'cancellation_scope',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired,
             HistoryEventType::TimerCancelled => 'timer',
@@ -341,7 +442,7 @@ final class HistoryTimeline
         $timerKind = self::stringValue($payload['timer_kind'] ?? null);
         $childLabel = self::displayLabel($child['type'] ?? $child['class'] ?? $child['run_id'] ?? 'child workflow');
 
-        return match ($event->event_type) {
+        $summary = match ($event->event_type) {
             HistoryEventType::StartAccepted => $outcome === null
                 ? 'Start accepted.'
                 : sprintf('Start accepted as %s.', $outcome),
@@ -349,6 +450,18 @@ final class HistoryTimeline
                 ? 'Start rejected.'
                 : sprintf('Start rejected: %s.', $rejectionReason),
             HistoryEventType::WorkflowStarted => 'Workflow run started.',
+            HistoryEventType::CancellationScopeRequested => 'Cooperative operation scope cancellation requested.',
+            HistoryEventType::CancellationScopeDeliveryPrepared => 'Operation scope cancellation preparation retained.',
+            HistoryEventType::CancellationScopeDelivered => 'Operation scope cancellation delivery boundary recorded.',
+            HistoryEventType::CancellationScopeRequestConflicted => 'Operation scope cancellation root conflicts with its accepted request.',
+            HistoryEventType::CancellationScopeOpened => sprintf(
+                'Cancellation scope %s opened under %s%s.',
+                self::stringValue($payload['scope_id'] ?? null) ?? 'unknown',
+                self::stringValue($payload['parent_scope_id'] ?? null) ?? 'unknown',
+                ($payload['shield_parent'] ?? null) === true ? ' with parent shielding' : '',
+            ),
+            HistoryEventType::SignalWaitCancelled => 'Signal wait cancelled by its operation scope.',
+            HistoryEventType::ConditionWaitCancelled => 'Condition wait cancelled by its operation scope.',
             HistoryEventType::WorkflowContinuedAsNew => sprintf(
                 'Continued as new on run %s.',
                 self::stringValue($payload['continued_to_run_id'] ?? null) ?? 'unknown'
@@ -448,7 +561,13 @@ final class HistoryTimeline
             HistoryEventType::CancelRequested => 'Cancel requested.',
             HistoryEventType::CooperativeCancellationRequested => 'Cooperative cancellation requested.',
             HistoryEventType::CooperativeCancellationDelivered => 'Cancellation delivered to workflow code.',
-            HistoryEventType::WorkflowCancelled => 'Workflow cancelled.',
+            HistoryEventType::WorkflowCancelled => match ($payload['cancellation_cleanup']['outcome'] ?? null) {
+                'completed' => 'Workflow cancelled after cleanup completed.',
+                'deadline_expired' => 'Workflow cancelled at the cleanup deadline.',
+                'not_delivered' => 'Workflow cancelled without cancellation delivery to workflow code.',
+                'unavailable' => 'Workflow cancelled. Cleanup delivery evidence is unavailable.',
+                default => 'Workflow cancelled.',
+            },
             HistoryEventType::TerminateRequested => 'Terminate requested.',
             HistoryEventType::WorkflowTerminated => 'Workflow terminated.',
             HistoryEventType::ArchiveRequested => match ($outcome) {
@@ -470,6 +589,11 @@ final class HistoryTimeline
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::ActivityCancelled => sprintf('Cancelled %s.', $activityLabel),
+            HistoryEventType::ActivityCancellationAcknowledged => sprintf(
+                'Worker reported stopped callback for %s%s.',
+                $activityLabel,
+                ($payload['received_after_deadline'] ?? false) === true ? ' after the cleanup deadline' : '',
+            ),
             HistoryEventType::ActivityTimedOut => $message === null
                 ? sprintf('Timed out %s.', $activityLabel)
                 : sprintf('Timed out %s: %s.', $activityLabel, $message),
@@ -516,6 +640,21 @@ final class HistoryTimeline
                 'signal_timeout' => 'Signal timeout cancelled.',
                 default => 'Timer cancelled.',
             },
+            HistoryEventType::ChildCancellationRequested => sprintf(
+                'Child cancellation %s under policy %s%s.',
+                self::stringValue($payload['request_outcome'] ?? null) ?? 'requested',
+                self::stringValue($payload['policy'] ?? null) ?? 'unknown',
+                self::stringValue($payload['rejection_reason'] ?? null) !== null
+                    ? ': ' . $payload['rejection_reason'] : '',
+            ),
+            HistoryEventType::ChildCancellationResolved => sprintf(
+                'Child cancellation resolved with durable outcome %s.',
+                self::stringValue($payload['child_status'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ParentCloseCancellationRequested => sprintf(
+                'Parent-close policy requested cooperative child cleanup, deadline %s.',
+                self::stringValue($payload['cancellation']['cleanup_deadline_at'] ?? null) ?? 'unknown',
+            ),
             HistoryEventType::ParentClosePolicyApplied => sprintf(
                 'Applied parent-close policy %s to child %s.',
                 self::stringValue($payload['policy'] ?? null) ?? 'unknown',
@@ -573,6 +712,10 @@ final class HistoryTimeline
                 self::stringValue($payload['reason'] ?? null) ?? 'unknown reason',
             ),
         };
+
+        return ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
+            ? $summary . ' The previous attempt lost authority. Callback stop is unknown.'
+            : $summary;
     }
 
     /**
@@ -616,6 +759,26 @@ final class HistoryTimeline
                 },
             'run_number' => self::intValue($payload['child_run_number'] ?? null),
             'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
+            ...(in_array($event->event_type, [
+                HistoryEventType::ChildCancellationRequested,
+                HistoryEventType::ChildCancellationResolved,
+            ], true) ? [
+                'cancellation' => [
+                    'policy' => self::stringValue($payload['policy'] ?? null),
+                    'parent_request_id' => self::stringValue($payload['parent_request_id'] ?? null),
+                    'root_request_id' => self::stringValue($payload['root_request_id'] ?? null),
+                    'cleanup_deadline_at' => self::timestamp($payload['cleanup_deadline_at'] ?? null),
+                    'child_request_id' => self::stringValue($payload['child_request_id'] ?? null),
+                    'child_root_request_id' => self::stringValue($payload['child_root_request_id'] ?? null),
+                    'child_cleanup_deadline_at' => self::timestamp($payload['child_cleanup_deadline_at'] ?? null),
+                    'request_outcome' => self::stringValue($payload['request_outcome'] ?? null),
+                    'rejection_reason' => self::stringValue($payload['rejection_reason'] ?? null),
+                    'terminal_history_event_id' => self::stringValue(
+                        $payload['child_terminal_history_event_id'] ?? null
+                    ),
+                    'terminal_event_type' => self::stringValue($payload['child_terminal_event_type'] ?? null),
+                ],
+            ] : []),
         ];
     }
 
@@ -839,6 +1002,8 @@ final class HistoryTimeline
                 ?? self::stringValue($payload['activity_class'] ?? null),
             'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null)
+                ?? ($event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+                    ? self::stringValue($payload['activity_attempt_id'] ?? null) : null)
                 ?? ($event->event_type === HistoryEventType::ActivityScheduled
                     ? null
                     : self::stringValue($activity?->current_attempt_id)),
@@ -851,7 +1016,8 @@ final class HistoryTimeline
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
                     HistoryEventType::ActivityTimedOut => 'failed',
-                    HistoryEventType::ActivityCancelled => 'cancelled',
+                    HistoryEventType::ActivityCancelled,
+                    HistoryEventType::ActivityCancellationAcknowledged => 'cancelled',
                     default => $activity?->status?->value,
                 },
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null)
@@ -1058,6 +1224,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity_execution',
             HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
@@ -1162,6 +1329,10 @@ final class HistoryTimeline
         if ($taskId === null) {
             return null;
         }
+        if (($event->payload['local_activity'] ?? null) === true
+            || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
+            return 'workflow';
+        }
 
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
@@ -1170,6 +1341,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged,
             HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
@@ -1181,11 +1353,16 @@ final class HistoryTimeline
         if ($taskId === null) {
             return null;
         }
+        if (($event->payload['local_activity'] ?? null) === true
+            || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
+            return self::stringValue($event->payload['task']['status'] ?? null);
+        }
 
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded => 'leased',
-            HistoryEventType::ActivityCancelled => 'cancelled',
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityCancellationAcknowledged => 'cancelled',
             HistoryEventType::WorkflowFailed => 'failed',
             HistoryEventType::WorkflowTimedOut => 'completed',
             default => 'completed',

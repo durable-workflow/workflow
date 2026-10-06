@@ -143,6 +143,13 @@ class CommandResult
         return $this->command->commandReason();
     }
 
+    public function cancellationContext(): ?CancellationContext
+    {
+        $snapshot = $this->command->payloadValues(['cancellation'])['cancellation'] ?? null;
+
+        return is_array($snapshot) ? CancellationContext::fromArray($snapshot) : null;
+    }
+
     public function message(): ?string
     {
         return $this->command->commandMessage();

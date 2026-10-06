@@ -30,7 +30,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.19';
+    public const VERSION = '1.20';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -285,6 +285,21 @@ final class WorkerProtocolVersion
         }
 
         return $capabilities;
+    }
+
+    public static function supportsChildCancellationPolicies(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, '1.20');
+    }
+
+    public static function supportsActivityCancellationPolicies(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, '1.20');
+    }
+
+    public static function supportsCancellationScopeMembership(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion($protocolVersion, CancellationScopeHistory::MINIMUM_PROTOCOL_VERSION);
     }
 
     public static function supportsMessageStreams(string $protocolVersion): bool
