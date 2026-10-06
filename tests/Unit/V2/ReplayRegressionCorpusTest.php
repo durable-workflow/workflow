@@ -15,6 +15,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -134,6 +135,14 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         $this->assertStepMatches($fixture['expected'], $step, "{$fixture['id']} final outcome");
+
+        if ($fixture['id'] === 'worker-session-routing-cold-replay') {
+            $scheduled = new WorkflowHistoryEvent($fixture['history'][1]);
+            $this->assertSame(
+                $fixture['history'][1]['payload']['activity']['worker_session'],
+                ActivitySnapshot::fromEvent($scheduled)['worker_session'],
+            );
+        }
 
         if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
             $run = new WorkflowRun();

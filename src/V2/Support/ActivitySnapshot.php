@@ -35,6 +35,7 @@ final class ActivitySnapshot
             'payload_codec' => self::stringValue($execution->payload_codec),
             'attempt_count' => self::executionAttemptCount($execution),
             'retry_policy' => self::arrayValue($execution->retry_policy),
+            'worker_session' => self::arrayValue($execution->activity_options['worker_session'] ?? null),
             'cancellation_policy' => self::stringValue($execution->activity_options['cancellation_policy'] ?? null),
             'cancellation_scope_id' => self::stringValue($execution->activity_options['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => ($execution->activity_options['cancellation_policy'] ?? null)
@@ -103,6 +104,7 @@ final class ActivitySnapshot
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
+            'worker_session' => self::arrayValue($payload['worker_session'] ?? null),
             'cancellation_policy' => self::stringValue($payload['cancellation_policy'] ?? null),
             ...(isset($payload['cancellation_scope_id']) ? [
                 'cancellation_scope_id' => self::stringValue($payload['cancellation_scope_id']),
@@ -184,6 +186,7 @@ final class ActivitySnapshot
             'payload_codec' => self::stringValue($snapshot['payload_codec'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
+            'worker_session' => self::arrayValue($snapshot['worker_session'] ?? null),
             'cancellation_policy' => self::stringValue($snapshot['cancellation_policy'] ?? null),
             'cancellation_scope_id' => self::stringValue($snapshot['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => self::stringValue($snapshot['schedule_to_close_deadline_at'] ?? null),
