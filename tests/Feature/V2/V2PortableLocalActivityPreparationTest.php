@@ -290,7 +290,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         ]];
     }
 
-    public function testThePublishedProtocolDoesNotOptInToTheCandidatePreparationPath(): void
+    public function testProtocol119CannotPreparePortableLocalActivities(): void
     {
         [, $task] = $this->newClaim();
         $reply = PortableLocalActivityPreparation::prepare(
@@ -300,6 +300,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             1,
             'sdk-local-attempt',
             $this->descriptor(),
+            '1.19',
         );
         $this->assertFalse($reply['prepared']);
         $this->assertSame('local_activity_preparation_requires_protocol_1_20', $reply['reason']);
@@ -900,7 +901,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame(1, ActivityAttempt::query()->count());
     }
 
-    public function testGroupRoleIsOptionalAndPublishedProtocolCannotUseIt(): void
+    public function testGroupRoleIsOptionalAndProtocol119CannotUseIt(): void
     {
         [, $task] = $this->newClaim();
         $bridge = app(PreparedLocalActivityGroupTaskBridge::class);
@@ -911,7 +912,8 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             1,
             'candidate-only',
             1,
-            $this->groupCommands()
+            $this->groupCommands(),
+            '1.19'
         );
         $this->assertFalse($reply['checkpointed']);
         foreach ([WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class] as $contract) {

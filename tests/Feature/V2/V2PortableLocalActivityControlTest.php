@@ -417,12 +417,12 @@ final class V2PortableLocalActivityControlTest extends TestCase
         yield 'invalid epoch' => ['original-worker', 0];
     }
 
-    public function testPublishedDefaultRefusesControlBeforeAnyMutation(): void
+    public function testProtocol119RefusesControlBeforeAnyMutation(): void
     {
         [$run, $task, $attempt, $execution] = $this->prepared();
         $before = $this->snapshot($run, $task, $attempt, $execution);
         $status = $this->bridge()
-            ->controlLocalActivity($attempt->id, 'original-worker', 7, true);
+            ->controlLocalActivity($attempt->id, 'original-worker', 7, true, '1.19');
         $this->assertSame('local_activity_control_requires_protocol_1_20', $status['reason']);
         $this->assertFalse($status['renewed']);
         $this->assertSame($before, $this->snapshot($run, $task, $attempt, $execution));

@@ -251,7 +251,7 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
         ]];
     }
 
-    public function testThePublishedProtocolAndOversizedBatchesDoNotEnterTheCandidatePath(): void
+    public function testProtocol119AndOversizedBatchesDoNotEnterThePreparedPath(): void
     {
         [, $task] = $this->newClaim();
         $bridge = app(DefaultWorkflowTaskBridge::class);
@@ -262,6 +262,7 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
             'checkpoint-one',
             1,
             $this->prefix(),
+            '1.19',
         )['reason']);
         $this->assertSame(
             'invalid_local_activity_checkpoint',

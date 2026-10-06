@@ -359,7 +359,7 @@ final class V2PortableLocalActivityOutcomeTest extends TestCase
         $this->assertSame(2, $run->historyEvents()->count());
     }
 
-    public function testThePublishedProtocolDoesNotEnterTheCandidateOutcomePath(): void
+    public function testProtocol119DoesNotEnterThePreparedOutcomePath(): void
     {
         [$run, , $prepared] = $this->preparedClaim();
         $reply = app(LocalActivityExecutor::class)->recordPortableOutcome(
@@ -367,6 +367,7 @@ final class V2PortableLocalActivityOutcomeTest extends TestCase
             'portable-worker',
             2,
             $this->success(),
+            '1.19',
         );
         $this->assertSame('local_activity_outcome_requires_protocol_1_20', $reply['reason']);
         $this->assertSame(2, $run->historyEvents()->count());

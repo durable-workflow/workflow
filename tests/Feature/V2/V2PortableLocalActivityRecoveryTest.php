@@ -362,10 +362,10 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertSame($before, $run->historyEvents()->count());
     }
 
-    public function testPublishedProtocolCannotEnterTheCandidateRecoveryPath(): void
+    public function testProtocol119CannotEnterThePreparedRecoveryPath(): void
     {
         [$run, $task, , $descriptor] = $this->reclaimedCall();
-        $reply = PortableLocalActivityPreparation::recover($task->id, 'replacement-worker', 8, 1, $descriptor);
+        $reply = PortableLocalActivityPreparation::recover($task->id, 'replacement-worker', 8, 1, $descriptor, '1.19');
         $this->assertSame('local_activity_recovery_requires_protocol_1_20', $reply['reason']);
         $this->assertSame(2, $run->historyEvents()->count());
     }
@@ -382,7 +382,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         }
     }
 
-    public function testLocalStopAdmissionRequiresTheCandidateProtocolThroughTheOptionalRole(): void
+    public function testLocalStopAdmissionRejectsProtocol119ThroughTheOptionalRole(): void
     {
         [$run, , $first] = $this->reclaimedCall();
         $before = $run->historyEvents()
@@ -392,7 +392,8 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
                 $first['activity_attempt_id'],
                 'original-worker',
                 'not-a-recorded-request',
-                7
+                7,
+                '1.19'
             );
         $this->assertFalse($reply['acknowledged']);
         $this->assertSame('local_activity_stop_receipt_requires_protocol_1_20', $reply['reason']);
