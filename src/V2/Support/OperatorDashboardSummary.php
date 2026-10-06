@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
+use LogicException;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowFailure;
@@ -16,8 +17,11 @@ final class OperatorDashboardSummary
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null, ?string $namespace = null): array
-    {
+    public static function snapshot(
+        ?CarbonInterface $now = null,
+        ?string $namespace = null,
+        bool $includeHistoryAudits = true,
+    ): array {
         $now ??= now();
         $namespace = self::normalizeNamespace($namespace);
         $flowsPastHour = self::flowsPastHour($now, $namespace);
@@ -35,7 +39,7 @@ final class OperatorDashboardSummary
             'workflow_type_health' => self::workflowTypeHealth($now, $namespace),
             'needs_attention' => self::needsAttention($now, $namespace),
             'fleet_trends_series' => self::fleetTrendsSeries($now, $namespace),
-            'operator_metrics' => OperatorMetrics::snapshot($now, $namespace),
+            'operator_metrics' => OperatorMetrics::snapshot($now, $namespace, $includeHistoryAudits),
         ];
     }
 
@@ -52,14 +56,23 @@ final class OperatorDashboardSummary
         $weekAgo = $now->copy()
             ->subWeek();
 
-        // Fetch terminal-run rows in the last 7 days and bucket them hourly in PHP
-        // to avoid DB-specific date formatting (DATE_FORMAT is MySQL-only).
-        $rows = self::summaryQuery($namespace)
-            ->select('closed_at', 'status_bucket')
+        // Aggregate before fetching: at most two status rows for each displayed
+        // hour, independent of how many maintenance runs completed in that hour.
+        $query = self::summaryQuery($namespace);
+        $hourBucket = match ($query->getConnection()->getDriverName()) {
+            'mysql', 'mariadb' => "DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00')",
+            'pgsql' => "TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00')",
+            'sqlite' => "STRFTIME('%Y-%m-%d %H:00:00', closed_at)",
+            'sqlsrv' => "CONVERT(varchar(13), closed_at, 120) + ':00:00'",
+            default => throw new LogicException('Unsupported database driver for dashboard trend aggregation.'),
+        };
+        $rows = $query
+            ->selectRaw($hourBucket . ' AS hour_bucket, status_bucket, COUNT(*) AS run_count')
             ->whereNotNull('closed_at')
             ->where('closed_at', '>=', $weekAgo)
+            ->where('closed_at', '<', $now->copy()->startOfHour()->addHour())
             ->whereIn('status_bucket', ['completed', 'failed'])
-            ->orderBy('closed_at')
+            ->groupBy(DB::raw($hourBucket), 'status_bucket')
             ->get();
 
         // Build time series with all hours (fill gaps with zeros)
@@ -71,10 +84,7 @@ final class OperatorDashboardSummary
 
         $hourCounts = [];
         foreach ($rows as $row) {
-            $hourKey = $row->closed_at->copy()
-                ->startOfHour()
-                ->format('Y-m-d H:00:00');
-            $hourCounts[$hourKey][$row->status_bucket] = ($hourCounts[$hourKey][$row->status_bucket] ?? 0) + 1;
+            $hourCounts[(string) $row->hour_bucket][$row->status_bucket] = (int) $row->run_count;
         }
 
         // Generate all hours in the range
@@ -206,18 +216,19 @@ final class OperatorDashboardSummary
             $terminalRuns = $completed + $failed + $cancelled + $terminated;
             $passRate = $terminalRuns > 0 ? ($completed / $terminalRuns) * 100 : 0;
 
-            // Get median duration for completed runs
+            // Preserve the existing upper-middle median without fetching and
+            // sorting every completed duration in the application process.
             $durations = self::summaryQuery($namespace)
                 ->where('workflow_type', $workflowType)
                 ->where('status', RunStatus::Completed->value)
                 ->where('created_at', '>=', $weekAgo)
-                ->whereNotNull('duration_ms')
-                ->pluck('duration_ms')
-                ->sort()
-                ->values();
+                ->whereNotNull('duration_ms');
+            $durationCount = (clone $durations)->count();
 
-            $medianDuration = $durations->count() > 0
-                ? $durations->get((int) ($durations->count() / 2))
+            $medianDuration = $durationCount > 0
+                ? $durations->orderBy('duration_ms')
+                    ->offset(intdiv($durationCount, 2))
+                    ->value('duration_ms')
                 : null;
 
             // Get error breakdown
