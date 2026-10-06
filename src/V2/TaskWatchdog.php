@@ -225,8 +225,21 @@ final class TaskWatchdog
     {
         try {
             $task = DB::transaction(static function () use ($candidateId): ?WorkflowTask {
+                $runId = WorkflowTask::query()->whereKey($candidateId)->value('workflow_run_id');
+                if (! is_string($runId)) {
+                    return null;
+                }
+
+                // Repair and Server mutations acquire the run before its tasks.
+                // Recheck the association after waiting for that run lock.
+                /** @var WorkflowRun $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->findOrFail($runId);
+
                 /** @var WorkflowTask|null $task */
                 $task = WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
                     ->lockForUpdate()
                     ->find($candidateId);
 
@@ -239,11 +252,6 @@ final class TaskWatchdog
                 )) {
                     return null;
                 }
-
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($task->workflow_run_id);
 
                 TaskCompatibility::sync($task, $run);
 
@@ -486,14 +494,6 @@ final class TaskWatchdog
             $task = DB::transaction(static function () use ($runId, &$cancellationEnforced): ?WorkflowTask {
                 $cancellationEnforced = false;
 
-                // Worker protocol mutations lock the task before the run.
-                $existingWorkflowTask = WorkflowTask::query()
-                    ->where('workflow_run_id', $runId)
-                    ->where('task_type', TaskType::Workflow->value)
-                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-                    ->lockForUpdate()
-                    ->first();
-
                 /** @var WorkflowRun|null $run */
                 $run = WorkflowRun::query()
                     ->lockForUpdate()
@@ -502,6 +502,13 @@ final class TaskWatchdog
                 if ($run === null || $run->status->isTerminal()) {
                     return null;
                 }
+
+                $existingWorkflowTask = WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                    ->lockForUpdate()
+                    ->first();
 
                 $now = now();
                 $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
