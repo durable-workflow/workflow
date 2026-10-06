@@ -12,6 +12,7 @@ use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Foundation\Bus\PendingDispatch;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\App;
@@ -65,7 +66,16 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, Shou
 
     public bool $outboxWasConsumed = false;
 
+    public $onUnlock;
+
     private Container $container;
+
+    /**
+     * @var list<PendingDispatch>
+     */
+    private array $pendingActivityDispatches = [];
+
+    private bool $activityDispatchHooked = false;
 
     public function __construct(
         public StoredWorkflow $storedWorkflow,
@@ -87,6 +97,31 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, Shou
         self::initializeQueue($this, $queue);
 
         $this->afterCommit = true;
+    }
+
+    /**
+     * @internal
+     */
+    public function dispatchActivityAfterUnlock(PendingDispatch $dispatch): void
+    {
+        $this->pendingActivityDispatches[] = $dispatch;
+
+        if ($this->activityDispatchHooked) {
+            return;
+        }
+
+        $previous = $this->onUnlock;
+        $this->activityDispatchHooked = true;
+        $this->onUnlock = function (bool $shouldSignal) use ($previous): void {
+            if (is_callable($previous)) {
+                $previous($shouldSignal);
+            }
+
+            $this->activityDispatchHooked = false;
+            // PendingDispatch queues each job when its final reference is gone.
+            // Activities must not spend attempts waiting for this handler's lock.
+            $this->pendingActivityDispatches = [];
+        };
     }
 
     public function uniqueId()
@@ -329,6 +364,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, Shou
 
     private function setContext(array $context): void
     {
+        $context['workflow'] = $this;
         $existingContext = WorkflowStub::getContext();
 
         if (property_exists($existingContext, 'probing') && $existingContext->probing) {
