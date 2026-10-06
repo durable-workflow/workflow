@@ -20,6 +20,35 @@ use Workflow\WorkflowStub;
 
 final class ContinuedDispatchTest extends TestCase
 {
+    public function testPreviouslyQueuedContinuedWorkflowRetiresWhileSuccessorIsActive(): void
+    {
+        $root = StoredWorkflow::findOrFail(WorkflowStub::make(TestContinuedAwaitTimerWorkflow::class)->id());
+        $root->update([
+            'arguments' => Serializer::serialize([0, 1]),
+            'status' => WorkflowContinuedStatus::$name,
+        ]);
+        $successor = StoredWorkflow::findOrFail(WorkflowStub::make(TestContinuedAwaitTimerWorkflow::class)->id());
+        $root->children()
+            ->attach($successor, [
+                'parent_index' => StoredWorkflow::ACTIVE_WORKFLOW_INDEX,
+                'parent_now' => now(),
+            ]);
+
+        foreach ([WorkflowPendingStatus::$name, WorkflowWaitingStatus::$name] as $status) {
+            $successor->update([
+                'status' => $status,
+            ]);
+            $job = new TestContinuedAwaitTimerWorkflow($root->fresh(), 0, 1);
+            $queueJob = Mockery::mock(Job::class);
+            $queueJob->shouldNotReceive('release');
+            $job->setJob($queueJob);
+            $job->handle();
+            $this->assertInstanceOf(WorkflowContinuedStatus::class, $root->fresh()->status);
+            $this->assertSame($status, $successor->fresh()->getRawOriginal('status'));
+            $this->assertSame(0, $root->logs()->count());
+        }
+    }
+
     public function testOldJobsDoNotDispatchTheirContinuedRunWhileSuccessorIsPending(): void
     {
         Queue::fake();
