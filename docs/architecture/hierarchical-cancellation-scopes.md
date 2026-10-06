@@ -390,8 +390,16 @@ delivery and budget, and an old attempt cannot publish. Native lease recovery
 still reports an unknown physical callback-stop state until the original owner
 provides real stop proof.
 
-These are Native prepared-local primitives. Other durable cleanup operations,
-SDK consumption/supervision, cleanup outcomes in scope inspection and real scoped
+Shielded scoped timers carry `cancellation_cleanup` with only the original
+scope, request and delivery history identities. Admission derives the immutable
+budget and preparation ceiling from canonical history. It refuses timers that
+would fire at or beyond that ceiling and preserves the authored delay. The
+scheduled history retains the derived snapshot so replacement can verify the
+same authority and later ancestor cancellation can preserve the shielded timer.
+Malformed proofs, invented deadlines and missing shielding cannot admit new work.
+
+These are Native prepared-local and timer primitives. Other durable cleanup operations,
+complete SDK consumption/supervision, cleanup outcomes in scope inspection and real scoped
 SIGKILL recovery remain qualification work. Scope execution stays unadvertised
 and the SDK Worker does not enable it from this internal descriptor alone.
 

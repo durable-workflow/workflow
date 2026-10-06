@@ -362,6 +362,7 @@ final class HistoryEventPayloadContract
             'parallel_group_path',
         ],
         'TimerScheduled' => [
+            'cancellation_cleanup',
             'timer_id',
             'sequence',
             'delay_seconds',

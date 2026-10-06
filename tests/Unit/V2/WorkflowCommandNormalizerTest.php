@@ -15,6 +15,44 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
 {
+    public function testScopedCleanupTimerProofRequiresTheCandidateProtocolAndCannotBeDroppedOrExtended(): void
+    {
+        $command = [
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+            'cancellation_scope_id' => 'scope',
+            'cancellation_cleanup' => [
+                'scope_id' => 'scope',
+                'request_id' => 'request',
+                'delivery_history_event_id' => 'delivery',
+            ],
+        ];
+        $this->assertSame($command, WorkflowCommandNormalizer::normalize([$command], '1.20')[0]);
+        foreach (['1.19', '2.0'] as $protocol) {
+            try {
+                WorkflowCommandNormalizer::normalize([$command], $protocol);
+                $this->fail('Unqualified protocol accepted a cleanup authority proof.');
+            } catch (ValidationException $error) {
+                $this->assertArrayHasKey('commands.0.cancellation_cleanup', $error->errors());
+            }
+        }
+        foreach ([
+            null, [], [
+                'scope_id' => 'scope',
+            ], [
+                ...$command['cancellation_cleanup'],
+                'cleanup_deadline_at' => '2027-01-01T00:00:00.000000Z',
+            ]] as $proof) {
+            $command['cancellation_cleanup'] = $proof;
+            try {
+                WorkflowCommandNormalizer::normalize([$command], '1.20');
+                $this->fail('Malformed cleanup authority was silently dropped or accepted.');
+            } catch (ValidationException $error) {
+                $this->assertArrayHasKey('commands.0.cancellation_cleanup', $error->errors());
+            }
+        }
+    }
+
     public function testOperationScopeMembershipRequiresTheCandidateProtocolAndPreservesExactAddresses(): void
     {
         foreach ($this->scopedOperationCommands() as $command) {

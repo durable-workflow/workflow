@@ -68,6 +68,9 @@ final class ScopedTimerCancellation
             }
             $ids[$id] = true;
             $sequences[$sequence] = $payload['timer_kind'] ?? null;
+            if (ScopedCancellationCleanup::isScheduledTimer($run, $event)) {
+                continue;
+            }
             $members[] = [
                 'sequence' => $sequence,
                 'timer_id' => $id,

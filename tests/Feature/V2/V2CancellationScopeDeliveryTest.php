@@ -2296,6 +2296,97 @@ final class V2CancellationScopeDeliveryTest extends TestCase
         yield 'later delivery has shorter budget' => [20, 5];
     }
 
+    public function testShieldedCleanupTimerUsesOriginalDeliveryAndRemainsOutsideLaterCancellationInventory(): void
+    {
+        [, $run, $task, , $scope] = $this->scopeTree();
+        $run->forceFill([
+            'execution_deadline_at' => now()
+                ->addSeconds(15),
+        ])->save();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $delivery = $this->deliver($run, $task, $scope, 'timer');
+        $proof = $this->scopedCleanupDescriptor($scope, $scope, $request, $delivery)['cancellation_cleanup'];
+        $command = [
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+            'cancellation_scope_id' => $scope,
+            'cancellation_cleanup' => $proof,
+        ];
+        $normalized = \Workflow\V2\Support\WorkflowCommandNormalizer::normalize([$command], '1.20');
+        $this->assertSame($command, $normalized[0]);
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete($task->id, $normalized);
+        $this->assertTrue($reply['completed'], $reply['reason'] ?? '');
+        $timer = $run->timers()
+            ->sole();
+        $this->assertSame(1, $timer->delay_seconds);
+        $this->assertSame('2026-10-03T00:00:01.000000Z', $timer->fire_at->toISOString());
+        $scheduled = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerScheduled)->sole();
+        $snapshot = $scheduled->payload['cancellation_cleanup'];
+        $this->assertSame($delivery->id, $snapshot['delivery_history_event_id']);
+        $this->assertSame($request->payload['request_id'], $snapshot['request_id']);
+        $this->assertSame('2026-10-03T00:00:30.000000Z', $snapshot['cleanup_deadline_at']);
+        $this->assertSame('2026-10-03T00:00:15.000000Z', $snapshot['authority_deadline_at']);
+        $this->assertSame([], ScopedTimerCancellation::members($run->fresh(), $scope));
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertFalse($run->fresh()->status->isTerminal());
+    }
+
+    #[DataProvider('invalidCleanupTimers')]
+    public function testCleanupTimerCannotInventAuthorityOrOutliveItsOriginalBudget(
+        string $mutation,
+        string $reason
+    ): void {
+        [, $run, $task, $parent, $scope] = $this->scopeTree();
+        $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $delivery = $this->deliver($run, $task, $scope, 'timer');
+        $command = [
+            'type' => 'start_timer',
+            'delay_seconds' => 1,
+            'cancellation_scope_id' => $scope,
+            'cancellation_cleanup' => $this->scopedCleanupDescriptor(
+                $scope,
+                $scope,
+                $request,
+                $delivery
+            )['cancellation_cleanup'],
+        ];
+        match ($mutation) {
+            'missing proof' => $command = array_diff_key($command, [
+                'cancellation_cleanup' => true,
+            ]),
+            'wrong request' => $command['cancellation_cleanup']['request_id'] = 'another-request',
+            'wrong delivery' => $command['cancellation_cleanup']['delivery_history_event_id'] = 'another-delivery',
+            'unaffected parent' => $command['cancellation_scope_id'] = $parent,
+            'invented budget' => $command['cancellation_cleanup']['cleanup_deadline_at'] = now()->addHour()->toISOString(),
+            'timer at deadline' => $command['delay_seconds'] = 30,
+            'timer after deadline' => $command['delay_seconds'] = 31,
+        };
+        $before = $run->historyEvents()
+            ->get()
+            ->toArray();
+        $claim = $task->fresh()
+            ->getAttributes();
+        $reply = app(DefaultWorkflowTaskBridge::class)->complete($task->id, [$command]);
+        $this->assertFalse($reply['completed']);
+        $this->assertSame($reason, $reply['reason']);
+        $this->assertSame($before, $run->historyEvents()->get()->toArray());
+        $this->assertSame($claim, $task->fresh()->getAttributes());
+        $this->assertSame(0, $run->timers()->count());
+    }
+
+    public static function invalidCleanupTimers(): iterable
+    {
+        yield 'missing proof' => ['missing proof', 'operation_scope_cancellation_prepared'];
+        foreach (['wrong request', 'wrong delivery', 'unaffected parent'] as $mutation) {
+            yield $mutation => [$mutation, 'cancellation_scope_cleanup_authority_mismatch'];
+        }
+        yield 'caller cannot invent a budget' => ['invented budget', 'invalid_commands'];
+        foreach (['timer at deadline', 'timer after deadline'] as $mutation) {
+            yield $mutation => [$mutation, 'cancellation_scope_cleanup_timer_exceeds_deadline'];
+        }
+    }
+
     private function scopedCleanupDescriptor(
         string $address,
         string $operationScope,

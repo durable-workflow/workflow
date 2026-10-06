@@ -160,6 +160,10 @@ final class WorkflowCommandNormalizer
             ],
             'guidance' => 'cancellation_scope_id records activity, timer, child or wait membership and requires candidate protocol 1.20.',
         ],
+        'cancellation_cleanup' => [
+            'allowed' => ['start_timer'],
+            'guidance' => 'Shielded scoped timers require the original scope, request and delivery identities under candidate protocol 1.20.',
+        ],
         'delay_seconds' => [
             'allowed' => ['start_timer'],
             'guidance' => 'delay_seconds is the timer delay and only applies to a start_timer command.',
@@ -705,6 +709,16 @@ final class WorkflowCommandNormalizer
             }
 
             if ($type === 'start_timer') {
+                $cleanupMetadata = ScopedCancellationCleanup::metadata($command);
+                if ($cleanupMetadata === null
+                    || ($cleanupMetadata !== [] && ! WorkerProtocolVersion::supportsCancellationScopeMembership(
+                        $protocolVersion
+                    ))) {
+                    $errors["commands.{$index}.cancellation_cleanup"] = [
+                        'Scoped cleanup timers require exactly the original scope, request and delivery identities under protocol 1.20.',
+                    ];
+                    continue;
+                }
                 if (! is_int($command['delay_seconds'] ?? null) || (int) $command['delay_seconds'] < 0) {
                     $errors["commands.{$index}.delay_seconds"] = [
                         'Start timer commands require a non-negative integer delay_seconds.',
@@ -717,6 +731,7 @@ final class WorkflowCommandNormalizer
                     'type' => $type,
                     'delay_seconds' => (int) $command['delay_seconds'],
                     ...$scopeMetadata,
+                    ...$cleanupMetadata,
                     ...self::optionalParallelMetadataForCommand($command, $type, $index, $errors),
                 ];
 

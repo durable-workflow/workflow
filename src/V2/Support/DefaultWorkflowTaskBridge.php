@@ -1427,6 +1427,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return 'operation_scope_not_recorded';
         }
         foreach ($commands as $offset => $command) {
+            if ($command['type'] === 'start_timer') {
+                $cleanupError = ScopedCancellationCleanup::timerRefusal($run, $command, $sequence + $offset);
+                if ($cleanupError !== null) {
+                    return $cleanupError;
+                }
+            }
             // Implicit-root commands also share the authored cursor. A pending
             // scoped delivery must consume its reserved position before any
             // unrelated operation or metadata write can take that position.
@@ -1434,7 +1440,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $run,
                 $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
                 $sequence + $offset,
-                $command['type'] === 'prepare_local_activity' ? ($command['cancellation_cleanup'] ?? null) : null,
+                in_array($command['type'], ['prepare_local_activity', 'start_timer'], true)
+                    ? ($command['cancellation_cleanup'] ?? null) : null,
             );
             if ($refusal !== null) {
                 return $refusal;
@@ -3454,6 +3461,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'sequence' => $sequence,
             'delay_seconds' => $delaySeconds,
             'fire_at' => $fireAt->toJSON(),
+            ...(isset($command['cancellation_cleanup']) ? [
+                'cancellation_cleanup' => PortableLocalActivityCleanup::snapshot(
+                    $run,
+                    $command['cancellation_cleanup'],
+                    $sequence,
+                    $command['cancellation_scope_id'],
+                ),
+            ] : []),
             ...self::operationScopeMetadata($command),
             ...self::parallelMetadataForCommand($command),
         ], $task);
@@ -5697,6 +5712,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         $scopeMetadata = self::operationScopeMetadata($command);
+        $cleanupMetadata = ScopedCancellationCleanup::metadata($command);
+        if ($cleanupMetadata === null || ($cleanupMetadata !== [] && $type !== 'start_timer')) {
+            return null;
+        }
         if (array_key_exists('cancellation_scope_id', $command)
             && ($scopeMetadata === [] || ! in_array(
                 $type,
@@ -5725,7 +5744,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'open_signal_wait' => self::normalizeOpenSignalWaitCommand($command),
             default => null,
         };
-        return $normalized === null ? null : [...$normalized, ...$scopeMetadata];
+        return $normalized === null ? null : [...$normalized, ...$scopeMetadata, ...$cleanupMetadata];
     }
 
     /** @param array<string, mixed> $command
