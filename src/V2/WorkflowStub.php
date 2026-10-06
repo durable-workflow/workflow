@@ -575,15 +575,18 @@ final class WorkflowStub
     /**
      * @param class-string<Workflow> $workflow
      */
-    public static function make(string $workflow, ?string $instanceId = null): self
+    public static function make(string $workflow, ?string $instanceId = null, ?string $namespace = null): self
     {
         $workflowType = TypeRegistry::for($workflow);
+        $namespace ??= config('workflows.v2.namespace');
+        $namespace = is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : null;
 
         if ($instanceId === null) {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()->create([
                 'workflow_class' => $workflow,
                 'workflow_type' => $workflowType,
+                'namespace' => $namespace,
                 'reserved_at' => now(),
                 'run_count' => 0,
             ]);
@@ -597,6 +600,7 @@ final class WorkflowStub
             workflow: $workflow,
             workflowType: $workflowType,
             instanceId: $instanceId,
+            namespace: $namespace,
         );
 
         return new self($instance, reservationNeedsCurrentRead: $reservationNeedsCurrentRead);
@@ -1072,6 +1076,7 @@ final class WorkflowStub
                 'run_number' => $instance->run_count + 1,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
+                'namespace' => $instance->namespace,
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'run_timeout_seconds' => $runTimeoutSeconds,
@@ -3251,6 +3256,7 @@ final class WorkflowStub
                 'run_number' => $instance->run_count + 1,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
+                'namespace' => $instance->namespace,
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'run_timeout_seconds' => $runTimeoutSeconds,
@@ -5114,6 +5120,7 @@ final class WorkflowStub
         string $workflow,
         string $workflowType,
         string $instanceId,
+        ?string $namespace,
     ): array {
         $now = now();
 
@@ -5121,6 +5128,7 @@ final class WorkflowStub
             'id' => $instanceId,
             'workflow_class' => $workflow,
             'workflow_type' => $workflowType,
+            'namespace' => $namespace,
             'reserved_at' => $now,
             'run_count' => 0,
             'created_at' => $now,
@@ -5146,6 +5154,13 @@ final class WorkflowStub
                 $instanceId,
                 $instance->workflow_type,
                 $workflowType,
+            ));
+        }
+
+        if ($instance->namespace !== $namespace) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be reused with a different namespace.',
+                $instanceId,
             ));
         }
 

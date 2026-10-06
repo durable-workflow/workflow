@@ -39,7 +39,11 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
             : (string) now()
                 ->getTimestampMs();
 
-        $stub = WorkflowStub::make($workflowClass, sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix));
+        $stub = WorkflowStub::make(
+            $workflowClass,
+            sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix),
+            $schedule->namespace,
+        );
 
         $startOptions = new StartOptions(
             labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
