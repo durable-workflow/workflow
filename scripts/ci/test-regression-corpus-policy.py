@@ -2126,6 +2126,22 @@ exit(0);
             result.stderr,
         )
 
+    def test_observer_model_class_reference_does_not_require_replay_growth(self) -> None:
+        source = self.root / "src/V2/Support/HistoryPageReader.php"
+        source.write_text(
+            "<?php\nreturn ConfiguredV2Models::resolve('history_event_model', WorkflowHistoryEvent::class);\n",
+            encoding="utf-8",
+        )
+        self.git("add", "src/V2/Support/HistoryPageReader.php")
+
+        result = self.validate()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        source.write_text("<?php\nWorkflowHistoryEvent::record($run, $type);\n", encoding="utf-8")
+        result = self.validate()
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+
     def test_content_heuristics_can_be_corrected_without_removing_core_guards(self) -> None:
         policy = self.read_policy()
         for guard in policy["categories"]["replay"]["guards"]:

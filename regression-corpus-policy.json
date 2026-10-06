@@ -66,7 +66,7 @@
             "Replay",
             "replay",
             "History::append",
-            "WorkflowHistoryEvent::",
+            "WorkflowHistoryEvent::(?!class\\b)",
             "historyEvents\\(",
             "historyEvents->",
             "history_sequence",
