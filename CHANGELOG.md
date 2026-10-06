@@ -9,6 +9,14 @@
   leases were never repaired and activity timeouts never enforced. Behaviour
   on the default connection is unchanged.
 
+## 2.4.6 - 2026-10-06
+
+- Keep an explicitly supplied run authoritative during task compatibility
+  resolution, including when its marker is null. Avoid the redundant run
+  relationship lookup and lazy-loading violations reported in #636. Preserve
+  task-marker precedence and the fallback for callers that do not supply a run.
+  Thanks to @vanducng for the report, fix and regression tests in #637.
+
 ## 2.2.20 - 2026-09-29
 
 - Require patched Laravel 12.69.0 or 13.30.0 minimums for the current framework
