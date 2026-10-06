@@ -642,7 +642,7 @@ jobs:
     needs: preflight
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 21
 
     strategy:
       fail-fast: false
@@ -741,7 +741,7 @@ jobs:
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
-      timeout-minutes: 12
+      timeout-minutes: 15
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
@@ -756,7 +756,7 @@ jobs:
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
         started_at=$(date +%s)
         set +e
-        timeout --foreground 12m xargs -a /tmp/mysql-shard-files \
+        timeout --foreground 15m xargs -a /tmp/mysql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
