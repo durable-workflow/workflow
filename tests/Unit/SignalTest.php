@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Contracts\Queue\Job;
+use Mockery;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
@@ -37,6 +39,11 @@ final class SignalTest extends TestCase
         ]);
 
         $signal = new Signal($storedWorkflow);
+        $queueJob = Mockery::mock(Job::class);
+        $queueJob->shouldReceive('release')
+            ->once()
+            ->with(0);
+        $signal->setJob($queueJob);
         $signal->handle();
 
         $this->assertSame(WorkflowRunningStatus::class, $workflow->status());

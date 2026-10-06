@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
+use Workflow\States\WorkflowContinuedStatus;
 
 class Signal implements ShouldBeEncrypted, ShouldQueue
 {
@@ -58,7 +59,10 @@ class Signal implements ShouldBeEncrypted, ShouldQueue
         try {
             $workflow->resume();
         } catch (TransitionNotFound) {
-            if ($workflow->running()) {
+            // This job belongs to its original run. A live successor cannot
+            // make a continued run resumable or give its old timer new work.
+            if ($this->storedWorkflow->refresh()->status::class !== WorkflowContinuedStatus::class
+                && $workflow->running()) {
                 $this->release();
             }
         }
