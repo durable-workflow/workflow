@@ -371,7 +371,8 @@ final class OperatorDashboardSummary
                         $timer->where('wait_kind', 'timer')
                             ->where('wait_deadline_at', '<', $dispatchOverdueThreshold)
                             ->where(static function ($task): void {
-                                $task->whereNull('next_task_status')->orWhere('next_task_status', '!=', 'leased');
+                                $task->whereNull('next_task_status')
+                                    ->orWhere('next_task_status', '!=', 'leased');
                             });
                     });
             })

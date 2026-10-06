@@ -126,7 +126,10 @@ final class OperatorDashboardReadBoundsTest extends TestCase
         $alerts = collect($dashboard['needs_attention']['alerts'])->where('type', 'long_waits');
         $this->assertSame($expected, $alerts->sum('count'));
         $global = OperatorDashboardSummary::snapshot($now, includeHistoryAudits: false);
-        $this->assertSame($expected + 1, collect($global['needs_attention']['alerts'])->where('type', 'long_waits')->sum('count'));
+        $this->assertSame(
+            $expected + 1,
+            collect($global['needs_attention']['alerts'])->where('type', 'long_waits')->sum('count')
+        );
     }
 
     /**
@@ -136,33 +139,52 @@ final class OperatorDashboardReadBoundsTest extends TestCase
     {
         return [
             'future activity retry' => [[
-                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 13:00:00', 'next_task_status' => 'ready',
+                'wait_kind' => 'activity',
+                'next_task_at' => '2026-10-06 13:00:00',
+                'next_task_status' => 'ready',
             ], 0],
-            'future timer' => [['wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 13:00:00'], 0],
+            'future timer' => [[
+                'wait_kind' => 'timer',
+                'wait_deadline_at' => '2026-10-06 13:00:00',
+            ], 0],
             'indefinite signal' => [[], 0],
             'future condition deadline' => [[
-                'wait_kind' => 'condition', 'wait_deadline_at' => '2026-10-06 13:00:00',
+                'wait_kind' => 'condition',
+                'wait_deadline_at' => '2026-10-06 13:00:00',
             ], 0],
             'eligible timer within dispatch grace' => [[
-                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 11:59:00',
+                'wait_kind' => 'timer',
+                'wait_deadline_at' => '2026-10-06 11:59:00',
             ], 0],
             'task currently leased' => [[
-                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 10:30:00', 'next_task_status' => 'leased',
+                'wait_kind' => 'activity',
+                'next_task_at' => '2026-10-06 10:30:00',
+                'next_task_status' => 'leased',
             ], 0],
             'timer resume currently leased' => [[
-                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 10:30:00', 'next_task_status' => 'leased',
+                'wait_kind' => 'timer',
+                'wait_deadline_at' => '2026-10-06 10:30:00',
+                'next_task_status' => 'leased',
             ], 0],
             'overdue ready resume' => [[
-                'wait_kind' => 'activity', 'next_task_at' => '2026-10-06 11:29:00', 'next_task_status' => 'ready',
+                'wait_kind' => 'activity',
+                'next_task_at' => '2026-10-06 11:29:00',
+                'next_task_status' => 'ready',
             ], 1],
             'overdue timer delivery' => [[
-                'wait_kind' => 'timer', 'wait_deadline_at' => '2026-10-06 11:29:00',
+                'wait_kind' => 'timer',
+                'wait_deadline_at' => '2026-10-06 11:29:00',
             ], 1],
             'elapsed condition deadline' => [[
-                'wait_kind' => 'condition', 'wait_deadline_at' => '2026-10-06 11:59:00',
+                'wait_kind' => 'condition',
+                'wait_deadline_at' => '2026-10-06 11:59:00',
             ], 1],
-            'recorded task problem' => [['task_problem' => true], 1],
-            'recorded repair need' => [['repair_attention' => true], 1],
+            'recorded task problem' => [[
+                'task_problem' => true,
+            ], 1],
+            'recorded repair need' => [[
+                'repair_attention' => true,
+            ], 1],
         ];
     }
 
