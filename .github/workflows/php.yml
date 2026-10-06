@@ -797,6 +797,14 @@ jobs:
         name: feature-timing-mysql-${{ matrix.shard }}
         path: build/test-results/mysql-shard-${{ matrix.shard }}*
 
+    - name: Verify bounded dashboard reads on MySQL
+      if: ${{ matrix.shard == 0 }}
+      run: vendor/bin/phpunit tests/Unit/V2/OperatorDashboardReadBoundsTest.php --fail-on-warning
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Upload laravel.log if MySQL tests fail
       if: ${{ github.server_url == 'https://github.com' && (failure() || steps.mysql_suite.outcome == 'failure') }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -936,6 +944,14 @@ jobs:
         # than a silent hang.
         PGOPTIONS: "-c synchronous_commit=off -c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
+    - name: Verify bounded dashboard reads on PostgreSQL
+      if: ${{ matrix.shard == 0 }}
+      run: vendor/bin/phpunit tests/Unit/V2/OperatorDashboardReadBoundsTest.php --fail-on-warning
+      env:
+        DB_CONNECTION: pgsql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Emit PostgreSQL shard diagnostics
       if: ${{ always() }}
       env:
@@ -1044,6 +1060,23 @@ jobs:
           tests/Feature/V2/V2WorkflowReplayerTest.php \
           tests/Feature/V2/V2WorkflowTaskBridgeTest.php \
           tests/Feature/V2/V2ActivityTimeoutTest.php
+      env:
+        APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
+        DB_CONNECTION: mysql
+        DB_DATABASE: testbench
+        DB_USERNAME: root
+        DB_PASSWORD: password
+        CACHE_DRIVER: redis
+        CACHE_STORE: redis
+        QUEUE_CONNECTION: redis
+        QUEUE_FAILED_DRIVER: 'null'
+        REDIS_PASSWORD: ''
+        XDEBUG_MODE: off
+
+    - name: Verify bounded dashboard reads on MariaDB
+      run: |
+        vendor/bin/phpunit tests/Unit/V2/OperatorDashboardReadBoundsTest.php --fail-on-warning
+        DB_CONNECTION=mariadb vendor/bin/phpunit tests/Unit/V2/OperatorDashboardReadBoundsTest.php --fail-on-warning
       env:
         APP_KEY: base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=
         DB_CONNECTION: mysql
