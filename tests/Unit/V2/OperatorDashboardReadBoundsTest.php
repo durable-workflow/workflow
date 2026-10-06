@@ -168,8 +168,10 @@ final class OperatorDashboardReadBoundsTest extends TestCase
                 'scope_key' => $namespace,
                 'namespace' => $namespace,
                 'supported' => '[]',
-                'recorded_at' => $now->copy()->subMinutes(10),
-                'expires_at' => $now->copy()->subMinutes(5),
+                'recorded_at' => $now->copy()
+                    ->subMinutes(10),
+                'expires_at' => $now->copy()
+                    ->subMinutes(5),
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -184,7 +186,11 @@ final class OperatorDashboardReadBoundsTest extends TestCase
         $this->assertSame(1, $alert['count']);
         $this->assertSame('operator_workers', $alert['scope']);
         $this->assertSame(0, $scoped['flows']);
-        $global = OperatorDashboardSummary::snapshot($now, includeHistoryAudits: false, workflowTypes: []);
+        $global = OperatorDashboardSummary::snapshot(
+            $now,
+            includeHistoryAudits: false,
+            workflowTypes: []
+        );
         $this->assertSame(2, collect($global['needs_attention']['alerts'])->firstWhere('type', 'stuck_workers')['count']);
     }
 
