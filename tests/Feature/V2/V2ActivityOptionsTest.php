@@ -154,7 +154,9 @@ final class V2ActivityOptionsTest extends TestCase
         $original = $execution->activity_options['worker_session'];
 
         // Cold replay and diagnostics use immutable history, not the current row.
-        $execution->forceFill(['activity_options' => []])->save();
+        $execution->forceFill([
+            'activity_options' => [],
+        ])->save();
         foreach ($events as $event) {
             $this->assertSame($original, $event->payload['activity']['worker_session']);
             $this->assertSame($original, ActivitySnapshot::fromEvent($event)['worker_session']);

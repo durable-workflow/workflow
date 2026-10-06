@@ -28,14 +28,22 @@ final class ActivitySessionHistoryTest extends TestCase
             'payload' => [
                 'sequence' => 1,
                 'activity_type' => 'render',
-                'activity' => ['id' => 'activity-1', 'worker_session' => $session],
+                'activity' => [
+                    'id' => 'activity-1',
+                    'worker_session' => $session,
+                ],
             ],
         ]);
 
         $this->assertSame($session, ActivitySnapshot::fromEvent($event)['worker_session']);
-        $event->payload = ['activity_type' => 'render', 'worker_session' => $session];
+        $event->payload = [
+            'activity_type' => 'render',
+            'worker_session' => $session,
+        ];
         $this->assertSame($session, ActivitySnapshot::fromEvent($event)['worker_session']);
-        $event->payload = ['activity_type' => 'render'];
+        $event->payload = [
+            'activity_type' => 'render',
+        ];
         $this->assertArrayNotHasKey('worker_session', ActivitySnapshot::fromEvent($event));
     }
 }
