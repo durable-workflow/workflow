@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow;
 
+use Illuminate\Queue\Jobs\SyncJob;
 use Laravel\SerializableClosure\SerializableClosure;
 use function React\Promise\all;
 use React\Promise\Deferred;
@@ -115,7 +116,16 @@ final class ActivityStub
             return (new Deferred())->promise();
         }
 
-        $activity::dispatch($context->index, $context->now, $context->storedWorkflow, ...$arguments);
+        $dispatch = $activity::dispatch($context->index, $context->now, $context->storedWorkflow, ...$arguments);
+
+        if (! $context->replaying
+            && isset($context->workflow)
+            && $context->workflow instanceof Workflow
+            && $context->workflow->job !== null
+            && ! $context->workflow->job instanceof SyncJob) {
+            $context->workflow->dispatchActivityAfterUnlock($dispatch);
+        }
+        unset($dispatch);
 
         ++$context->index;
         WorkflowStub::setContext($context);
