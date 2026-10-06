@@ -2,8 +2,8 @@
 
 Design decision for [shared cancellation work](https://github.com/durable-workflow/.github/issues/136)
 and [the Native implementation](https://github.com/durable-workflow/workflow/pull/603).
-User-facing scope execution is not implemented or advertised by the current
-source tuple. Native has an internal canonical
+General scope execution is not advertised by the current source tuple. Restricted
+source consumers remain behind disabled SDK preview profiles. Native has a canonical
 registration kernel: `CancellationScopeHistory` records `CancellationScopeOpened`
 at a typed durable command position under the configured storage connection
 and matching live claim. It preserves the recorded parent and shield mode on
@@ -14,8 +14,12 @@ authenticate scope opening, prefix checkpointing, preparation and delivery.
 No SDK scope capability is enabled by that foundation. The database tests exercise
 the real bridge with authoritative claim fixtures, not an end-to-end SDK scope
 execution.
-Protocol 1.20 remains unfrozen until the authority and replay contracts below
-have an implemented, qualified consumer.
+The initial portable release boundary is defined in the
+[cooperative cancellation model](cooperative-cancellation-model.md#initial-portable-release-boundary).
+Its whole-run contract is qualified separately. Scope execution remains disabled
+until the authority, replay and complete consumer gates below pass. Internal
+preview extensions do not acquire a stable compatibility promise from sharing
+the candidate protocol number.
 
 ## Outcome and chosen boundary
 

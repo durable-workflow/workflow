@@ -17,6 +17,34 @@ alone does not establish that outcome.
 
 ## Preserve existing contracts
 
+### Initial portable release boundary
+
+The initial portable release covers cooperative whole-run requests, the rich
+immutable context, one bounded cancellation tree across children and Activities,
+explicit operation policies, shielded cleanup, replay after worker loss, stale
+attempt fencing and the shared API/CLI/Waterline cascade view. The published
+mixed-language demonstration and comparative qualification remain required.
+
+Remote Activities support TryCancel, WaitCancellationCompleted and Abandon.
+Abandon requires an original finite independent lifetime. Portable local
+Activities support TryCancel and WaitCancellationCompleted. Local Abandon is
+rejected before admission because it cannot outlive its hosting claim safely.
+This limitation is part of the advertised capability contract.
+
+Independently cancellable operation scopes remain a source preview. The SDK
+profiles default off and no general scope execution capability is advertised.
+The existing scalar/all-group consumers test the recording and authority model.
+Partial local supervision, mixed-membership groups, overlapping deliveries and
+the full scope inspection view remain outside the initial supported release.
+The separate hierarchical-scope qualification gate still applies before those
+capabilities can be enabled or advertised. Those preview extensions do not
+extend the stable whole-run contract or acquire a compatibility guarantee.
+
+The competitive claim must identify demonstrated customer advantages and the
+remaining tradeoffs. A bounded cleanup tree and automatic callback supervision
+are useful stronger contracts. They do not establish that every operation or
+scope authoring API is better than every competing product.
+
 `WorkflowStub::requestCancellation()` is cooperative. `cancel()` immediately
 closes a run and revokes outstanding durable work. `terminate()` also closes
 the run immediately with a distinct outcome. None of these can roll back an
@@ -506,7 +534,8 @@ subtree scopes require separate authority. The
 [hierarchical scope decision](hierarchical-cancellation-scopes.md) defines the
 chosen durable operation-tree boundary, canonical membership, shield inheritance,
 shared local claim handling and the implementation/qualification gate. The current
-source tuple does not implement or advertise those scopes.
+source tuple has preview consumers for a restricted subset and does not advertise
+general scope execution.
 
 ## Lifecycle and diagnostics
 

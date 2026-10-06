@@ -29,7 +29,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $manifest = SurfaceStabilityContract::manifest();
 
         $this->assertSame('durable-workflow.v2.surface-stability.contract', $manifest['schema']);
-        $this->assertSame(4, $manifest['version']);
+        $this->assertSame(5, $manifest['version']);
         $this->assertSame('https://durable-workflow.github.io/docs/2.0/compatibility', $manifest['authority_url']);
     }
 
@@ -145,7 +145,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $negotiation = $manifest['surface_families']['worker_protocol']['negotiation'];
 
         $this->assertSame('worker_protocol.version', $negotiation['advertised_version_path']);
-        $this->assertSame('1.19', $negotiation['default_advertised_version']);
+        $this->assertSame('1.20', $negotiation['default_advertised_version']);
         $this->assertSame(
             'same_major_and_minor_less_than_or_equal_to_advertised',
             $negotiation['request_header_rule'],
@@ -153,6 +153,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame('1.0', $negotiation['accepted_request_versions_by_default'][0]);
         $this->assertContains('1.2', $negotiation['accepted_request_versions_by_default']);
         $this->assertSame('1.19', $negotiation['accepted_request_versions_by_default'][19]);
+        $this->assertSame('1.20', $negotiation['accepted_request_versions_by_default'][20]);
         $this->assertSame('advertised_version', $negotiation['response_version']);
         $this->assertSame(
             ['missing_header', 'malformed_version', 'different_major', 'minor_greater_than_advertised'],

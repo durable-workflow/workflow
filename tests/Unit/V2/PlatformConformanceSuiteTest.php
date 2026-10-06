@@ -1031,7 +1031,10 @@ final class PlatformConformanceSuiteTest extends TestCase
         $contracts = $suiteManifest['fixture_catalog']['signal_query_runtime_contract']['required_scenario_contracts'];
 
         $this->assertIsString($workflowSourceRelease);
-        $this->assertMatchesRegularExpression('/^2\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/D', $workflowSourceRelease);
+        $this->assertMatchesRegularExpression(
+            '/^2\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta|rc)\.(?:0|[1-9]\d*))?$/D',
+            $workflowSourceRelease
+        );
         $this->assertSame($workflowSourceRelease, PlatformConformanceSuite::workflowSourceRelease());
 
         foreach ($sdkCompatibility as $sdk) {
