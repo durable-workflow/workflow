@@ -126,6 +126,46 @@ final class RunObservationTest extends TestCase
         $this->assertNull(RunObservation::forRun($run)['current_run_id']);
     }
 
+    public function testRetainedCommandContractUsesOnlyTheFirstStartupEventAndLeavesExistingRelationsUntouched(): void
+    {
+        $run = $this->createRun('contract');
+        $payload = [
+            'declared_queries' => ['progress'],
+            'declared_query_contracts' => [[
+                'name' => 'progress',
+                'parameters' => [],
+            ]],
+            'declared_signals' => ['approve'],
+            'declared_signal_contracts' => [[
+                'name' => 'approve',
+                'parameters' => [],
+            ]],
+            'declared_updates' => [],
+            'declared_update_contracts' => [],
+            'declared_entry_method' => 'handle',
+            'declared_entry_mode' => 'canonical',
+            'declared_entry_declaring_class' => 'RetainedWorkflowDefinition',
+        ];
+        WorkflowHistoryEvent::query()->create([
+            'id' => 'contract-started',
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => 'WorkflowStarted',
+            'payload' => $payload,
+            'recorded_at' => now(),
+        ]);
+        $run->setRelation('historyEvents', $run->newCollection());
+        $original = $run->getRelations();
+
+        $observation = RunObservation::forRun($run);
+
+        $this->assertSame('durable_history', $observation['command_contract']['source']);
+        $this->assertSame(['progress'], $observation['command_contract']['queries']);
+        $this->assertSame(['approve'], $observation['command_contract']['signals']);
+        $this->assertFalse($observation['command_contract']['backfill_needed']);
+        $this->assertSame($original, $run->getRelations());
+    }
+
     public function testConfiguredInstanceScopeAndEagerLoadsDoNotExpandTheObservation(): void
     {
         $run = $this->createRun('selected');
