@@ -253,7 +253,8 @@ final class CiWorkflowPolicyTest extends TestCase
             self::assertStringContainsString('--testsuite feature', $full);
             self::assertStringContainsString("if: github.event_name == 'pull_request'", $review);
             self::assertStringContainsString('timeout-minutes: 3', $review);
-            self::assertStringContainsString('tests/Feature/AsyncWorkflowTest.php', $review);
+            self::assertStringContainsString('--testsuite feature --filter', $review);
+            self::assertStringContainsString('AsyncWorkflowTest|ContinuedSignalRetirementTest', $review);
         }
 
         self::assertStringContainsString("if: github.event_name == 'pull_request'", self::step('Run unit test suite'));
