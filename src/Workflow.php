@@ -173,7 +173,9 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $this->storedWorkflow->refresh();
 
             if ($this->storedWorkflow->status::class !== WorkflowRunningStatus::class) {
-                if ($this->storedWorkflow->toWorkflow()->running()) {
+                if ($this->storedWorkflow->status::class !== WorkflowContinuedStatus::class
+                    && $this->storedWorkflow->toWorkflow()
+                        ->running()) {
                     $this->release();
                 }
                 return;
