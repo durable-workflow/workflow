@@ -59,6 +59,26 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     }
 
     /**
+     * Filter workflow volume in SQL while retaining namespace-wide operational
+     * metrics. An empty type list means no matching workflows.
+     *
+     * @param list<string> $workflowTypes
+     * @return array<string, mixed>
+     */
+    public function workflowTypeDashboardSummary(
+        array $workflowTypes,
+        ?CarbonInterface $now = null,
+        ?string $namespace = null,
+    ): array {
+        return OperatorDashboardSummary::snapshot(
+            $now,
+            $namespace,
+            includeHistoryAudits: false,
+            workflowTypes: $workflowTypes,
+        );
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function metrics(?CarbonInterface $now = null, ?string $namespace = null): array
