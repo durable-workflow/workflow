@@ -9,7 +9,7 @@ use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
+use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -30,7 +30,7 @@ use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\Traits\Sagas;
 use Workflow\Traits\SerializesModels;
 
-class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
+class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, ShouldQueue
 {
     use Dispatchable;
     use InteractsWithQueue;
