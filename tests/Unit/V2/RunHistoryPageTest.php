@@ -103,11 +103,16 @@ final class RunHistoryPageTest extends TestCase
         $this->events($run, 1, 3);
         config()
             ->set('workflows.v2.history_event_model', ScopedHistoryPageEvent::class);
+        $runs = 0;
+        WorkflowRun::retrieved(static function () use (&$runs): void {
+            ++$runs;
+        });
 
         $page = RunHistoryPage::forRun($run);
 
         $this->assertSame([2, 3], array_column($page['events'], 'sequence'));
         $this->assertSame(3, $page['through_sequence']);
+        $this->assertSame(0, $runs);
     }
 
     public function testPrunedAndEmptyWindowsAreExplicitAndDoNotResolveStoredValues(): void
@@ -213,6 +218,8 @@ final class RunHistoryPageTest extends TestCase
 
 final class ScopedHistoryPageEvent extends WorkflowHistoryEvent
 {
+    protected $with = ['run'];
+
     protected static function booted(): void
     {
         static::addGlobalScope('page-fixture', static function ($query): void {

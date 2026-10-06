@@ -932,6 +932,48 @@ roadmap and are tracked as follow-on roadmap issues:
   semantics; this contract describes the engine's requirements,
   not per-backend tuning.
 
+## Bounded relationship observations
+
+`DefaultOperatorObservabilityRepository::runRelationshipsPage()` reads a page of
+declared parent or child links and the corresponding run metadata in the selected
+run's namespace. The default limit is 50 and the permitted range is 1 through 100.
+It fetches at most `limit + 1` links and `limit` related runs. It loads no child
+histories, application inputs or outputs, summaries, or projection audits.
+
+The response includes link types, exact instance/run references, independently
+observed related-run statuses, metadata availability, pruning and continuation
+fields. Pass `next_link_id` and the original `through_link_id` to continue within
+the first link boundary. That boundary fixes membership, while related-run status
+continues to reflect its live row. A coordinator's completion does not determine
+its children's outcomes. The response identifies both data sources and leaves
+historical parent-recorded outcome audits unevaluated. Missing metadata is unknown.
+
+These bounded observer reads retain configured model scopes and connection
+selection, while disabling their default eager loads to preserve the read bound.
+
+## Bounded current wait observations
+
+`DefaultOperatorObservabilityRepository::runCurrentWaits($run, $limit, $now)`
+reads at most `limit + 1` projected open waits, then at most `limit` rows from
+each of the task, activity and current-attempt tables. The default limit is 50
+and the permitted range is 1 through 100. It reads no run or child history,
+decodes no application payload and does not audit or repair projections.
+
+The response identifies the selected instance, run, namespace and observation
+time. Each wait includes its dependency, known task timing, applicable deadline
+and attempt information. Activity retry timing comes from that activity's own
+task. Pending activities use schedule and total deadlines. Running activities
+use close, heartbeat and total deadlines. A timer fire makes work eligible.
+It does not represent a workflow expiry. Unknown resume times remain unknown.
+
+The observation is explicitly partial and its total wait count is unknown.
+`has_more` reports the continuation sentinel for the selected projection rows.
+Missing projections, unsupported history, absent dependency metadata and stale
+open waits for closed activity rows are explicit. Pruned details are distinct
+from a terminal run with no current waits. `history_audit` remains
+`not_evaluated`. The complete detail and audit contracts remain available for
+callers that need to inspect or rebuild historical evidence.
+
 ## Changing this contract
 
 A change to any guarantee named here MUST ship alongside:
