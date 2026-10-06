@@ -23,6 +23,18 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
+    public function runHistoryPage(
+        WorkflowRun $run,
+        int $limit = 200,
+        int $afterSequence = 0,
+        ?int $throughSequence = null,
+    ): array {
+        return RunHistoryPage::forRun($run, $limit, $afterSequence, $throughSequence);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function listItem(WorkflowRunSummary $summary): array
     {
         return RunListItemView::fromSummary($summary);

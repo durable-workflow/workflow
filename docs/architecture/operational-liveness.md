@@ -734,6 +734,30 @@ Rules:
   (connection, queue, compatibility) is frozen in Phase 6; this
   contract inherits it and reuses it for stuck-task scoping.
 
+## Retained history pages
+
+The default `OperatorObservabilityRepository` implementation offers the additive
+`runHistoryPage($run, $limit = 200, $afterSequence = 0, $throughSequence = null)`
+method. Custom observer implementations can expose this method independently.
+Callers check for support before requesting a page.
+
+The method reads at most `limit + 1` event models from the selected run. Limits
+range from 1 to 1000. It does not fetch child histories, rebuild projections or
+resolve external payloads. Event payloads retain their stored representation.
+
+The response provides the selected instance, run and namespace, returned events,
+sequence boundaries, `has_more`, `next_sequence` and `details_state`. Subsequent
+pages pass both the returned `next_sequence` and original `through_sequence`.
+This keeps pagination within the first observation even if the run appends more
+events. A fresh read without that ceiling observes the newer retained history.
+
+`details_state: pruned` remains explicit even when a page contains no events.
+An empty page means that no retained events match its sequence window. It is not
+proof that the run never recorded a failure or that its original history remains
+complete. The history export and complete diagnostic APIs keep their existing
+contracts. HTTP consumers must select the authorized run and validate their
+cursor before invoking this embedded read method.
+
 ## Admin HTTP surface for liveness
 
 The server exposes the liveness repair surface through the admin
