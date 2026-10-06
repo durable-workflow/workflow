@@ -18,6 +18,9 @@ use Workflow\WorkflowStub;
 
 final class ContinuedSignalRetirementTest extends TestCase
 {
+    /**
+     * @dataProvider chainLengths
+     */
     #[DataProvider('chainLengths')]
     public function testOldSignalsAndTimersRetireWhileTheCurrentRunStillWaits(int $length): void
     {
