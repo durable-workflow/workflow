@@ -48,6 +48,17 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     }
 
     /**
+     * Dashboard reads omit the fleet-wide history audit. Audit-derived counts
+     * stay unknown; the ordinary metrics method retains its complete audit.
+     *
+     * @return array<string, mixed>
+     */
+    public function boundedDashboardSummary(?CarbonInterface $now = null, ?string $namespace = null): array
+    {
+        return OperatorDashboardSummary::snapshot($now, $namespace, includeHistoryAudits: false);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function metrics(?CarbonInterface $now = null, ?string $namespace = null): array

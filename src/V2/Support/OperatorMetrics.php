@@ -33,13 +33,19 @@ final class OperatorMetrics
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null, ?string $namespace = null): array
-    {
+    public static function snapshot(
+        ?CarbonInterface $now = null,
+        ?string $namespace = null,
+        bool $includeHistoryAudits = true,
+    ): array {
         $now ??= now();
         $namespace = self::normalizeNamespace($namespace);
 
         return [
             'generated_at' => $now->toJSON(),
+            ...($includeHistoryAudits ? [] : [
+                'history_audit_evaluation' => 'not_requested',
+            ]),
             'runs' => self::runMetrics($now, $namespace),
             'tasks' => self::taskMetrics($now, $namespace),
             'activities' => self::activityMetrics($now, $namespace),
@@ -47,8 +53,8 @@ final class OperatorMetrics
             'repair' => $namespace === null ? TaskRepairCandidates::snapshot($now) : self::emptyRepairSnapshot(),
             'starts' => self::startMetrics($now, $namespace),
             'history' => self::historyMetrics($namespace),
-            'command_contracts' => self::commandContractMetrics($namespace),
-            'projections' => self::projectionMetrics($now, $namespace),
+            'command_contracts' => self::commandContractMetrics($namespace, $includeHistoryAudits),
+            'projections' => self::projectionMetrics($now, $namespace, $includeHistoryAudits),
             'schedules' => self::scheduleMetrics($now, $namespace),
             'workers' => self::workerMetrics($namespace),
             'backend' => BackendCapabilities::snapshot($now),
@@ -545,10 +551,22 @@ final class OperatorMetrics
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, int|null>
      */
-    private static function commandContractMetrics(?string $namespace): array
+    private static function commandContractMetrics(?string $namespace, bool $includeHistoryAudits): array
     {
+        if (! $includeHistoryAudits) {
+            return array_fill_keys([
+                'backfill_needed_runs',
+                'backfill_available_runs',
+                'backfill_unavailable_runs',
+                'actionable_backfill_needed_runs',
+                'actionable_backfill_available_runs',
+                'actionable_backfill_unavailable_runs',
+                'closed_backfill_needed_runs',
+            ], null);
+        }
+
         $needed = 0;
         $available = 0;
         $actionableNeeded = 0;
@@ -613,8 +631,11 @@ final class OperatorMetrics
     /**
      * @return array<string, array<string, int|string|null>>
      */
-    private static function projectionMetrics(CarbonInterface $now, ?string $namespace): array
-    {
+    private static function projectionMetrics(
+        CarbonInterface $now,
+        ?string $namespace,
+        bool $includeHistoryAudits
+    ): array {
         $runSummaries = RunSummaryProjectionDrift::metrics($namespace);
         $oldestMissingRunStartedAt = self::oldestMissingRunSummaryStartedAt($namespace);
 
@@ -628,10 +649,10 @@ final class OperatorMetrics
                     ? 0
                     : (int) $oldestMissingRunStartedAt->diffInMilliseconds($now),
             ],
-            'run_waits' => self::runWaitProjectionMetrics($namespace),
-            'run_timeline_entries' => self::runTimelineProjectionMetrics($namespace),
-            'run_timer_entries' => self::runTimerProjectionMetrics($namespace),
-            'run_lineage_entries' => self::runLineageProjectionMetrics($namespace),
+            'run_waits' => self::runWaitProjectionMetrics($namespace, $includeHistoryAudits),
+            'run_timeline_entries' => self::runTimelineProjectionMetrics($namespace, $includeHistoryAudits),
+            'run_timer_entries' => self::runTimerProjectionMetrics($namespace, $includeHistoryAudits),
+            'run_lineage_entries' => self::runLineageProjectionMetrics($namespace, $includeHistoryAudits),
         ];
     }
 
@@ -663,27 +684,27 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
-    private static function runWaitProjectionMetrics(?string $namespace): array
+    private static function runWaitProjectionMetrics(?string $namespace, bool $includeHistoryAudits): array
     {
         $waitModel = self::runWaitModel();
         $summariesWithOpenWaits = self::summariesWithOpenWaits($namespace);
         $missingCurrentOpenWaits = self::missingCurrentOpenWaitProjections($namespace);
-        $drift = SelectedRunProjectionDrift::waitMetrics(namespace: $namespace);
+        $drift = $includeHistoryAudits ? SelectedRunProjectionDrift::waitMetrics(namespace: $namespace) : null;
         $orphaned = self::projectionRowsMissingRun($waitModel, $namespace);
 
         return [
             'runs' => self::runQuery($namespace)->count(),
             'rows' => self::scopedRunModelQuery($waitModel, $namespace)->count(),
             'projected_runs' => self::scopedRunModelQuery($waitModel, $namespace)->distinct()->count('workflow_run_id'),
-            'runs_with_waits' => $drift['runs_with_waits'],
-            'projected_runs_with_waits' => $drift['projected_runs_with_waits'],
-            'missing_runs_with_waits' => $drift['missing_runs_with_waits'],
+            'runs_with_waits' => $drift['runs_with_waits'] ?? null,
+            'projected_runs_with_waits' => $drift['projected_runs_with_waits'] ?? null,
+            'missing_runs_with_waits' => $drift['missing_runs_with_waits'] ?? null,
             'summaries_with_open_waits' => $summariesWithOpenWaits,
             'projected_current_open_waits' => max(0, $summariesWithOpenWaits - $missingCurrentOpenWaits),
             'missing_current_open_waits' => $missingCurrentOpenWaits,
-            'stale_projected_runs' => $drift['stale_projected_runs'],
+            'stale_projected_runs' => $drift['stale_projected_runs'] ?? null,
             'orphaned' => $orphaned,
-            'needs_rebuild' => $drift['missing_runs_with_waits'] + $drift['stale_projected_runs'] + $orphaned,
+            'needs_rebuild' => $drift === null ? null : $drift['missing_runs_with_waits'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp(
                 self::scopedRunModelQuery($waitModel, $namespace)->min('updated_at')
             ),
@@ -696,11 +717,11 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
-    private static function runTimelineProjectionMetrics(?string $namespace): array
+    private static function runTimelineProjectionMetrics(?string $namespace, bool $includeHistoryAudits): array
     {
         $timelineModel = self::runTimelineEntryModel();
         $missingHistoryEvents = self::missingTimelineEventProjections($namespace);
-        $drift = SelectedRunProjectionDrift::timelineMetrics(namespace: $namespace);
+        $drift = $includeHistoryAudits ? SelectedRunProjectionDrift::timelineMetrics(namespace: $namespace) : null;
         $orphaned = self::orphanedTimelineRows($namespace);
 
         return [
@@ -710,13 +731,13 @@ final class OperatorMetrics
             'projected_runs' => self::scopedRunModelQuery($timelineModel, $namespace)->distinct()->count(
                 'workflow_run_id'
             ),
-            'runs_with_history' => $drift['runs_with_history'],
-            'projected_runs_with_history' => $drift['projected_runs_with_history'],
-            'missing_runs_with_history' => $drift['missing_runs_with_history'],
+            'runs_with_history' => $drift['runs_with_history'] ?? null,
+            'projected_runs_with_history' => $drift['projected_runs_with_history'] ?? null,
+            'missing_runs_with_history' => $drift['missing_runs_with_history'] ?? null,
             'missing_history_events' => $missingHistoryEvents,
-            'stale_projected_runs' => $drift['stale_projected_runs'],
+            'stale_projected_runs' => $drift['stale_projected_runs'] ?? null,
             'orphaned' => $orphaned,
-            'needs_rebuild' => $drift['missing_runs_with_history'] + $drift['stale_projected_runs'] + $orphaned,
+            'needs_rebuild' => $drift === null ? null : $drift['missing_runs_with_history'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp(
                 self::scopedRunModelQuery($timelineModel, $namespace)->min('updated_at')
             ),
@@ -729,10 +750,10 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
-    private static function runTimerProjectionMetrics(?string $namespace): array
+    private static function runTimerProjectionMetrics(?string $namespace, bool $includeHistoryAudits): array
     {
         $timerModel = self::runTimerEntryModel();
-        $drift = SelectedRunProjectionDrift::timerMetrics(namespace: $namespace);
+        $drift = $includeHistoryAudits ? SelectedRunProjectionDrift::timerMetrics(namespace: $namespace) : null;
         $orphaned = self::projectionRowsMissingRun($timerModel, $namespace);
 
         return [
@@ -741,11 +762,11 @@ final class OperatorMetrics
             'projected_runs' => self::scopedRunModelQuery($timerModel, $namespace)->distinct()->count(
                 'workflow_run_id'
             ),
-            'runs_with_timers' => $drift['runs_with_timers'],
-            'projected_runs_with_timers' => $drift['projected_runs_with_timers'],
-            'missing_runs_with_timers' => $drift['missing_runs_with_timers'],
-            'stale_projected_runs' => $drift['stale_projected_runs'],
-            'schema_version_mismatch_runs' => $drift['schema_version_mismatch_runs'],
+            'runs_with_timers' => $drift['runs_with_timers'] ?? null,
+            'projected_runs_with_timers' => $drift['projected_runs_with_timers'] ?? null,
+            'missing_runs_with_timers' => $drift['missing_runs_with_timers'] ?? null,
+            'stale_projected_runs' => $drift['stale_projected_runs'] ?? null,
+            'schema_version_mismatch_runs' => $drift['schema_version_mismatch_runs'] ?? null,
             'schema_version_mismatch_rows' => self::scopedRunModelQuery($timerModel, $namespace)
                 ->where(static function ($query): void {
                     $query->whereNull('schema_version')
@@ -753,7 +774,7 @@ final class OperatorMetrics
                 })
                 ->count(),
             'orphaned' => $orphaned,
-            'needs_rebuild' => $drift['missing_runs_with_timers'] + $drift['stale_projected_runs'] + $orphaned,
+            'needs_rebuild' => $drift === null ? null : $drift['missing_runs_with_timers'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp(
                 self::scopedRunModelQuery($timerModel, $namespace)->min('updated_at')
             ),
@@ -766,10 +787,10 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
-    private static function runLineageProjectionMetrics(?string $namespace): array
+    private static function runLineageProjectionMetrics(?string $namespace, bool $includeHistoryAudits): array
     {
         $lineageModel = self::runLineageEntryModel();
-        $drift = SelectedRunProjectionDrift::lineageMetrics(namespace: $namespace);
+        $drift = $includeHistoryAudits ? SelectedRunProjectionDrift::lineageMetrics(namespace: $namespace) : null;
         $orphaned = self::projectionRowsMissingRun($lineageModel, $namespace);
 
         return [
@@ -778,12 +799,12 @@ final class OperatorMetrics
             'projected_runs' => self::scopedRunModelQuery($lineageModel, $namespace)->distinct()->count(
                 'workflow_run_id'
             ),
-            'runs_with_lineage' => $drift['runs_with_lineage'],
-            'projected_runs_with_lineage' => $drift['projected_runs_with_lineage'],
-            'missing_runs_with_lineage' => $drift['missing_runs_with_lineage'],
-            'stale_projected_runs' => $drift['stale_projected_runs'],
+            'runs_with_lineage' => $drift['runs_with_lineage'] ?? null,
+            'projected_runs_with_lineage' => $drift['projected_runs_with_lineage'] ?? null,
+            'missing_runs_with_lineage' => $drift['missing_runs_with_lineage'] ?? null,
+            'stale_projected_runs' => $drift['stale_projected_runs'] ?? null,
             'orphaned' => $orphaned,
-            'needs_rebuild' => $drift['missing_runs_with_lineage'] + $drift['stale_projected_runs'] + $orphaned,
+            'needs_rebuild' => $drift === null ? null : $drift['missing_runs_with_lineage'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp(
                 self::scopedRunModelQuery($lineageModel, $namespace)->min('updated_at')
             ),
