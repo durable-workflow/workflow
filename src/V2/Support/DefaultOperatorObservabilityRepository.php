@@ -35,6 +35,14 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
+    public function runCurrentWaits(WorkflowRun $run, int $limit = 50, ?CarbonInterface $now = null): array
+    {
+        return RunCurrentWaits::forRun($run, $limit, $now);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function listItem(WorkflowRunSummary $summary): array
     {
         return RunListItemView::fromSummary($summary);
