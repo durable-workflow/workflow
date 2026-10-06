@@ -1218,6 +1218,13 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ));
         }
 
+        if ($instance->namespace !== $namespace) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be reused with a different namespace.',
+                $instanceId,
+            ));
+        }
+
         if ($instance->workflow_class !== $workflowClass) {
             $instance->forceFill([
                 'workflow_class' => $workflowClass,

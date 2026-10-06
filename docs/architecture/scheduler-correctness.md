@@ -31,6 +31,30 @@ change, not a correctness change.
 
 ## Scope
 
+### Namespace of PHP starts
+
+`Workflow\V2\WorkflowStub::make()` and the default `WorkflowControlPlane`
+use `workflows.v2.namespace` (`DW_V2_NAMESPACE`) when starting a new instance.
+They trim a nonblank configured namespace and store it on the instance, run,
+durable task and visibility summary. An unset or blank configuration leaves
+ordinary starts unscoped (`NULL`). Caller-supplied and generated instance IDs
+follow the same rule.
+
+An explicit `namespace:` argument to `WorkflowStub::make()` overrides the
+configured default, matching the control plane's `namespace` start option.
+
+The default PHP schedule starter uses the schedule's stored namespace, including
+an explicit override of the application's configuration. Schedules created
+without a configured or explicit namespace use `default`, and their started
+instances, runs and tasks use `default` too. Hosts providing another
+`ScheduleWorkflowStarter` must preserve the schedule namespace.
+
+An instance ID remains reserved for its original namespace. A start targeting
+that ID from another namespace is rejected. This also applies to an existing
+unscoped instance after enabling a configured namespace. Changing configuration
+does not migrate or relabel previous instances, runs or histories. Use the load
+APIs to address an existing execution in its original namespace.
+
 The contract covers:
 
 - **durable dispatch state** — the canonical set of durable rows whose
