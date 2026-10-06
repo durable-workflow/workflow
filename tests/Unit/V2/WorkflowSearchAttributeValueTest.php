@@ -201,10 +201,10 @@ final class WorkflowSearchAttributeValueTest extends TestCase
     }
 }
 
-final readonly class SearchAttributeStringableValue implements Stringable
+final class SearchAttributeStringableValue implements Stringable
 {
     public function __construct(
-        private string $value
+        private readonly string $value
     ) {
     }
 
