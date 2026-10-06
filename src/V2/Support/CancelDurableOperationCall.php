@@ -6,10 +6,10 @@ namespace Workflow\V2\Support;
 
 use Workflow\V2\Contracts\YieldedCommand;
 
-final readonly class CancelDurableOperationCall implements YieldedCommand
+final class CancelDurableOperationCall implements YieldedCommand
 {
     public function __construct(
-        public DurableOperationHandle $handle
+        public readonly DurableOperationHandle $handle
     ) {
     }
 }
