@@ -10,6 +10,7 @@ use LogicException;
 use Workflow\V2\CancellationContext;
 use Workflow\V2\CommandContext;
 use Workflow\V2\CommandResult;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
@@ -62,10 +63,10 @@ final class CancellationScopeRequests
             ): WorkflowHistoryEvent {
                 // Claims and heartbeat lock task before run. Acceptance must
                 // establish recoverable ownership before a worker prepares delivery.
-                $claims = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                $openTasks = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->where('workflow_run_id', $run->id)
                     ->where('task_type', TaskType::Workflow)
-                    ->where('status', TaskStatus::Leased)
+                    ->whereIn('status', [TaskStatus::Ready, TaskStatus::Leased])
                     ->orderBy('id')
                     ->lockForUpdate()
                     ->get();
@@ -150,7 +151,7 @@ final class CancellationScopeRequests
                 }
                 $expiry = CancellationCleanupLease::expiresAt($locked);
                 /** @var WorkflowTask $claim */
-                foreach ($claims as $claim) {
+                foreach ($openTasks->where('status', TaskStatus::Leased) as $claim) {
                     if ($claim->lease_expires_at === null || now()->gte($claim->lease_expires_at)
                         || ! $expiry->lt($claim->lease_expires_at)) {
                         continue;
@@ -161,6 +162,34 @@ final class CancellationScopeRequests
                     WorkflowRunSummary::query()->whereKey($locked->id)->where('next_task_id', $claim->id)->update([
                         'next_task_lease_expires_at' => $expiry,
                     ]);
+                }
+                if ($openTasks->isEmpty()) {
+                    // A workflow waiting on a scoped timer/activity still needs
+                    // a claim to prepare delivery. Acceptance alone must not
+                    // leave it asleep past the original cleanup deadline.
+                    /** @var WorkflowTask $task */
+                    $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->create([
+                        'workflow_run_id' => $locked->id,
+                        'namespace' => $locked->namespace,
+                        'task_type' => TaskType::Workflow,
+                        'status' => TaskStatus::Ready,
+                        'available_at' => now(),
+                        'payload' => [
+                            'resume_source_kind' => 'cancellation_scope_request',
+                            'resume_source_id' => $event->id,
+                            'workflow_command_id' => $requestId,
+                            'scope_id' => $scopeId,
+                        ],
+                        'connection' => $locked->connection,
+                        'queue' => $locked->queue,
+                        'compatibility' => $locked->compatibility,
+                    ]);
+                    app(HistoryProjectionRole::class)->projectRun(
+                        $locked->fresh(
+                            ['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']
+                        )
+                    );
+                    TaskDispatcher::dispatch($task);
                 }
                 return $event;
             }, 3);

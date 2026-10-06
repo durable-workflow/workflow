@@ -254,6 +254,54 @@ final class V2CancellationScopeRequestsTest extends TestCase
         $this->assertRunCancellationUntouched($run);
     }
 
+    public function testAcceptanceWakesWaitingRunWithoutDeliveringOrDuplicatingAnOpenClaim(): void
+    {
+        [, $run, , $scope] = $this->scopeTree('request-sleeping');
+        $original = $run->tasks()
+            ->sole();
+        $original->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+        $run->forceFill([
+            'status' => RunStatus::Waiting,
+        ])->save();
+
+        $accepted = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        $task = $run->tasks()
+            ->where('status', TaskStatus::Ready)->sole();
+        $this->assertNotSame($original->id, $task->id);
+        $this->assertSame(TaskType::Workflow, $task->task_type);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame($run->namespace, $task->namespace);
+        $this->assertSame($run->connection, $task->connection);
+        $this->assertSame($run->queue, $task->queue);
+        $this->assertSame($run->compatibility, $task->compatibility);
+        $this->assertSame('2026-10-03T00:00:00.000000Z', $task->available_at->toISOString());
+        $this->assertSameJsonObject([
+            'resume_source_kind' => 'cancellation_scope_request',
+            'resume_source_id' => $accepted->id,
+            'workflow_command_id' => $accepted->payload['request_id'],
+            'scope_id' => $scope,
+        ], $task->payload);
+        $this->assertSame($task->id, WorkflowRunSummary::query()->findOrFail($run->id)->next_task_id);
+        $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
+        $this->assertSame($accepted->id, CancellationScopeRequests::request($run, $scope, '1.20', 3600)->id);
+        $this->assertSame(2, $run->tasks()->count());
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::CancellationScopeRequested)->count()
+        );
+        $this->assertSame(0, $run->historyEvents()->whereIn('event_type', [
+            HistoryEventType::CancellationScopeDeliveryPrepared,
+            HistoryEventType::CancellationScopeDelivered,
+        ])->count());
+        $this->assertRunCancellationUntouched($run);
+    }
+
     public function testAcceptanceDoesNotReviveAnExpiredClaim(): void
     {
         [, $run, , $scope] = $this->scopeTree('request-expired');
