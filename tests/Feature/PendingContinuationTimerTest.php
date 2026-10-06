@@ -26,6 +26,7 @@ final class PendingContinuationTimerTest extends TestCase
         $key = $connection->getQueue($queue);
         $workflow = WorkflowStub::make(TestPendingContinuationWorkflow::class);
         $workflow->start(0, new WorkflowOptions(connection: 'redis', queue: $queue));
+        $originalWorkflowPayload = $redis->lindex($key, 0);
         $this->tick($queue);
         $root = StoredWorkflow::findOrFail($workflow->id());
         $this->assertInstanceOf(WorkflowWaitingStatus::class, $root->status);
@@ -45,6 +46,12 @@ final class PendingContinuationTimerTest extends TestCase
         $this->assertInstanceOf(WorkflowPendingStatus::class, $successor->status);
         $before = $root->logs()
             ->count();
+
+        // A workflow job already queued by an older release must retire too.
+        $redis->lpush($key, $originalWorkflowPayload);
+        $this->tick($queue);
+        $this->assertSame(1, $redis->llen($key));
+        $this->assertSame(1, $redis->zcard($key . ':delayed'));
 
         // Deliver the original encrypted bytes before the queued successor to
         // force the pending-run boundary. Only this fixture's queue moves.
