@@ -68,8 +68,10 @@ final class ActivityMiddleware
     public function onUnlock(bool $shouldSignal): void
     {
         try {
+            // Every durable completion needs a wake. Semaphore release order
+            // cannot establish which sibling result becomes visible last.
             $this->job->storedWorkflow->toWorkflow()
-                ->next($this->job->index, $this->job->now, $this->job::class, $this->result, $shouldSignal);
+                ->next($this->job->index, $this->job->now, $this->job::class, $this->result);
 
             ActivityCompleted::dispatch(
                 $this->job->storedWorkflow->id,
