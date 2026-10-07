@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestQueryChildMixedWaitWorkflow;
 use Tests\Fixtures\V2\TestQueryParallelChildAuthorityWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -152,6 +153,90 @@ final class QueryStateReplayerChildAuthorityTest extends TestCase
         }
 
         return $cases;
+    }
+
+    #[DataProvider('mixedWaitOutcomes')]
+    public function testChildGroupsRestoreMixedWaitsFromCommittedHistory(string $outcome): void
+    {
+        $run = $this->createRun(TestQueryChildMixedWaitWorkflow::class, RunStatus::Waiting, []);
+        $group = static fn (int $sequence): array => [
+            'sequence' => $sequence,
+            'parallel_group_id' => 'parallel-calls:1:4',
+            'parallel_group_kind' => 'mixed',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 4,
+            'parallel_group_index' => $sequence - 1,
+        ];
+        $child = $group(1) + [
+            'child_workflow_type' => TestTimerWorkflow::class,
+        ];
+        $this->appendEvent($run, HistoryEventType::ChildWorkflowScheduled, $child);
+        $this->appendEvent($run, HistoryEventType::TimerScheduled, $group(2) + [
+            'timer_kind' => 'durable_timer',
+            'timer_id' => 'mixed-timer',
+            'delay_seconds' => 60,
+        ]);
+        $signal = $group(3) + [
+            'signal_name' => 'approval',
+            'signal_wait_id' => 'mixed-approval',
+        ];
+        $this->appendEvent($run, HistoryEventType::SignalWaitOpened, $signal);
+        $condition = $group(4) + [
+            'condition_key' => 'approval.ready',
+            'condition_wait_id' => 'mixed-condition',
+        ];
+        $this->appendEvent($run, HistoryEventType::ConditionWaitOpened, $condition);
+        $this->appendEvent($run, HistoryEventType::ChildRunCompleted, $child + [
+            'child_status' => RunStatus::Completed->value,
+            'output' => Serializer::serializeWithCodec($run->payload_codec, 'recorded-child'),
+            'payload_codec' => $run->payload_codec,
+        ]);
+        $this->appendEvent($run, HistoryEventType::TimerFired, $group(2) + [
+            'timer_kind' => 'durable_timer',
+        ]);
+        if ($outcome === 'fulfilled') {
+            $this->appendEvent($run, HistoryEventType::SignalApplied, $signal + [
+                'arguments' => Serializer::serializeWithCodec($run->payload_codec, ['recorded-approval']),
+                'payload_codec' => $run->payload_codec,
+            ]);
+            $this->appendEvent($run, HistoryEventType::ConditionWaitSatisfied, $condition);
+        } elseif ($outcome === 'timed-out') {
+            $this->appendEvent($run, HistoryEventType::TimerFired, $signal + [
+                'timer_kind' => 'signal_timeout',
+            ]);
+            $this->appendEvent($run, HistoryEventType::ConditionWaitTimedOut, $condition);
+        }
+        $expected = [
+            'stage' => 'waiting-for-mixed-group',
+            'value' => null,
+        ];
+        if ($outcome !== 'pending') {
+            $expected = [
+                'stage' => 'waiting-for-finish',
+                'value' => [
+                    'recorded-child', true,
+                    $outcome === 'fulfilled' ? 'recorded-approval' : null,
+                    $outcome === 'fulfilled',
+                ],
+            ];
+        }
+        $before = $this->snapshot();
+        foreach ([1, 2] as $repetition) {
+            $state = (new QueryStateReplayer())->replayState($run->fresh());
+            $this->assertInstanceOf($outcome === 'pending' ? AllCall::class : SignalCall::class, $state->current);
+            $this->assertSame($expected, $state->workflow->currentState());
+            $this->assertSame($expected, (new QueryStateReplayer())->query($run->fresh(), 'currentState'));
+            $this->assertSame($before, $this->snapshot());
+        }
+    }
+
+    public static function mixedWaitOutcomes(): array
+    {
+        return [
+            'pending' => ['pending'],
+            'fulfilled' => ['fulfilled'],
+            'timed out' => ['timed-out'],
+        ];
     }
 
     /**
