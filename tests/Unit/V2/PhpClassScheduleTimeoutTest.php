@@ -144,6 +144,24 @@ final class PhpClassScheduleTimeoutTest extends TestCase
         $this->assertSame($runDeadline, $originalRun->fresh()->run_deadline_at->toISOString());
     }
 
+    public function testServiceActionTimeoutRepresentationRemainsUnchanged(): void
+    {
+        $action = [
+            'workflow_type' => 'remote-workflow',
+            'execution_timeout_seconds' => '120',
+            'run_timeout_seconds' => '60',
+        ];
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'service-timeouts',
+            spec: [
+                'cron_expressions' => ['* * * * *'],
+            ],
+            action: $action,
+        );
+
+        $this->assertSame($action, $schedule->fresh()->action);
+    }
+
     #[DataProvider('invalidTimeouts')]
     public function testInvalidCreateAndUpdateUseStartOptionsValidation(string $field, mixed $value): void
     {
