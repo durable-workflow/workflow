@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "parallel-child-parent-resolution-authority",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "query-state-replayer"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestQueryParallelChildAuthorityWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-07T11:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_workflow_run_id": "01j00000000000000000000031",
+        "child_workflow_instance_id": "corpus-query-authority-child-1",
+        "parallel_group_id": "parallel-children:1:2",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0
+      },
+      "recorded_at": "2026-10-07T11:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 2,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_workflow_run_id": "01j00000000000000000000032",
+        "child_workflow_instance_id": "corpus-query-authority-child-2",
+        "parallel_group_id": "parallel-children:1:2",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1
+      },
+      "recorded_at": "2026-10-07T11:00:02+00:00"
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []}
+}
