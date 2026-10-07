@@ -24,7 +24,7 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
         string $outcome,
         ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
-        $action = is_array($schedule->action) ? $schedule->action : [];
+        $action = WorkflowSchedule::normalizeActionTimeouts(is_array($schedule->action) ? $schedule->action : []);
         $workflowClass = $action['workflow_class'] ?? null;
 
         if (! is_string($workflowClass) || $workflowClass === '') {
@@ -49,6 +49,8 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
             labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
             memo: is_array($schedule->memo) ? $schedule->memo : [],
             searchAttributes: is_array($schedule->search_attributes) ? $schedule->search_attributes : [],
+            executionTimeoutSeconds: $action['execution_timeout_seconds'] ?? null,
+            runTimeoutSeconds: $action['run_timeout_seconds'] ?? null,
         );
 
         $arguments = array_values(is_array($action['input'] ?? null) ? $action['input'] : []);
