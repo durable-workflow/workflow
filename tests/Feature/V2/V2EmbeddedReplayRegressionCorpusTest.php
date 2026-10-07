@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
+use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -24,6 +25,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
@@ -125,6 +127,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'legacy-version-shared-step-position') {
                 $this->assertLegacyVersionSharesTheRecordedStepPosition($fixture);
+
+                continue;
+            }
+
+            if ($fixture['id'] === 'parallel-child-parent-resolution-authority') {
+                $this->assertParallelChildParentResolutionAuthority($fixture);
 
                 continue;
             }
@@ -1069,6 +1077,55 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
             ->exists());
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertParallelChildParentResolutionAuthority(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        foreach (array_slice($fixture['history'], 1) as $event) {
+            $payload = $event['payload'];
+            $instance = WorkflowInstance::query()->create([
+                'id' => $payload['child_workflow_instance_id'],
+                'workflow_class' => TestTimerWorkflow::class,
+                'workflow_type' => TestTimerWorkflow::class,
+                'run_count' => 1,
+            ]);
+            $child = WorkflowRun::query()->create([
+                'id' => $payload['child_workflow_run_id'],
+                'workflow_instance_id' => $instance->id,
+                'run_number' => 1,
+                'workflow_class' => TestTimerWorkflow::class,
+                'workflow_type' => TestTimerWorkflow::class,
+                'status' => RunStatus::Completed->value,
+                'closed_reason' => 'completed',
+                'closed_at' => now(),
+                'payload_codec' => $run->payload_codec,
+                'output_payload_codec' => $run->payload_codec,
+                'output' => Serializer::serializeWithCodec($run->payload_codec, 'uncommitted-child-output'),
+                'connection' => 'database',
+                'queue' => 'default',
+            ]);
+            $instance->forceFill([
+                'current_run_id' => $child->id,
+            ])->save();
+        }
+        $before = WorkflowRun::query()->orderBy('id')->get()->toArray();
+        $history = WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray();
+        foreach ([1, 2] as $repetition) {
+            $this->assertSame(
+                [
+                    'stage' => 'waiting-for-children',
+                    'value' => null,
+                    'failure' => null,
+                ],
+                (new QueryStateReplayer())->query($run->fresh(), 'currentState'),
+            );
+            $this->assertSame($before, WorkflowRun::query()->orderBy('id')->get()->toArray());
+            $this->assertSame($history, WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray());
+        }
     }
 
     /**
