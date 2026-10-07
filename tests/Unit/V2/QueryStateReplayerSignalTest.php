@@ -44,7 +44,9 @@ final class QueryStateReplayerSignalTest extends TestCase
             $root = sys_get_temp_dir() . '/query-signal-payload-' . Str::ulid();
             $driver = new LocalFilesystemExternalPayloadStorage($root);
             $policy = $this->createMock(ExternalPayloadStoragePolicy::class);
-            $policy->method('driverFor')->with('query-signals')->willReturn($driver);
+            $policy->method('driverFor')
+                ->with('query-signals')
+                ->willReturn($driver);
             $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
             $this->beforeApplicationDestroyed(static function () use ($root): void {
                 ExternalPayloadStorage::flushVerifiedCache();
@@ -53,7 +55,10 @@ final class QueryStateReplayerSignalTest extends TestCase
             $serialized = ExternalPayloads::externalize($serialized, 'avro', $driver, 1);
         }
         $payload = match ($storage) {
-            'envelope' => ['codec' => 'avro', 'blob' => $serialized],
+            'envelope' => [
+                'codec' => 'avro',
+                'blob' => $serialized,
+            ],
             'external' => ExternalPayloads::historyValue($serialized, 'avro', $run->namespace),
             default => $serialized,
         };
@@ -72,14 +77,29 @@ final class QueryStateReplayerSignalTest extends TestCase
     {
         return [
             'serialized value' => ['value', 'recorded', 'inline', 'recorded'],
-            'inline value envelope' => ['value', ['approved' => true], 'envelope', ['approved' => true]],
-            'external value envelope' => ['value', str_repeat('approved', 100), 'external', str_repeat('approved', 100)],
+            'inline value envelope' => [
+                'value', [
+                    'approved' => true,
+                ], 'envelope', [
+                    'approved' => true,
+                ]],
+            'external value envelope' => [
+                'value',
+                str_repeat('approved', 100),
+                'external',
+                str_repeat('approved', 100),
+            ],
             'one argument envelope' => ['arguments', ['recorded'], 'envelope', 'recorded'],
             'multiple arguments' => ['arguments', ['Ada', true], 'inline', ['Ada', true]],
             'empty arguments' => ['arguments', [], 'envelope', true],
             'null argument' => ['arguments', [null], 'inline', null],
             'legacy scalar arguments' => ['arguments', 'recorded', 'inline', 'recorded'],
-            'external arguments' => ['arguments', [str_repeat('recorded', 100)], 'external', str_repeat('recorded', 100)],
+            'external arguments' => [
+                'arguments',
+                [str_repeat('recorded', 100)],
+                'external',
+                str_repeat('recorded', 100),
+            ],
         ];
     }
 
@@ -89,6 +109,12 @@ final class QueryStateReplayerSignalTest extends TestCase
         $run = $this->createRun();
         $this->openWait($run, 10, 'approval-one');
         $signal = $this->createSignal($run, SignalStatus::Applied);
+        if ($correlation !== 'wait-id') {
+            // IDs still identify the delivery if its mutable wait projection drifts.
+            $signal->forceFill([
+                'signal_wait_id' => 'different-projection-wait',
+            ])->save();
+        }
         $payload = [
             'sequence' => 10,
             'signal_name' => 'approval',
@@ -105,13 +131,17 @@ final class QueryStateReplayerSignalTest extends TestCase
         }
         $event = $this->appendEvent($run, HistoryEventType::SignalApplied, $payload);
         if ($correlation === 'event-command-id') {
-            $event->forceFill(['workflow_command_id' => $signal->workflow_command_id])->save();
+            $event->forceFill([
+                'workflow_command_id' => $signal->workflow_command_id,
+            ])->save();
         }
         $this->openWait($run, 20, 'approval-two');
         $this->assertReadOnlyState($run, 2, ['projection-arguments']);
 
         $event->forceFill([
-            'payload' => $payload + ['value' => Serializer::serialize('committed-history')],
+            'payload' => $payload + [
+                'value' => Serializer::serialize('committed-history'),
+            ],
         ])->save();
         $signal->forceFill([
             'status' => SignalStatus::Received->value,
@@ -146,10 +176,14 @@ final class QueryStateReplayerSignalTest extends TestCase
         $this->assertReadOnlyState($run, 1, []);
 
         if ($evidence === 'projection') {
-            $signal->forceFill(['status' => SignalStatus::Applied->value])->save();
+            $signal->forceFill([
+                'status' => SignalStatus::Applied->value,
+            ])->save();
         } elseif ($evidence === 'received-sequence') {
             $received->forceFill([
-                'payload' => $received->payload + ['workflow_sequence' => '10'],
+                'payload' => $received->payload + [
+                    'workflow_sequence' => '10',
+                ],
             ])->save();
         } else {
             $this->appendEvent($run, HistoryEventType::SignalApplied, [
@@ -227,10 +261,13 @@ final class QueryStateReplayerSignalTest extends TestCase
             'status' => RunStatus::Waiting->value,
             'payload_codec' => 'avro',
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'last_progress_at' => now(),
         ]);
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return $run;
     }
@@ -281,7 +318,10 @@ final class QueryStateReplayerSignalTest extends TestCase
 
     private function assertReadOnlyState(WorkflowRun $run, int $wait, array $values): void
     {
-        $expected = ['stage' => 'waiting-for-approval-' . $wait, 'values' => $values];
+        $expected = [
+            'stage' => 'waiting-for-approval-' . $wait,
+            'values' => $values,
+        ];
         $before = $this->runtimeSnapshot($run);
 
         for ($repetition = 0; $repetition < 2; ++$repetition) {
@@ -297,7 +337,10 @@ final class QueryStateReplayerSignalTest extends TestCase
 
     private function runtimeSnapshot(WorkflowRun $run): array
     {
-        $snapshot = ['run' => $run->fresh()->getAttributes()];
+        $snapshot = [
+            'run' => $run->fresh()
+                ->getAttributes(),
+        ];
         foreach ([WorkflowHistoryEvent::class, WorkflowCommand::class, WorkflowSignal::class,
             ActivityExecution::class, WorkflowTask::class, WorkflowTimer::class] as $model) {
             $snapshot[$model] = $model::query()->where('workflow_run_id', $run->id)->orderBy('id')->get()->toArray();
