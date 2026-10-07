@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Uid\Ulid;
+use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -39,6 +40,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
+use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -119,6 +121,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'run-inherited-scoped-cleanup-cold-reload') {
                 $this->assertRunInheritedScopedCleanupAfterColdReload($fixture);
+            }
+
+            if ($fixture['id'] === 'legacy-version-shared-step-position') {
+                $this->assertLegacyVersionSharesTheRecordedStepPosition($fixture);
+
+                continue;
             }
 
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
@@ -1021,6 +1029,46 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         ] as $table) {
             DB::table($table)->delete();
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertLegacyVersionSharesTheRecordedStepPosition(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+        $payload = $started->payload;
+        unset($payload['workflow_definition_fingerprint']);
+        $started->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $bundle = HistoryExport::forRun($run->fresh());
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->get()->toArray();
+        TestQueryReplayGuardActivity::$executions = 0;
+
+        $this->assertSame(
+            $fixture['expected']['result'],
+            (new QueryStateReplayer())->query($run->fresh(), 'currentState'),
+        );
+        $this->assertSame(ReplayDiff::STATUS_REPLAYED, (new ReplayDiff())->diffExport($bundle)['status']);
+        $this->assertSame(
+            $before,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->get()->toArray(),
+        );
+
+        $this->runReadyWorkflowTask($run);
+        $workflow = WorkflowStub::loadRun($run->id);
+        $this->assertTrue($workflow->completed());
+        $this->assertSame($fixture['expected']['result'], $workflow->output());
+        $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
+        $this->assertFalse(WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->exists());
     }
 
     /**
