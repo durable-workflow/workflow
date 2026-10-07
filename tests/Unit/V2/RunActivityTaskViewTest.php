@@ -442,7 +442,8 @@ final class RunActivityTaskViewTest extends TestCase
     private function runtimeRecords(WorkflowRun $run): array
     {
         $records = [
-            'run' => $run->fresh()->getRawOriginal(),
+            'run' => $run->fresh()
+                ->getRawOriginal(),
         ];
         foreach ([WorkflowHistoryEvent::class, ActivityExecution::class, WorkflowTask::class] as $model) {
             $records[$model] = $model::query()->where('workflow_run_id', $run->id)->orderBy('id')->get()
