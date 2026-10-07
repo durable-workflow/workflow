@@ -93,7 +93,7 @@ final class RunActivityTaskViewTest extends TestCase
         $this->assertSame($retry ? 2 : null, $row['retry_after_attempt']);
         $this->assertSame($retry ? 7 : null, $row['retry_backoff_seconds']);
         $this->assertSame($retry ? 4 : null, $row['retry_max_attempts']);
-        $this->assertSame($retry ? self::POLICY : null, $row['retry_policy']);
+        $this->assertRetryPolicy($row['retry_policy'], $retry ? self::POLICY : null);
         foreach (['retry_of_task_id', 'retry_after_attempt_id'] as $field) {
             $this->assertSame($payload[$field] ?? null, $row[$field]);
         }
@@ -217,7 +217,7 @@ final class RunActivityTaskViewTest extends TestCase
         $this->assertSame(2, $row['attempt_count']);
         $this->assertSame(7, $row['retry_backoff_seconds']);
         $this->assertSame(4, $row['retry_max_attempts']);
-        $this->assertSame(self::POLICY, $row['retry_policy']);
+        $this->assertRetryPolicy($row['retry_policy']);
         $this->assertTrue($row['available_at']->equalTo(now()->addSeconds(7)));
         $this->assertSame('activities', $row['queue']);
         $this->assertMissingTransport($row);
@@ -251,7 +251,7 @@ final class RunActivityTaskViewTest extends TestCase
         $this->assertNull($row['expected_task_id']);
         $this->assertNull($row['retry_after_attempt']);
         $this->assertSame(0, $row['attempt_count']);
-        $this->assertSame(self::POLICY, $row['retry_policy']);
+        $this->assertRetryPolicy($row['retry_policy']);
         $this->assertTrue($row['available_at']->equalTo(now()));
         $this->assertSame('redis', $row['connection']);
         $this->assertSame($dedicatedRoute ? 'activities' : 'workflows', $row['queue']);
@@ -392,6 +392,21 @@ final class RunActivityTaskViewTest extends TestCase
             'sequence' => $activity->sequence,
             'activity' => ActivitySnapshot::fromExecution($activity),
         ]);
+    }
+
+    private function assertRetryPolicy(mixed $actual, ?array $expected = self::POLICY): void
+    {
+        if ($expected === null) {
+            $this->assertNull($actual);
+
+            return;
+        }
+        $this->assertIsArray($actual);
+        // JSON object key order varies by database; policy values and ordered
+        // lists still require exact types and contents.
+        ksort($expected);
+        ksort($actual);
+        $this->assertSame($expected, $actual);
     }
 
     private function assertMissingTransport(array $row): void
