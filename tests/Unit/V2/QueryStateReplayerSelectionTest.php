@@ -14,6 +14,7 @@ use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -33,6 +34,69 @@ use Workflow\V2\Workflow;
 
 final class QueryStateReplayerSelectionTest extends TestCase
 {
+    #[DataProvider('projectedGroupOutcomes')]
+    public function testGroupQueriesRestorePersistedActivityOutcomesWithoutTerminalEvents(
+        string $firstStatus,
+        string $secondStatus,
+        bool $resolved,
+        mixed $value,
+        ?string $failure,
+    ): void {
+        $run = $this->createRun(TestQuerySelectionGroupWorkflow::class);
+        foreach ([1, 2, 3] as $sequence) {
+            $this->appendEvent($run, HistoryEventType::ActivityScheduled, $this->groupActivity($sequence));
+        }
+        $winner = $this->completeActivity($run, 3, 'fast-result', true);
+        $this->appendSelection($run, $winner, true);
+        foreach ([1 => $firstStatus, 2 => $secondStatus] as $sequence => $status) {
+            ActivityExecution::query()->create([
+                'id' => 'activity-' . $sequence,
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'activity_type' => TestQueryReplayGuardActivity::class,
+                'payload_codec' => $run->payload_codec,
+                'arguments' => Serializer::serializeWithCodec($run->payload_codec, []),
+                'status' => $status,
+                'result' => $status === ActivityStatus::Completed->value
+                    ? Serializer::serializeWithCodec($run->payload_codec, 'row-result-' . $sequence) : null,
+                'exception' => in_array($status, [ActivityStatus::Failed->value, ActivityStatus::Cancelled->value], true)
+                    ? Serializer::serializeWithCodec($run->payload_codec, [
+                        'class' => \RuntimeException::class,
+                        'message' => 'recorded ' . $status . ' activity ' . $sequence,
+                    ]) : null,
+                'closed_at' => in_array($status, [ActivityStatus::Pending->value, ActivityStatus::Running->value], true)
+                    ? null : now()->addSeconds($sequence),
+            ]);
+        }
+        $expected = [
+            'stage' => $resolved ? 'waiting-for-finish' : 'awaiting-group',
+            'winner' => 'fast',
+            'value' => $value,
+            'failure' => $failure,
+        ];
+        $before = $this->snapshot($run);
+        TestQueryReplayGuardActivity::$executions = 0;
+        foreach ([1, 2] as $repetition) {
+            $state = (new QueryStateReplayer())->replayState($run->fresh());
+            $this->assertSame($expected, (new QueryStateReplayer())->query($run->fresh(), 'currentState'));
+            $this->assertInstanceOf($resolved ? SignalCall::class : DurableOperationHandle::class, $state->current);
+            $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
+            $this->assertSame($before, $this->snapshot($run));
+        }
+    }
+
+    public static function projectedGroupOutcomes(): array
+    {
+        return [
+            'pending first activity' => ['pending', 'completed', false, null, null],
+            'running first activity' => ['running', 'completed', false, null, null],
+            'pending second activity' => ['completed', 'pending', false, null, null],
+            'both completed' => ['completed', 'completed', true, ['row-result-1', 'row-result-2'], null],
+            'failed first activity' => ['failed', 'completed', true, null, 'recorded failed activity 1'],
+            'cancelled first activity' => ['cancelled', 'completed', true, null, 'recorded cancelled activity 1'],
+        ];
+    }
+
     #[DataProvider('groupOutcomes')]
     public function testQueriesRestoreTheLoserGroupFromCommittedOutcomes(
         string $outcome,
