@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "legacy-version-shared-step-position",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "query-state-replayer", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestLegacyPatchReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-01T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestQueryReplayGuardActivity",
+        "activity_execution_id": "01j00000000000000000000001"
+      },
+      "recorded_at": "2026-10-01T12:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestQueryReplayGuardActivity",
+        "activity_execution_id": "01j00000000000000000000001",
+        "result": "wwHioz3/VYAiNwoecmVjb3JkZWQtcmVzdWx0",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-10-01T12:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "01j00000000000000000000002",
+        "timer_kind": "durable_timer",
+        "delay_seconds": 60,
+        "fire_at": "2026-10-01T12:01:02+00:00"
+      },
+      "recorded_at": "2026-10-01T12:00:02+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "01j00000000000000000000002",
+        "timer_kind": "durable_timer",
+        "fired_at": "2026-10-01T12:01:02+00:00"
+      },
+      "recorded_at": "2026-10-01T12:01:02+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "patched": false,
+      "value": "recorded-result",
+      "stage": "completed"
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

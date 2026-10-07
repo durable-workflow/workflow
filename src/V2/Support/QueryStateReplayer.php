@@ -326,12 +326,16 @@ final class QueryStateReplayer
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
                 $this->applyRecordedUpdates($run, $workflow, $historySequence);
-                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::VERSION_MARKER, [
-                    'change_id' => $current->changeId,
-                ]);
-
                 $versionEvent = $this->versionMarkerEvent($run, $historySequence);
                 $resolution = VersionResolver::resolve($run, $versionEvent, $current, $historySequence);
+
+                // A legacy default occupies no history slot. The next durable
+                // step can already be recorded at this position.
+                if ($resolution->advancesSequence) {
+                    WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::VERSION_MARKER, [
+                        'change_id' => $current->changeId,
+                    ]);
+                }
 
                 $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                 $current = $workflowExecution->send(
