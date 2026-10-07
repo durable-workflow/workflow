@@ -781,6 +781,12 @@ final class QueryStateReplayer
                         continue;
                     }
 
+                    if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $itemSequence)) {
+                        $pending = true;
+
+                        continue;
+                    }
+
                     $childStatus = $childRun instanceof WorkflowRun
                         ? ChildRunHistory::resolvedStatus(null, $childRun)
                         : null;
@@ -809,12 +815,6 @@ final class QueryStateReplayer
                             $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                         );
                         $failures[$offset] = ChildRunHistory::exceptionForChildRun($childRun);
-
-                        continue;
-                    }
-
-                    if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $itemSequence)) {
-                        $pending = true;
 
                         continue;
                     }
