@@ -29,6 +29,7 @@ final class TestQuerySelectionWaitHandleWorkflow extends Workflow
                     'signal' => Workflow::await('slow', 60),
                     'condition' => Workflow::await(static fn (): bool => false, null, 'slow.ready'),
                     'condition_timeout' => Workflow::await(static fn (): bool => false, 60, 'slow.ready'),
+                    'child' => Workflow::child(TestTimerWorkflow::class, 60),
                 },
             ]),
             'fast' => static fn () => Workflow::activity(TestQueryReplayGuardActivity::class, 'fast'),

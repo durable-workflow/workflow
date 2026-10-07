@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestQuerySelectionCancellationWorkflow;
 use Tests\Fixtures\V2\TestQuerySelectionGroupWorkflow;
 use Tests\Fixtures\V2\TestQuerySelectionWaitHandleWorkflow;
+use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -117,9 +118,28 @@ final class QueryStateReplayerSelectionTest extends TestCase
     ): void {
         $run = $this->createRun(TestQuerySelectionWaitHandleWorkflow::class, [$kind]);
         $wait = $this->selectionWait($kind, 1);
+        $child = null;
+        if ($kind === 'child') {
+            $child = $this->createRun(TestTimerWorkflow::class, [60]);
+            $child->forceFill([
+                'status' => RunStatus::Completed->value,
+                'closed_reason' => RunStatus::Completed->value,
+                'closed_at' => now(),
+                'output' => Serializer::serializeWithCodec($run->payload_codec, 'contradictory-child-projection'),
+                'output_payload_codec' => $run->payload_codec,
+            ])->save();
+            $wait += [
+                'child_workflow_instance_id' => $child->workflow_instance_id,
+                'child_workflow_run_id' => $child->id,
+            ];
+            if ($failure === 'child-closed') {
+                $failure = 'Child workflow ' . $child->id . ' closed as ' . $outcome . '.';
+            }
+        }
         $opening = match ($kind) {
             'timer' => HistoryEventType::TimerScheduled,
             'signal' => HistoryEventType::SignalWaitOpened,
+            'child' => HistoryEventType::ChildWorkflowScheduled,
             default => HistoryEventType::ConditionWaitOpened,
         };
         $this->appendEvent($run, $opening, $wait);
@@ -174,6 +194,19 @@ final class QueryStateReplayerSelectionTest extends TestCase
                     'timer_kind' => 'signal_timeout',
                 ] : $wait,
             );
+        } elseif ($child !== null && $outcome !== 'pending') {
+            $this->appendEvent($run, match ($outcome) {
+                'completed' => HistoryEventType::ChildRunCompleted,
+                'failed' => HistoryEventType::ChildRunFailed,
+                'cancelled' => HistoryEventType::ChildRunCancelled,
+                default => HistoryEventType::ChildRunTerminated,
+            }, $wait + [
+                'child_status' => $outcome,
+                'output' => Serializer::serializeWithCodec($run->payload_codec, 'recorded-child'),
+                'payload_codec' => $run->payload_codec,
+                'exception_class' => \RuntimeException::class,
+                'message' => 'recorded child failure',
+            ]);
         }
         $resolved = $outcome !== 'pending';
         $expected = [
@@ -183,6 +216,8 @@ final class QueryStateReplayerSelectionTest extends TestCase
             'failure' => $failure,
         ];
         $before = $this->snapshot($run);
+        $childBefore = $child?->fresh()
+            ->getAttributes();
         TestQueryReplayGuardActivity::$executions = 0;
         foreach ([1, 2] as $repetition) {
             $state = (new QueryStateReplayer())->replayState($run->fresh());
@@ -194,6 +229,9 @@ final class QueryStateReplayerSelectionTest extends TestCase
             }
             $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
             $this->assertSame($before, $this->snapshot($run));
+            if ($child !== null) {
+                $this->assertSame($childBefore, $child->fresh()->getAttributes());
+            }
         }
     }
 
@@ -214,6 +252,17 @@ final class QueryStateReplayerSelectionTest extends TestCase
             'pending condition with timeout' => ['condition_timeout', 'pending', null, null],
             'satisfied condition with timeout' => ['condition_timeout', 'satisfied', [true], null],
             'condition timeout' => ['condition_timeout', 'timed-out', [false], null],
+            'terminal child row without parent resolution stays pending' => ['child', 'pending', null, null],
+            'committed child output overrides its projection' => ['child', 'completed', ['recorded-child'], null],
+            'committed child failure overrides its completed projection' => [
+                'child', 'failed', null, 'recorded child failure',
+            ],
+            'committed child cancellation overrides its completed projection' => [
+                'child', 'cancelled', null, 'child-closed',
+            ],
+            'committed child termination overrides its completed projection' => [
+                'child', 'terminated', null, 'child-closed',
+            ],
         ];
     }
 
@@ -523,6 +572,9 @@ final class QueryStateReplayerSelectionTest extends TestCase
                     'signal_name' => 'slow',
                     'signal_wait_id' => 'wait-slow',
                     'timeout_seconds' => 60,
+                ],
+                'child' => [
+                    'child_workflow_type' => TestTimerWorkflow::class,
                 ],
                 default => [
                     'condition_key' => 'slow.ready',
