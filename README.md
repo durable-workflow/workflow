@@ -76,6 +76,31 @@ continue-as-new, search attributes, memo, and message streams. The runtime
 persists execution history so replay can resume after process or host failure
 without repeating completed activities.
 
+## Schedule a Workflow
+
+```php
+use Workflow\V2\Support\ScheduleManager;
+
+$schedule = ScheduleManager::create(
+    scheduleId: 'daily-greeting',
+    workflowClass: GreetWorkflow::class,
+    cronExpression: '0 9 * * *',
+    arguments: ['world'],
+    executionTimeoutSeconds: 120,
+    runTimeoutSeconds: 60,
+);
+```
+
+Run `php artisan workflow:v2:schedule-tick` from Laravel's scheduler to start
+due occurrences. Both scheduled occurrences and `ScheduleManager::trigger()`
+use these limits. The execution timeout covers one logical execution across
+retries and continue-as-new. The run timeout limits each individual run and
+resets on continue-as-new. Each occurrence starts a new execution budget.
+Omit either option, or pass `null`, to leave that limit unset.
+
+See [schedule timeout configuration](docs/schedules.md) for the action format,
+validation and updates.
+
 ## Choose a Deployment
 
 | Deployment | Use it when | Runtime owner |

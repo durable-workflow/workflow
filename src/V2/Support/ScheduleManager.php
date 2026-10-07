@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
 /**
@@ -66,6 +67,8 @@ final class ScheduleManager
         ?string $queue = null,
         ?string $notes = null,
         ?string $namespace = null,
+        ?int $executionTimeoutSeconds = null,
+        ?int $runTimeoutSeconds = null,
     ): WorkflowSchedule {
         self::assertValidCron($cronExpression);
 
@@ -81,6 +84,10 @@ final class ScheduleManager
                 'workflow_type' => $workflowType,
                 'workflow_class' => $workflowClass,
                 'input' => $arguments,
+                ...array_filter([
+                    'execution_timeout_seconds' => $executionTimeoutSeconds,
+                    'run_timeout_seconds' => $runTimeoutSeconds,
+                ], static fn (?int $value): bool => $value !== null),
             ],
             overlapPolicy: $overlapPolicy,
             labels: $labels,
@@ -120,6 +127,7 @@ final class ScheduleManager
     ): WorkflowSchedule {
         $namespace ??= config('workflows.v2.namespace') ?? 'default';
         $action = WorkflowSchedule::normalizeActionTimeouts($action);
+        self::assertValidPhpActionTimeouts($action);
 
         self::assertValidSpec($spec);
 
@@ -248,6 +256,7 @@ final class ScheduleManager
 
         if ($action !== null) {
             $currentAction = WorkflowSchedule::normalizeActionTimeouts($action);
+            self::assertValidPhpActionTimeouts($currentAction);
         }
 
         $updates = [
@@ -1122,6 +1131,19 @@ final class ScheduleManager
             };
         } catch (\Throwable) {
             // Best-effort.
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $action
+     */
+    private static function assertValidPhpActionTimeouts(array $action): void
+    {
+        if (array_key_exists('workflow_class', $action)) {
+            new StartOptions(
+                executionTimeoutSeconds: $action['execution_timeout_seconds'] ?? null,
+                runTimeoutSeconds: $action['run_timeout_seconds'] ?? null,
+            );
         }
     }
 
