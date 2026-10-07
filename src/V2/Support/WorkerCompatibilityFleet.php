@@ -545,8 +545,6 @@ final class WorkerCompatibilityFleet
             return self::$snapshotCache;
         }
 
-        self::pruneExpired();
-
         $databaseSnapshots = WorkerCompatibilityHeartbeat::query()
             ->where('expires_at', '>=', now())
             ->orderBy('namespace')

@@ -18,10 +18,14 @@ final class OperatorDashboardObservationTest extends TestCase
     public function testHourlyVolumeUsesUtcSortTimestamps(string $timezone, string $instant): void
     {
         $originalTimezone = date_default_timezone_get();
-        config(['app.timezone' => $timezone]);
+        config([
+            'app.timezone' => $timezone,
+        ]);
         date_default_timezone_set($timezone);
         $now = Carbon::parse($instant)->setTimezone($timezone);
-        $cutoff = $now->copy()->utc()->subHour();
+        $cutoff = $now->copy()
+            ->utc()
+            ->subHour();
 
         try {
             foreach ([-1, 0, 1] as $seconds) {
@@ -62,11 +66,15 @@ final class OperatorDashboardObservationTest extends TestCase
     public function testLegacyVolumeUsesApplicationTimestampBasis(string $timezone): void
     {
         $originalTimezone = date_default_timezone_get();
-        config(['app.timezone' => $timezone]);
+        config([
+            'app.timezone' => $timezone,
+        ]);
         date_default_timezone_set($timezone);
         // Callers may supply UTC even when the application stores local dates.
         $now = Carbon::parse('2026-10-07T07:42:00Z');
-        $cutoff = $now->copy()->subHour()->setTimezone($timezone);
+        $cutoff = $now->copy()
+            ->subHour()
+            ->setTimezone($timezone);
 
         try {
             foreach ([-1, 0, 1] as $seconds) {
@@ -92,6 +100,9 @@ final class OperatorDashboardObservationTest extends TestCase
         ];
     }
 
+    /**
+     * @param list<int> $expiryOffsets
+     */
     #[DataProvider('heartbeatCases')]
     public function testDashboardAndFleetReadsDoNotWrite(array $expiryOffsets, int $active): void
     {
@@ -117,7 +128,10 @@ final class OperatorDashboardObservationTest extends TestCase
             (new DefaultOperatorObservabilityRepository())->boundedDashboardSummary($now, 'dashboard-observation');
             $summary = WorkerCompatibilityFleet::summaryForNamespace('dashboard-observation');
             $this->assertSame($active, $summary['active_workers']);
-            $this->assertSame(count($expiryOffsets) + 1, DB::table('workflow_worker_compatibility_heartbeats')->count());
+            $this->assertSame(
+                count($expiryOffsets) + 1,
+                DB::table('workflow_worker_compatibility_heartbeats')->count()
+            );
             $writes = array_filter($connection->getQueryLog(), static fn (array $query): bool =>
                 preg_match('/^\s*(insert|update|delete|replace)\b/i', $query['query']) === 1);
             $this->assertSame([], $writes);
@@ -150,10 +164,19 @@ final class OperatorDashboardObservationTest extends TestCase
         $this->seedHeartbeat('expired', now()->subMinute());
         $this->seedHeartbeat('active', now()->addMinute());
 
-        WorkerCompatibilityFleet::recordForNamespace('dashboard-observation', ['build'], queue: 'default', workerId: 'new');
+        WorkerCompatibilityFleet::recordForNamespace(
+            'dashboard-observation',
+            ['build'],
+            queue: 'default',
+            workerId: 'new'
+        );
 
-        $this->assertFalse(DB::table('workflow_worker_compatibility_heartbeats')->where('worker_id', 'expired')->exists());
-        $this->assertTrue(DB::table('workflow_worker_compatibility_heartbeats')->where('worker_id', 'active')->exists());
+        $this->assertFalse(
+            DB::table('workflow_worker_compatibility_heartbeats')->where('worker_id', 'expired')->exists()
+        );
+        $this->assertTrue(
+            DB::table('workflow_worker_compatibility_heartbeats')->where('worker_id', 'active')->exists()
+        );
         $this->assertSame(2, WorkerCompatibilityFleet::summaryForNamespace('dashboard-observation')['active_workers']);
     }
 
@@ -171,24 +194,48 @@ final class OperatorDashboardObservationTest extends TestCase
             'created_at' => $startedAt->format('Y-m-d H:i:s.u'),
             'updated_at' => $startedAt->format('Y-m-d H:i:s.u'),
         ];
-        DB::table('workflow_instances')->insert([...$identity, 'workflow_class' => 'Observation', 'run_count' => 1]);
+        DB::table('workflow_instances')->insert([
+            ...$identity,
+            'workflow_class' => 'Observation',
+            'run_count' => 1,
+        ]);
         DB::table('workflow_runs')->insert([
-            ...$identity, 'workflow_instance_id' => $id, 'workflow_class' => 'Observation', 'run_number' => 1,
-            'status' => 'completed', 'started_at' => $startedAt, 'closed_at' => $startedAt,
+            ...$identity,
+            'workflow_instance_id' => $id,
+            'workflow_class' => 'Observation',
+            'run_number' => 1,
+            'status' => 'completed',
+            'started_at' => $startedAt,
+            'closed_at' => $startedAt,
         ]);
         DB::table('workflow_run_summaries')->insert([
-            ...$identity, 'workflow_instance_id' => $id, 'class' => 'Observation', 'run_number' => 1,
-            'status' => 'completed', 'status_bucket' => 'completed', 'started_at' => $startedAt, 'closed_at' => $startedAt,
+            ...$identity,
+            'workflow_instance_id' => $id,
+            'class' => 'Observation',
+            'run_number' => 1,
+            'status' => 'completed',
+            'status_bucket' => 'completed',
+            'started_at' => $startedAt,
+            'closed_at' => $startedAt,
             'sort_timestamp' => $projected ? RunSummarySortKey::timestamp($startedAt) : null,
         ]);
     }
 
-    private function seedHeartbeat(string $workerId, Carbon $expiresAt, string $namespace = 'dashboard-observation'): void
-    {
+    private function seedHeartbeat(
+        string $workerId,
+        Carbon $expiresAt,
+        string $namespace = 'dashboard-observation'
+    ): void {
         DB::table('workflow_worker_compatibility_heartbeats')->insert([
-            'worker_id' => $workerId, 'scope_key' => $workerId, 'namespace' => $namespace,
-            'supported' => '["build"]', 'queue' => 'default', 'recorded_at' => now(), 'expires_at' => $expiresAt,
-            'created_at' => now(), 'updated_at' => now(),
+            'worker_id' => $workerId,
+            'scope_key' => $workerId,
+            'namespace' => $namespace,
+            'supported' => '["build"]',
+            'queue' => 'default',
+            'recorded_at' => now(),
+            'expires_at' => $expiresAt,
+            'created_at' => now(),
+            'updated_at' => now(),
         ]);
     }
 }

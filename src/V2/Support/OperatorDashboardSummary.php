@@ -440,15 +440,20 @@ final class OperatorDashboardSummary
 
     private static function flowsPastHour(CarbonInterface $now, ?string $namespace, ?array $workflowTypes): int
     {
+        // Projection sort timestamps are UTC. Legacy created_at values retain
+        // the application's database timestamp basis.
         $cutoff = $now->copy()
+            ->utc()
             ->subHour();
+        $legacyCutoff = $cutoff->copy()
+            ->setTimezone((string) config('app.timezone', 'UTC'));
 
         return self::summaryQuery($namespace, $workflowTypes)
-            ->where(static function ($query) use ($cutoff): void {
+            ->where(static function ($query) use ($cutoff, $legacyCutoff): void {
                 $query->where('sort_timestamp', '>=', $cutoff)
-                    ->orWhere(static function ($fallback) use ($cutoff): void {
+                    ->orWhere(static function ($fallback) use ($legacyCutoff): void {
                         $fallback->whereNull('sort_timestamp')
-                            ->where('created_at', '>=', $cutoff);
+                            ->where('created_at', '>=', $legacyCutoff);
                     });
             })
             ->count();
