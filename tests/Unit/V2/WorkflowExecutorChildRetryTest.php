@@ -184,7 +184,9 @@ final class WorkflowExecutorChildRetryTest extends TestCase
                 $this->assertSame($executionDeadline, $retry->execution_deadline_at?->toIso8601String());
                 $this->assertSame($timeouts ? 120 : null, $retry->run_timeout_seconds);
                 $this->assertSame(
-                    $timeouts ? now()->addSeconds(120)->toIso8601String() : null,
+                    $timeouts ? now()
+                        ->addSeconds(120)
+                        ->toIso8601String() : null,
                     $retry->run_deadline_at?->toIso8601String()
                 );
                 $instance = WorkflowInstance::query()->findOrFail($retry->workflow_instance_id);
@@ -193,7 +195,9 @@ final class WorkflowExecutorChildRetryTest extends TestCase
                 $retryTask = WorkflowTask::query()->where('workflow_run_id', $retry->id)->sole();
                 $this->assertSame(TaskStatus::Ready, $retryTask->status);
                 $this->assertSame(
-                    now()->addSeconds($backoff)->toIso8601String(),
+                    now()
+                        ->addSeconds($backoff)
+                        ->toIso8601String(),
                     $retryTask->available_at?->toIso8601String()
                 );
                 $this->assertSame($connection, $retryTask->connection);
@@ -231,19 +235,34 @@ final class WorkflowExecutorChildRetryTest extends TestCase
                 $this->assertSame($this->ordered($expectedStart), $this->ordered($started->payload));
                 $this->assertSame(
                     [false, 0, ''],
-                    WorkflowMemo::query()->where('workflow_run_id', $retry->id)->where(
-                        'key',
-                        'order'
-                    )->sole()->getValue()
+                    WorkflowMemo::query()->where('workflow_run_id', $retry->id)->where('key', 'order')->sole()
+                        ->getValue()
                 );
                 app(RunTimelineProjector::class)->project($retry->fresh());
                 $before = $this->records();
                 $this->assertFalse($bridge->execute($task->id)['executed']);
                 $this->assertSame($before, $this->records());
                 if ($backoff > 0) {
-                    $this->assertFalse($bridge->execute($retryTask->id)['executed']);
+                    $this->assertSame([], $bridge->poll(
+                        $connection,
+                        'native-child-retry',
+                        10,
+                        'child-retry-build',
+                        'native-child-retry'
+                    ));
                     $this->assertSame($before, $this->records());
                     Carbon::setTestNow(now()->addSeconds($backoff));
+                    $this->assertSame([$retryTask->id], array_column(
+                        $bridge->poll(
+                            $connection,
+                            'native-child-retry',
+                            10,
+                            'child-retry-build',
+                            'native-child-retry'
+                        ),
+                        'task_id',
+                    ));
+                    $this->assertSame($before, $this->records());
                 }
                 $current = $retry;
             }
@@ -253,8 +272,19 @@ final class WorkflowExecutorChildRetryTest extends TestCase
             ->where('event_type', HistoryEventType::ChildRunFailed->value)->count());
         $resume = WorkflowTask::query()->where('workflow_run_id', $parentRun->id)
             ->where('status', TaskStatus::Ready->value)->sole();
-        $this->assertSame($current->id, $resume->payload['child_workflow_run_id']);
-        $this->assertSame(1, $resume->payload['parent_sequence']);
+        $resolution = WorkflowHistoryEvent::query()->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunFailed->value)->sole();
+        $this->assertSame($this->ordered([
+            'workflow_wait_kind' => 'child',
+            'open_wait_id' => 'child:' . $scheduled->payload['child_call_id'],
+            'resume_source_kind' => 'child_workflow_run',
+            'resume_source_id' => $current->id,
+            'workflow_history_event_id' => $resolution->id,
+            'child_call_id' => $scheduled->payload['child_call_id'],
+            'child_workflow_run_id' => $current->id,
+            'workflow_sequence' => 1,
+            'workflow_event_type' => HistoryEventType::ChildRunFailed->value,
+        ]), $this->ordered($resume->payload));
         $this->assertTrue($bridge->execute($resume->id)['executed']);
         $expected = [
             'message' => 'native child failed',
