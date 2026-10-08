@@ -23,6 +23,7 @@ use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -31,6 +32,7 @@ use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\CancellationScopeDelivery;
@@ -49,6 +51,7 @@ use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Support\WorkflowStepHistory;
+use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -99,6 +102,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'signal-applied-envelope-cold-replay') {
                 $this->assertSignalAppliedEnvelopeColdReplay($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'buffered-signal-committed-wait-reconciliation') {
+                $this->assertBufferedSignalCommittedWaitReconciliation($fixture);
             }
 
             if (($fixture['id'] ?? null) === 'portable-local-activity-attempt-identity-cold-reload') {
@@ -1258,6 +1265,73 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         $this->assertSame('completed', $run->fresh()->status->value);
         $this->assertSame($fixture['expected']['result'], $run->fresh()->workflowOutput());
+    }
+
+    private function assertBufferedSignalCommittedWaitReconciliation(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $prefix = $fixture;
+        $prefix['history'] = array_values(
+            array_filter(
+                $fixture['history'],
+                static fn (array $event): bool => $event['event_type'] !== 'SignalApplied'
+            )
+        );
+        $run = $this->createRunFromFixture($prefix);
+        $received = $fixture['history'][1]['payload'];
+        $expectedApplied = $fixture['history'][3]['payload'];
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'signal',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'append',
+                'arguments' => ['first'],
+            ]),
+            'accepted_at' => now(),
+        ]);
+        $signal = WorkflowSignal::query()->create([
+            'id' => $received['signal_id'],
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'run',
+            'signal_name' => $received['signal_name'],
+            'signal_wait_id' => $received['signal_wait_id'],
+            'status' => 'received',
+            'outcome' => 'signal_received',
+            'payload_codec' => 'avro',
+            'arguments' => $received['arguments'],
+            'command_sequence' => $command->command_sequence,
+            'received_at' => now(),
+        ]);
+        $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->sole();
+        $task->forceFill([
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+        ])->save();
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $this->assertTrue($bridge->claimStatus($task->id, 'buffered-signal-worker')['claimed']);
+        $this->assertTrue($bridge->complete($task->id, [])['completed']);
+
+        $applied = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)->sole();
+        $this->assertSame($received['signal_id'], $applied->payload['signal_id']);
+        $this->assertSame($expectedApplied['signal_wait_id'], $applied->payload['signal_wait_id']);
+        $this->assertSame($expectedApplied['sequence'], $applied->payload['sequence']);
+        $this->assertSame($expectedApplied['signal_wait_id'], $signal->fresh()->signal_wait_id);
+        $cold = WorkflowFiberRunner::forClass(
+            $fixture['workflow']['type'],
+            $instance->id,
+            $run->id,
+            $fixture['workflow']['arguments'],
+            'avro',
+            HistoryExport::forRun($run->fresh())['history_events']
+        )->step();
+        $this->assertTrue($cold->completed);
+        $this->assertSame($fixture['expected']['result'], $cold->result);
     }
 
     /**
