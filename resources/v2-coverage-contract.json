@@ -12,11 +12,11 @@
         }
     },
     "ratchet": {
-        "accepted_baseline_basis_points": 9274,
+        "accepted_baseline_basis_points": 9279,
         "target_basis_points": 10000
     },
     "provenance": {
         "observed_at": "2026-10-08",
-        "evidence": "Public full qualification run 37844950093 succeeded on attempt 1 and measured 65,288 of 70,394 executable lines (92.74%) at commit 8cf807978a20fcdedeef525de32f6f3e3a2f0243, merged through #717 as 75a3e271705460b5c8de9663f54cf84add9765c7 with identical tested and merged trees. The measurement unions one unit report with all four MySQL feature-shard reports across the complete 582-file production source inventory, with no exclusions."
+        "evidence": "Public full qualification run 37852803324 succeeded on attempt 2 after one isolated PostgreSQL shard retry under unchanged limits and measured 65,322 of 70,394 executable lines (92.79%) at commit 84df89138d1a558dcd0c620c3f8145fe36ea3d07, merged through #721 as 99026e37162a9409722e8c7e45b47edcc2a8a3a0 with identical tested and merged trees. The original deadline failure remains retained in issue #426. The measurement unions one unit report with all four MySQL feature-shard reports across the complete 582-file production source inventory, with no exclusions."
     }
 }
