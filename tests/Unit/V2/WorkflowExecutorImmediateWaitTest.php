@@ -39,14 +39,15 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
         parent::setUp();
         Carbon::setTestNow('2026-10-08 18:30:00');
         Queue::fake();
-        config()->set([
-            'queue.default' => 'redis',
-            'workflows.v2.task_dispatch_mode' => 'queue',
-            'workflows.v2.workflow_task_lease_seconds' => 300,
-            'workflows.v2.compatibility.current' => 'immediate-build',
-            'workflows.v2.compatibility.supported' => ['immediate-build'],
-            'workflows.v2.compatibility.namespace' => 'immediate-waits',
-        ]);
+        config()
+            ->set([
+                'queue.default' => 'redis',
+                'workflows.v2.task_dispatch_mode' => 'queue',
+                'workflows.v2.workflow_task_lease_seconds' => 300,
+                'workflows.v2.compatibility.current' => 'immediate-build',
+                'workflows.v2.compatibility.supported' => ['immediate-build'],
+                'workflows.v2.compatibility.namespace' => 'immediate-waits',
+            ]);
         WorkerCompatibilityFleet::clear();
     }
 
@@ -57,7 +58,9 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
         parent::tearDown();
     }
 
-    /** @return iterable<string, array{string, bool, bool, mixed}> */
+    /**
+     * @return iterable<string, array{string, bool, bool, mixed}>
+     */
     public static function outcomes(): iterable
     {
         foreach ([false, true] as $nested) {
@@ -78,11 +81,12 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
     ): void {
         $connection = config('database.default');
         $this->assertIsString($connection);
-        config()->set('queue.connections.' . $connection, [
-            'driver' => 'redis',
-            'connection' => 'default',
-            'queue' => 'immediate-waits',
-        ]);
+        config()
+            ->set('queue.connections.' . $connection, [
+                'driver' => 'redis',
+                'connection' => 'default',
+                'queue' => 'immediate-waits',
+            ]);
         $workflow = WorkflowStub::make(ImmediateWaitWorkflow::class, 'immediate-one', 'immediate-waits');
         $this->assertTrue($workflow->attemptStart($kind, $ready, $nested, new WorkflowOptions(
             connection: $connection,
@@ -103,7 +107,8 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
         ];
         $this->assertSame($expected, $workflow->refresh()->output());
         $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->where(
-            'task_type', TaskType::Timer->value
+            'task_type',
+            TaskType::Timer->value
         )->count());
         $context = [
             'task' => [
@@ -131,13 +136,18 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
             $type = $kind === 'condition'
                 ? HistoryEventType::ConditionWaitOpened : HistoryEventType::SignalWaitOpened;
             $opened = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->where(
-                'event_type', $type->value
+                'event_type',
+                $type->value
             )->sole();
             $field = $kind === 'condition' ? 'condition_wait_id' : 'signal_wait_id';
             $waitId = $opened->payload[$field];
             $this->assertIsString($waitId);
             $this->assertNotSame('', $waitId);
-            $waitPayload = [$field => $waitId, 'sequence' => 1, 'timeout_seconds' => 0];
+            $waitPayload = [
+                $field => $waitId,
+                'sequence' => 1,
+                'timeout_seconds' => 0,
+            ];
             if ($kind === 'condition') {
                 $fingerprint = ConditionWaitDefinition::fingerprint(ImmediateWaitWorkflow::condition($ready));
                 $this->assertIsString($fingerprint);
@@ -151,15 +161,19 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
             $this->assertSame($this->ordered($waitPayload + $metadata + $context), $this->ordered($opened->payload));
         }
         $timers = WorkflowTimer::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
-        $firstTimesOut = $kind !== 'condition' || !$ready;
-        $this->assertCount(($firstTimesOut ? 1 : 0) + ($nested ? 1 : 0), $timers);
+        $firstCreatesTimer = $kind !== 'condition' || ! $ready;
+        $this->assertCount(($firstCreatesTimer ? 1 : 0) + ($nested ? 1 : 0), $timers);
         foreach ($timers as $timer) {
             $this->assertSame(TimerStatus::Fired, $timer->status);
             $this->assertSame(0, $timer->delay_seconds);
             $this->assertSame('2026-10-08T18:30:00.000000Z', $timer->fire_at?->toJSON());
             $this->assertSame($timer->fire_at?->toJSON(), $timer->fired_at?->toJSON());
             $sequence = (int) $timer->sequence;
-            $common = ['timer_id' => $timer->id, 'sequence' => $sequence, 'delay_seconds' => 0];
+            $common = [
+                'timer_id' => $timer->id,
+                'sequence' => $sequence,
+                'delay_seconds' => 0,
+            ];
             if ($sequence === 1 && $kind !== 'timer') {
                 $common['timer_kind'] = $kind . '_timeout';
                 if ($kind === 'condition') {
@@ -169,15 +183,22 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
                         'condition_definition_fingerprint' => $fingerprint,
                     ];
                 } else {
-                    $common += ['signal_wait_id' => $waitId, 'signal_name' => 'approve'];
+                    $common += [
+                        'signal_wait_id' => $waitId,
+                        'signal_name' => 'approve',
+                    ];
                 }
             }
             foreach ([HistoryEventType::TimerScheduled, HistoryEventType::TimerFired] as $type) {
                 $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->where(
-                    'event_type', $type->value
-                )->get()->sole(fn (WorkflowHistoryEvent $row): bool => $row->payload['timer_id'] === $timer->id);
+                    'event_type',
+                    $type->value
+                )->get()
+                    ->sole(static fn (WorkflowHistoryEvent $row): bool => $row->payload['timer_id'] === $timer->id);
                 $timestamp = $type === HistoryEventType::TimerScheduled ? 'fire_at' : 'fired_at';
-                $payload = $common + [$timestamp => '2026-10-08T18:30:00.000000Z']
+                $payload = $common + [
+                    $timestamp => '2026-10-08T18:30:00.000000Z',
+                ]
                     + $this->metadata($nested, $groupKind, $sequence - 1) + $context;
                 $this->assertSame($this->ordered($payload), $this->ordered($event->payload));
             }
@@ -185,7 +206,8 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
         if ($kind === 'condition') {
             $type = $ready ? HistoryEventType::ConditionWaitSatisfied : HistoryEventType::ConditionWaitTimedOut;
             $resolved = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->where(
-                'event_type', $type->value
+                'event_type',
+                $type->value
             )->sole();
             $payload = [
                 'condition_wait_id' => $waitId,
@@ -194,7 +216,7 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
                 'sequence' => 1,
                 'timeout_seconds' => 0,
             ];
-            if (!$ready) {
+            if (! $ready) {
                 $payload['timer_id'] = $timers->first()->id;
             }
             $this->assertSame($this->ordered($payload + $metadata + $context), $this->ordered($resolved->payload));
@@ -211,10 +233,12 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     */
     private function metadata(bool $nested, string $kind, int $index): array
     {
-        if (!$nested) {
+        if (! $nested) {
             return [];
         }
         $entry = [
@@ -224,10 +248,14 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
             'parallel_group_size' => 2,
             'parallel_group_index' => $index,
         ];
-        return $entry + ['parallel_group_path' => [$entry, $entry]];
+        return $entry + [
+            'parallel_group_path' => [$entry, $entry],
+        ];
     }
 
-    /** @param array<mixed> $value @return array<mixed> */
+    /**
+     * @param array<mixed> $value @return array<mixed>
+     */
     private function ordered(array $value): array
     {
         foreach ($value as &$entry) {
@@ -236,13 +264,15 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
             }
         }
         unset($entry);
-        if (!array_is_list($value)) {
+        if (! array_is_list($value)) {
             ksort($value);
         }
         return $value;
     }
 
-    /** @return array<string, list<array<string, mixed>>> */
+    /**
+     * @return array<string, list<array<string, mixed>>>
+     */
     private function records(): array
     {
         $records = [];
@@ -260,15 +290,21 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
 #[Signal('approve')]
 final class ImmediateWaitWorkflow extends Workflow
 {
-    /** @var array<string, mixed> */
-    private array $observed = ['phase' => 'before'];
+    /**
+     * @var array<string, mixed>
+     */
+    private array $observed = [
+        'phase' => 'before',
+    ];
 
     public static function condition(bool $ready): Closure
     {
         return static fn (): bool => $ready;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     */
     public function handle(string $kind, bool $ready, bool $nested): array
     {
         $operation = static fn (): mixed => match ($kind) {
@@ -277,12 +313,23 @@ final class ImmediateWaitWorkflow extends Workflow
             default => Workflow::timer(0),
         };
         $result = $nested
-            ? Workflow::all([static fn () => Workflow::all([$operation, static fn () => Workflow::timer(0)])])
+            ? Workflow::all([
+                static fn () => Workflow::all([
+                    $operation,
+                    static fn () => Workflow::timer(0),
+                ]),
+            ])
             : $operation();
-        return $this->observed = ['phase' => 'done', 'kind' => $kind, 'result' => $result];
+        return $this->observed = [
+            'phase' => 'done',
+            'kind' => $kind,
+            'result' => $result,
+        ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     */
     #[QueryMethod]
     public function state(): array
     {
