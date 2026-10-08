@@ -2154,6 +2154,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         && ($event->payload['signal_name'] ?? null) === $signalName;
                 });
 
+        // A signal admitted before a wait was committed still carries its
+        // buffered identity. Delivery consumes the active wait, so persist
+        // that authored occurrence for the next cold replay as well.
+        if (! $opened instanceof WorkflowHistoryEvent && str_starts_with($signalWaitId ?? '', 'signal-command:')) {
+            $activeWaitId = SignalWaits::openWaitIdForName($run->fresh(['historyEvents']) ?? $run, $signalName);
+            if ($activeWaitId !== null) {
+                $opened = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+                    ->where('workflow_run_id', $run->id)
+                    ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+                    ->get()
+                    ->first(
+                        static fn (WorkflowHistoryEvent $event): bool => ($event->payload['signal_wait_id'] ?? null) === $activeWaitId
+                    );
+                $signalWaitId = $activeWaitId;
+            }
+        }
+
         $openedPayload = $opened instanceof WorkflowHistoryEvent && is_array($opened->payload)
             ? $opened->payload
             : [];
@@ -4129,6 +4146,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $openedWaitIds = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->lockForUpdate()
             ->get()
             ->filter(static function (WorkflowHistoryEvent $event) use ($signalName): bool {
                 return ($event->payload['signal_name'] ?? null) === $signalName
@@ -4150,6 +4168,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ->orderBy('received_at')
             ->orderBy('created_at')
             ->orderBy('id')
+            ->lockForUpdate()
             ->get();
 
         foreach ($signals as $signal) {

@@ -56,6 +56,7 @@ final class PendingMessageTask
             ->orderBy('received_at')
             ->orderBy('created_at')
             ->orderBy('id')
+            ->lockForUpdate()
             ->get();
 
         $freshRun = $run->fresh(['historyEvents']) ?? $run;
@@ -135,6 +136,7 @@ final class PendingMessageTask
             ->orderBy('accepted_at')
             ->orderBy('created_at')
             ->orderBy('id')
+            ->lockForUpdate()
             ->first();
 
         if (! $update instanceof WorkflowUpdate) {
