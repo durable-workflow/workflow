@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\Attributes\DataProvider;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Support\ParallelChildGroup;
@@ -15,7 +15,7 @@ use Workflow\V2\Workflow;
 final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
 {
     /**
-     * @return iterable<string, array{string, mixed, bool}>
+     * @return iterable<string, array{string, mixed, bool, bool}>
      */
     public static function resolvedMembers(): iterable
     {
@@ -30,18 +30,23 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
             'nested' => [[true, [false, 0, '', null]], false],
         ];
         foreach ($values as $kind => $value) {
-            yield 'cold:' . $kind => [$kind, $value, false];
-            yield 'existing:' . $kind => [$kind, $value, true];
+            yield 'cold:' . $kind => [$kind, $value, false, false];
+            yield 'existing:' . $kind => [$kind, $value, true, false];
+            if (in_array($kind, ['timer', 'activity', 'child', 'signal'], true)) {
+                yield 'cancel:cold:' . $kind => [$kind, $value, false, true];
+                yield 'cancel:existing:' . $kind => [$kind, $value, true, true];
+            }
         }
     }
 
     #[DataProvider('resolvedMembers')]
-    public function testResolvedLosingHandlesKeepStrictValuesWithoutAuthoringCancellation(
+    public function testResolvedLosingHandlesKeepStrictValuesAcrossReplay(
         string $kind,
         mixed $value,
         bool $existing,
+        bool $cancel,
     ): void {
-        $author = $this->runner($kind);
+        $author = $this->runner($kind, $cancel);
         $scheduled = $author->step();
         $this->assertFalse($scheduled->completed);
         $this->assertSame('start_timer', $scheduled->commands[0]['type']);
@@ -87,14 +92,14 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
         ];
         for ($repeat = 0; $repeat < 2; ++$repeat) {
             if ($existing) {
-                $runner = $this->runner($kind, $opening);
+                $runner = $this->runner($kind, $cancel, $opening);
                 $waiting = $runner->step();
                 $this->assertFalse($waiting->completed);
                 $this->assertSame([], $waiting->commands);
                 $this->assertSame($runner, $runner->withHistoryEvents($history));
                 $completed = $runner->step();
             } else {
-                $completed = $this->runner($kind, $history)
+                $completed = $this->runner($kind, $cancel, $history)
                     ->step();
             }
             $this->assertTrue($completed->completed);
@@ -113,13 +118,13 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
     /**
      * @param list<array<string, mixed>> $history
      */
-    private function runner(string $kind, array $history = []): WorkflowFiberRunner
+    private function runner(string $kind, bool $cancel, array $history = []): WorkflowFiberRunner
     {
         return WorkflowFiberRunner::forClass(
             EngineSelectionHandlesWorkflow::class,
             'engine-selection',
             'engine-selection-run',
-            [$kind],
+            [$kind, $cancel],
             'avro',
             $history,
             'engine-selection',
@@ -159,6 +164,7 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
                 ]],
                 default => ['ConditionWaitOpened', [
                     'condition_wait_id' => 'condition-' . $sequence,
+                    'condition_wait_occurrence_id' => 'engine:condition:' . $sequence,
                     'condition_key' => 'engine.ready',
                     'condition_definition_fingerprint' => $command['condition_definition_fingerprint'],
                     'timeout_seconds' => 60,
@@ -209,6 +215,7 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
             ]],
             default => [$kind === 'condition-true' ? 'ConditionWaitSatisfied' : 'ConditionWaitTimedOut', [
                 'condition_wait_id' => 'condition-' . $sequence,
+                'condition_wait_occurrence_id' => 'engine:condition:' . $sequence,
                 'condition_key' => 'engine.ready',
                 'condition_definition_fingerprint' => $command['condition_definition_fingerprint'],
             ]],
@@ -231,7 +238,7 @@ final class WorkflowFiberRunnerSelectionHandleTest extends TestCase
 #[Signal('approval')]
 final class EngineSelectionHandlesWorkflow extends Workflow
 {
-    public function handle(string $kind): array
+    public function handle(string $kind, bool $cancel): array
     {
         $activity = static fn (): mixed => Workflow::activity('engine.reserve', false, 0, '');
         $child = static fn (): mixed => Workflow::child('engine.child');
@@ -258,7 +265,9 @@ final class EngineSelectionHandlesWorkflow extends Workflow
         ]);
         $values = [];
         for ($repeat = 0; $repeat < 2; ++$repeat) {
-            $selection->handles['other']->cancel();
+            if ($cancel) {
+                $selection->handles['other']->cancel();
+            }
             $values[] = $selection->handles['other']->await();
         }
         return [
