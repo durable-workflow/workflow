@@ -221,7 +221,7 @@ final class WorkflowExecutorImmediateWaitTest extends TestCase
             }
             $this->assertSame($this->ordered($payload + $metadata + $context), $this->ordered($resolved->payload));
         }
-        app(RunTimelineProjector::class)->project($run->id);
+        app(RunTimelineProjector::class)->project($run->fresh());
         $before = $this->records();
         $this->assertFalse($bridge->execute($task->id)['executed']);
         $this->assertSame($before, $this->records());
