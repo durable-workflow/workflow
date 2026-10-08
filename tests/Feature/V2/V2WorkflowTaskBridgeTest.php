@@ -3064,6 +3064,57 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(7, BridgeProtocolSignalReplayWorkflow::lastCount());
     }
 
+    public function testSignalWaitAndDeliverySeeAdmissionCommittedAfterTheTransactionSnapshot(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('This regression requires MySQL repeatable-read snapshots.');
+        }
+        Queue::fake();
+        $run = $this->createWaitingRun();
+        $this->makeDefinitionUnavailableWithDurableCommandContract($run);
+        $task = $this->createLeasedTask($run);
+        $signal = $this->recordReceivedSignal($run, 'advance', 'signal-command:snapshot-admission', [7]);
+        $received = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalReceived->value)->sole();
+        $signalAttributes = $signal->getAttributes();
+        $receivedAttributes = $received->getAttributes();
+        $signal->delete();
+        $received->delete();
+        config()
+            ->set('database.connections.signal_snapshot_peer', DB::connection()->getConfig());
+        $peer = DB::connection('signal_snapshot_peer');
+        $level = DB::transactionLevel();
+        try {
+            DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            DB::beginTransaction();
+            $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $run->id)->count());
+            // A second committed connection models admission after that read,
+            // before completion takes its existing run/task locks.
+            $peer->table($signal->getTable())
+                ->insert($signalAttributes);
+            $peer->table($received->getTable())
+                ->insert($receivedAttributes);
+            $outcome = $this->bridge->complete($task->id, [[
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+            ]]);
+            DB::commit();
+            $this->assertTrue($outcome['completed']);
+            $opened = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::SignalWaitOpened->value)->sole();
+            $this->assertSame($signal->signal_wait_id, $opened->payload['signal_wait_id']);
+            $this->assertCount(1, $outcome['created_task_ids']);
+            $delivery = WorkflowTask::query()->findOrFail($outcome['created_task_ids'][0]);
+            $this->assertSame($signal->id, $delivery->payload['workflow_signal_id']);
+            $this->assertSame($signal->signal_wait_id, $delivery->payload['signal_wait_id']);
+        } finally {
+            while (DB::transactionLevel() > $level) {
+                DB::rollBack();
+            }
+            DB::purge('signal_snapshot_peer');
+        }
+    }
+
     public function testProtocolSignalAfterOpenSignalWaitUsesCommittedWaitId(): void
     {
         Queue::fake();
