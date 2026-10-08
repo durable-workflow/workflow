@@ -19,7 +19,10 @@ final class ChildParallelMetadataTest extends NonDatabaseTestCase
     {
         $child = self::childEntry();
         yield 'default all children' => [$child, [$child], [$child]];
-        $explicitAll = [...$child, 'parallel_group_mode' => 'all'];
+        $explicitAll = [
+            ...$child,
+            'parallel_group_mode' => 'all',
+        ];
         yield 'explicit all children' => [$explicitAll, [$explicitAll], [$child]];
         $outer = [
             'parallel_group_id' => 'parallel-calls:10:3',
@@ -56,7 +59,10 @@ final class ChildParallelMetadataTest extends NonDatabaseTestCase
         array $path,
         array $canonicalPath,
     ): void {
-        $arguments = [false, 0, '', ['order' => 'order-a']];
+        $arguments = [
+            false, 0, '', [
+                'order' => 'order-a',
+            ]];
         $envelope = [
             'codec' => 'avro',
             'blob' => Serializer::serializeWithCodec('avro', $arguments),
@@ -110,7 +116,10 @@ final class ChildParallelMetadataTest extends NonDatabaseTestCase
 
     public function testChildGroupsRejectAnotherCommandFamilyPrefixInBothPublicPaths(): void
     {
-        $entry = [...self::childEntry(), 'parallel_group_id' => 'parallel-timers:11:2'];
+        $entry = [
+            ...self::childEntry(),
+            'parallel_group_id' => 'parallel-timers:11:2',
+        ];
         $commands = [[
             'type' => 'start_child_workflow',
             'workflow_type' => 'FulfilOrder',
