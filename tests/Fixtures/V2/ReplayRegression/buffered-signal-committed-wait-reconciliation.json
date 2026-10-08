@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "buffered-signal-committed-wait-reconciliation",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestBufferedSignalHistoryWorkflow",
+    "arguments": [1],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {"sequence": 2, "event_type": "SignalReceived", "payload": {
+      "signal_id": "admitted-first", "signal_name": "append",
+      "signal_wait_id": "signal-command:admitted-first",
+      "arguments": "wwHioz3/VYAiNwwCCgpmaXJzdAA=", "payload_codec": "avro"
+    }},
+    {"sequence": 3, "event_type": "SignalWaitOpened", "payload": {
+      "sequence": 1, "signal_name": "append", "signal_wait_id": "committed-first-wait"
+    }},
+    {"sequence": 4, "event_type": "SignalApplied", "payload": {
+      "sequence": 1, "signal_id": "admitted-first", "signal_name": "append",
+      "signal_wait_id": "committed-first-wait", "value": "wwHioz3/VYAiNwoKZmlyc3Q="
+    }}
+  ],
+  "expected": {
+    "completed": true, "result": ["first"],
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
