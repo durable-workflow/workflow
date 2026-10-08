@@ -126,13 +126,15 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertSame($this->task->id, $event->workflow_task_id);
         $this->assertSame('caller', $event->run->namespace);
         $this->assertSame(1, $event->payload['sequence']);
-        $this->assertSame($surface, $event->payload['service_call']);
-        $this->assertSame($surface, $event->payload['response_or_failure_surface']);
+        $this->assertSameJsonObject($surface, $event->payload['service_call']);
+        $this->assertSameJsonObject($surface, $event->payload['response_or_failure_surface']);
         $this->assertSame($this->run->id, $event->payload['caller_workflow_run_id']);
         $this->assertSame($payload, $event->payload['request_payload']);
         $response = $surface['response_payload'] ?? $surface['result'] ?? null;
         if ($response === null) {
             $this->assertArrayNotHasKey('response_payload', $event->payload);
+        } elseif (is_array($response)) {
+            $this->assertSameJsonObject($response, $event->payload['response_payload']);
         } else {
             $this->assertSame($response, $event->payload['response_payload']);
         }
@@ -379,7 +381,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
             HistoryEventType::ServiceCallCompleted->value
         )->sole();
         $this->assertSame('explicit-service-call', $event->payload['service_call_id']);
-        $this->assertSame($surface['response_payload'], $event->payload['response_payload']);
+        $this->assertSameJsonObject($surface['response_payload'], $event->payload['response_payload']);
         $this->assertSame('python', $event->payload['service_sdk_language']);
         $this->assertSame('workflow-php', $event->payload['caller_sdk_language']);
         foreach ([
