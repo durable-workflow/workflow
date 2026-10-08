@@ -17,6 +17,7 @@ use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -31,6 +32,7 @@ use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
+use Workflow\WorkflowOptions;
 
 final class WorkflowExecutorServiceOperationTest extends TestCase
 {
@@ -39,13 +41,15 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
         parent::setUp();
         Carbon::setTestNow('2026-10-08 17:10:00');
         Queue::fake();
-        config()->set([
-            'queue.default' => 'redis',
-            'workflows.v2.task_dispatch_mode' => 'queue',
-            'workflows.v2.compatibility.current' => 'service-build',
-            'workflows.v2.compatibility.supported' => ['service-build'],
-            'workflows.v2.compatibility.namespace' => 'service-caller',
-        ]);
+        config()
+            ->set([
+                'queue.default' => 'redis',
+                'workflows.v2.task_dispatch_mode' => 'queue',
+                'workflows.v2.workflow_task_lease_seconds' => 300,
+                'workflows.v2.compatibility.current' => 'service-build',
+                'workflows.v2.compatibility.supported' => ['service-build'],
+                'workflows.v2.compatibility.namespace' => 'service-caller',
+            ]);
         WorkerCompatibilityFleet::clear();
     }
 
@@ -70,14 +74,27 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
         bool $waiting,
         ?array $failure,
     ): void {
-        $surface = ['service_call_id' => 'service-call-one'] + $surface;
+        $surface = [
+            'service_call_id' => 'service-call-one',
+        ] + $surface;
         if ($eventType === HistoryEventType::ServiceCallCompleted) {
             $surface['response_payload'] = Serializer::serializeWithCodec('avro', $response);
         }
         $service = new EmbeddedServiceControlPlaneProbe($surface);
         $this->app->instance(ServiceControlPlane::class, $service);
+        $connection = config('database.default');
+        $this->assertIsString($connection);
+        config()
+            ->set('queue.connections.' . $connection, [
+                'driver' => 'redis',
+                'connection' => 'default',
+                'queue' => 'service-boundary',
+            ]);
         $workflow = WorkflowStub::make(ExecutorServiceOperationWorkflow::class, 'service-owner', 'service-caller');
-        $this->assertTrue($workflow->attemptStart($options)->accepted());
+        $this->assertTrue($workflow->attemptStart($options, new WorkflowOptions(
+            connection: $connection,
+            queue: 'service-boundary',
+        ))->accepted());
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
         $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->sole();
         $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
@@ -138,6 +155,22 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
             'outcome' => $surface['outcome'],
             'service_call' => $surface,
             'response_or_failure_surface' => $surface,
+            'task' => [
+                'id' => $task->id,
+                'type' => 'workflow',
+                'status' => 'leased',
+                'available_at' => $task->available_at?->toJSON(),
+                'leased_at' => '2026-10-08T17:10:00.000000Z',
+                'lease_owner' => $task->id,
+                'lease_expires_at' => '2026-10-08T17:15:00.000000Z',
+                'attempt_count' => 1,
+                'repair_count' => 0,
+                'connection' => $connection,
+                'queue' => $task->queue,
+                'compatibility' => 'service-build',
+                'last_dispatch_attempt_at' => $task->last_dispatch_attempt_at?->toJSON(),
+                'last_dispatched_at' => $task->last_dispatched_at?->toJSON(),
+            ],
         ];
         foreach (['status', 'operation_mode', 'wait_for', 'response_payload'] as $field) {
             if (array_key_exists($field, $surface)) {
@@ -166,7 +199,9 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
             ];
         }
         $this->assertSame($this->ordered($expectedPayload), $this->ordered($event->payload));
-        $expectedObserved = ['phase' => 'waiting'];
+        $expectedObserved = [
+            'phase' => 'waiting',
+        ];
         if ($failure !== null) {
             $expectedObserved = [
                 'phase' => 'caught',
@@ -206,7 +241,11 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
         foreach ([1, 2] as $observation) {
             $observed = $workflow->query('observed');
             $this->assertIsArray($observed);
-            $this->assertSame($this->ordered($expectedObserved), $this->ordered($observed), 'Observation ' . $observation);
+            $this->assertSame(
+                $this->ordered($expectedObserved),
+                $this->ordered($observed),
+                'Observation ' . $observation
+            );
         }
         $this->assertSame($before, $this->records());
         $this->assertFalse($bridge->execute($task->id)['executed']);
@@ -225,7 +264,12 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
      */
     public static function outcomes(): iterable
     {
-        foreach (['false' => false, 'zero' => 0, 'empty string' => '', 'null' => null] as $name => $response) {
+        foreach ([
+            'false' => false,
+            'zero' => 0,
+            'empty string' => '',
+            'null' => null,
+        ] as $name => $response) {
             yield 'completed ' . $name => [[
                 'status' => 'completed',
                 'outcome' => 'completed',
@@ -336,12 +380,17 @@ final class EmbeddedServiceControlPlaneProbe implements ServiceControlPlane
     /**
      * @param array<string, mixed> $surface
      */
-    public function __construct(public readonly array $surface)
-    {
+    public function __construct(
+        public readonly array $surface
+    ) {
     }
 
-    public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
-    {
+    public function execute(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $options = []
+    ): array {
         $this->executions[] = [$endpointName, $serviceName, $operationName, $options];
         return $this->surface;
     }
@@ -360,12 +409,19 @@ final class EmbeddedServiceControlPlaneProbe implements ServiceControlPlane
 #[Type('executor-service-operation')]
 final class ExecutorServiceOperationWorkflow extends Workflow
 {
-    public const REQUEST = ['invoice' => 42, 'enabled' => false, 'attempt' => 0, 'note' => ''];
+    public const REQUEST = [
+        'invoice' => 42,
+        'enabled' => false,
+        'attempt' => 0,
+        'note' => '',
+    ];
 
     /**
      * @var array<string, mixed>
      */
-    private array $state = ['phase' => 'waiting'];
+    private array $state = [
+        'phase' => 'waiting',
+    ];
 
     /**
      * @param array<string, mixed> $options
@@ -392,7 +448,9 @@ final class ExecutorServiceOperationWorkflow extends Workflow
             $this->state = [
                 'phase' => 'caught',
                 'failure' => [
-                    'class' => $exception::class,
+                    'class' => $exception instanceof RestoredWorkflowException
+                        ? $exception->originalExceptionClass()
+                        : $exception::class,
                     'message' => $exception->getMessage(),
                     'code' => $exception->getCode(),
                 ],
