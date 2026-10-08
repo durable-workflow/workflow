@@ -19,34 +19,64 @@ final class MetadataValueValidationTest extends NonDatabaseTestCase
     public static function invalidSearchAttributeValues(): iterable
     {
         $keyMessage = 'Workflow v2 search attribute keys must be 1-64 URL-safe characters using letters, numbers, ".", "_", "-", and ":".';
-        yield 'integer key' => [[7 => 'value'], $keyMessage];
-        yield 'empty key' => [['' => 'value'], $keyMessage];
-        yield 'space in key' => [['order status' => 'value'], $keyMessage];
-        yield 'oversized key' => [[str_repeat('k', 65) => 'value'], $keyMessage];
-        yield 'associative list' => [['tags' => ['first' => 'alpha']],
+        yield 'integer key' => [[
+            7 => 'value',
+        ], $keyMessage];
+        yield 'empty key' => [[
+            '' => 'value',
+        ], $keyMessage];
+        yield 'space in key' => [[
+            'order status' => 'value',
+        ], $keyMessage];
+        yield 'oversized key' => [[
+            str_repeat('k', 65) => 'value',
+        ], $keyMessage];
+        yield 'associative list' => [[
+            'tags' => [
+                'first' => 'alpha',
+            ],
+        ],
             'Workflow v2 search attribute [tags] list value must be a JSON array.'];
-        yield 'integer list entry' => [['tags' => ['alpha', 0]],
+        yield 'integer list entry' => [[
+            'tags' => ['alpha', 0],
+        ],
             'Workflow v2 search attribute [tags] list values must contain only strings.'];
-        yield 'null list entry' => [['tags' => ['alpha', null]],
+        yield 'null list entry' => [[
+            'tags' => ['alpha', null],
+        ],
             'Workflow v2 search attribute [tags] list values must contain only strings.'];
-        yield 'oversized keyword' => [['tags' => [str_repeat('x', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1)]],
-            sprintf('Workflow v2 search attribute [tags] list values must be up to %d characters.', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH)];
-        yield 'oversized string' => [['status' => str_repeat('x', WorkflowSearchAttribute::MAX_STRING_LENGTH + 1)],
-            sprintf('Workflow v2 search attribute [status] must be up to %d characters.', WorkflowSearchAttribute::MAX_STRING_LENGTH)];
+        yield 'oversized keyword' => [[
+            'tags' => [str_repeat('x', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1)],
+        ],
+            sprintf(
+                'Workflow v2 search attribute [tags] list values must be up to %d characters.',
+                WorkflowSearchAttribute::MAX_KEYWORD_LENGTH
+            )];
+        yield 'oversized string' => [[
+            'status' => str_repeat('x', WorkflowSearchAttribute::MAX_STRING_LENGTH + 1),
+        ],
+            sprintf(
+                'Workflow v2 search attribute [status] must be up to %d characters.',
+                WorkflowSearchAttribute::MAX_STRING_LENGTH
+            )];
     }
 
     /**
      * @param array<string|int, mixed> $attributes
      */
     #[DataProvider('invalidSearchAttributeValues')]
-    public function testMalformedSearchAttributeValuesRetainCompleteIndexedDiagnostics(array $attributes, string $message): void
-    {
+    public function testMalformedSearchAttributeValuesRetainCompleteIndexedDiagnostics(
+        array $attributes,
+        string $message
+    ): void {
         $commands = [[
             'type' => 'upsert_search_attributes',
             'attributes' => $attributes,
         ]];
         $before = $commands;
-        $expected = ['commands.0.attributes' => [$message]];
+        $expected = [
+            'commands.0.attributes' => [$message],
+        ];
 
         $this->assertSame($expected, $this->errors($commands));
         $this->assertSame($expected, $this->errors($commands));
@@ -59,17 +89,29 @@ final class MetadataValueValidationTest extends NonDatabaseTestCase
     public static function absentMemoEnvelopes(): iterable
     {
         yield 'omitted entries' => [[]];
-        yield 'null entries' => [['entries' => null]];
-        yield 'empty entries' => [['entries' => []]];
-        yield 'string entries' => [['entries' => 'raw-data']];
-        yield 'boolean entries' => [['entries' => false]];
-        yield 'integer entries' => [['entries' => 0]];
+        yield 'null entries' => [[
+            'entries' => null,
+        ]];
+        yield 'empty entries' => [[
+            'entries' => [],
+        ]];
+        yield 'string entries' => [[
+            'entries' => 'raw-data',
+        ]];
+        yield 'boolean entries' => [[
+            'entries' => false,
+        ]];
+        yield 'integer entries' => [[
+            'entries' => 0,
+        ]];
     }
 
     #[DataProvider('absentMemoEnvelopes')]
     public function testMissingMemoEnvelopeHasTheSameFieldSpecificFailureOnRepeat(array $options): void
     {
-        $commands = [['type' => 'upsert_memo'] + $options];
+        $commands = [[
+            'type' => 'upsert_memo',
+        ] + $options];
         $before = $commands;
         $expected = [
             'commands.0.entries' => ['Upsert memo commands require an Avro entries payload envelope.'],
@@ -84,16 +126,22 @@ final class MetadataValueValidationTest extends NonDatabaseTestCase
     {
         $commands = [[
             'type' => 'upsert_memo',
-            'entries' => MemoPayload::mapEnvelope(['status' => 'waiting']),
+            'entries' => MemoPayload::mapEnvelope([
+                'status' => 'waiting',
+            ]),
         ], [
             'type' => 'upsert_search_attributes',
-            'attributes' => ['tags' => ['alpha', false]],
+            'attributes' => [
+                'tags' => ['alpha', false],
+            ],
         ], [
             'type' => 'upsert_memo',
             'entries' => null,
         ], [
             'type' => 'upsert_search_attributes',
-            'attributes' => ['attempt' => 0],
+            'attributes' => [
+                'attempt' => 0,
+            ],
         ]];
         $before = $commands;
         $expected = [
