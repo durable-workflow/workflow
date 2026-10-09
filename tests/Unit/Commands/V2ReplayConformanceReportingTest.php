@@ -105,9 +105,11 @@ final class V2ReplayConformanceReportingTest extends TestCase
         $this->assertSame('', Artisan::output());
         $this->assertFileExists($path);
         $persisted = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($persisted);
         unset($options['--output']);
         $this->assertSame(0, Artisan::call('workflow:v2:replay-conformance', $options));
         $stdout = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($stdout);
         unset($persisted['started_at'], $persisted['finished_at'], $stdout['started_at'], $stdout['finished_at']);
         $this->assertSame($stdout, $persisted);
     }
