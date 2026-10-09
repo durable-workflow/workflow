@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Commands;
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 use Workflow\V2\Support\HistoryExport;
@@ -12,6 +13,73 @@ use Workflow\V2\Support\ReplayVerification;
 
 final class V2ReplaySimulateCommandTest extends TestCase
 {
+    public function testMissingDirectoryJsonStdoutPreservesFailureExitAndUncheckedEvidence(): void
+    {
+        $directory = $this->ephemeralDirectory('replay-simulate-missing') . '/missing';
+
+        for ($delivery = 0; $delivery < 2; ++$delivery) {
+            $exit = Artisan::call('workflow:v2:replay-simulate', [
+                'directory' => $directory,
+                '--skip-replay' => true,
+                '--strict-warnings' => true,
+                '--json' => true,
+            ]);
+            $report = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exit);
+            $this->assertSame('failed', $report['verdict']);
+            $this->assertSame('block_and_investigate', $report['promotion_decision']);
+            $this->assertSame([$directory], $report['missing_bundles']);
+            $this->assertSame([], $report['bundles']);
+            $this->assertSame(0, $report['evidence']['integrity_checked_count']);
+            $this->assertSame(0, $report['evidence']['replay_checked_count']);
+            $this->assertTrue($report['evidence']['replay_skipped']);
+            $this->assertTrue($report['evidence']['strict_warnings']);
+            $this->assertDirectoryDoesNotExist($directory);
+        }
+    }
+
+    public function testMissingDirectoryHumanOutputNamesTheInputAndDoesNotClaimBundleSuccess(): void
+    {
+        $directory = $this->ephemeralDirectory('replay-simulate-human-missing') . '/missing';
+
+        $this->artisan('workflow:v2:replay-simulate', [
+            'directory' => $directory,
+        ])
+            ->expectsOutput('Replay simulation: FAILED')
+            ->expectsOutput('Bundles: total=0 ok=0 warning=0 drifted=0 failed=0')
+            ->expectsOutput('  [MISSING] ' . $directory)
+            ->assertFailed();
+
+        $this->assertDirectoryDoesNotExist($directory);
+    }
+
+    public function testHumanOutputListsSortedBundleVerdictsAndConservativePromotionDecisions(): void
+    {
+        $directory = $this->ephemeralDirectory('replay-simulate-human-bundles');
+        $good = self::wellFormedBundle('human-good');
+        $bad = self::wellFormedBundle('human-bad');
+        $bad['integrity']['checksum'] = str_repeat('0', 64);
+        $this->writeBundle($directory . '/z-good.json', $good);
+        $this->writeBundle($directory . '/a-bad.json', $bad);
+        $before = [file_get_contents($directory . '/a-bad.json'), file_get_contents($directory . '/z-good.json')];
+
+        $this->artisan('workflow:v2:replay-simulate', [
+            'directory' => $directory,
+            '--skip-replay' => true,
+        ])
+            ->expectsOutput('Replay simulation: FAILED')
+            ->expectsOutput('Bundles: total=2 ok=1 warning=0 drifted=0 failed=1')
+            ->expectsOutput('  [FAILED] ' . $directory . '/a-bad.json promotion=block_and_investigate')
+            ->expectsOutput('  [OK] ' . $directory . '/z-good.json promotion=review_before_promote')
+            ->assertFailed();
+
+        $this->assertSame($before, [
+            file_get_contents($directory . '/a-bad.json'),
+            file_get_contents($directory . '/z-good.json'),
+        ]);
+    }
+
     public function testCommandAggregatesBundleDirectoryIntoSimulationReport(): void
     {
         $directory = $this->ephemeralDirectory('replay-simulate-bundles');
