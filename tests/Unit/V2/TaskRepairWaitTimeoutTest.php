@@ -147,12 +147,16 @@ final class TaskRepairWaitTimeoutTest extends TestCase
         $this->assertInstanceOf(WorkflowTask::class, $task);
         $task->refresh();
         $this->assertSame(TaskType::Workflow, $task->task_type);
-        $this->assertSame($kind === 'condition' ? [] : array_filter([
+        $expected = $kind === 'condition' ? [] : array_filter([
             'workflow_wait_kind' => 'signal',
             'open_wait_id' => 'missing',
             'resume_source_kind' => 'timer',
             'resume_source_id' => $timerId,
-        ], static fn (mixed $value): bool => $value !== null), $task->payload);
+        ], static fn (mixed $value): bool => $value !== null);
+        ksort($expected);
+        $actual = $task->payload;
+        ksort($actual);
+        $this->assertSame($expected, $actual);
         $this->assertRouting($run, $task);
         $this->assertSame(0, $run->timers()->count());
         $this->assertSame(1, $run->tasks()->count());
