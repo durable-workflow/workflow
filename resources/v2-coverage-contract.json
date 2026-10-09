@@ -12,11 +12,11 @@
         }
     },
     "ratchet": {
-        "accepted_baseline_basis_points": 9296,
+        "accepted_baseline_basis_points": 9301,
         "target_basis_points": 10000
     },
     "provenance": {
         "observed_at": "2026-10-09",
-        "evidence": "Public full qualification run 37869692484 succeeded on attempt 2 and measured 65,440 of 70,394 executable lines (92.96%) at commit c11e5aa8cd6904f68d0cf3ef1d127886da90efdd, merged through #728 as 164a15b2178997ca5c2e16f91950f29a215d9369 with identical tested and merged trees. Exact comparison against the prior qualified result proves 29 gained lines and zero losses with identical source and component denominators. Original PostgreSQL shard 3 deadline evidence is retained in #426; its sole isolated retry used the same head, selection and 600-second limit and passed in 425 seconds. The measurement unions one unit report with all four MySQL feature-shard reports across the complete 582-file production source inventory, with no exclusions."
+        "evidence": "Public full qualification run 37874275860 succeeded on attempt 1 and measured 65,477 of 70,394 executable lines (93.01%) at commit 40dad9d8b9128e6299c58a34bf1f02edc3ff391d, merged through #730 as 2c13fb9bd1527aa95276f8af4c63ca2e8547b9d5 with identical tested and merged trees. Exact comparison against the prior qualified result proves 37 gained lines and zero losses with identical source and component denominators. The measurement unions one unit report with all four MySQL feature-shard reports across the complete 582-file production source inventory, with no exclusions."
     }
 }
