@@ -56,13 +56,17 @@ final class ScheduleSqliteContentionTest extends TestCase
     public static function writerModes(): array
     {
         return [
-            'committed WAL snapshot' => [false],
-            'writer still holds lock' => [true],
+            'due / committed WAL snapshot' => [false, 'due'],
+            'due / writer still holds lock' => [true, 'due'],
+            'buffer / committed WAL snapshot' => [false, 'buffer'],
+            'buffer / writer still holds lock' => [true, 'buffer'],
+            'backfill / committed WAL snapshot' => [false, 'backfill'],
+            'backfill / writer still holds lock' => [true, 'backfill'],
         ];
     }
 
     #[DataProvider('writerModes')]
-    public function testContentionRetriesOriginalOccurrenceOnce(bool $holdWriter): void
+    public function testContentionRetriesOriginalOccurrenceOnce(bool $holdWriter, string $admission): void
     {
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: 'retry-original-occurrence',
@@ -80,6 +84,18 @@ final class ScheduleSqliteContentionTest extends TestCase
         );
         $due = $schedule->next_fire_at->copy();
         Carbon::setTestNow($due->copy()->addSeconds(8));
+        if ($admission === 'buffer') {
+            $schedule->bufferAction($due);
+            $schedule->forceFill([
+                'next_fire_at' => $due->copy()
+                    ->addHour(),
+            ])->save();
+        }
+        $nextFireAt = $schedule->next_fire_at->copy();
+        $bufferBefore = $schedule->buffered_actions;
+        $evaluate = static fn (): array => $admission === 'backfill'
+            ? ScheduleManager::backfill($schedule, $due, $due->copy()->addSecond())
+            : ScheduleManager::tick();
         DB::statement('CREATE TABLE contention_marker (writes INTEGER NOT NULL)');
         DB::statement('INSERT INTO contention_marker(writes) VALUES (0)');
         $writer = new PDO('sqlite:' . $this->databasePath);
@@ -103,7 +119,7 @@ final class ScheduleSqliteContentionTest extends TestCase
         $error = null;
         $results = [];
         try {
-            $results = ScheduleManager::tick();
+            $results = $evaluate();
         } catch (Throwable $exception) {
             $error = $exception;
         } finally {
@@ -117,7 +133,8 @@ final class ScheduleSqliteContentionTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertStringContainsString('database is locked', $results[0]['error']);
         $fresh = $schedule->fresh();
-        $this->assertTrue($fresh->next_fire_at->equalTo($due));
+        $this->assertTrue($fresh->next_fire_at->equalTo($nextFireAt));
+        $this->assertSame($bufferBefore, $fresh->buffered_actions);
         $this->assertNull($fresh->last_fired_at);
         $this->assertSame(0, (int) $fresh->fires_count);
         $this->assertSame(0, (int) $fresh->failures_count);
@@ -127,10 +144,14 @@ final class ScheduleSqliteContentionTest extends TestCase
             static fn ($event): string => $event->value,
         )->all());
 
-        $retry = ScheduleManager::tick();
+        $retry = $evaluate();
         $this->assertCount(1, $retry);
         $this->assertArrayNotHasKey('error', $retry[0], json_encode($retry[0], JSON_THROW_ON_ERROR));
-        $this->assertSame('triggered', $retry[0]['outcome']);
+        if ($admission !== 'backfill') {
+            $this->assertSame($admission === 'buffer' ? 'drained' : 'triggered', $retry[0]['outcome']);
+        } else {
+            $this->assertNotNull($retry[0]['instance_id']);
+        }
         $fresh = $schedule->fresh();
         $this->assertSame(ScheduleStatus::Deleted, $fresh->status);
         $this->assertSame(1, (int) $fresh->fires_count);
