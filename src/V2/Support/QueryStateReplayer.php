@@ -55,6 +55,7 @@ final class QueryStateReplayer
         $this->syncWorkflowCursor($workflow, 1);
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
+        $versionDecisions = new VersionDecisions($run);
         $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
 
@@ -67,6 +68,18 @@ final class QueryStateReplayer
         $sequence = 1;
 
         while (true) {
+            while (($duplicate = $versionDecisions->duplicateAt(
+                $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
+            )) !== null) {
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+                $versionDecisions->assertDuplicate($run, $duplicate, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::VERSION_MARKER, [
+                    'change_id' => $duplicate->payload['change_id'],
+                ]);
+                ++$sequence;
+                $this->syncWorkflowCursor($workflow, $sequence);
+            }
+
             if (! $workflowExecution->valid()) {
                 $this->syncWorkflowCursor($workflow, $sequence);
                 return new ReplayState($workflow, $sequence, null);
@@ -326,8 +339,11 @@ final class QueryStateReplayer
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
                 $this->applyRecordedUpdates($run, $workflow, $historySequence);
-                $versionEvent = $this->versionMarkerEvent($run, $historySequence);
-                $resolution = VersionResolver::resolve($run, $versionEvent, $current, $historySequence);
+                $versionEvent = $versionDecisions->markerAt($historySequence);
+                $resolution = $versionDecisions->resolve($run, $current, $historySequence);
+                if (! $resolution->advancesSequence) {
+                    $versionEvent = null;
+                }
 
                 // A legacy default occupies no history slot. The next durable
                 // step can already be recorded at this position.

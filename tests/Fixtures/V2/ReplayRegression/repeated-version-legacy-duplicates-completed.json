@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "repeated-version-legacy-duplicates-completed",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "query-state-replayer", "workflow-executor"],
+  "workflow": {"type": "Tests\\Fixtures\\V2\\TestSinglePatchReplayWorkflow", "arguments": [], "payload_codec": "avro"},
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-01T12:00:00+00:00"},
+    {"sequence": 2, "event_type": "VersionMarkerRecorded", "payload": {"sequence": 1, "change_id": "same", "version": 1, "min_supported": -1, "max_supported": 1}, "recorded_at": "2026-10-01T12:00:01+00:00"},
+    {"sequence": 3, "event_type": "VersionMarkerRecorded", "payload": {"sequence": 2, "change_id": "same", "version": 1, "min_supported": -1, "max_supported": 1}, "recorded_at": "2026-10-01T12:00:02+00:00"},
+    {"sequence": 4, "event_type": "ActivityScheduled", "payload": {"sequence": 3, "activity_type": "Tests\\Fixtures\\V2\\TestQueryReplayGuardActivity", "activity_execution_id": "01j00000000000000000000001"}, "recorded_at": "2026-10-01T12:00:03+00:00"},
+    {"sequence": 5, "event_type": "ActivityCompleted", "payload": {"sequence": 3, "activity_type": "Tests\\Fixtures\\V2\\TestQueryReplayGuardActivity", "activity_execution_id": "01j00000000000000000000001", "result": "wwHioz3/VYAiNwoecmVjb3JkZWQtcmVzdWx0", "payload_codec": "avro"}, "recorded_at": "2026-10-01T12:00:04+00:00"}
+  ],
+  "expected": {"completed": true, "result": [true, "recorded-result"], "commands": [{"type": "complete_workflow"}]}
+}

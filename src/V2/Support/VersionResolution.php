@@ -27,4 +27,9 @@ final class VersionResolution
     {
         return new self($version, false, false);
     }
+
+    public static function reused(int $version): self
+    {
+        return new self($version, false, false);
+    }
 }

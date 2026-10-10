@@ -12,6 +12,13 @@ use Workflow\V2\WorkflowStub;
 
 final class VersionResolver
 {
+    public static function reuse(int $version, VersionCall $versionCall): VersionResolution
+    {
+        self::assertSupported($version, $versionCall);
+
+        return VersionResolution::reused($version);
+    }
+
     public static function resolve(
         WorkflowRun $run,
         ?WorkflowHistoryEvent $event,

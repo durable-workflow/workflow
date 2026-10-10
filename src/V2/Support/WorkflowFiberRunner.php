@@ -158,6 +158,8 @@ final class WorkflowFiberRunner
 
     private bool $hasReplayHistory = false;
 
+    private VersionDecisions $versionDecisions;
+
     private ?string $namespace = null;
 
     /**
@@ -171,6 +173,7 @@ final class WorkflowFiberRunner
         array $historyEvents = [],
         ?string $namespace = null,
     ) {
+        $this->versionDecisions = new VersionDecisions([]);
         $this->namespace = self::stringValue($namespace)
             ?? self::stringValue($this->workflow->run->namespace ?? null);
         $this->loadHistoryEvents($historyEvents);
@@ -285,6 +288,17 @@ final class WorkflowFiberRunner
         $immediateCommands = [];
 
         while (true) {
+            while (($duplicate = $this->versionDecisions->duplicateAt(
+                $this->historySequenceForCurrentPosition() ?? $this->sequence,
+            )) !== null) {
+                $this->versionDecisions->assertDuplicate(
+                    $this->workflow->run,
+                    $duplicate,
+                    $duplicate->payload['sequence']
+                );
+                ++$this->sequence;
+            }
+
             if (! $this->execution instanceof WorkflowExecution) {
                 throw new RuntimeException('Workflow execution has not been started.');
             }
@@ -523,6 +537,9 @@ final class WorkflowFiberRunner
                     $versionMarkerEvent,
                     $historySequence ?? $this->sequence,
                 );
+                if (! $resolution->advancesSequence) {
+                    $versionMarkerEvent = null;
+                }
 
                 if ($resolution->shouldRecordMarker) {
                     $step = WorkflowStep::yielded($current, $this->payloadCodec);
@@ -1383,6 +1400,7 @@ final class WorkflowFiberRunner
             $this->namespace,
         );
         $this->recordedVersionMarkers = self::indexRecordedVersionMarkers($this->historyEvents);
+        $this->versionDecisions->replaceMarkers($this->recordedVersionMarkers);
         $this->recordedMemoUpserts = self::indexRecordedMemoUpserts($this->historyEvents);
         $this->recordedSearchAttributeUpserts = self::indexRecordedSearchAttributeUpserts($this->historyEvents);
     }
@@ -1392,11 +1410,11 @@ final class WorkflowFiberRunner
         ?WorkflowHistoryEvent $event,
         int $sequence,
     ): VersionResolution {
-        if ($event === null && ! $this->hasReplayHistory) {
-            return VersionResolution::fresh($versionCall->maxSupported);
-        }
-
-        return VersionResolver::resolve($this->workflow->run, $event, $versionCall, $sequence);
+        return $this->versionDecisions->resolve(
+            $this->hasReplayHistory ? $this->workflow->run : null,
+            $versionCall,
+            $sequence,
+        );
     }
 
     /**
