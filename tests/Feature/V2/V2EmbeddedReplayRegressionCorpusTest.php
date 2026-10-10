@@ -253,6 +253,16 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private function assertRepeatedVersionClockBoundaries(array $fixture): void
     {
         $run = $this->createRunFromFixture($fixture);
+        $markers = $run->historyEvents()
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)->get()
+            ->keyBy(static fn (WorkflowHistoryEvent $marker): int => $marker->payload['sequence']);
+        foreach ($fixture['history'] as $event) {
+            if ($event['event_type'] === HistoryEventType::VersionMarkerRecorded->value) {
+                $markers[$event['payload']['sequence']]->update([
+                    'recorded_at' => Carbon::parse($event['recorded_at']),
+                ]);
+            }
+        }
         $before = $run->historyEvents()
             ->orderBy('sequence')
             ->get()

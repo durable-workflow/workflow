@@ -9,6 +9,14 @@
   leases were never repaired and activity timeouts never enforced. Behaviour
   on the default connection is unchanged.
 
+## 2.5.7 - 2026-10-10
+
+- Reuse a workflow's first patch or version decision for repeated calls without
+  recording duplicate markers. Continue validating every call's supported range.
+- Replay duplicate markers from older releases without changing their history
+  positions or the recorded clock values observed by retained calls. Executor,
+  query reconstruction and fiber replay share this compatibility behavior.
+
 ## 2.5.5 - 2026-10-10
 
 - Preserve complete terminal cancellation and termination diagnostics when a
