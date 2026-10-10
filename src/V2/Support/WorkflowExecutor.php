@@ -99,7 +99,10 @@ final class WorkflowExecutor
 
         while (true) {
             try {
-                while (($duplicate = $versionDecisions->duplicateAt($sequence)) !== null) {
+                while (($duplicate = $versionDecisions->duplicateAt(
+                    $sequence,
+                    $current instanceof VersionCall ? $current : null,
+                )) !== null) {
                     $versionDecisions->assertDuplicate($run, $duplicate, $sequence);
                     WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER, [
                         'change_id' => $duplicate->payload['change_id'],

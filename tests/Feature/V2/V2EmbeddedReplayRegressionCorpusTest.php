@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
+use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -77,6 +78,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'repeated-version-legacy-clock-boundaries') {
+                $this->assertRepeatedVersionClockBoundaries($fixture);
+                continue;
+            }
 
             if (in_array($fixture['id'], [
                 'repeated-version-legacy-duplicates-completed',
@@ -239,6 +245,41 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertRepeatedVersionClockBoundaries(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $before = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        TestQueryReplayGuardActivity::$executions = 0;
+
+        foreach ([1, 2] as $coldReplay) {
+            $state = (new QueryStateReplayer())->replayState($run->fresh());
+            $this->assertInstanceOf(TestRepeatedPatchClockWorkflow::class, $state->workflow);
+            $this->assertSame($fixture['expected']['result'], $state->workflow->currentState());
+            $this->assertSame(4, $state->sequence);
+            $this->assertNull($state->current);
+        }
+
+        $this->runReadyWorkflowTask($run);
+        $events = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame($before, array_slice($events->toArray(), 0, count($before)));
+        $this->assertCount(2, $events->where('event_type', HistoryEventType::VersionMarkerRecorded));
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::WorkflowCompleted));
+        $activity = $events->firstWhere('event_type', HistoryEventType::ActivityScheduled);
+        $this->assertNotNull($activity);
+        $this->assertSame(3, $activity->payload['sequence']);
+        $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
+        $this->assertSame('completed', $run->fresh()->status->value);
+        $this->assertSame($fixture['expected']['result'], $run->fresh()->workflowOutput());
     }
 
     /**

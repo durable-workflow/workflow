@@ -288,8 +288,10 @@ final class WorkflowFiberRunner
         $immediateCommands = [];
 
         while (true) {
+            $versionCall = $this->execution?->current();
             while (($duplicate = $this->versionDecisions->duplicateAt(
                 $this->historySequenceForCurrentPosition() ?? $this->sequence,
+                $versionCall instanceof VersionCall ? $versionCall : null,
             )) !== null) {
                 $this->versionDecisions->assertDuplicate(
                     $this->workflow->run,
