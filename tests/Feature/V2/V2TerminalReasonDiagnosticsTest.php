@@ -42,7 +42,8 @@ final class V2TerminalReasonDiagnosticsTest extends TestCase
         $this->assertNotNull($run);
         $this->assertSame(
             $operation === 'cancel' ? RunStatus::Cancelled : RunStatus::Terminated,
-            $run->fresh()->status,
+            $run->fresh()
+->status,
         );
         $terminalType = $operation === 'cancel'
             ? HistoryEventType::WorkflowCancelled
@@ -105,6 +106,10 @@ final class V2TerminalReasonDiagnosticsTest extends TestCase
         yield 'literal escape remains literal' => ['cancel', 'left\u0000right', 'Workflow cancelled: left\u0000right'];
         yield 'NUL and literal backslash zero with quote' => [
             'cancel', "left\\0\0\"right", '"Workflow cancelled: left\\\\0\u0000\"right"',
+        ];
+        yield 'NUL with Unicode line separators' => [
+            'cancel', "left\0\u{2028}middle\u{2029}right",
+            '"Workflow cancelled: left\u0000' . "\u{2028}middle\u{2029}right" . '"',
         ];
     }
 }

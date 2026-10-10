@@ -50,6 +50,29 @@ closes a run and revokes outstanding durable work. `terminate()` also closes
 the run immediately with a distinct outcome. None of these can roll back an
 external side effect.
 
+### Terminal reason diagnostics
+
+Immediate cancellation and termination preserve the caller's original reason
+in Avro command and history payloads. Their terminal history `message` and
+`workflow_failures.message` contain the same diagnostic.
+
+When that complete diagnostic contains a literal NUL byte, both message fields
+store a JSON string literal. For example, a reason with a NUL between `left`
+and `right` produces `"Workflow cancelled: left\u0000right"`, including the
+outer quotes. JSON decoding recovers the complete diagnostic, while the original
+reason remains available without decoding in the Avro payload. Escaped controls,
+backslashes and quotes remain distinct; Unicode and slashes stay readable.
+The rendering also preserves Unicode line/paragraph separators U+2028 and U+2029
+rather than escaping them. It uses PHP's `JSON_UNESCAPED_UNICODE`,
+`JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_LINE_TERMINATORS` flags.
+This representation works on PostgreSQL, where a text column cannot store NUL,
+as well as SQLite and MySQL/MariaDB. Diagnostics without NUL keep their existing
+format and start with `Workflow ` rather than a quote.
+
+HTTP reason normalization still happens before the command. It may remove
+boundary NUL and whitespace, while an internal NUL uses the same diagnostic
+representation. Embedded calls preserve the supplied reason.
+
 Existing `ParentClosePolicy::RequestCancel` snapshots use `request_cancel` and
 currently issue terminal cancellation. Preserve that recorded contract during
 replay. The candidate `ParentClosePolicy::RequestCancellation` uses
