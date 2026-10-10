@@ -73,7 +73,17 @@ final class VersionDecisions
     public function resolve(?WorkflowRun $run, VersionCall $call, int $sequence): VersionResolution
     {
         if (isset($this->decisions[$call->changeId])) {
-            return VersionResolver::reuse($this->decisions[$call->changeId]['version'], $call);
+            $reused = VersionResolver::reuse($this->decisions[$call->changeId]['version'], $call);
+            $duplicate = $this->duplicateAt($sequence);
+            if (($duplicate?->payload['change_id'] ?? null) === $call->changeId) {
+                $this->assertDuplicate($run, $duplicate, $sequence);
+
+                // Old releases persisted each repeated call. Consume its
+                // physical marker and recorded clock without creating one.
+                return VersionResolution::recorded($reused->version);
+            }
+
+            return $reused;
         }
 
         $event = $this->markerAt($sequence);
@@ -88,10 +98,14 @@ final class VersionDecisions
         return $resolution;
     }
 
-    public function duplicateAt(int $sequence): ?WorkflowHistoryEvent
+    public function duplicateAt(int $sequence, ?VersionCall $currentCall = null): ?WorkflowHistoryEvent
     {
         $event = $this->markerAt($sequence);
         $changeId = $event?->payload['change_id'] ?? null;
+
+        if ($currentCall !== null && $currentCall->changeId === $changeId) {
+            return null;
+        }
 
         return is_string($changeId) && isset($this->decisions[$changeId]) ? $event : null;
     }

@@ -70,6 +70,7 @@ final class QueryStateReplayer
         while (true) {
             while (($duplicate = $versionDecisions->duplicateAt(
                 $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
+                $current instanceof VersionCall ? $current : null,
             )) !== null) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
                 $versionDecisions->assertDuplicate($run, $duplicate, $historySequence);
