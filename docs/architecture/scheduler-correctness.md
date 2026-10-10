@@ -298,6 +298,15 @@ continue to fire at their next tick cadence. If the acceleration
 layer is propagating stale signals, the scheduler still reads
 `next_fire_at` directly and is therefore not misled.
 
+A transient SQLite `BUSY` or `LOCKED` error before admission commits MUST
+leave the original due occurrence eligible for a later tick. It MUST NOT
+advance `next_fire_at`, change the last successful fire, consume a remaining
+action, increment permanent failure accounting, or invent a history event.
+The failed attempt still returns its database error to the evaluator. Once
+contention clears, the normal locked-row and occurrence checks admit that
+original occurrence at most once. Permanent start errors retain their existing
+failure accounting. This also applies to buffered admission and backfill.
+
 ### Schedule instants and the UTC upgrade
 
 The schedule spec's `timezone` controls which local wall-clock times a cron

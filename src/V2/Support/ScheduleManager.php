@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use PDOException;
+use Throwable;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Enums\HistoryEventType;
@@ -532,8 +534,7 @@ final class ScheduleManager
                 ];
             } catch (\Throwable $e) {
                 $schedule->refresh();
-                $schedule->recordFailure($e->getMessage());
-                $schedule->save();
+                self::recordStartFailure($schedule, $e);
                 $results[] = [
                     'schedule_id' => $schedule->schedule_id,
                     'instance_id' => null,
@@ -560,8 +561,7 @@ final class ScheduleManager
                 $results[] = self::tickResult($schedule, $detail, $occurrenceTime);
             } catch (\Throwable $e) {
                 $schedule->refresh();
-                $schedule->recordFailure($e->getMessage());
-                $schedule->save();
+                self::recordStartFailure($schedule, $e);
                 $row = [
                     'schedule_id' => $schedule->schedule_id,
                     'instance_id' => null,
@@ -653,8 +653,7 @@ final class ScheduleManager
                 ];
             } catch (\Throwable $e) {
                 $schedule->refresh();
-                $schedule->recordFailure($e->getMessage());
-                $schedule->save();
+                self::recordStartFailure($schedule, $e);
 
                 $results[] = [
                     'schedule_id' => $schedule->schedule_id,
@@ -929,8 +928,7 @@ final class ScheduleManager
         } catch (WorkflowExecutionUnavailableException $exception) {
             throw $exception;
         } catch (\Throwable $e) {
-            $schedule->recordFailure($e->getMessage());
-            $schedule->save();
+            self::recordStartFailure($schedule, $e);
 
             throw $e;
         }
@@ -971,6 +969,25 @@ final class ScheduleManager
         }
 
         return $result;
+    }
+
+    private static function recordStartFailure(WorkflowSchedule $schedule, Throwable $exception): void
+    {
+        // SQLite may reject a deferred transaction's read-to-write upgrade even
+        // with a busy timeout. No admission committed. Keep the original due
+        // occurrence and action budget for the next tick, and avoid another write
+        // against the same locked or invalidated snapshot while reporting failure.
+        if ($schedule->getConnection()->getDriverName() === 'sqlite') {
+            for ($cause = $exception; $cause !== null; $cause = $cause->getPrevious()) {
+                if ($cause instanceof PDOException && isset($cause->errorInfo[1])
+                    && in_array(((int) $cause->errorInfo[1]) & 0xff, [5, 6], true)) {
+                    return;
+                }
+            }
+        }
+
+        $schedule->recordFailure($exception->getMessage());
+        $schedule->save();
     }
 
     private static function recordScheduleTriggered(
