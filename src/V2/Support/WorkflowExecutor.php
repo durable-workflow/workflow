@@ -73,6 +73,7 @@ final class WorkflowExecutor
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
 
         try {
+            $versionDecisions = new VersionDecisions($run);
             $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -97,6 +98,21 @@ final class WorkflowExecutor
         $historySequenceAtTaskStart = $run->last_history_sequence ?? 0;
 
         while (true) {
+            try {
+                while (($duplicate = $versionDecisions->duplicateAt($sequence)) !== null) {
+                    $versionDecisions->assertDuplicate($run, $duplicate, $sequence);
+                    WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER, [
+                        'change_id' => $duplicate->payload['change_id'],
+                    ]);
+                    ++$sequence;
+                    $this->syncWorkflowCursor($workflow, $sequence);
+                }
+            } catch (Throwable $throwable) {
+                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                return null;
+            }
+
             $eventsInTransaction = ($run->last_history_sequence ?? 0) - $historySequenceAtTaskStart;
 
             if ($eventsInTransaction > 0) {
@@ -701,10 +717,10 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                $versionMarkerEvent = $this->versionMarkerEvent($run, $sequence);
+                $versionMarkerEvent = $versionDecisions->markerAt($sequence);
 
                 try {
-                    $resolution = VersionResolver::resolve($run, $versionMarkerEvent, $current, $sequence);
+                    $resolution = $versionDecisions->resolve($run, $current, $sequence);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -734,6 +750,9 @@ final class WorkflowExecutor
                 }
 
                 $version = $resolution->version;
+                if (! $resolution->advancesSequence) {
+                    $versionMarkerEvent = null;
+                }
 
                 try {
                     if ($resolution->shouldRecordMarker) {

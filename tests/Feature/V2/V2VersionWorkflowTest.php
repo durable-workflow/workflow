@@ -7,6 +7,8 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestDeprecatedPatchWorkflow;
 use Tests\Fixtures\V2\TestPatchedWorkflow;
+use Tests\Fixtures\V2\TestRepeatedPatchWorkflow;
+use Tests\Fixtures\V2\TestRepeatedVersionWorkflow;
 use Tests\Fixtures\V2\TestVersionAfterSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionBeforeSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionMinSupportedWorkflow;
@@ -33,6 +35,65 @@ use Workflow\V2\WorkflowStub;
 
 final class V2VersionWorkflowTest extends TestCase
 {
+    public function testRepeatedPatchAndDeprecationRecordOneMarker(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestRepeatedPatchWorkflow::class, 'repeated-patch');
+        $workflow->start();
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([true, true, 'v1_result'], $workflow->output());
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())->orderBy(
+            'sequence'
+        )->get();
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::VersionMarkerRecorded));
+        $this->assertSame(
+            2,
+            $events->firstWhere('event_type', HistoryEventType::ActivityScheduled)->payload['sequence']
+        );
+        $before = $events->toArray();
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        foreach ([1, 2] as $coldReplay) {
+            $state = (new \Workflow\V2\Support\WorkflowReplayer())->replay($run->fresh());
+            $this->assertSame(3, $state->sequence);
+            $this->assertNull($state->current);
+        }
+        $this->assertSame(
+            $before,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())->orderBy('sequence')->get()
+                ->toArray()
+        );
+    }
+
+    public function testRepeatedVersionKeepsItsFirstDecisionWhenTheRangeGrows(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestRepeatedVersionWorkflow::class, 'repeated-version');
+        $workflow->start();
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([1, 1], $workflow->output());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
+    }
+
+    public function testRepeatedVersionStillRejectsAnUnsupportedFirstDecision(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestRepeatedVersionWorkflow::class, 'repeated-unsupported');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->failed());
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $workflow->runId())->firstOrFail();
+        $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
+        $this->assertStringContainsString("Version 1 for change ID 'frozen' is not supported", $failure->message);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
+    }
+
     public function testVersionMarkersAreRecordedAndReplayedInQueriesAndTimeline(): void
     {
         Queue::fake();
