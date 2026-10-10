@@ -9,6 +9,13 @@
   leases were never repaired and activity timeouts never enforced. Behaviour
   on the default connection is unchanged.
 
+## 2.5.5 - 2026-10-10
+
+- Preserve complete terminal cancellation and termination diagnostics when a
+  reason contains a literal NUL. History and failure rows use the same lossless
+  JSON string literal on every supported database, while Avro keeps the original
+  reason. Ordinary messages and SDK cancellation results retain their behavior.
+
 ## 2.4.6 - 2026-10-06
 
 - Keep an explicitly supplied run authoritative during task compatibility

@@ -3635,6 +3635,17 @@ final class WorkflowStub
                 ? sprintf('Workflow %s: %s', $closedReason, $reason)
                 : sprintf('Workflow %s.', $closedReason);
 
+            // PostgreSQL text cannot store NUL. A whole JSON string literal is
+            // reversible and distinct from ordinary "Workflow " diagnostics.
+            // The original reason remains unchanged in Avro command/history.
+            if (str_contains($failureMessage, "\0")) {
+                $failureMessage = json_encode(
+                    $failureMessage,
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                        | JSON_UNESCAPED_LINE_TERMINATORS,
+                );
+            }
+
             /** @var WorkflowFailure $failure */
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $run->id,
