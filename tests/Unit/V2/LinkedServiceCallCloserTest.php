@@ -703,7 +703,7 @@ final class LinkedServiceCallCloserTest extends TestCase
                     'cancelled_at' => now(),
                 ])->save();
                 $cancelledAt = $call->refresh()
-                    ->cancelled_at->format(DATE_ATOM);
+                    ->cancelled_at->toJSON();
 
                 return [
                     'started' => true,

@@ -75,6 +75,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -141,6 +144,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -339,6 +345,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -395,6 +404,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -468,6 +480,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -567,6 +582,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -641,6 +659,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -748,6 +769,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 1,
             'activity_timeouts_enforced' => 1,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -808,6 +832,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $secondIteration = [
@@ -832,6 +859,9 @@ final class V2RepairPassCommandTest extends TestCase
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
