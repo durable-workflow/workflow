@@ -12,6 +12,8 @@ use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\Fixtures\V2\TestVersionPendingRangeRepairWorkflow;
+use Tests\Fixtures\V2\TestVersionRangeRepairActivity;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -23,6 +25,8 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -79,6 +83,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'manual-repair-blocked-replay-with-pending-activity') {
+                $this->assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity($fixture);
+                continue;
+            }
 
             if ($fixture['id'] === 'repeated-version-legacy-clock-boundaries') {
                 $this->assertRepeatedVersionClockBoundaries($fixture);
@@ -268,6 +277,117 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity(array $fixture): void
+    {
+        self::stopWorkers();
+        Queue::fake();
+        $previousProjection = $this->app->make(HistoryProjectionRole::class);
+        $this->app->instance(HistoryProjectionRole::class, new DefaultHistoryProjectionRole());
+        Carbon::setTestNow('2026-10-11 10:00:00 UTC');
+        TestVersionRangeRepairActivity::$executions = 0;
+        TestVersionPendingRangeRepairWorkflow::$minSupported = 1;
+        TestVersionPendingRangeRepairWorkflow::$maxSupported = 1;
+        $value = $fixture['workflow']['arguments'][0];
+
+        try {
+            $workflow = WorkflowStub::make(
+                TestVersionPendingRangeRepairWorkflow::class,
+                'version-pending-range-repair'
+            );
+            $workflow->start($value);
+            $runId = (string) $workflow->runId();
+            $initial = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->firstOrFail();
+            $this->app->call([new RunWorkflowTask($initial->id), 'handle']);
+            $activity = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity)->where('status', TaskStatus::Ready)->firstOrFail();
+            $timer = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Timer)->where('status', TaskStatus::Ready)->firstOrFail();
+            $this->assertNotNull($timer->available_at);
+            Carbon::setTestNow($timer->available_at->copy()->addSecond());
+            $this->app->call([new RunTimerTask($timer->id), 'handle']);
+            $resume = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->firstOrFail();
+
+            TestVersionPendingRangeRepairWorkflow::$minSupported = 2;
+            TestVersionPendingRangeRepairWorkflow::$maxSupported = 2;
+            $this->app->call([new RunWorkflowTask($resume->id), 'handle']);
+            $blocked = $resume->fresh();
+            $this->assertSame(TaskStatus::Failed, $blocked->status);
+            $this->assertSame(true, $blocked->payload['replay_blocked']);
+            $this->assertSame('version_marker_incompatible_range', $blocked->payload['replay_blocked_reason']);
+            $this->assertSame(RunStatus::Waiting, WorkflowRun::query()->findOrFail($runId)->status);
+            $this->assertFalse(WorkflowFailure::query()->where('workflow_run_id', $runId)->exists());
+            $this->assertSame($resume->id, $blocked->id);
+            $this->assertSame(0, TestVersionRangeRepairActivity::$executions);
+            $pendingBeforeRepair = $activity->fresh()
+                ->toArray();
+            $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get()
+                ->toArray();
+
+            TestVersionPendingRangeRepairWorkflow::$minSupported = 1;
+            TestVersionPendingRangeRepairWorkflow::$maxSupported = 1;
+            $repair = WorkflowStub::loadSelection('version-pending-range-repair', $runId)->attemptRepair();
+            $this->assertTrue($repair->accepted());
+            $this->assertSame('repair_dispatched', $repair->outcome());
+            $repairEvent = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::RepairRequested)->firstOrFail();
+            $this->assertSame($blocked->id, $repairEvent->payload['task_id']);
+            $this->assertSame('workflow', $repairEvent->payload['task_type']);
+            $this->assertSame('workflow_replay_blocked', $repairEvent->payload['liveness_state']);
+            $this->assertSame('activity', $repairEvent->payload['wait_kind']);
+            $this->assertSame($pendingBeforeRepair, $activity->fresh()->toArray());
+            $this->assertSame(TaskStatus::Ready, $blocked->fresh()->status);
+            $this->assertSame($blocked->repair_count + 1, $blocked->fresh()->repair_count);
+            $afterRepair = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get()
+                ->toArray();
+            $this->assertSame($prefix, array_slice($afterRepair, 0, count($prefix)));
+            $this->assertCount(count($prefix) + 1, $afterRepair);
+
+            $this->app->call([new RunWorkflowTask($blocked->id), 'handle']);
+            $this->assertSame(TaskStatus::Completed, $blocked->fresh()->status);
+            $this->assertSame($blocked->attempt_count + 1, $blocked->fresh()->attempt_count);
+            $this->assertSame($pendingBeforeRepair, $activity->fresh()->toArray());
+            $this->assertSame(0, TestVersionRangeRepairActivity::$executions);
+            $this->assertSame('waiting', $workflow->refresh()->status());
+            $this->assertSame($afterRepair, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get()
+                ->toArray());
+
+            $this->app->call([new RunActivityTask($activity->id), 'handle']);
+            $final = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->firstOrFail();
+            $this->assertNotSame($blocked->id, $final->id);
+            $this->app->call([new RunWorkflowTask($final->id), 'handle']);
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame($runId, $workflow->runId());
+            $this->assertSame($value, $workflow->output());
+            $this->assertSame(1, TestVersionRangeRepairActivity::$executions);
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get()
+                ->toArray();
+            $this->assertSame($prefix, array_slice($history, 0, count($prefix)));
+            $this->assertSame(
+                ['RepairRequested', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'],
+                array_column(array_slice($history, count($prefix)), 'event_type')
+            );
+        } finally {
+            $this->app->instance(HistoryProjectionRole::class, $previousProjection);
+            Carbon::setTestNow();
+            TestVersionPendingRangeRepairWorkflow::$minSupported = 1;
+            TestVersionPendingRangeRepairWorkflow::$maxSupported = 1;
+        }
     }
 
     /**
