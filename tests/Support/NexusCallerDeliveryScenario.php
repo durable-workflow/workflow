@@ -9,6 +9,7 @@ use Symfony\Component\Uid\Ulid;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -27,6 +28,70 @@ use Workflow\V2\WorkflowStub;
 
 trait NexusCallerDeliveryScenario
 {
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    protected function assertNexusCallerSdkAttribution(array $fixture): void
+    {
+        $previous = $this->app->make(ServiceControlPlane::class);
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        try {
+            $workflow = WorkflowStub::make($fixture['workflow']['type'], 'sdk-attribution-caller', 'caller');
+            $this->assertTrue($workflow->attemptStart(...$fixture['workflow']['arguments'])->accepted());
+            $run = WorkflowRun::query()->findOrFail($workflow->runId());
+            $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->sole();
+            $bridge = $this->app->make(WorkflowTaskBridge::class);
+            $this->assertTrue($bridge->claimStatus($task->id, 'sdk-caller')['claimed']);
+            $service = Mockery::mock(ServiceControlPlane::class);
+            $service->shouldReceive('execute')
+                ->once()
+                ->withArgs(function (
+                    string $endpoint,
+                    string $service,
+                    string $operation,
+                    array $options
+                ) use ($fixture, $run): bool {
+                    $this->assertSame(['billing', 'invoices', 'create'], [$endpoint, $service, $operation]);
+                    $this->assertSame($fixture['caller_sdk_language'], $options['metadata']['caller_sdk_language']);
+                    $this->assertSame($run->workflow_instance_id, $options['metadata']['caller_workflow_instance_id']);
+                    $this->assertSame($run->id, $options['metadata']['caller_workflow_run_id']);
+                    $this->assertSame(1, $options['metadata']['workflow_sequence']);
+
+                    return true;
+                })->andReturn([
+    'service_call_id' => 'attributed-call',
+    'accepted' => true,
+    'status' => 'started',
+]);
+            $this->app->instance(ServiceControlPlane::class, $service);
+            $completed = $bridge->complete($task->id, [[
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'billing',
+                'service_name' => 'invoices',
+                'operation_name' => 'create',
+                'request_payload' => Serializer::serialize([
+                    'invoice_id' => 42,
+                ]),
+                'metadata' => [
+                    'caller_sdk_language' => $fixture['caller_sdk_language'],
+                    'caller_workflow_instance_id' => 'forged-owner',
+                    'caller_workflow_run_id' => 'forged-run',
+                    'workflow_sequence' => 99,
+                ],
+            ]]);
+            $this->assertTrue($completed['completed']);
+            $event = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ServiceCallStarted->value)->sole();
+            $this->assertSame($fixture['caller_sdk_language'], $event->payload['caller_sdk_language']);
+            $this->assertSame($run->id, $event->payload['caller_workflow_run_id']);
+            $this->assertSame(1, $event->payload['sequence']);
+        } finally {
+            $this->app->instance(ServiceControlPlane::class, $previous);
+        }
+    }
+
     /**
      * @param class-string<Workflow> $workflowClass
      * @param array<int, mixed> $arguments

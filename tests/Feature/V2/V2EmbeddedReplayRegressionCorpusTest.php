@@ -87,6 +87,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
 
+            if ($fixture['id'] === 'nexus-sdk-caller-attribution') {
+                $this->clearWorkflowState();
+                $this->assertNexusCallerSdkAttribution($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'nexus-waiting-caller-terminal-delivery') {
                 $this->clearWorkflowState();
                 $this->assertWaitingNexusCallerReceivesResult(

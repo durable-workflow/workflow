@@ -335,7 +335,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
                 'approved' => false,
             ],
             'metadata' => [
-                'caller_sdk_language' => 'forged-sdk',
+                'caller_sdk_language' => 'sdk-python',
                 'caller_workflow_instance_id' => 'forged-owner',
                 'caller_workflow_run_id' => 'forged-run',
                 'workflow_sequence' => 99,
@@ -361,7 +361,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $expected['mode_override'] = 'sync';
         $expected['wait_for'] = 'completed';
         $expected['metadata'] = [
-            'caller_sdk_language' => 'workflow-php',
+            'caller_sdk_language' => 'sdk-python',
             'caller_workflow_instance_id' => $this->run->workflow_instance_id,
             'caller_workflow_run_id' => $this->run->id,
             'workflow_sequence' => 1,
@@ -383,7 +383,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertSame('explicit-service-call', $event->payload['service_call_id']);
         $this->assertSameJsonObject($surface['response_payload'], $event->payload['response_payload']);
         $this->assertSame('python', $event->payload['service_sdk_language']);
-        $this->assertSame('workflow-php', $event->payload['caller_sdk_language']);
+        $this->assertSame('sdk-python', $event->payload['caller_sdk_language']);
         foreach ([
             'operation_mode',
             'wait_for',
@@ -397,6 +397,63 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         }
         $this->assertSame(0, BridgeServiceOperationProbeWorkflow::$calls);
         Queue::assertNothingPushed();
+    }
+
+    #[DataProvider('callerSdkLanguages')]
+    public function testDeclaredCallerSdkIsRecordedWithoutChangingCallerAuthority(
+        mixed $language,
+        string $expected
+    ): void {
+        $service = new BridgeServiceControlPlaneProbe([
+            'service_call_id' => 'sdk-attribution-call',
+            'accepted' => true,
+            'status' => 'started',
+        ]);
+        $this->app->instance(ServiceControlPlane::class, $service);
+        $result = $this->bridge->complete($this->task->id, [[
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+            'request_payload' => Serializer::serialize([
+                'invoice_id' => 42,
+            ]),
+            'metadata' => [
+                'caller_sdk_language' => $language,
+                'caller_workflow_instance_id' => 'forged-owner',
+                'caller_workflow_run_id' => 'forged-run',
+                'workflow_sequence' => 99,
+            ],
+        ]]);
+
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $metadata = $service->executions[0][3]['metadata'];
+        $this->assertSame($expected, $metadata['caller_sdk_language']);
+        $this->assertSame($this->run->workflow_instance_id, $metadata['caller_workflow_instance_id']);
+        $this->assertSame($this->run->id, $metadata['caller_workflow_run_id']);
+        $this->assertSame(1, $metadata['workflow_sequence']);
+        $event = WorkflowHistoryEvent::query()->where(
+            'event_type',
+            HistoryEventType::ServiceCallStarted->value
+        )->sole();
+        $this->assertSame($expected, $event->payload['caller_sdk_language']);
+        $this->assertSame($this->run->workflow_instance_id, $event->payload['caller_workflow_instance_id']);
+        $this->assertSame($this->run->id, $event->payload['caller_workflow_run_id']);
+        $this->assertSame(1, $event->payload['sequence']);
+        $this->assertSame([], $result['created_task_ids']);
+    }
+
+    /**
+     * @return iterable<string, array{mixed, string}>
+     */
+    public static function callerSdkLanguages(): iterable
+    {
+        foreach (['sdk-python', 'sdk-php', 'sdk-rust', 'partner-sdk'] as $language) {
+            yield $language => [$language, $language];
+        }
+        foreach ([null, '', 42, []] as $index => $language) {
+            yield 'legacy fallback ' . $index => [$language, 'workflow-php'];
+        }
     }
 
     /**
