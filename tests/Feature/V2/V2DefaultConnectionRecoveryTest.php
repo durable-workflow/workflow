@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
@@ -52,7 +53,7 @@ final class V2DefaultConnectionRecoveryTest extends TestCase
         $this->assertGreaterThanOrEqual(1, $task->repair_count);
         $activities = ActivityExecution::query()->where('workflow_run_id', $runId)->get();
         $this->assertCount(1, $activities);
-        $this->assertSame('completed', $activities->first()->status);
+        $this->assertSame(ActivityStatus::Completed, $activities->first()->status);
         $this->assertSame(1, $activities->first()->attempt_count);
         foreach ([HistoryEventType::ActivityCompleted, HistoryEventType::WorkflowCompleted] as $eventType) {
             $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
