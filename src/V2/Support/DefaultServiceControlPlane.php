@@ -1614,7 +1614,12 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     ->lockForUpdate()
                     ->findOrFail($call->id);
                 $locked->resolved_binding_kind ??= $bindingKind;
-                $locked->resolved_target_reference ??= $targetReference;
+                if (! $this->isTerminal($locked)
+                    || ($locked->linked_workflow_instance_id === null
+                        && $locked->linked_workflow_run_id === null
+                        && $locked->linked_workflow_update_id === null)) {
+                    $locked->resolved_target_reference = $targetReference;
+                }
                 $locked->linked_workflow_instance_id ??= $instanceId;
                 $locked->linked_workflow_run_id ??= $runId;
                 $locked->linked_workflow_update_id ??= $updateId;

@@ -120,6 +120,7 @@ final class LinkedServiceCallCloserTest extends TestCase
             'blob' => $blob,
         ], $result['result_envelope']);
         $this->assertSame($run->id, $result['linked_workflow_run_id']);
+        $this->assertSame($run->id, $result['resolved_target_reference']);
         $this->assertSame(1, $result['retry_attempt_count']);
         $this->assertSame('completed', $result['service_call_attempts'][0]['status']);
     }
