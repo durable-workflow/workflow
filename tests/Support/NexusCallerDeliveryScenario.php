@@ -89,7 +89,9 @@ trait NexusCallerDeliveryScenario
             $this->assertSame($run->id, $event->payload['caller_workflow_run_id']);
             $this->assertSame(1, $event->payload['sequence']);
         } finally {
-            config(['workflows.v2.task_dispatch_mode' => $previousDispatchMode]);
+            config([
+                'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
+            ]);
             $this->app->instance(ServiceControlPlane::class, $previous);
         }
     }
