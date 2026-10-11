@@ -30,6 +30,7 @@ GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
 MALFORMED_SERVICE_RESPONSE_ENVELOPE = "malformed_service_response_envelope"
 SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH = "search_attribute_type_identity_mismatch"
 WORKFLOW_HISTORY_SHAPE_MISMATCH = "workflow_history_shape_mismatch"
+VERSION_MARKER_INCOMPATIBLE_RANGE = "version_marker_incompatible_range"
 UNSUPPORTED_PAYLOAD_CODEC = "unsupported_payload_codec"
 PHP_GOLDEN_REPLAY_WORKFLOW = "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow"
 PHP_REPLAY_CONSUMERS = {
@@ -1272,6 +1273,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
         MALFORMED_SERVICE_RESPONSE_ENVELOPE,
         SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH,
         WORKFLOW_HISTORY_SHAPE_MISMATCH,
+        VERSION_MARKER_INCOMPATIBLE_RANGE,
         UNSUPPORTED_PAYLOAD_CODEC,
     }:
         raise CorpusError(f"{context}.type is unsupported")
