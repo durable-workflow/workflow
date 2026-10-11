@@ -326,6 +326,28 @@ abstract class TestCase extends BaseTestCase
         self::startWorkers();
     }
 
+    protected function enableAutomaticTaskRepair(): void
+    {
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        $redis = self::redisConnection();
+
+        if (! $redis instanceof \Redis) {
+            throw new RuntimeException('Automatic task repair tests require a Redis connection.');
+        }
+
+        try {
+            $redis->select(self::redisCacheDatabase());
+
+            // Remove every cache prefix primed for the separate test workers.
+            // Their subsequent Looping events use the normal repair throttle.
+            foreach (self::cacheKeyCandidates(TaskWatchdog::LOOP_THROTTLE_KEY) as $key) {
+                $redis->del($key);
+            }
+        } finally {
+            $redis->close();
+        }
+    }
+
     /**
      * @return array<int, array{
      *     worker: int,

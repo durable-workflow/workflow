@@ -20,6 +20,12 @@ final class RequestedTaskScope
             return;
         }
 
+        // Tasks that inherit the default connection store null instead of the
+        // resolved driver name supplied by a queue worker's Looping event.
+        if ($column === 'connection' && in_array(config('queue.default'), $values, true)) {
+            $values[] = 'default';
+        }
+
         $query->where(static function ($requestedScope) use ($column, $values): void {
             $nonDefault = array_values(array_filter(
                 $values,
