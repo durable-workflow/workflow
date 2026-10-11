@@ -37,7 +37,7 @@ final class V2DefaultConnectionRecoveryTest extends TestCase
         Queue::swap($queue);
         $this->enableAutomaticTaskRepair();
 
-        $this->waitForWorkflow($workflow);
+        $this->waitForWorkflow($workflow, static fn (WorkflowStub $run): bool => ! $run->refresh()->running());
 
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame($runId, $workflow->runId());
