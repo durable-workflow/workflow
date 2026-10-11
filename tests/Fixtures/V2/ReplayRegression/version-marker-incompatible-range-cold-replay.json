@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "version-marker-incompatible-range-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "query-state-replayer", "workflow-executor"],
+  "workflow": {"type": "Tests\\Fixtures\\V2\\TestVersionRangeConflictWorkflow", "arguments": [], "payload_codec": "avro"},
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-11T02:22:00+00:00"},
+    {"sequence": 2, "event_type": "VersionMarkerRecorded", "payload": {"sequence": 1, "change_id": "range-probe", "version": 1, "min_supported": 1, "max_supported": 1}, "recorded_at": "2026-10-11T02:22:01+00:00"}
+  ],
+  "expected_failure": {"type": "version_marker_incompatible_range", "exception": "Workflow\\V2\\Exceptions\\VersionRangeMismatchException"}
+}

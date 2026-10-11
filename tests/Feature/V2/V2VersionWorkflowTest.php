@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestApplicationVersionExceptionWorkflow;
 use Tests\Fixtures\V2\TestDeprecatedPatchWorkflow;
 use Tests\Fixtures\V2\TestPatchedWorkflow;
 use Tests\Fixtures\V2\TestRepeatedPatchWorkflow;
@@ -12,6 +13,8 @@ use Tests\Fixtures\V2\TestRepeatedVersionWorkflow;
 use Tests\Fixtures\V2\TestVersionAfterSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionBeforeSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionMinSupportedWorkflow;
+use Tests\Fixtures\V2\TestVersionRangeRepairActivity;
+use Tests\Fixtures\V2\TestVersionRangeRepairWorkflow;
 use Tests\Fixtures\V2\TestVersionWorkflow;
 use Tests\TestCase;
 use Workflow\Exceptions\VersionNotSupportedException;
@@ -79,17 +82,14 @@ final class V2VersionWorkflowTest extends TestCase
             ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
     }
 
-    public function testRepeatedVersionStillRejectsAnUnsupportedFirstDecision(): void
+    public function testRepeatedVersionBlocksReplayForAnUnsupportedFirstDecision(): void
     {
         Queue::fake();
         $workflow = WorkflowStub::make(TestRepeatedVersionWorkflow::class, 'repeated-unsupported');
         $workflow->start(2);
         $this->drainReadyTasks();
 
-        $this->assertTrue($workflow->refresh()->failed());
-        $failure = WorkflowFailure::query()->where('workflow_run_id', $workflow->runId())->firstOrFail();
-        $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
-        $this->assertStringContainsString("Version 1 for change ID 'frozen' is not supported", $failure->message);
+        $this->assertVersionRangeReplayBlocked((string) $workflow->runId(), 'frozen', 1, 2, 5, 2);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
             ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
     }
@@ -288,7 +288,7 @@ final class V2VersionWorkflowTest extends TestCase
         $this->assertSame(1, $marker->payload['version'] ?? null);
     }
 
-    public function testVersionMarkersFailRunWhenRecordedVersionIsNotSupported(): void
+    public function testVersionMarkersBlockReplayWhenRecordedVersionIsNotSupported(): void
     {
         Queue::fake();
 
@@ -318,15 +318,7 @@ final class V2VersionWorkflowTest extends TestCase
 
         $this->drainReadyTasks();
 
-        $this->assertTrue($workflow->refresh()->failed());
-
-        /** @var WorkflowFailure $failure */
-        $failure = WorkflowFailure::query()
-            ->where('workflow_run_id', $workflow->runId())
-            ->firstOrFail();
-
-        $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
-        $this->assertStringContainsString("Version -1 for change ID 'step-1' is not supported", $failure->message);
+        $this->assertVersionRangeReplayBlocked((string) $workflow->runId());
     }
 
     public function testVersionMarkersValidateRecordedChangeIdentity(): void
@@ -555,19 +547,11 @@ final class V2VersionWorkflowTest extends TestCase
 
         $this->drainReadyTasks();
 
-        $this->assertTrue(WorkflowStub::loadRun($run->id)->failed());
+        $this->assertVersionRangeReplayBlocked($run->id);
         $this->assertNull(WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
             ->first());
-
-        /** @var WorkflowFailure $failure */
-        $failure = WorkflowFailure::query()
-            ->where('workflow_run_id', $run->id)
-            ->firstOrFail();
-
-        $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
-        $this->assertStringContainsString("Version -1 for change ID 'step-1' is not supported", $failure->message);
     }
 
     public function testPreFingerprintRunUsesLegacyDefaultEvenWithSameCompatibility(): void
@@ -589,19 +573,97 @@ final class V2VersionWorkflowTest extends TestCase
 
         $this->drainReadyTasks();
 
-        $this->assertTrue(WorkflowStub::loadRun($run->id)->failed());
+        $this->assertVersionRangeReplayBlocked($run->id);
         $this->assertNull(WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
             ->first());
+    }
 
-        /** @var WorkflowFailure $failure */
-        $failure = WorkflowFailure::query()
-            ->where('workflow_run_id', $run->id)
-            ->firstOrFail();
+    public function testCompatibleDefinitionRepairResumesTheOriginalTaskWithoutRepeatingTheActivity(): void
+    {
+        Queue::fake();
+        TestVersionRangeRepairActivity::$executions = 0;
+        TestVersionRangeRepairWorkflow::$minSupported = 1;
+        TestVersionRangeRepairWorkflow::$maxSupported = 1;
+        $value = [
+            'count' => 9007199254740993,
+            'optional' => null,
+            'message' => 'range retained λ',
+        ];
+        $workflow = WorkflowStub::make(TestVersionRangeRepairWorkflow::class, 'version-range-repair');
+        $workflow->start($value);
+        $runId = (string) $workflow->runId();
+        $first = WorkflowTask::query()->where('workflow_run_id', $runId)->where(
+            'status',
+            TaskStatus::Ready
+        )->firstOrFail();
+        $this->app->call([new RunWorkflowTask($first->id), 'handle']);
+        $activity = WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity)->where('status', TaskStatus::Ready)->firstOrFail();
+        $this->app->call([new RunActivityTask($activity->id), 'handle']);
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy(
+            'sequence'
+        )->get()->toArray();
+        $resume = WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->firstOrFail();
 
+        try {
+            TestVersionRangeRepairWorkflow::$minSupported = 2;
+            TestVersionRangeRepairWorkflow::$maxSupported = 2;
+            $this->app->call([new RunWorkflowTask($resume->id), 'handle']);
+            $blocked = $this->assertVersionRangeReplayBlocked($runId, 'repair-range', 1, 2, 2);
+            $this->assertSame($resume->id, $blocked->id);
+            $this->assertSame(
+                $prefix,
+                WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')->get()->toArray()
+            );
+            $this->assertSame(1, TestVersionRangeRepairActivity::$executions);
+
+            TestVersionRangeRepairWorkflow::$minSupported = 1;
+            TestVersionRangeRepairWorkflow::$maxSupported = 1;
+            $repair = WorkflowStub::loadSelection('version-range-repair', $runId)->attemptRepair();
+            $this->assertTrue($repair->accepted());
+            $this->assertSame('repair_dispatched', $repair->outcome());
+            $this->drainReadyTasks();
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame($runId, $workflow->runId());
+            $this->assertSame($value, $workflow->output());
+            $this->assertSame(1, TestVersionRangeRepairActivity::$executions);
+            $finalTask = $blocked->fresh();
+            $this->assertSame(TaskStatus::Completed, $finalTask->status);
+            $this->assertSame($blocked->attempt_count + 1, $finalTask->attempt_count);
+            $this->assertSame($blocked->repair_count + 1, $finalTask->repair_count);
+            $this->assertFalse(array_key_exists('replay_blocked', $finalTask->payload));
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy(
+                'sequence'
+            )->get()->toArray();
+            $this->assertSame($prefix, array_slice($history, 0, count($prefix)));
+            $this->assertSame(
+                ['RepairRequested', 'WorkflowCompleted'],
+                array_column(array_slice($history, count($prefix)), 'event_type')
+            );
+        } finally {
+            TestVersionRangeRepairWorkflow::$minSupported = 1;
+            TestVersionRangeRepairWorkflow::$maxSupported = 1;
+        }
+    }
+
+    public function testApplicationVersionExceptionStillFailsTheRun(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestApplicationVersionExceptionWorkflow::class, 'application-version-failure');
+        $workflow->start();
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->failed());
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $workflow->runId())->firstOrFail();
         $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
-        $this->assertStringContainsString("Version -1 for change ID 'step-1' is not supported", $failure->message);
+        $this->assertSame('Application version check failed.', $failure->message);
+        $this->assertFalse(WorkflowTask::query()->where('workflow_run_id', $workflow->runId())
+            ->get()
+            ->contains(static fn (WorkflowTask $task): bool => ($task->payload['replay_blocked'] ?? false) === true));
     }
 
     /**
@@ -688,6 +750,38 @@ final class V2VersionWorkflowTest extends TestCase
         ]);
 
         return $run;
+    }
+
+    private function assertVersionRangeReplayBlocked(
+        string $runId,
+        string $changeId = 'step-1',
+        int $version = -1,
+        int $minSupported = 1,
+        int $maxSupported = 2,
+        int $sequence = 1,
+    ): WorkflowTask {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertFalse($run->status->isTerminal());
+        $this->assertNull($run->closed_at);
+        $this->assertFalse(WorkflowFailure::query()->where('workflow_run_id', $runId)->exists());
+        $this->assertFalse(WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)->exists());
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('status', TaskStatus::Failed->value)->firstOrFail();
+        $this->assertSame(true, $task->payload['replay_blocked']);
+        $this->assertSame('version_marker_incompatible_range', $task->payload['replay_blocked_reason']);
+        $this->assertSame($sequence, $task->payload['replay_blocked_workflow_sequence']);
+        $this->assertSame($changeId, $task->payload['replay_blocked_change_id']);
+        $this->assertSame($version, $task->payload['replay_blocked_recorded_version']);
+        $this->assertSame($minSupported, $task->payload['replay_blocked_min_supported']);
+        $this->assertSame($maxSupported, $task->payload['replay_blocked_max_supported']);
+        $this->assertStringContainsString(
+            sprintf("Version %d for change ID '%s' is not supported", $version, $changeId),
+            $task->last_error
+        );
+        $this->assertNull($task->lease_expires_at);
+
+        return $task;
     }
 
     private function drainReadyTasks(): void

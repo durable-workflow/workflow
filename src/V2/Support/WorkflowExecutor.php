@@ -38,6 +38,7 @@ use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
 use Workflow\V2\Models\ActivityExecution;
@@ -4340,6 +4341,12 @@ final class WorkflowExecutor
             return;
         }
 
+        if ($throwable instanceof VersionRangeMismatchException) {
+            $this->blockReplayUntilCompatibleVersionRange($run, $task, $throwable);
+
+            return;
+        }
+
         $failureCategory = FailureFactory::classify('terminal', $sourceKind, $throwable);
         $nonRetryable = FailureFactory::isNonRetryable($throwable);
 
@@ -4475,6 +4482,32 @@ final class WorkflowExecutor
 
             return false;
         }
+    }
+
+    private function blockReplayUntilCompatibleVersionRange(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        VersionRangeMismatchException $throwable,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'version_marker_incompatible_range';
+        $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+        $payload['replay_blocked_change_id'] = $throwable->changeId;
+        $payload['replay_blocked_recorded_version'] = $throwable->recordedVersion;
+        $payload['replay_blocked_min_supported'] = $throwable->minSupported;
+        $payload['replay_blocked_max_supported'] = $throwable->maxSupported;
+
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
+
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
     }
 
     private function blockReplayUntilFailureCanBeRestored(
