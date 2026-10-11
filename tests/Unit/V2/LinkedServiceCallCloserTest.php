@@ -106,24 +106,7 @@ final class LinkedServiceCallCloserTest extends TestCase
                     'workflow_run_id' => $run->id,
                 ];
             });
-        $endpoint = WorkflowServiceEndpoint::query()->create([
-            'namespace' => 'service',
-            'endpoint_name' => 'php-service',
-        ]);
-        $service = WorkflowService::query()->create([
-            'namespace' => 'service',
-            'workflow_service_endpoint_id' => $endpoint->id,
-            'service_name' => 'greeter',
-        ]);
-        WorkflowServiceOperation::query()->create([
-            'namespace' => 'service',
-            'workflow_service_endpoint_id' => $endpoint->id,
-            'workflow_service_id' => $service->id,
-            'operation_name' => 'greet',
-            'operation_mode' => 'async',
-            'handler_binding_kind' => ServiceCallBindingKind::WorkflowRun->value,
-            'handler_target_reference' => 'nexus.service',
-        ]);
+        $this->registerWorkflowService();
         $result = (new DefaultServiceControlPlane($workflow))->execute('php-service', 'greeter', 'greet', [
             'namespace' => 'service',
             'caller_namespace' => 'caller',
@@ -164,6 +147,46 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertNull($call->completed_at);
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
         $this->assertSame(0, $run->refresh()->last_history_sequence);
+    }
+
+    public function testCancellationDuringAdmissionCannotBeReopenedByLateStartedDispatch(): void
+    {
+        $run = $this->createRun();
+        $cancelledAt = null;
+        $workflow = Mockery::mock(WorkflowControlPlane::class);
+        $workflow->shouldReceive('start')
+            ->once()
+            ->andReturnUsing(static function () use ($run, &$cancelledAt): array {
+                $call = WorkflowServiceCall::query()->sole();
+                $call->forceFill([
+                    'status' => 'cancelled',
+                    'outcome' => ServiceCallOutcome::Cancelled->value,
+                    'outcome_reason' => 'operator_cancelled',
+                    'cancelled_at' => now(),
+                ])->save();
+                $cancelledAt = $call->refresh()->cancelled_at->format(DATE_ATOM);
+
+                return [
+                    'started' => true,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                ];
+            });
+        $this->registerWorkflowService();
+        $result = (new DefaultServiceControlPlane($workflow))->execute('php-service', 'greeter', 'greet', [
+            'namespace' => 'service',
+            'caller_namespace' => 'caller',
+            'payload_codec' => 'avro',
+            'payload_blob' => Serializer::serializeWithCodec('avro', []),
+        ]);
+
+        $this->assertSame('cancelled', $result['status']);
+        $this->assertSame('cancelled', $result['outcome']);
+        $this->assertSame('operator_cancelled', $result['outcome_reason']);
+        $this->assertSame($cancelledAt, $result['cancelled_at']);
+        $this->assertNull($result['started_at']);
+        $this->assertSame($run->id, $result['linked_workflow_run_id']);
+        $this->assertSame('cancelled', $result['service_call_attempts'][0]['status']);
     }
 
     public function testFailureCancellationAndTerminationCloseWithoutLosingTypedReason(): void
@@ -254,6 +277,28 @@ final class LinkedServiceCallCloserTest extends TestCase
             'codec' => 'avro',
             'external_storage' => $reference,
         ], $view['result_envelope']);
+    }
+
+    private function registerWorkflowService(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'service',
+            'endpoint_name' => 'php-service',
+        ]);
+        $service = WorkflowService::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'greeter',
+        ]);
+        WorkflowServiceOperation::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'greet',
+            'operation_mode' => 'async',
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowRun->value,
+            'handler_target_reference' => 'nexus.service',
+        ]);
     }
 
     private function createRun(): WorkflowRun

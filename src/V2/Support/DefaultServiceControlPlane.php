@@ -1599,22 +1599,42 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
     ): void {
-        $call->status = ServiceCallStatus::Started->value;
-        $call->outcome = ServiceCallOutcome::Accepted->value;
-        $call->outcome_category = ServiceCallOutcome::Accepted->category();
-        $call->outcome_reason = null;
-        $call->outcome_message = null;
-        $call->outcome_metadata = null;
-        $call->resolved_binding_kind = $bindingKind;
-        $call->resolved_target_reference = $targetReference;
-        $call->linked_workflow_instance_id = $instanceId;
-        $call->linked_workflow_run_id = $runId;
-        $call->linked_workflow_update_id = $updateId;
-        $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
-        $call->started_at ??= now();
-        $call->failed_at = null;
-        $call->failure_message = null;
-        $call->save();
+        $call->getConnection()
+            ->transaction(function () use (
+                $call,
+                $bindingKind,
+                $targetReference,
+                $instanceId,
+                $runId,
+                $updateId,
+                $metadata,
+            ): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                $locked->resolved_binding_kind ??= $bindingKind;
+                $locked->resolved_target_reference ??= $targetReference;
+                $locked->linked_workflow_instance_id ??= $instanceId;
+                $locked->linked_workflow_run_id ??= $runId;
+                $locked->linked_workflow_update_id ??= $updateId;
+                $locked->metadata = $this->mergeMetadata($locked->metadata, $metadata);
+
+                if (! $this->isTerminal($locked)) {
+                    $locked->status = ServiceCallStatus::Started->value;
+                    $locked->outcome = ServiceCallOutcome::Accepted->value;
+                    $locked->outcome_category = ServiceCallOutcome::Accepted->category();
+                    $locked->outcome_reason = null;
+                    $locked->outcome_message = null;
+                    $locked->outcome_metadata = null;
+                    $locked->started_at ??= now();
+                    $locked->failed_at = null;
+                    $locked->failure_message = null;
+                }
+
+                $locked->save();
+            });
+        $call->refresh();
         LinkedServiceCallCloser::reconcile($call);
     }
 
