@@ -29,6 +29,7 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
 {
     public function testThreeFourChildParentsCompleteWithConcurrentQueueWorkers(): void
     {
+        $this->enableAutomaticTaskRepair();
         $workflows = [];
         for ($index = 0; $index < 3; $index++) {
             $workflow = WorkflowStub::make(TestParallelGreetingChildrenWorkflow::class, 'parallel-parent-' . $index);
