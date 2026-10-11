@@ -602,9 +602,8 @@ final class V2VersionWorkflowTest extends TestCase
         $activity = WorkflowTask::query()->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Activity)->where('status', TaskStatus::Ready)->firstOrFail();
         $this->app->call([new RunActivityTask($activity->id), 'handle']);
-        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy(
-            'sequence'
-        )->get()->toArray();
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')->get()
+            ->toArray();
         $resume = WorkflowTask::query()->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->firstOrFail();
 
@@ -636,9 +635,8 @@ final class V2VersionWorkflowTest extends TestCase
             $this->assertSame($blocked->attempt_count + 1, $finalTask->attempt_count);
             $this->assertSame($blocked->repair_count + 1, $finalTask->repair_count);
             $this->assertFalse(array_key_exists('replay_blocked', $finalTask->payload));
-            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy(
-                'sequence'
-            )->get()->toArray();
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')->get()
+                ->toArray();
             $this->assertSame($prefix, array_slice($history, 0, count($prefix)));
             $this->assertSame(
                 ['RepairRequested', 'WorkflowCompleted'],
