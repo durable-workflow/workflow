@@ -73,7 +73,7 @@ final class VersionDecisions
     public function resolve(?WorkflowRun $run, VersionCall $call, int $sequence): VersionResolution
     {
         if (isset($this->decisions[$call->changeId])) {
-            $reused = VersionResolver::reuse($this->decisions[$call->changeId]['version'], $call);
+            $reused = VersionResolver::reuse($this->decisions[$call->changeId]['version'], $call, $sequence);
             $duplicate = $this->duplicateAt($sequence);
             if (($duplicate?->payload['change_id'] ?? null) === $call->changeId) {
                 $this->assertDuplicate($run, $duplicate, $sequence);

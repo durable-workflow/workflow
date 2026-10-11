@@ -22,6 +22,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -195,6 +196,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (in_array('workflow-executor', $consumers, true)) {
                 $run = $this->createRunFromFixture($fixture);
+                $historyBefore = $run->historyEvents()
+                    ->orderBy('sequence')
+                    ->get()
+                    ->toArray();
                 $this->runReadyWorkflowTask($run);
 
                 /** @var WorkflowFailure|null $failure */
@@ -209,12 +214,30 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     ->latest('created_at')
                     ->first();
                 $blockedPayload = is_array($blockedTask?->payload) ? $blockedTask->payload : [];
-                $expectedReplayBlock = $fixture['expected_failure']['exception']
-                    === HistoryEventShapeMismatchException::class
+                $expectedReplayBlockReason = match ($fixture['expected_failure']['exception']) {
+                    HistoryEventShapeMismatchException::class => 'history_shape_mismatch',
+                    VersionRangeMismatchException::class => 'version_marker_incompatible_range',
+                    default => null,
+                };
+                $expectedReplayBlock = $expectedReplayBlockReason !== null
                     && ($blockedPayload['replay_blocked'] ?? false) === true
-                    && ($blockedPayload['replay_blocked_reason'] ?? null) === 'history_shape_mismatch';
+                    && ($blockedPayload['replay_blocked_reason'] ?? null) === $expectedReplayBlockReason;
 
-                if ($failure === null) {
+                if ($expectedReplayBlock) {
+                    $this->assertFalse($run->fresh()->status->isTerminal());
+                    $this->assertNull($run->fresh()->closed_at);
+                    $this->assertSame($historyBefore, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+                    $this->assertFalse($run->historyEvents()->whereIn('event_type', [
+                        HistoryEventType::WorkflowCompleted->value,
+                        HistoryEventType::WorkflowFailed->value,
+                    ])->exists());
+                }
+
+                if ($expectedReplayBlockReason !== null) {
+                    if (! $expectedReplayBlock || $failure !== null) {
+                        $mismatches[] = "{$fixture['id']} did not preserve a nonterminal blocked replay.";
+                    }
+                } elseif ($failure === null) {
                     if (! $expectedReplayBlock) {
                         $mismatches[] = "{$fixture['id']} was accepted by WorkflowExecutor instead of failing closed.";
                     }

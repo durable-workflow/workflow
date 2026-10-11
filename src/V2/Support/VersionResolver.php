@@ -5,16 +5,19 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use LogicException;
-use Workflow\Exceptions\VersionNotSupportedException;
+use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
 
 final class VersionResolver
 {
-    public static function reuse(int $version, VersionCall $versionCall): VersionResolution
-    {
-        self::assertSupported($version, $versionCall);
+    public static function reuse(
+        int $version,
+        VersionCall $versionCall,
+        ?int $sequence = null,
+    ): VersionResolution {
+        self::assertSupported($version, $versionCall, $sequence);
 
         return VersionResolution::reused($version);
     }
@@ -31,7 +34,7 @@ final class VersionResolver
 
         if (self::shouldUseLegacyDefault($run)) {
             $version = WorkflowStub::DEFAULT_VERSION;
-            self::assertSupported($version, $versionCall);
+            self::assertSupported($version, $versionCall, $sequence);
 
             return VersionResolution::legacyDefault($version);
         }
@@ -72,7 +75,7 @@ final class VersionResolver
             ));
         }
 
-        self::assertSupported($version, $versionCall);
+        self::assertSupported($version, $versionCall, $sequence);
 
         return $version;
     }
@@ -110,16 +113,16 @@ final class VersionResolver
             && $runCompatibility !== $currentCompatibility;
     }
 
-    private static function assertSupported(int $version, VersionCall $versionCall): void
+    private static function assertSupported(int $version, VersionCall $versionCall, ?int $sequence): void
     {
         if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
-            throw new VersionNotSupportedException(sprintf(
-                "Version %d for change ID '%s' is not supported. Supported range: [%d, %d]",
-                $version,
+            throw new VersionRangeMismatchException(
                 $versionCall->changeId,
+                $version,
                 $versionCall->minSupported,
                 $versionCall->maxSupported,
-            ));
+                $sequence,
+            );
         }
     }
 

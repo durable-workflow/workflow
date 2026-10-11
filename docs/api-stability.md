@@ -633,6 +633,22 @@ site before the patch marker existed.
 
 **Evolution rules:**
 
+An existing recorded version, or the legacy default for a pre-marker run,
+outside the current authored supported range is a replay compatibility fault.
+The embedded engine blocks the affected workflow task with
+`version_marker_incompatible_range`; it keeps the original run non-terminal
+and preserves its history, version decision and completed work. Restore a
+compatible definition, then explicitly repair that run to resume its original
+logical task with a new fenced attempt. Repair does not rewrite markers or
+resurrect already closed runs. Ordinary application exceptions still produce
+their normal application outcome.
+
+The engine's range exception remains catchable as
+`Workflow\Exceptions\VersionNotSupportedException`. Its message preserves the
+recorded version, change ID and supported bounds. The blocked task retains
+those values and the workflow sequence as diagnostic metadata; they do not
+extend the frozen marker or command payload above.
+
 - Adding a field to either shape is a protocol break. Replayers running
   older SDK builds will silently ignore the field, producing decisions
   that diverge from replayers on the new build. Treat any new shape as
