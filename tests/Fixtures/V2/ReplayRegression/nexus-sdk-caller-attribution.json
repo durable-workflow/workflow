@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-sdk-caller-attribution",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusWaitingCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {
+      "sequence": 2,
+      "event_type": "ServiceCallStarted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "attributed-call",
+        "endpoint_name": "php-service",
+        "service_name": "greeter",
+        "operation_name": "greet",
+        "caller_sdk_language": "sdk-python",
+        "status": "started",
+        "operation_mode": "sync",
+        "wait_for": "completed",
+        "service_call": {"service_call_id": "attributed-call", "status": "started"}
+      }
+    }
+  ],
+  "caller_sdk_language": "sdk-python",
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  }
+}

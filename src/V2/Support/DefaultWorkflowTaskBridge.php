@@ -3587,7 +3587,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     ): array {
         $metadata = is_array($command['metadata'] ?? null) ? $command['metadata'] : [];
         $metadata = [
-            'caller_sdk_language' => 'workflow-php',
+            'caller_sdk_language' => self::metadataString($metadata, 'caller_sdk_language') ?? 'workflow-php',
             'caller_workflow_instance_id' => $run->workflow_instance_id,
             'caller_workflow_run_id' => $run->id,
             'workflow_sequence' => $sequence,
@@ -3712,7 +3712,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_run_id' => $run->id,
             'caller_workflow_instance_id' => $run->workflow_instance_id,
             'caller_workflow_run_id' => $run->id,
-            'caller_sdk_language' => 'workflow-php',
+            'caller_sdk_language' => self::metadataString($command['metadata'] ?? null, 'caller_sdk_language')
+                ?? 'workflow-php',
             'endpoint_name' => $command['endpoint_name'],
             'service_name' => $command['service_name'],
             'operation_name' => $command['operation_name'],
