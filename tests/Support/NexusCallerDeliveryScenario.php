@@ -61,10 +61,10 @@ trait NexusCallerDeliveryScenario
 
                     return true;
                 })->andReturn([
-    'service_call_id' => 'attributed-call',
-    'accepted' => true,
-    'status' => 'started',
-]);
+                    'service_call_id' => 'attributed-call',
+                    'accepted' => true,
+                    'status' => 'started',
+                ]);
             $this->app->instance(ServiceControlPlane::class, $service);
             $completed = $bridge->complete($task->id, [[
                 'type' => 'start_service_operation',
