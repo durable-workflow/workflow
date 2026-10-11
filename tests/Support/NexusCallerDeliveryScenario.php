@@ -34,6 +34,7 @@ trait NexusCallerDeliveryScenario
     protected function assertNexusCallerSdkAttribution(array $fixture): void
     {
         $previous = $this->app->make(ServiceControlPlane::class);
+        $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
@@ -88,6 +89,7 @@ trait NexusCallerDeliveryScenario
             $this->assertSame($run->id, $event->payload['caller_workflow_run_id']);
             $this->assertSame(1, $event->payload['sequence']);
         } finally {
+            config(['workflows.v2.task_dispatch_mode' => $previousDispatchMode]);
             $this->app->instance(ServiceControlPlane::class, $previous);
         }
     }
