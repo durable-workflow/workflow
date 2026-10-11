@@ -14,6 +14,7 @@ use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\HistoryRecordedAt;
+use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
 
 class WorkflowHistoryEvent extends Model
@@ -123,6 +124,8 @@ class WorkflowHistoryEvent extends Model
                     'last_progress_at' => $now,
                 ]);
                 $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
+
+                LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
 
                 return $event;
             });

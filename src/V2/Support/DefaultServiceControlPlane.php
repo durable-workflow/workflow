@@ -334,6 +334,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function serialize(WorkflowServiceCall $call): array
     {
+        LinkedServiceCallCloser::reconcile($call);
         $serialized = [
             'service_call_id' => $call->id,
             'namespace' => $call->namespace,
@@ -367,6 +368,19 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ];
 
         $failureMetadata = $this->arrayValue($call->outcome_metadata);
+        $result = $this->arrayValue($call->metadata)['nexus_result'] ?? null;
+        if (is_array($result)) {
+            if (is_string($result['blob'] ?? null)) {
+                $serialized['result_envelope'] = $result;
+            } elseif (is_array($result['external_reference'] ?? null) && is_string($call->output_payload_reference)) {
+                $serialized['result_envelope'] = [
+                    'codec' => $result['codec'],
+                    'external_storage' => $result['external_reference'] + [
+                        'uri' => $call->output_payload_reference,
+                    ],
+                ];
+            }
+        }
         $failureType = $this->failureTypeFrom($failureMetadata);
 
         if ($failureType !== null) {
@@ -769,6 +783,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $attemptStartedAt = now();
             $result = $this->dispatchHandlerAttempt($call, $operation, $request, $options, $attempt, $maxAttempts);
             $call->refresh();
+            LinkedServiceCallCloser::reconcile($call);
 
             $retry = $this->shouldRetryServiceCall($result, $attempt, $maxAttempts);
             $backoffSeconds = $retry ? $this->serviceCallBackoffSeconds($call->retry_policy, $attempt) : null;
@@ -966,23 +981,31 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function recordServiceCallAttempt(WorkflowServiceCall $call, array $attempt): void
     {
-        $metadata = $this->arrayValue($call->metadata);
-        $attempts = isset($metadata['service_call_attempts']) && is_array($metadata['service_call_attempts'])
-            ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
-            : [];
-        $attempts[] = $attempt;
-        $metadata['service_call_attempts'] = $attempts;
-        $metadata['retry_attempt_count'] = count($attempts);
-        $call->metadata = $metadata;
+        $call->getConnection()
+            ->transaction(function () use ($call, $attempt): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                $metadata = $this->arrayValue($locked->metadata);
+                $attempts = isset($metadata['service_call_attempts']) && is_array($metadata['service_call_attempts'])
+                    ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
+                    : [];
+                $attempts[] = $attempt;
+                $metadata['service_call_attempts'] = $attempts;
+                $metadata['retry_attempt_count'] = count($attempts);
+                $locked->metadata = $metadata;
 
-        if ($this->isFailed($call)) {
-            $outcomeMetadata = $this->arrayValue($call->outcome_metadata);
-            $outcomeMetadata['service_call_attempts'] = $attempts;
-            $outcomeMetadata['retry_attempt_count'] = count($attempts);
-            $call->outcome_metadata = $outcomeMetadata;
-        }
+                if ($this->isFailed($locked)) {
+                    $outcomeMetadata = $this->arrayValue($locked->outcome_metadata);
+                    $outcomeMetadata['service_call_attempts'] = $attempts;
+                    $outcomeMetadata['retry_attempt_count'] = count($attempts);
+                    $locked->outcome_metadata = $outcomeMetadata;
+                }
 
-        $call->save();
+                $locked->save();
+            });
+        $call->refresh();
     }
 
     /**
@@ -1576,22 +1599,48 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
     ): void {
-        $call->status = ServiceCallStatus::Started->value;
-        $call->outcome = ServiceCallOutcome::Accepted->value;
-        $call->outcome_category = ServiceCallOutcome::Accepted->category();
-        $call->outcome_reason = null;
-        $call->outcome_message = null;
-        $call->outcome_metadata = null;
-        $call->resolved_binding_kind = $bindingKind;
-        $call->resolved_target_reference = $targetReference;
-        $call->linked_workflow_instance_id = $instanceId;
-        $call->linked_workflow_run_id = $runId;
-        $call->linked_workflow_update_id = $updateId;
-        $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
-        $call->started_at ??= now();
-        $call->failed_at = null;
-        $call->failure_message = null;
-        $call->save();
+        $call->getConnection()
+            ->transaction(function () use (
+                $call,
+                $bindingKind,
+                $targetReference,
+                $instanceId,
+                $runId,
+                $updateId,
+                $metadata,
+            ): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                $locked->resolved_binding_kind ??= $bindingKind;
+                if (! $this->isTerminal($locked)
+                    || ($locked->linked_workflow_instance_id === null
+                        && $locked->linked_workflow_run_id === null
+                        && $locked->linked_workflow_update_id === null)) {
+                    $locked->resolved_target_reference = $targetReference;
+                }
+                $locked->linked_workflow_instance_id ??= $instanceId;
+                $locked->linked_workflow_run_id ??= $runId;
+                $locked->linked_workflow_update_id ??= $updateId;
+                $locked->metadata = $this->mergeMetadata($locked->metadata, $metadata);
+
+                if (! $this->isTerminal($locked)) {
+                    $locked->status = ServiceCallStatus::Started->value;
+                    $locked->outcome = ServiceCallOutcome::Accepted->value;
+                    $locked->outcome_category = ServiceCallOutcome::Accepted->category();
+                    $locked->outcome_reason = null;
+                    $locked->outcome_message = null;
+                    $locked->outcome_metadata = null;
+                    $locked->started_at ??= now();
+                    $locked->failed_at = null;
+                    $locked->failure_message = null;
+                }
+
+                $locked->save();
+            });
+        $call->refresh();
+        LinkedServiceCallCloser::reconcile($call);
     }
 
     /**
