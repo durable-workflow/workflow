@@ -103,6 +103,17 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'nexus-original-deadline-cold-delivery') {
+                $this->clearWorkflowState();
+                $this->assertWaitingNexusCallerReceivesResult(
+                    $fixture['workflow']['type'],
+                    $fixture['workflow']['arguments'],
+                    $fixture['terminal_result'],
+                    $fixture['deadline_policy'],
+                );
+                continue;
+            }
+
             if ($fixture['id'] === 'manual-repair-blocked-replay-with-pending-activity') {
                 $this->assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity($fixture);
                 continue;
@@ -1280,6 +1291,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private function clearWorkflowState(): void
     {
         foreach ([
+            'workflow_service_calls',
+            'workflow_service_operations',
+            'workflow_services',
+            'workflow_service_endpoints',
             'workflow_run_summaries',
             'workflow_run_waits',
             'workflow_run_timeline_entries',

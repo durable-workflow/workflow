@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-original-deadline-cold-delivery",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusDeadlineCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "ServiceCallStarted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "original-deadline-call",
+        "service_call": {"service_call_id": "original-deadline-call", "status": "started"}
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ServiceCallFailed",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "original-deadline-call",
+        "outcome": "timed_out",
+        "exception_class": "RuntimeException",
+        "exception_type": "ServiceCallTimedOut",
+        "message": "Service call deadline expired.",
+        "service_call": {
+          "service_call_id": "original-deadline-call",
+          "status": "failed",
+          "outcome": "timed_out",
+          "call_deadline_at": "2026-10-11T00:00:01.123456Z"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {"failure_message": "Service call deadline expired."},
+    "commands": [{"type": "complete_workflow"}]
+  },
+  "deadline_policy": {"timeout_seconds": 1},
+  "terminal_result": {"failure_message": "Service call deadline expired."}
+}
