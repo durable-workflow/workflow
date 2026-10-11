@@ -81,6 +81,7 @@ final class RequestedTaskScopeTest extends TestCase
         $other = $this->createTask('other-repair', 'database');
         foreach ([$implicit, $other] as $task) {
             $task->forceFill([
+                'available_at' => now()->subMinute(),
                 'created_at' => now()->subMinute(),
                 'last_dispatched_at' => now()
                     ->subMinute(),
