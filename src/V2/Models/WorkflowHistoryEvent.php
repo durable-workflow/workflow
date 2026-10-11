@@ -16,6 +16,7 @@ use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\HistoryRecordedAt;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -126,6 +127,7 @@ class WorkflowHistoryEvent extends Model
                 $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
 
                 LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
+                ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);
 
                 return $event;
             });

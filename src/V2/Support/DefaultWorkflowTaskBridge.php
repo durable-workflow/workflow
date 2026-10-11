@@ -336,6 +336,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'last_claim_error' => null,
             ])->save();
 
+            ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             self::projectWorkflowTaskClaim($run, $task);
 
             return [

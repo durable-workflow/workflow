@@ -16,6 +16,7 @@ final class LinkedServiceCallCloser
 {
     public static function reconcile(WorkflowServiceCall $call): void
     {
+        ServiceCallWorkflowDelivery::enqueue($call);
         if ($call->resolved_binding_kind !== ServiceCallBindingKind::WorkflowRun->value
             || ! in_array($call->status, ['pending', 'accepted', 'started'], true)
             || ! is_string($call->linked_workflow_run_id)) {
@@ -126,6 +127,7 @@ final class LinkedServiceCallCloser
                     $values['metadata'] = $metadata;
                     $call->forceFill($values)
                         ->save();
+                    ServiceCallWorkflowDelivery::enqueue($call);
                 }
             });
     }

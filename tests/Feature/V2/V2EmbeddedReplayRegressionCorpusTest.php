@@ -14,6 +14,7 @@ use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestVersionPendingRangeRepairWorkflow;
 use Tests\Fixtures\V2\TestVersionRangeRepairActivity;
+use Tests\Support\NexusCallerDeliveryScenario;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -65,6 +66,8 @@ use Workflow\V2\WorkflowStub;
 
 final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 {
+    use NexusCallerDeliveryScenario;
+
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
@@ -83,6 +86,16 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'nexus-waiting-caller-terminal-delivery') {
+                $this->clearWorkflowState();
+                $this->assertWaitingNexusCallerReceivesResult(
+                    $fixture['workflow']['type'],
+                    $fixture['workflow']['arguments'],
+                    $fixture['terminal_result'],
+                );
+                continue;
+            }
 
             if ($fixture['id'] === 'manual-repair-blocked-replay-with-pending-activity') {
                 $this->assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity($fixture);

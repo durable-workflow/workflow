@@ -368,18 +368,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ];
 
         $failureMetadata = $this->arrayValue($call->outcome_metadata);
-        $result = $this->arrayValue($call->metadata)['nexus_result'] ?? null;
-        if (is_array($result)) {
-            if (is_string($result['blob'] ?? null)) {
-                $serialized['result_envelope'] = $result;
-            } elseif (is_array($result['external_reference'] ?? null) && is_string($call->output_payload_reference)) {
-                $serialized['result_envelope'] = [
-                    'codec' => $result['codec'],
-                    'external_storage' => $result['external_reference'] + [
-                        'uri' => $call->output_payload_reference,
-                    ],
-                ];
-            }
+        $result = ServiceCallResultEnvelope::fromCall($call);
+        if ($result !== null) {
+            $serialized['result_envelope'] = $result;
         }
         $failureType = $this->failureTypeFrom($failureMetadata);
 

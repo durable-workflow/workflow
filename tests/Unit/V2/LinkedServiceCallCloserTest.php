@@ -8,11 +8,17 @@ use Mockery;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -20,11 +26,332 @@ use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\LinkedServiceCallCloser;
+use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\ServiceOperationResult;
+use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
 
 final class LinkedServiceCallCloserTest extends TestCase
 {
+    public function testTerminalServiceOutcomeResumesItsOriginalWaitingCallerOnce(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $service = $this->createRun();
+        $caller = $this->createRun('caller');
+        $call = $this->createCall($service, [
+            'caller_workflow_instance_id' => $caller->workflow_instance_id,
+            'caller_workflow_run_id' => $caller->id,
+            'operation_mode' => 'sync',
+        ]);
+        WorkflowHistoryEvent::record($caller, HistoryEventType::ServiceCallStarted, [
+            'sequence' => 7,
+            'service_call_id' => $call->id,
+            'operation_mode' => 'sync',
+            'wait_for' => 'completed',
+            'endpoint_name' => $call->endpoint_name,
+            'service_name' => $call->service_name,
+            'operation_name' => $call->operation_name,
+            'payload_codec' => 'avro',
+            'caller_sdk_language' => 'sdk-python',
+            'service_call' => (new DefaultServiceControlPlane())->describeCall($call->id, [
+                'namespace' => 'service',
+            ]),
+        ]);
+        $blob = Serializer::serializeWithCodec('avro', [
+            'greeting' => 'hello world',
+        ]);
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => $blob,
+            'payload_codec' => 'avro',
+        ]);
+
+        $this->assertSame('completed', $call->refresh()->status);
+        $task = WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole();
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $caller->id)
+            ->where('event_type', HistoryEventType::ServiceCallCompleted->value)
+            ->count());
+        $claim = $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'replacement-worker');
+        $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
+        $task->refresh();
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $caller->id)
+            ->where('event_type', HistoryEventType::ServiceCallCompleted->value)
+            ->sole();
+        $this->assertSame(7, $event->payload['sequence']);
+        $this->assertSame($call->id, $event->payload['service_call_id']);
+        $this->assertSame('sdk-python', $event->payload['caller_sdk_language']);
+        $this->assertSameJsonObject([
+            'codec' => 'avro',
+            'blob' => $blob,
+        ], $event->payload['response_payload']);
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame(TaskType::Workflow, $task->task_type);
+        $this->assertSame('caller', $task->namespace);
+        $this->assertSame($event->id, $task->payload['workflow_history_event_id']);
+        $this->assertSame($call->id, $task->payload['service_call_id']);
+        $this->assertSame(7, $task->payload['workflow_sequence']);
+        $records = [$event->getAttributes(), $task->getAttributes()];
+
+        foreach ([1, 2] as $_) {
+            LinkedServiceCallCloser::reconcile($call->refresh());
+            $this->assertSame($records, [$event->refresh()->getAttributes(), $task->refresh()->getAttributes()]);
+        }
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $caller->id)->count());
+        $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+
+        $task->forceFill([
+            'status' => TaskStatus::Ready,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+        $claim = $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'another-replacement-worker');
+        $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
+        $this->assertSame($event->id, $task->refresh()->payload['workflow_history_event_id']);
+        $this->assertSame(2, $task->attempt_count);
+        $this->assertSame($records[0], $event->refresh()->getAttributes());
+        $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+    }
+
+    public function testAlreadyCompletedServiceResumesWhenAdmissionHistoryArrivesLate(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $service = $this->createRun();
+        $caller = $this->createRun('caller');
+        $call = $this->createCall($service, [
+            'caller_workflow_instance_id' => $caller->workflow_instance_id,
+            'caller_workflow_run_id' => $caller->id,
+            'operation_mode' => 'sync',
+            'metadata' => [
+                'caller_terminal_history_event_id' => 'untrusted-caller-hint',
+            ],
+        ]);
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => Serializer::serializeWithCodec('avro', 'early result'),
+            'payload_codec' => 'avro',
+        ]);
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $caller->id)->count());
+        $this->recordAdmission($caller, $call);
+        $task = WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole();
+        $this->assertTrue(
+            $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'late-caller')['claimed']
+        );
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $caller->id)
+            ->where('event_type', HistoryEventType::ServiceCallCompleted->value)
+            ->sole();
+        $this->assertSame(
+            'early result',
+            Serializer::unserializeWithCodec('avro', $event->payload['response_payload']['blob'])
+        );
+    }
+
+    public function testAsyncAdmissionKeepsItsRecordedResultWhenTheServiceCompletes(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        foreach ([[
+            'operation_mode' => 'async',
+        ], [
+            'wait_for' => 'accepted',
+        ]] as $options) {
+            $service = $this->createRun();
+            $caller = $this->createRun('caller');
+            $call = $this->createCall($service, [
+                'caller_workflow_instance_id' => $caller->workflow_instance_id,
+                'caller_workflow_run_id' => $caller->id,
+                'operation_mode' => $options['operation_mode'] ?? 'sync',
+            ]);
+            $event = $this->recordAdmission($caller, $call, $options);
+            $saved = $event->refresh()
+                ->getAttributes();
+            WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+                'output' => Serializer::serializeWithCodec('avro', 'later result'),
+                'payload_codec' => 'avro',
+            ]);
+            LinkedServiceCallCloser::reconcile($call->refresh());
+            $this->assertSame('completed', $call->status);
+            $this->assertSame($saved, $event->refresh()->getAttributes());
+            $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $caller->id)->count());
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+        }
+    }
+
+    public function testFailureAndCancellationResumeWithTheActualTerminalCause(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        foreach ([
+            HistoryEventType::WorkflowFailed,
+            HistoryEventType::WorkflowCancelled,
+            HistoryEventType::WorkflowTerminated,
+        ] as $terminal) {
+            $service = $this->createRun();
+            $caller = $this->createRun('caller');
+            $call = $this->createCall($service, [
+                'caller_workflow_instance_id' => $caller->workflow_instance_id,
+                'caller_workflow_run_id' => $caller->id,
+                'operation_mode' => 'sync',
+            ]);
+            $this->recordAdmission($caller, $call);
+            WorkflowHistoryEvent::record($service, $terminal, [
+                'message' => 'original service cause',
+            ] + ($terminal === HistoryEventType::WorkflowFailed ? [
+                'exception_type' => 'PaymentDeclined',
+            ] : []));
+            $task = WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole();
+            $this->assertTrue(
+                $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'failure-caller')['claimed']
+            );
+            $event = WorkflowHistoryEvent::query()->findOrFail($task->refresh()->payload['workflow_history_event_id']);
+            $this->assertSame('original service cause', $event->payload['message']);
+            $this->assertSame($terminal === HistoryEventType::WorkflowCancelled
+                ? HistoryEventType::ServiceCallCancelled
+                : HistoryEventType::ServiceCallFailed, $event->event_type);
+            $this->assertSame($terminal === HistoryEventType::WorkflowCancelled
+                ? 'service_call_cancelled'
+                : ($terminal === HistoryEventType::WorkflowFailed ? 'PaymentDeclined' : 'handler_failed'), $event->payload['exception']['type']);
+            $this->assertSame(7, $event->payload['sequence']);
+        }
+    }
+
+    public function testEmbeddedCallerWaitsAndThenReplaysTheActualServiceResult(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $service = $this->createRun();
+        $control = Mockery::mock(WorkflowControlPlane::class);
+        $control->shouldReceive('start')
+            ->once()
+            ->andReturn([
+                'started' => true,
+                'workflow_instance_id' => $service->workflow_instance_id,
+                'workflow_run_id' => $service->id,
+            ]);
+        $this->registerWorkflowService();
+        $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($control));
+        $workflow = WorkflowStub::make(NexusWaitingCallerWorkflow::class, 'waiting-caller', 'caller');
+        $this->assertTrue($workflow->attemptStart()->accepted());
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->sole();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
+        $this->assertNull($workflow->refresh()->output());
+        $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+        $this->assertSame('started', $call->status);
+
+        $expected = [
+            'greeting' => 'hello world',
+        ];
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => Serializer::serializeWithCodec('avro', $expected),
+            'payload_codec' => 'avro',
+        ]);
+        $resume = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $this->app->call([new RunWorkflowTask($resume->id), 'handle']);
+        $this->assertSame(RunStatus::Completed, $run->refresh()->status);
+        $this->assertSame($expected, $workflow->refresh()->output());
+        $this->assertSame('completed', $call->refresh()->status);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ServiceCallCompleted->value)
+            ->count());
+    }
+
+    public function testOutcomeWakeAndDeliveryRemainRecoverableAfterTransactionRollback(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $service = $this->createRun();
+        $caller = $this->createRun('caller');
+        $call = $this->createCall($service, [
+            'caller_workflow_instance_id' => $caller->workflow_instance_id,
+            'caller_workflow_run_id' => $caller->id,
+            'operation_mode' => 'sync',
+        ]);
+        $this->recordAdmission($caller, $call);
+        $connection = $call->getConnection();
+        $connection->beginTransaction();
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => Serializer::serializeWithCodec('avro', 'result'),
+            'payload_codec' => 'avro',
+        ]);
+        $this->assertSame('completed', $call->refresh()->status);
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $caller->id)->count());
+        $connection->rollBack();
+        $this->assertSame('started', $call->refresh()->status);
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $caller->id)->count());
+
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => Serializer::serializeWithCodec('avro', 'result'),
+            'payload_codec' => 'avro',
+        ]);
+        $task = WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole();
+        $connection->beginTransaction();
+        $this->assertTrue(
+            $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'uncommitted-worker')['claimed']
+        );
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+        $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+        $connection->rollBack();
+        $this->assertSame('completed', $call->refresh()->status);
+        $this->assertSame(TaskStatus::Ready, $task->refresh()->status);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+        $this->assertTrue(
+            $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'committed-worker')['claimed']
+        );
+        $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+    }
+
+    public function testSharedCallPreservesAsyncAdmissionAndResumesOnlyTheLaterWaitingBoundary(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $service = $this->createRun();
+        $caller = $this->createRun('caller');
+        $call = $this->createCall($service, [
+            'caller_workflow_instance_id' => $caller->workflow_instance_id,
+            'caller_workflow_run_id' => $caller->id,
+            'operation_mode' => 'sync',
+        ]);
+        $admission = $this->recordAdmission($caller, $call, [
+            'wait_for' => 'accepted',
+        ]);
+        $saved = $admission->refresh()
+            ->getAttributes();
+        $this->recordAdmission($caller, $call, [
+            'sequence' => 8,
+        ]);
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => Serializer::serializeWithCodec('avro', 'result'),
+            'payload_codec' => 'avro',
+        ]);
+        $task = WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole();
+        $this->assertSame(8, $task->payload['workflow_sequence']);
+        $this->assertTrue(
+            $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'waiting-worker')['claimed']
+        );
+        $this->assertSame($saved, $admission->refresh()->getAttributes());
+        $event = WorkflowHistoryEvent::query()->findOrFail($task->refresh()->payload['workflow_history_event_id']);
+        $this->assertSame(8, $event->payload['sequence']);
+    }
+
     public function testCompletionClosesOriginalCallAndRetainsSerializedResult(): void
     {
         $run = $this->createRun();
@@ -281,6 +608,26 @@ final class LinkedServiceCallCloserTest extends TestCase
         ], $view['result_envelope']);
     }
 
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function recordAdmission(
+        WorkflowRun $caller,
+        WorkflowServiceCall $call,
+        array $options = []
+    ): WorkflowHistoryEvent {
+        return WorkflowHistoryEvent::record($caller, HistoryEventType::ServiceCallStarted, array_replace([
+            'sequence' => 7,
+            'service_call_id' => $call->id,
+            'operation_mode' => 'sync',
+            'wait_for' => 'completed',
+            'payload_codec' => 'avro',
+            'service_call' => (new DefaultServiceControlPlane())->describeCall($call->id, [
+                'namespace' => 'service',
+            ]),
+        ], $options));
+    }
+
     private function registerWorkflowService(): void
     {
         $endpoint = WorkflowServiceEndpoint::query()->create([
@@ -303,10 +650,10 @@ final class LinkedServiceCallCloserTest extends TestCase
         ]);
     }
 
-    private function createRun(): WorkflowRun
+    private function createRun(string $namespace = 'service'): WorkflowRun
     {
         $instance = WorkflowInstance::query()->create([
-            'namespace' => 'service',
+            'namespace' => $namespace,
             'workflow_type' => 'nexus.service',
             'workflow_class' => 'nexus.service',
             'run_count' => 1,
@@ -314,7 +661,7 @@ final class LinkedServiceCallCloserTest extends TestCase
 
         return WorkflowRun::query()->create([
             'workflow_instance_id' => $instance->id,
-            'namespace' => 'service',
+            'namespace' => $namespace,
             'run_number' => 1,
             'workflow_type' => 'nexus.service',
             'workflow_class' => 'nexus.service',
@@ -349,5 +696,20 @@ final class LinkedServiceCallCloserTest extends TestCase
             'accepted_at' => now(),
             'started_at' => now(),
         ], $overrides));
+    }
+}
+
+#[Type('nexus-waiting-caller')]
+final class NexusWaitingCallerWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        $result = Workflow::serviceOperation('php-service', 'greeter', 'greet', ['world'], new ServiceOperationOptions(
+            targetNamespace: 'service',
+            modeOverride: 'sync',
+            waitFor: 'completed',
+        ));
+
+        return $result instanceof ServiceOperationResult ? $result->responsePayload : null;
     }
 }
