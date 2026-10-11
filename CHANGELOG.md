@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.5.12 - 2026-10-11
+
+- Enforce a Nexus service call's original deadline during admission, background
+  repair and terminal transitions. Duplicate requests, retries and catalog
+  edits preserve the original budget. Late target completion cannot replace
+  the caller's typed timeout.
+- Validate relative and absolute deadline policies and preserve UTC microsecond
+  precision. The migration backfills deadlines from original stored acceptance
+  times and rejects unsupported historical policies with the affected call ID.
+  Back up the database and replace old application and worker processes before
+  applying the migration.
+
 ## Unreleased
 
 - Check for the engine's tables on the configured `workflows.storage.connection`
