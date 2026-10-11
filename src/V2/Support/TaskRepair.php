@@ -118,6 +118,14 @@ final class TaskRepair
                 || TaskRepairPolicy::leaseExpired($task)
                 || self::replayBlocked($task))
             ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
+                // Manual repair must unblock replay before redispatching an
+                // older pending activity that cannot repair workflow code.
+                $leftReplayBlocked = self::replayBlocked($left);
+                $rightReplayBlocked = self::replayBlocked($right);
+                if ($leftReplayBlocked !== $rightReplayBlocked) {
+                    return $leftReplayBlocked ? -1 : 1;
+                }
+
                 $leftAvailableAt = $left->available_at?->getTimestampMs() ?? PHP_INT_MAX;
                 $rightAvailableAt = $right->available_at?->getTimestampMs() ?? PHP_INT_MAX;
 
