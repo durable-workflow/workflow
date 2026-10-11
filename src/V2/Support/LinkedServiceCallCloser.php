@@ -46,8 +46,16 @@ final class LinkedServiceCallCloser
     public static function closeForTerminalEvent(WorkflowRun $run, WorkflowHistoryEvent $event): void
     {
         $terminal = match ($event->event_type) {
-            HistoryEventType::WorkflowCompleted => [ServiceCallStatus::Completed, ServiceCallOutcome::Completed, 'completed_at'],
-            HistoryEventType::WorkflowCancelled => [ServiceCallStatus::Cancelled, ServiceCallOutcome::Cancelled, 'cancelled_at'],
+            HistoryEventType::WorkflowCompleted => [
+                ServiceCallStatus::Completed,
+                ServiceCallOutcome::Completed,
+                'completed_at',
+            ],
+            HistoryEventType::WorkflowCancelled => [
+                ServiceCallStatus::Cancelled,
+                ServiceCallOutcome::Cancelled,
+                'cancelled_at',
+            ],
             HistoryEventType::WorkflowFailed, HistoryEventType::WorkflowTerminated => [
                 ServiceCallStatus::Failed, ServiceCallOutcome::HandlerFailed, 'failed_at',
             ],
@@ -58,14 +66,17 @@ final class LinkedServiceCallCloser
         }
 
         ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
-            ->getModel()->getConnection()->transaction(static function () use ($run, $event, $terminal): void {
+            ->getModel()
+            ->getConnection()
+            ->transaction(static function () use ($run, $event, $terminal): void {
                 $calls = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->where('target_namespace', $run->namespace)
                     ->where('linked_workflow_instance_id', $run->workflow_instance_id)
                     ->where('linked_workflow_run_id', $run->id)
                     ->where('resolved_binding_kind', ServiceCallBindingKind::WorkflowRun->value)
                     ->whereIn('status', ['pending', 'accepted', 'started'])
-                    ->lockForUpdate()->get();
+                    ->lockForUpdate()
+                    ->get();
 
                 foreach ($calls as $call) {
                     if (! $call instanceof WorkflowServiceCall) {
@@ -87,12 +98,18 @@ final class LinkedServiceCallCloser
                         $codec = $payload['payload_codec'] ?? $run->output_payload_codec ?? $call->payload_codec;
                         $output = $payload['output'] ?? null;
                         if (is_string($output)) {
-                            $metadata['nexus_result'] = ['codec' => $codec, 'blob' => $output];
+                            $metadata['nexus_result'] = [
+                                'codec' => $codec,
+                                'blob' => $output,
+                            ];
                         } elseif (is_array($output) && is_array($output['external_storage'] ?? null)) {
                             $reference = $output['external_storage'];
                             $values['output_payload_reference'] = $reference['uri'];
                             unset($reference['uri']);
-                            $metadata['nexus_result'] = ['codec' => $codec, 'external_reference' => $reference];
+                            $metadata['nexus_result'] = [
+                                'codec' => $codec,
+                                'external_reference' => $reference,
+                            ];
                         }
                         $values['payload_codec'] = $codec;
                     } else {
@@ -107,12 +124,15 @@ final class LinkedServiceCallCloser
                         ];
                     }
                     $values['metadata'] = $metadata;
-                    $call->forceFill($values)->save();
+                    $call->forceFill($values)
+                        ->save();
                 }
             });
     }
 
-    /** @return list<string> */
+    /**
+     * @return list<string>
+     */
     private static function terminalEventTypes(): array
     {
         return [

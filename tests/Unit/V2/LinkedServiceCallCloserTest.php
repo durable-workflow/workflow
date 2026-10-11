@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Mockery;
+use RuntimeException;
 use Tests\TestCase;
-use Workflow\Serializer;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ServiceCallBindingKind;
@@ -13,7 +16,10 @@ use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 
@@ -23,7 +29,9 @@ final class LinkedServiceCallCloserTest extends TestCase
     {
         $run = $this->createRun();
         $call = $this->createCall($run);
-        $blob = Serializer::serializeWithCodec('avro', ['greeting' => 'hello world']);
+        $blob = Serializer::serializeWithCodec('avro', [
+            'greeting' => 'hello world',
+        ]);
         $event = WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
             'output' => $blob,
             'payload_codec' => 'avro',
@@ -33,13 +41,21 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertSame('completed', $call->status);
         $this->assertSame(ServiceCallOutcome::Completed, $call->outcome);
         $this->assertTrue($event->recorded_at->equalTo($call->completed_at));
-        $this->assertSame(['codec' => 'avro', 'blob' => $blob], $call->metadata['nexus_result']);
+        $this->assertSame([
+            'codec' => 'avro',
+            'blob' => $blob,
+        ], $call->metadata['nexus_result']);
         $this->assertSame('caller', $call->caller_namespace);
         $this->assertSame($run->id, $call->linked_workflow_run_id);
 
         WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->delete();
-        $view = (new DefaultServiceControlPlane())->describeCall($call->id, ['namespace' => 'service']);
-        $this->assertSame(['codec' => 'avro', 'blob' => $blob], $view['result_envelope']);
+        $view = (new DefaultServiceControlPlane())->describeCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSame([
+            'codec' => 'avro',
+            'blob' => $blob,
+        ], $view['result_envelope']);
         $this->assertSame('completed', $view['status']);
     }
 
@@ -65,8 +81,89 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertTrue($first->recorded_at->equalTo($call->completed_at));
         $this->assertSame(0, (new DefaultServiceControlPlane())->describeCall(
             $call->id,
-            ['namespace' => 'service'],
+            [
+                'namespace' => 'service',
+            ],
         )['retry_attempt_count']);
+    }
+
+    public function testServiceThatFinishesDuringAdmissionReturnsItsResultAndKeepsTheAttempt(): void
+    {
+        $run = $this->createRun();
+        $blob = Serializer::serializeWithCodec('avro', 'finished during admission');
+        $workflow = Mockery::mock(WorkflowControlPlane::class);
+        $workflow->shouldReceive('start')
+            ->once()
+            ->andReturnUsing(static function () use ($run, $blob): array {
+                WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+                    'output' => $blob,
+                    'payload_codec' => 'avro',
+                ]);
+
+                return [
+                    'started' => true,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                ];
+            });
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'service',
+            'endpoint_name' => 'php-service',
+        ]);
+        $service = WorkflowService::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'greeter',
+        ]);
+        WorkflowServiceOperation::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'greet',
+            'operation_mode' => 'async',
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowRun->value,
+            'handler_target_reference' => 'nexus.service',
+        ]);
+        $result = (new DefaultServiceControlPlane($workflow))->execute('php-service', 'greeter', 'greet', [
+            'namespace' => 'service',
+            'caller_namespace' => 'caller',
+            'payload_codec' => 'avro',
+            'payload_blob' => Serializer::serializeWithCodec('avro', ['world']),
+        ]);
+
+        $this->assertSame('completed', $result['status']);
+        $this->assertSame([
+            'codec' => 'avro',
+            'blob' => $blob,
+        ], $result['result_envelope']);
+        $this->assertSame($run->id, $result['linked_workflow_run_id']);
+        $this->assertSame(1, $result['retry_attempt_count']);
+        $this->assertSame('completed', $result['service_call_attempts'][0]['status']);
+    }
+
+    public function testRolledBackTerminalHistoryCannotLeaveACompletedCall(): void
+    {
+        $run = $this->createRun();
+        $call = $this->createCall($run);
+
+        try {
+            $run->getConnection()
+                ->transaction(static function () use ($run): void {
+                    WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+                        'output' => Serializer::serializeWithCodec('avro', 'uncommitted result'),
+                        'payload_codec' => 'avro',
+                    ]);
+                    throw new RuntimeException('abort completion transaction');
+                });
+            $this->fail('The surrounding transaction must abort.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('abort completion transaction', $exception->getMessage());
+        }
+
+        $this->assertSame('started', $call->refresh()->status);
+        $this->assertNull($call->completed_at);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, $run->refresh()->last_history_sequence);
     }
 
     public function testFailureCancellationAndTerminationCloseWithoutLosingTypedReason(): void
@@ -87,7 +184,9 @@ final class LinkedServiceCallCloserTest extends TestCase
             $this->assertSame($status, $call->status);
             $this->assertSame($outcome, $call->outcome);
             $this->assertTrue($event->recorded_at->equalTo($call->{$timestamp}));
-            $view = (new DefaultServiceControlPlane())->describeCall($call->id, ['namespace' => 'service']);
+            $view = (new DefaultServiceControlPlane())->describeCall($call->id, [
+                'namespace' => 'service',
+            ]);
             $this->assertSame('ServiceFailure', $view['error_type']);
             $this->assertSame('service stopped', $view['failure_message']);
             $this->assertArrayNotHasKey('result_envelope', $view);
@@ -99,10 +198,18 @@ final class LinkedServiceCallCloserTest extends TestCase
         $run = $this->createRun();
         $another = $this->createRun();
         $calls = [
-            $this->createCall($run, ['target_namespace' => 'another-namespace']),
-            $this->createCall($run, ['linked_workflow_run_id' => $another->id]),
-            $this->createCall($run, ['linked_workflow_instance_id' => $another->workflow_instance_id]),
-            $this->createCall($run, ['resolved_binding_kind' => ServiceCallBindingKind::WorkflowUpdate->value]),
+            $this->createCall($run, [
+                'target_namespace' => 'another-namespace',
+            ]),
+            $this->createCall($run, [
+                'linked_workflow_run_id' => $another->id,
+            ]),
+            $this->createCall($run, [
+                'linked_workflow_instance_id' => $another->workflow_instance_id,
+            ]),
+            $this->createCall($run, [
+                'resolved_binding_kind' => ServiceCallBindingKind::WorkflowUpdate->value,
+            ]),
         ];
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
             'output' => Serializer::serializeWithCodec('avro', 'done'),
@@ -128,7 +235,10 @@ final class LinkedServiceCallCloserTest extends TestCase
             'codec' => 'avro',
         ];
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
-            'output' => ['codec' => 'avro', 'external_storage' => $reference],
+            'output' => [
+                'codec' => 'avro',
+                'external_storage' => $reference,
+            ],
             'payload_codec' => 'avro',
         ]);
 
@@ -137,8 +247,13 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertArrayNotHasKey('uri', $call->metadata['nexus_result']['external_reference']);
         $this->assertSame($reference['sha256'], $call->metadata['nexus_result']['external_reference']['sha256']);
         WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->delete();
-        $view = (new DefaultServiceControlPlane())->describeCall($call->id, ['namespace' => 'service']);
-        $this->assertSame(['codec' => 'avro', 'external_storage' => $reference], $view['result_envelope']);
+        $view = (new DefaultServiceControlPlane())->describeCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSameJsonObject([
+            'codec' => 'avro',
+            'external_storage' => $reference,
+        ], $view['result_envelope']);
     }
 
     private function createRun(): WorkflowRun
@@ -165,7 +280,9 @@ final class LinkedServiceCallCloserTest extends TestCase
         ]);
     }
 
-    /** @param array<string, mixed> $overrides */
+    /**
+     * @param array<string, mixed> $overrides
+     */
     private function createCall(WorkflowRun $run, array $overrides = []): WorkflowServiceCall
     {
         return WorkflowServiceCall::query()->create(array_merge([

@@ -375,7 +375,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             } elseif (is_array($result['external_reference'] ?? null) && is_string($call->output_payload_reference)) {
                 $serialized['result_envelope'] = [
                     'codec' => $result['codec'],
-                    'external_storage' => $result['external_reference'] + ['uri' => $call->output_payload_reference],
+                    'external_storage' => $result['external_reference'] + [
+                        'uri' => $call->output_payload_reference,
+                    ],
                 ];
             }
         }
@@ -979,28 +981,30 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function recordServiceCallAttempt(WorkflowServiceCall $call, array $attempt): void
     {
-        $call->getConnection()->transaction(function () use ($call, $attempt): void {
-            /** @var WorkflowServiceCall $locked */
-            $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
-                ->lockForUpdate()->findOrFail($call->id);
-            $metadata = $this->arrayValue($locked->metadata);
-            $attempts = isset($metadata['service_call_attempts']) && is_array($metadata['service_call_attempts'])
-                ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
-                : [];
-            $attempts[] = $attempt;
-            $metadata['service_call_attempts'] = $attempts;
-            $metadata['retry_attempt_count'] = count($attempts);
-            $locked->metadata = $metadata;
+        $call->getConnection()
+            ->transaction(function () use ($call, $attempt): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                $metadata = $this->arrayValue($locked->metadata);
+                $attempts = isset($metadata['service_call_attempts']) && is_array($metadata['service_call_attempts'])
+                    ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
+                    : [];
+                $attempts[] = $attempt;
+                $metadata['service_call_attempts'] = $attempts;
+                $metadata['retry_attempt_count'] = count($attempts);
+                $locked->metadata = $metadata;
 
-            if ($this->isFailed($locked)) {
-                $outcomeMetadata = $this->arrayValue($locked->outcome_metadata);
-                $outcomeMetadata['service_call_attempts'] = $attempts;
-                $outcomeMetadata['retry_attempt_count'] = count($attempts);
-                $locked->outcome_metadata = $outcomeMetadata;
-            }
+                if ($this->isFailed($locked)) {
+                    $outcomeMetadata = $this->arrayValue($locked->outcome_metadata);
+                    $outcomeMetadata['service_call_attempts'] = $attempts;
+                    $outcomeMetadata['retry_attempt_count'] = count($attempts);
+                    $locked->outcome_metadata = $outcomeMetadata;
+                }
 
-            $locked->save();
-        });
+                $locked->save();
+            });
         $call->refresh();
     }
 
