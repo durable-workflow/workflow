@@ -43,6 +43,22 @@ final class ServiceExecutionContractTest extends TestCase
         $this->assertTrue($method->isStatic());
     }
 
+    public function testManifestPublishesTheOriginalCallDeadlineContract(): void
+    {
+        $call = ServiceExecutionContract::manifest()['durable_records']['calls'];
+        $this->assertSame(['accepted_at', 'call_deadline_at'], $call['deadline_fields']);
+        $deadline = $call['deadline_contract'];
+        $this->assertSame(['timeout_seconds', 'deadline_at'], $deadline['policy_forms']);
+        $this->assertSame([1, 2_147_483_647], $deadline['timeout_seconds_range']);
+        $this->assertTrue($deadline['resolved_deadline_immutable']);
+        $this->assertTrue($deadline['null_policy_inherits_linked_target']);
+        $this->assertFalse($deadline['api_poll_required_for_expiry']);
+        $this->assertTrue($deadline['expiry_wins_at_boundary']);
+        $this->assertSame('failed', $deadline['terminal_status']);
+        $this->assertSame('timed_out', $deadline['terminal_outcome']);
+        $this->assertTrue($deadline['target_cancellation_is_separate']);
+    }
+
     public function testControlPlaneNamesServiceControlPlaneInterfaceAndMethods(): void
     {
         $controlPlane = ServiceExecutionContract::manifest()['control_plane'];

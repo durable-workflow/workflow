@@ -37,7 +37,10 @@ interface MatchingRole
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_candidates: int,
      *     activity_timeouts_enforced: int,
-     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>,
+     *     service_call_timeout_candidates?: int,
+     *     service_call_timeouts_enforced?: int,
+     *     service_call_timeout_failures?: list<array{call_id: string, message: string}>
      * }
      */
     public function runPass(

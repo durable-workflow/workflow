@@ -85,6 +85,7 @@ class V2RepairPassCommand extends Command
 
         return $report['existing_task_failures'] === []
             && $report['missing_run_failures'] === []
+            && ($report['service_call_timeout_failures'] ?? []) === []
             ? self::SUCCESS
             : self::FAILURE;
     }
@@ -169,7 +170,10 @@ class V2RepairPassCommand extends Command
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
-     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>,
+     *     service_call_timeout_candidates?: int,
+     *     service_call_timeouts_enforced?: int,
+     *     service_call_timeout_failures?: list<array{call_id: string, message: string}>
      * } $report
      */
     private function renderHumanReport(array $report): void
@@ -222,6 +226,16 @@ class V2RepairPassCommand extends Command
                 $failure['execution_id'],
                 $failure['message'],
             ));
+        }
+        $this->line(sprintf(
+            'Service call timeouts: %d enforced from %d candidates.',
+            $report['service_call_timeouts_enforced'] ?? 0,
+            $report['service_call_timeout_candidates'] ?? 0
+        ));
+        foreach (($report['service_call_timeout_failures'] ?? []) as $failure) {
+            $this->error(
+                sprintf('Service call [%s] failed timeout enforcement: %s', $failure['call_id'], $failure['message'])
+            );
         }
     }
 

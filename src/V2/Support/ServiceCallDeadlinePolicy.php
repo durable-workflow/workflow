@@ -31,7 +31,9 @@ final class ServiceCallDeadlinePolicy
                 $value,
                 $parts,
             ) !== 1) {
-                throw new InvalidArgumentException('Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits.');
+                throw new InvalidArgumentException(
+                    'Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits.'
+                );
             }
             $parsed = DateTimeImmutable::createFromFormat(
                 '!Y-m-d\TH:i:s.uP',
@@ -44,11 +46,15 @@ final class ServiceCallDeadlinePolicy
             }
             $deadline = CarbonImmutable::instance($parsed)->utc();
         } else {
-            throw new InvalidArgumentException('Service deadline_policy must contain exactly timeout_seconds or deadline_at.');
+            throw new InvalidArgumentException(
+                'Service deadline_policy must contain exactly timeout_seconds or deadline_at.'
+            );
         }
 
         if ($deadline->year < 1970 || $deadline->year > 9999) {
-            throw new InvalidArgumentException('Service call deadlines must resolve within UTC years 1970 through 9999.');
+            throw new InvalidArgumentException(
+                'Service call deadlines must resolve within UTC years 1970 through 9999.'
+            );
         }
 
         return $deadline;

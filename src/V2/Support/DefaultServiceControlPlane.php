@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Support\Str;
 use Throwable;
@@ -124,17 +125,19 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ?? ($call instanceof WorkflowServiceCall ? $this->stringFrom($call->caller_namespace) : null)
             ?? $this->configuredNamespace();
 
-        $this->stampPending(
-            $call,
-            $namespace,
-            $callerNamespace,
-            $endpointKey,
-            $serviceKey,
-            $operationKey,
-            $principal,
-            $options,
-        );
-        $call->save();
+        if ($call->accepted_at === null) {
+            $this->stampPending(
+                $call,
+                $namespace,
+                $callerNamespace,
+                $endpointKey,
+                $serviceKey,
+                $operationKey,
+                $principal,
+                $options,
+            );
+            $call->save();
+        }
 
         $endpoint = $this->endpoint($namespace, $endpointKey);
 
@@ -219,6 +222,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         $this->markAccepted($call, $boundaryRequest, $decision);
 
+        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
+            return $this->serialize($call) + [
+                'accepted' => true,
+                'idempotent_replay' => false,
+                'reason' => $call->outcome_reason,
+            ];
+        }
+
         if (($options['dispatch_handler'] ?? true) === false) {
             return $this->serialize($call) + [
                 'accepted' => true,
@@ -279,7 +290,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        if ($this->isTerminal($call)) {
+        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
             return $this->serialize($call) + [
                 'accepted' => false,
                 'reason' => 'service_call_terminal',
@@ -309,23 +320,41 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $metadata['linked_cancel'] = $this->publicResult($result);
         }
 
-        $now = now();
-        $call->status = ServiceCallStatus::Cancelled->value;
-        $call->outcome = ServiceCallOutcome::Cancelled->value;
-        $call->outcome_category = ServiceCallOutcome::Cancelled->category();
-        $call->outcome_reason = 'cancelled_by_request';
-        $call->outcome_message = $this->stringOption($options, 'reason');
-        $call->outcome_metadata = [
-            'failure_reason' => ServiceCallFailureReason::Cancellation->value,
-        ];
-        $call->metadata = $metadata === [] ? null : $metadata;
-        $call->cancelled_at ??= $now;
-        $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
-        $call->save();
+        $cancelled = $call->getConnection()
+            ->transaction(function () use ($call, $metadata, $options): bool {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if (ServiceCallDeadline::expireLocked($locked, now())) {
+                    return false;
+                }
+                if ($this->isTerminal($locked)) {
+                    return $locked->status === ServiceCallStatus::Cancelled->value;
+                }
+                $call = $locked;
+                $now = now();
+                $call->status = ServiceCallStatus::Cancelled->value;
+                $call->outcome = ServiceCallOutcome::Cancelled->value;
+                $call->outcome_category = ServiceCallOutcome::Cancelled->category();
+                $call->outcome_reason = 'cancelled_by_request';
+                $call->outcome_message = $this->stringOption($options, 'reason');
+                $call->outcome_metadata = [
+                    'failure_reason' => ServiceCallFailureReason::Cancellation->value,
+                ];
+                $call->metadata = $metadata === [] ? null : $metadata;
+                $call->cancelled_at ??= $now;
+                $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
+                $call->save();
+                ServiceCallWorkflowDelivery::enqueue($call);
+
+                return true;
+            });
+        $call->refresh();
 
         return $this->serialize($call) + [
-            'accepted' => true,
-            'reason' => null,
+            'accepted' => $cancelled,
+            'reason' => $cancelled ? null : 'service_call_terminal',
         ];
     }
 
@@ -360,6 +389,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'service_call_attempts' => $this->serviceCallAttempts($call),
             'retry_attempt_count' => count($this->serviceCallAttempts($call)),
             'accepted_at' => $this->timestamp($call->accepted_at),
+            'call_deadline_at' => $call->call_deadline_at?->copy()
+                ->utc()
+                ->format('Y-m-d\TH:i:s.u\Z'),
             'started_at' => $this->timestamp($call->started_at),
             'completed_at' => $this->timestamp($call->completed_at),
             'failed_at' => $this->timestamp($call->failed_at),
@@ -420,6 +452,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'service_call_attempts' => [],
             'retry_attempt_count' => 0,
             'accepted_at' => null,
+            'call_deadline_at' => null,
             'started_at' => null,
             'completed_at' => null,
             'failed_at' => null,
@@ -628,7 +661,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 ->value;
         $call->resolved_binding_kind = $resolvedBindingKind ?? self::UNRESOLVED;
         $call->resolved_target_reference = $operation->handler_target_reference;
-        $call->deadline_policy = $operation->deadline_policy;
+        if ($call->accepted_at === null) {
+            $call->deadline_policy = $operation->deadline_policy;
+        }
+        ServiceCallDeadlinePolicy::resolve($call->deadline_policy, $call->accepted_at ?? now());
         $call->idempotency_policy = $operation->idempotency_policy;
         $call->cancellation_policy = $operation->cancellation_policy;
         $call->retry_policy = $operation->retry_policy;
@@ -675,47 +711,51 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     private function markResolutionFailure(WorkflowServiceCall $call, string $failedAt): void
     {
-        $message = sprintf('Service contract component [%s] did not resolve.', $failedAt);
+        $this->guardCallOutcome($call, function (WorkflowServiceCall $call) use ($failedAt): void {
+            $message = sprintf('Service contract component [%s] did not resolve.', $failedAt);
 
-        $call->status = ServiceCallStatus::Failed->value;
-        $call->outcome = ServiceCallOutcome::RejectedNotFound->value;
-        $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
-        $call->outcome_reason = 'unknown_target';
-        $call->outcome_message = $message;
-        $call->resolved_target_reference = null;
-        $call->outcome_metadata = [
-            'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
-            'resolution_failed_at' => $failedAt,
-        ];
-        $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
-        $call->failure_message = $message;
-        $call->failed_at ??= now();
-        $call->save();
+            $call->status = ServiceCallStatus::Failed->value;
+            $call->outcome = ServiceCallOutcome::RejectedNotFound->value;
+            $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
+            $call->outcome_reason = 'unknown_target';
+            $call->outcome_message = $message;
+            $call->resolved_target_reference = null;
+            $call->outcome_metadata = [
+                'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
+                'resolution_failed_at' => $failedAt,
+            ];
+            $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
+            $call->failure_message = $message;
+            $call->failed_at ??= now();
+            $call->save();
+        });
     }
 
     private function markUnknownBindingKind(WorkflowServiceCall $call, WorkflowServiceOperation $operation): void
     {
-        $message = sprintf(
-            'Service operation [%s] has unknown handler binding kind [%s].',
-            $operation->operation_name,
-            $operation->handler_binding_kind,
-        );
+        $this->guardCallOutcome($call, function (WorkflowServiceCall $call) use ($operation): void {
+            $message = sprintf(
+                'Service operation [%s] has unknown handler binding kind [%s].',
+                $operation->operation_name,
+                $operation->handler_binding_kind,
+            );
 
-        $call->status = ServiceCallStatus::Failed->value;
-        $call->outcome = ServiceCallOutcome::RejectedNotFound->value;
-        $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
-        $call->outcome_reason = 'unknown_binding_kind';
-        $call->outcome_message = $message;
-        $call->resolved_target_reference = null;
-        $call->outcome_metadata = [
-            'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
-            'resolution_failed_at' => 'handler_binding_kind',
-            'handler_binding_kind' => (string) $operation->handler_binding_kind,
-        ];
-        $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
-        $call->failure_message = $message;
-        $call->failed_at ??= now();
-        $call->save();
+            $call->status = ServiceCallStatus::Failed->value;
+            $call->outcome = ServiceCallOutcome::RejectedNotFound->value;
+            $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
+            $call->outcome_reason = 'unknown_binding_kind';
+            $call->outcome_message = $message;
+            $call->resolved_target_reference = null;
+            $call->outcome_metadata = [
+                'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
+                'resolution_failed_at' => 'handler_binding_kind',
+                'handler_binding_kind' => (string) $operation->handler_binding_kind,
+            ];
+            $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
+            $call->failure_message = $message;
+            $call->failed_at ??= now();
+            $call->save();
+        });
     }
 
     private function markBoundaryRejection(
@@ -723,19 +763,43 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ServiceBoundaryRequest $request,
         ServiceBoundaryDecision $decision,
     ): void {
-        $call->status = ServiceCallStatus::Failed->value;
-        $call->outcome = $decision->outcome->value;
-        $call->outcome_category = $decision->outcome->category();
-        $call->outcome_reason = $decision->reason;
-        $call->outcome_message = $decision->message;
-        $call->outcome_metadata = $decision->metadata === [] ? null : $decision->metadata;
-        $call->policy_name = $decision->policyName;
-        $call->retry_after_seconds = $decision->retryAfterSeconds;
-        $call->boundary_policy = $request->effectiveBoundaryPolicy() ?: null;
-        $call->metadata = $this->mergeMetadata($call->metadata, $decision->metadata);
-        $call->failure_message = $decision->message;
-        $call->failed_at ??= now();
-        $call->save();
+        $this->guardCallOutcome($call, function (WorkflowServiceCall $call) use ($request, $decision): void {
+            $call->status = ServiceCallStatus::Failed->value;
+            $call->outcome = $decision->outcome->value;
+            $call->outcome_category = $decision->outcome->category();
+            $call->outcome_reason = $decision->reason;
+            $call->outcome_message = $decision->message;
+            $call->outcome_metadata = $decision->metadata === [] ? null : $decision->metadata;
+            $call->policy_name = $decision->policyName;
+            $call->retry_after_seconds = $decision->retryAfterSeconds;
+            $call->boundary_policy = $request->effectiveBoundaryPolicy() ?: null;
+            $call->metadata = $this->mergeMetadata($call->metadata, $decision->metadata);
+            $call->failure_message = $decision->message;
+            $call->failed_at ??= now();
+            $call->save();
+        });
+    }
+
+    /**
+     * @param callable(WorkflowServiceCall): void $transition
+     */
+    private function guardCallOutcome(WorkflowServiceCall $call, callable $transition): void
+    {
+        $call->getConnection()
+            ->transaction(static function () use ($call, $transition): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if (ServiceCallDeadline::expireLocked($locked, now())
+                    || in_array($locked->status, ['completed', 'failed', 'cancelled'], true)) {
+                    return;
+                }
+                $locked->forceFill($call->getDirty());
+                $transition($locked);
+                ServiceCallWorkflowDelivery::enqueue($locked);
+            });
+        $call->refresh();
     }
 
     private function markAccepted(
@@ -743,18 +807,38 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ServiceBoundaryRequest $request,
         ServiceBoundaryDecision $decision,
     ): void {
-        $call->status = ServiceCallStatus::Accepted->value;
-        $call->outcome = ServiceCallOutcome::Accepted->value;
-        $call->outcome_category = ServiceCallOutcome::Accepted->category();
-        $call->outcome_reason = $decision->reason;
-        $call->outcome_message = $decision->message;
-        $call->outcome_metadata = $decision->metadata === [] ? null : $decision->metadata;
-        $call->policy_name = $decision->policyName;
-        $call->retry_after_seconds = $decision->retryAfterSeconds;
-        $call->boundary_policy = $request->effectiveBoundaryPolicy() ?: null;
-        $call->metadata = $this->mergeMetadata($call->metadata, $decision->metadata);
-        $call->accepted_at ??= now();
-        $call->save();
+        $call->getConnection()
+            ->transaction(function () use ($call, $request, $decision): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if ($this->isTerminal($locked)) {
+                    $call->refresh();
+                    return;
+                }
+                if ($locked->accepted_at !== null) {
+                    $call->accepted_at = $locked->accepted_at;
+                    $call->deadline_policy = $locked->deadline_policy;
+                    $call->call_deadline_at = $locked->call_deadline_at;
+                }
+                $call->status = ServiceCallStatus::Accepted->value;
+                $call->outcome = ServiceCallOutcome::Accepted->value;
+                $call->outcome_category = ServiceCallOutcome::Accepted->category();
+                $call->outcome_reason = $decision->reason;
+                $call->outcome_message = $decision->message;
+                $call->outcome_metadata = $decision->metadata === [] ? null : $decision->metadata;
+                $call->policy_name = $decision->policyName;
+                $call->retry_after_seconds = $decision->retryAfterSeconds;
+                $call->boundary_policy = $request->effectiveBoundaryPolicy() ?: null;
+                $call->metadata = $this->mergeMetadata($call->metadata, $decision->metadata);
+                $call->accepted_at ??= now();
+                $call->call_deadline_at ??= ServiceCallDeadlinePolicy::resolve(
+                    $call->deadline_policy,
+                    $call->accepted_at
+                );
+                $call->save();
+            });
     }
 
     /**
@@ -771,6 +855,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $result = null;
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
+                return [
+                    'accepted' => $this->acceptedShape($call),
+                    'reason' => $call->outcome_reason,
+                    'retry_scheduled' => false,
+                ];
+            }
             $attemptStartedAt = now();
             $result = $this->dispatchHandlerAttempt($call, $operation, $request, $options, $attempt, $maxAttempts);
             $call->refresh();
@@ -1604,6 +1695,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
+                ServiceCallDeadline::expireLocked($locked, now());
                 $locked->resolved_binding_kind ??= $bindingKind;
                 if (! $this->isTerminal($locked)
                     || ($locked->linked_workflow_instance_id === null
@@ -1646,23 +1738,44 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
     ): void {
-        $call->status = ServiceCallStatus::Completed->value;
-        $call->outcome = ServiceCallOutcome::Completed->value;
-        $call->outcome_category = ServiceCallOutcome::Completed->category();
-        $call->outcome_reason = 'completed';
-        $call->outcome_message = null;
-        $call->outcome_metadata = null;
-        $call->resolved_binding_kind = $bindingKind;
-        $call->resolved_target_reference = $targetReference;
-        $call->linked_workflow_instance_id = $instanceId;
-        $call->linked_workflow_run_id = $runId;
-        $call->linked_workflow_update_id = $updateId;
-        $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
-        $call->started_at ??= now();
-        $call->completed_at ??= now();
-        $call->failed_at = null;
-        $call->failure_message = null;
-        $call->save();
+        $call->getConnection()
+            ->transaction(function () use (
+                $call,
+                $bindingKind,
+                $targetReference,
+                $instanceId,
+                $runId,
+                $updateId,
+                $metadata,
+            ): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if (ServiceCallDeadline::expireLocked($locked, now()) || $this->isTerminal($locked)) {
+                    return;
+                }
+                $call = $locked;
+                $call->status = ServiceCallStatus::Completed->value;
+                $call->outcome = ServiceCallOutcome::Completed->value;
+                $call->outcome_category = ServiceCallOutcome::Completed->category();
+                $call->outcome_reason = 'completed';
+                $call->outcome_message = null;
+                $call->outcome_metadata = null;
+                $call->resolved_binding_kind = $bindingKind;
+                $call->resolved_target_reference = $targetReference;
+                $call->linked_workflow_instance_id = $instanceId;
+                $call->linked_workflow_run_id = $runId;
+                $call->linked_workflow_update_id = $updateId;
+                $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
+                $call->started_at ??= now();
+                $call->completed_at ??= now();
+                $call->failed_at = null;
+                $call->failure_message = null;
+                $call->save();
+                ServiceCallWorkflowDelivery::enqueue($call);
+            });
+        $call->refresh();
     }
 
     /**
@@ -1677,6 +1790,58 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         array $metadata = [],
         int $attempt = 1,
         int $maxAttempts = 1,
+    ): array {
+        $result = $call->getConnection()
+            ->transaction(function () use (
+                $call,
+                $request,
+                $reason,
+                $message,
+                $metadata,
+                $attempt,
+                $maxAttempts
+            ): array {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if (ServiceCallDeadline::expireLocked($locked, now()) || $this->isTerminal($locked)) {
+                    return [
+                        'accepted' => false,
+                        'kind' => $locked->resolved_binding_kind,
+                        'reason' => $locked->outcome_reason,
+                        'message' => $locked->failure_message,
+                        'retry_scheduled' => false,
+                    ];
+                }
+
+                return $this->markHandlerFailureAfterFence(
+                    $locked,
+                    $request,
+                    $reason,
+                    $message,
+                    $metadata,
+                    $attempt,
+                    $maxAttempts
+                );
+            });
+        $call->refresh();
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $metadata
+     * @return array<string, mixed>
+     */
+    private function markHandlerFailureAfterFence(
+        WorkflowServiceCall $call,
+        ServiceBoundaryRequest $request,
+        string $reason,
+        ?string $message,
+        array $metadata,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $failureType = $this->failureTypeFrom($metadata) ?? $reason;
         $typedFailureMetadata = [
@@ -2215,6 +2380,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     private function timestamp(mixed $value): ?string
     {
-        return $value instanceof DateTimeInterface ? $value->format('c') : null;
+        return $value instanceof DateTimeInterface ? CarbonImmutable::instance($value)->utc()->format(
+            'Y-m-d\TH:i:s.u\Z'
+        ) : null;
     }
 }

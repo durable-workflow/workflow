@@ -220,6 +220,19 @@ final class ServiceExecutionContract
                     'retry_policy',
                     'boundary_policy',
                 ],
+                'deadline_fields' => ['accepted_at', 'call_deadline_at'],
+                'deadline_contract' => [
+                    'policy_forms' => ['timeout_seconds', 'deadline_at'],
+                    'timeout_seconds_range' => [1, 2_147_483_647],
+                    'resolved_timestamp_format' => 'UTC RFC3339 with six fractional digits and Z',
+                    'resolved_deadline_immutable' => true,
+                    'null_policy_inherits_linked_target' => true,
+                    'api_poll_required_for_expiry' => false,
+                    'expiry_wins_at_boundary' => true,
+                    'terminal_status' => ServiceCallStatus::Failed->value,
+                    'terminal_outcome' => ServiceCallOutcome::TimedOut->value,
+                    'target_cancellation_is_separate' => true,
+                ],
             ],
         ];
     }

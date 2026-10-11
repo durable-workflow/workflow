@@ -16,6 +16,9 @@ final class LinkedServiceCallCloser
 {
     public static function reconcile(WorkflowServiceCall $call): void
     {
+        if (in_array($call->status, ['pending', 'accepted', 'started'], true)) {
+            ServiceCallDeadline::expire($call);
+        }
         ServiceCallWorkflowDelivery::enqueue($call);
         if ($call->resolved_binding_kind !== ServiceCallBindingKind::WorkflowRun->value
             || ! in_array($call->status, ['pending', 'accepted', 'started'], true)
@@ -81,6 +84,9 @@ final class LinkedServiceCallCloser
 
                 foreach ($calls as $call) {
                     if (! $call instanceof WorkflowServiceCall) {
+                        continue;
+                    }
+                    if (ServiceCallDeadline::expireLocked($call, now())) {
                         continue;
                     }
                     [$status, $outcome, $timestamp] = $terminal;
