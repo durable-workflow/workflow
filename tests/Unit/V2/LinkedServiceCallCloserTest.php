@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Support\Carbon;
 use Mockery;
 use RuntimeException;
 use Tests\TestCase;
@@ -29,13 +30,222 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\LinkedServiceCallCloser;
+use Workflow\V2\Support\ServiceCallDeadline;
+use Workflow\V2\Support\ServiceCallView;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
 final class LinkedServiceCallCloserTest extends TestCase
 {
+    public function testRepairExpiresTheOriginalCallWithoutAnApiReadAndReplacementReplaysOneFailure(): void
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        Carbon::setTestNow('2026-10-11T10:00:00.123456Z');
+        try {
+            $service = $this->createRun();
+            $caller = $this->createRun('caller');
+            $deadline = now()
+                ->addSecond();
+            $call = $this->createCall($service, [
+                'caller_workflow_instance_id' => $caller->workflow_instance_id,
+                'caller_workflow_run_id' => $caller->id,
+                'operation_mode' => 'sync',
+                'deadline_policy' => [
+                    'timeout_seconds' => 1,
+                ],
+                'call_deadline_at' => $deadline,
+            ]);
+            $this->recordAdmission($caller, $call);
+            Carbon::setTestNow($deadline);
+            $report = TaskWatchdog::runPass('sync', 'default', runIds: [$caller->id]);
+            $this->assertSame(1, $report['service_call_timeouts_enforced']);
+            $this->assertSame([], $report['service_call_timeout_failures']);
+            $this->assertSame('failed', $call->refresh()->status);
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
+            $this->assertSame('2026-10-11T10:00:01.123456Z', ServiceCallView::listItem($call)['call_deadline_at']);
+            $task = WorkflowTask::query()->where('payload->service_call_id', $call->id)->sole();
+            $first = $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'first-worker');
+            $this->assertTrue($first['claimed']);
+            $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallFailed->value)->sole();
+            $this->assertSame($call->id, $event->payload['service_call_id']);
+            $this->assertSame(7, $event->payload['sequence']);
+            $this->assertSame('timed_out', $event->payload['service_call']['outcome']);
+            $original = $event->getAttributes();
+            // Recover the abandoned caller claim without an application API poll.
+            $task->refresh()
+                ->forceFill([
+                    'lease_expires_at' => now()
+                        ->subSecond(),
+                ])->save();
+            TaskWatchdog::runPass('sync', 'default', runIds: [$caller->id]);
+            $second = $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'replacement-worker');
+            $this->assertTrue($second['claimed']);
+            $this->assertSame($original, $event->refresh()->getAttributes());
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallFailed->value)->count());
+            WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+                'output' => Serializer::serializeWithCodec('avro', 'late'),
+                'payload_codec' => 'avro',
+            ]);
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->refresh()->outcome);
+            $this->assertNull($call->completed_at);
+            $this->assertArrayNotHasKey('nexus_result', $call->metadata);
+            $this->assertSame(1, WorkflowTask::query()->where('payload->service_call_id', $call->id)->count());
+            $this->assertFalse(ServiceCallDeadline::expire($call));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testExpiryWinsWhenLinkedCompletionArrivesAtTheOriginalBoundary(): void
+    {
+        Carbon::setTestNow('2026-10-11T10:00:00.123456Z');
+        try {
+            $service = $this->createRun();
+            $call = $this->createCall($service, [
+                'deadline_policy' => [
+                    'timeout_seconds' => 1,
+                ],
+                'call_deadline_at' => now()
+                    ->addSecond(),
+            ]);
+            Carbon::setTestNow(now()->addSecond());
+            WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+                'output' => Serializer::serializeWithCodec('avro', 'boundary'),
+                'payload_codec' => 'avro',
+            ]);
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->refresh()->outcome);
+            $this->assertNull($call->completed_at);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $service->id)
+                ->where('event_type', HistoryEventType::WorkflowCompleted->value)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testACompletionCommittedBeforeDeadlineIsNotReplacedByLaterExpiry(): void
+    {
+        Carbon::setTestNow('2026-10-11T10:00:00.123456Z');
+        try {
+            $service = $this->createRun();
+            $call = $this->createCall($service, [
+                'deadline_policy' => [
+                    'timeout_seconds' => 1,
+                ],
+                'call_deadline_at' => now()
+                    ->addSecond(),
+            ]);
+            WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+                'output' => Serializer::serializeWithCodec('avro', 'on time'),
+                'payload_codec' => 'avro',
+            ]);
+            Carbon::setTestNow(now()->addSeconds(2));
+            $this->assertFalse(ServiceCallDeadline::expire($call->refresh()));
+            $this->assertSame(ServiceCallOutcome::Completed, $call->outcome);
+            $this->assertSame([], ServiceCallDeadline::expiredCallIds(10));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testMigrationBackfillsOriginalAcceptanceAndCanResumeWithoutResettingTheBudget(): void
+    {
+        $service = $this->createRun();
+        $call = $this->createCall($service, [
+            'accepted_at' => '2026-10-01 10:00:00.123456',
+            'deadline_policy' => [
+                'timeout_seconds' => 1,
+            ],
+        ]);
+        $inherited = $this->createCall($service);
+        $migration = require __DIR__ . '/../../../src/migrations/2026_10_11_000100_add_original_service_call_deadlines.php';
+        $migration->up();
+        $original = $call->refresh()
+            ->call_deadline_at->format('Y-m-d H:i:s.u');
+        $this->assertSame('2026-10-01 10:00:01.123456', $original);
+        $migration->up();
+        $this->assertSame($original, $call->refresh()->call_deadline_at->format('Y-m-d H:i:s.u'));
+        $this->assertNull($inherited->refresh()->call_deadline_at);
+        $this->assertTrue(ServiceCallDeadline::expire($call));
+        $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
+    }
+
+    public function testMigrationPreservesLegacyTimezoneWhileTheNewDeadlineRemainsUtc(): void
+    {
+        $timezone = date_default_timezone_get();
+        date_default_timezone_set('Europe/Berlin');
+        try {
+            $service = $this->createRun();
+            $call = $this->createCall($service, [
+                'accepted_at' => '2026-10-01 10:00:00.123456',
+                'deadline_policy' => [
+                    'timeout_seconds' => 1,
+                ],
+            ]);
+            $migration = require __DIR__ . '/../../../src/migrations/2026_10_11_000100_add_original_service_call_deadlines.php';
+            $migration->up();
+            $this->assertSame(
+                '2026-10-01T08:00:01.123456Z',
+                ServiceCallView::listItem($call->refresh())['call_deadline_at']
+            );
+            $this->assertSame('2026-10-01 08:00:01.123456', $call->getRawOriginal('call_deadline_at'));
+        } finally {
+            date_default_timezone_set($timezone);
+        }
+    }
+
+    public function testInvalidLegacyPolicyRollsBackBackfillInsteadOfInventingADeadline(): void
+    {
+        $service = $this->createRun();
+        $valid = $this->createCall($service, [
+            'deadline_policy' => [
+                'timeout_seconds' => 1,
+            ],
+        ]);
+        $invalid = $this->createCall($service, [
+            'deadline_policy' => [
+                'unsupported' => 1,
+            ],
+        ]);
+        $migration = require __DIR__ . '/../../../src/migrations/2026_10_11_000100_add_original_service_call_deadlines.php';
+        try {
+            $migration->up();
+            $this->fail('Unsupported historical policy unexpectedly migrated.');
+        } catch (RuntimeException $failure) {
+            $this->assertStringContainsString($invalid->id, $failure->getMessage());
+        }
+        $this->assertNull($valid->refresh()->call_deadline_at);
+        $this->assertNull($invalid->refresh()->call_deadline_at);
+        $invalid->forceFill([
+            'deadline_policy' => [
+                'timeout_seconds' => 2,
+            ],
+        ])->save();
+        $migration->up();
+        $this->assertEquals($valid->accepted_at->copy()->utc()->addSecond(), $valid->refresh()->call_deadline_at);
+        $this->assertEquals($invalid->accepted_at->copy()->utc()->addSeconds(2), $invalid->refresh()->call_deadline_at);
+    }
+
+    public function testUnlinkedCallsRemainExpiryCandidatesInAQueueScopedBackgroundPass(): void
+    {
+        $service = $this->createRun();
+        $call = $this->createCall($service, [
+            'linked_workflow_instance_id' => null,
+            'linked_workflow_run_id' => null,
+            'call_deadline_at' => now()
+                ->subSecond(),
+        ]);
+        $this->assertSame([$call->id], ServiceCallDeadline::expiredCallIds(10, connection: 'other', queue: 'other'));
+        $this->assertTrue(ServiceCallDeadline::expire($call));
+        $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
+    }
+
     public function testTerminalServiceOutcomeResumesItsOriginalWaitingCallerOnce(): void
     {
         config([

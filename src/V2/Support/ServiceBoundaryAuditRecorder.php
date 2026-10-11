@@ -80,6 +80,7 @@ final class ServiceBoundaryAuditRecorder
         $now = now();
         if ($decision->isAllowed()) {
             $call->accepted_at = $now;
+            $call->call_deadline_at = ServiceCallDeadlinePolicy::resolve($request->deadlinePolicy, $now);
         } else {
             $call->failed_at = $now;
             $call->failure_message = $decision->message;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+use Illuminate\Support\Carbon;
 use Mockery;
 use Symfony\Component\Uid\Ulid;
 use Workflow\Serializers\Serializer;
@@ -23,6 +24,8 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\WorkflowFiberRunner;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -100,19 +103,25 @@ trait NexusCallerDeliveryScenario
      * @param class-string<Workflow> $workflowClass
      * @param array<int, mixed> $arguments
      * @param array<string, mixed> $expected
+     * @param array<string, mixed>|null $deadlinePolicy
      */
     protected function assertWaitingNexusCallerReceivesResult(
         string $workflowClass,
         array $arguments,
-        array $expected
+        array $expected,
+        ?array $deadlinePolicy = null,
     ): void {
         $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
         $previousControlPlane = $this->app->make(ServiceControlPlane::class);
+        $previousNow = Carbon::getTestNow();
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
 
         try {
+            if ($deadlinePolicy !== null) {
+                Carbon::setTestNow('2026-10-11T00:00:00.123456Z');
+            }
             $instance = WorkflowInstance::query()->create([
                 'namespace' => 'service',
                 'workflow_type' => 'nexus.service',
@@ -149,6 +158,7 @@ trait NexusCallerDeliveryScenario
                 'operation_mode' => 'async',
                 'handler_binding_kind' => 'workflow_run',
                 'handler_target_reference' => 'nexus.service',
+                'deadline_policy' => $deadlinePolicy,
             ]);
             $control = Mockery::mock(WorkflowControlPlane::class);
             $control->shouldReceive('start')
@@ -169,8 +179,22 @@ trait NexusCallerDeliveryScenario
             $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
             $this->assertSame('started', $call->status);
 
+            if ($deadlinePolicy !== null) {
+                $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());
+                // A fresh control plane and repair pass read only durable state.
+                // No describe/wait polling is allowed to cause expiration.
+                $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane());
+                Carbon::setTestNow('2026-10-11T00:00:01.123456Z');
+                $report = TaskWatchdog::runPass(runIds: [$run->id]);
+                $this->assertSame(1, $report['service_call_timeouts_enforced']);
+                $this->assertSame('timed_out', $call->refresh()->outcome?->value);
+                $this->assertSame('ServiceCallTimedOut', $call->outcome_metadata['caller_observed_error_type']);
+            }
+
             WorkflowHistoryEvent::record($serviceRun, HistoryEventType::WorkflowCompleted, [
-                'output' => Serializer::serializeWithCodec('avro', $expected),
+                'output' => Serializer::serializeWithCodec('avro', $deadlinePolicy === null ? $expected : [
+                    'late' => true,
+                ]),
                 'payload_codec' => 'avro',
             ]);
             $resume = WorkflowTask::query()
@@ -182,12 +206,39 @@ trait NexusCallerDeliveryScenario
             $this->app->call([new RunWorkflowTask($resume->id), 'handle']);
             $this->assertSame(RunStatus::Completed, $run->refresh()->status);
             $this->assertSame($expected, $workflow->refresh()->output());
-            $this->assertSame('completed', $call->refresh()->status);
+            $this->assertSame($deadlinePolicy === null ? 'completed' : 'failed', $call->refresh()->status);
             $this->assertSame(1, WorkflowHistoryEvent::query()
                 ->where('workflow_run_id', $run->id)
-                ->where('event_type', HistoryEventType::ServiceCallCompleted->value)
+                ->where('event_type', $deadlinePolicy === null
+                    ? HistoryEventType::ServiceCallCompleted->value
+                    : HistoryEventType::ServiceCallFailed->value)
                 ->count());
+            if ($deadlinePolicy !== null) {
+                $failed = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ServiceCallFailed->value)->sole();
+                $this->assertSame($call->id, $failed->payload['service_call_id']);
+                $this->assertSame(1, $failed->payload['sequence']);
+                $this->assertSame('ServiceCallTimedOut', $failed->payload['exception_type']);
+                $this->assertSame(0, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ServiceCallCompleted->value)->count());
+                $cold = WorkflowFiberRunner::forClass(
+                    $workflowClass,
+                    $run->workflow_instance_id,
+                    $run->id,
+                    $arguments,
+                    'avro',
+                    $run->fresh('historyEvents')
+                        ->historyEvents->toArray(),
+                )->step();
+                $this->assertTrue($cold->completed);
+                $this->assertSame($expected, $cold->result);
+                $again = TaskWatchdog::runPass(runIds: [$run->id]);
+                $this->assertSame(0, $again['service_call_timeouts_enforced']);
+                $this->assertSame(1, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ServiceCallFailed->value)->count());
+            }
         } finally {
+            Carbon::setTestNow($previousNow);
             config([
                 'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
             ]);

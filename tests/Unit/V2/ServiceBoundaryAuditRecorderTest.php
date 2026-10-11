@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Support\Carbon;
+use InvalidArgumentException;
 use Tests\TestCase;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -16,9 +18,48 @@ use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\TaskWatchdog;
 
 final class ServiceBoundaryAuditRecorderTest extends TestCase
 {
+    public function testAdmissionPersistsTheOriginalDeadlineBeforeHandlerDispatchAndRepairExpiresIt(): void
+    {
+        Carbon::setTestNow('2026-10-11T00:00:00.123456Z');
+        try {
+            [, , $operation] = $this->seedCatalog();
+            $request = $this->request($operation, deadlinePolicy: [
+                'timeout_seconds' => 1,
+            ]);
+            $call = (new ServiceBoundaryAuditRecorder())->record($request, ServiceBoundaryDecision::allow())->refresh();
+            $this->assertSame('accepted', $call->status);
+            $this->assertSame('2026-10-11T00:00:00.123456Z', $call->accepted_at?->toJSON());
+            $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());
+            $this->assertNull($call->linked_workflow_run_id);
+            Carbon::setTestNow('2026-10-11T00:00:01.123456Z');
+            $report = TaskWatchdog::runPass();
+            $this->assertSame(1, $report['service_call_timeouts_enforced']);
+            $this->assertSame([], $report['service_call_timeout_failures']);
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->refresh()->outcome);
+            $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAnInvalidDeadlineCannotCreateAnAcceptedAuditRow(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $request = $this->request($operation, deadlinePolicy: [
+            'timeout_seconds' => '1',
+        ]);
+        $this->expectException(InvalidArgumentException::class);
+        try {
+            (new ServiceBoundaryAuditRecorder())->record($request, ServiceBoundaryDecision::allow());
+        } finally {
+            $this->assertSame(0, WorkflowServiceCall::query()->count());
+        }
+    }
+
     public function testPersistsAnAdmittedCallWithFullPrincipalAttribution(): void
     {
         [, , $operation] = $this->seedCatalog();
@@ -39,6 +80,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->assertSame('acme', $call->caller_principal_tenant);
         $this->assertSame(ServiceCallBindingKind::WorkflowUpdate->value, $call->resolved_binding_kind);
         $this->assertNotNull($call->accepted_at);
+        $this->assertNull($call->call_deadline_at);
         $this->assertNull($call->failed_at);
         $this->assertSame($operation->id, $call->workflow_service_operation_id);
     }
@@ -143,6 +185,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
     private function request(
         WorkflowServiceOperation $operation,
         ?string $callerNamespace = 'analytics',
+        ?array $deadlinePolicy = null,
     ): ServiceBoundaryRequest {
         return new ServiceBoundaryRequest(
             principal: new ServiceCallPrincipal(
@@ -165,6 +208,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
             callerWorkflowInstanceId: 'caller-wf-1',
             callerWorkflowRunId: '01HRR3M8GXXS0M5KGFFXQ4S6V0',
             idempotencyKey: 'invoice-1',
+            deadlinePolicy: $deadlinePolicy,
             operationBoundaryPolicy: [
                 'authorization' => [
                     'caller_namespaces' => [

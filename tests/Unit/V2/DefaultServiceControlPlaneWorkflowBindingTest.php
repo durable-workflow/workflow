@@ -43,6 +43,129 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
         parent::tearDown();
     }
 
+    public function testDeferredDispatchAndDuplicatesRetainTheOriginalDeadlineAfterCatalogEdits(): void
+    {
+        Carbon::setTestNow('2026-10-08T03:00:00.123456Z');
+        $operation = $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Sync, [
+            'workflow_type' => 'invoice',
+        ]);
+        $operation->forceFill([
+            'deadline_policy' => [
+                'timeout_seconds' => 2,
+            ],
+        ])->save();
+        $control = new DefaultServiceControlPlane();
+        $options = [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'idempotency_key' => 'immutable-deadline',
+            'dispatch_handler' => false,
+        ];
+        $first = $control->execute('billing', 'invoices', 'approve', $options);
+        $this->assertTrue($first['accepted']);
+        $this->assertSame('2026-10-08T03:00:00.123456Z', $first['accepted_at']);
+        $this->assertSame('2026-10-08T03:00:02.123456Z', $first['call_deadline_at']);
+        $operation->forceFill([
+            'deadline_policy' => [
+                'timeout_seconds' => 200,
+            ],
+        ])->save();
+        Carbon::setTestNow(now()->addSecond());
+        $duplicate = $control->execute('billing', 'invoices', 'approve', $options);
+        $this->assertSame($first['service_call_id'], $duplicate['service_call_id']);
+        $this->assertSame($first['call_deadline_at'], $duplicate['call_deadline_at']);
+        $dispatched = $control->execute('billing', 'invoices', 'approve', $options + [
+            'service_call_id' => $first['service_call_id'],
+        ]);
+        $this->assertSame($first['accepted_at'], $dispatched['accepted_at']);
+        $this->assertSame($first['call_deadline_at'], $dispatched['call_deadline_at']);
+        $call = WorkflowServiceCall::query()->sole();
+        $this->assertSame([
+            'timeout_seconds' => 2,
+        ], $call->deadline_policy);
+        Carbon::setTestNow(now()->addSecond());
+        $expired = $control->describeCall($call->id, [
+            'namespace' => 'billing',
+        ]);
+        $this->assertSame('timed_out', $expired['outcome']);
+        $this->assertSame($first['call_deadline_at'], $expired['call_deadline_at']);
+    }
+
+    public function testAlreadyExpiredAbsoluteDeadlineNeverDispatchesTheLinkedHandler(): void
+    {
+        $operation = $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Sync, [
+            'workflow_type' => 'invoice',
+        ]);
+        $operation->forceFill([
+            'deadline_policy' => [
+                'deadline_at' => '2026-10-08T02:00:00.123456Z',
+            ],
+        ])->save();
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldNotReceive('start');
+        $control = new DefaultServiceControlPlane($workflows);
+        $result = $control->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+        $this->assertTrue($result['accepted']);
+        $this->assertSame('failed', $result['status']);
+        $this->assertSame('timed_out', $result['outcome']);
+        $this->assertSame('2026-10-08T02:00:00.123456Z', $result['call_deadline_at']);
+    }
+
+    public function testCatalogEditsCannotGiveAnInheritedCallANewDeadline(): void
+    {
+        $operation = $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Sync, [
+            'workflow_type' => 'invoice',
+        ]);
+        $control = new DefaultServiceControlPlane();
+        $options = [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'dispatch_handler' => false,
+        ];
+        $first = $control->execute('billing', 'invoices', 'approve', $options);
+        $operation->forceFill([
+            'deadline_policy' => [
+                'timeout_seconds' => 1,
+            ],
+        ])->save();
+        $again = $control->execute('billing', 'invoices', 'approve', $options + [
+            'service_call_id' => $first['service_call_id'],
+        ]);
+        $this->assertSame($first['service_call_id'], $again['service_call_id']);
+        $this->assertNull($again['call_deadline_at']);
+        $this->assertNull(WorkflowServiceCall::query()->sole()->deadline_policy);
+    }
+
+    public function testLateCancellationCannotReplaceTheOriginalTimeoutWithoutPriorPolling(): void
+    {
+        $operation = $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Sync, [
+            'workflow_type' => 'invoice',
+        ]);
+        $operation->forceFill([
+            'deadline_policy' => [
+                'timeout_seconds' => 1,
+            ],
+        ])->save();
+        $control = new DefaultServiceControlPlane();
+        $first = $control->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'dispatch_handler' => false,
+        ]);
+        Carbon::setTestNow(now()->addSecond());
+        $cancel = $control->cancelCall($first['service_call_id'], [
+            'namespace' => 'billing',
+        ]);
+        $this->assertFalse($cancel['accepted']);
+        $this->assertSame('timed_out', $cancel['outcome']);
+        $this->assertSame($first['call_deadline_at'], $cancel['call_deadline_at']);
+        $this->assertNull(WorkflowServiceCall::query()->sole()->cancelled_at);
+    }
+
     #[DataProvider('updateOutcomes')]
     public function testUpdateBindingPreservesOptionsAndDurableOutcomeWithoutRedispatch(
         ServiceCallOperationMode $mode,

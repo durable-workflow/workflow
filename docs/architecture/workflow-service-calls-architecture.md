@@ -247,6 +247,8 @@ contract-bound:
   deadline at the contract layer; the call inherits the deadline of
   the linked target reference." A non-null policy specifies an
   absolute deadline timestamp or a duration relative to `accepted_at`.
+  The [service call deadline contract](workflow-service-call-deadlines.md)
+  defines validation, the immutable `call_deadline_at`, expiry and late-result fencing.
 - `cancellation_policy` (JSON): names how the call participates in
   cancellation. A null `cancellation_policy` MUST be interpreted as
   "the call is cancelled when the caller's run is cancelled; the

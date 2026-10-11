@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonImmutable;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -68,6 +69,9 @@ final class ServiceCallView
             'failure_message' => $call->failure_message,
 
             'accepted_at' => self::iso($call->accepted_at),
+            'call_deadline_at' => $call->call_deadline_at?->copy()
+                ->utc()
+                ->format('Y-m-d\TH:i:s.u\Z'),
             'started_at' => self::iso($call->started_at),
             'completed_at' => self::iso($call->completed_at),
             'failed_at' => self::iso($call->failed_at),
@@ -202,6 +206,8 @@ final class ServiceCallView
 
     private static function iso(mixed $value): ?string
     {
-        return $value instanceof \DateTimeInterface ? $value->format('c') : null;
+        return $value instanceof \DateTimeInterface ? CarbonImmutable::instance($value)->utc()->format(
+            'Y-m-d\TH:i:s.u\Z'
+        ) : null;
     }
 }

@@ -17,9 +17,12 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RequestedTaskScope;
+use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -76,7 +79,10 @@ final class TaskWatchdog
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_candidates: int,
      *     activity_timeouts_enforced: int,
-     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>,
+     *     service_call_timeout_candidates: int,
+     *     service_call_timeouts_enforced: int,
+     *     service_call_timeout_failures: list<array{call_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -175,6 +181,32 @@ final class TaskWatchdog
                 $report['deadline_expired_failures'][] = [
                     'run_id' => $deadlineRunId,
                     'message' => $result['error'],
+                ];
+            }
+        }
+
+        $serviceCallIds = ServiceCallDeadline::expiredCallIds(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue,
+        );
+        $report['service_call_timeout_candidates'] = count($serviceCallIds);
+        foreach ($serviceCallIds as $callId) {
+            try {
+                /** @var WorkflowServiceCall $call */
+                $call = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->findOrFail(
+                    $callId
+                );
+                if (ServiceCallDeadline::expire($call)) {
+                    $report['service_call_timeouts_enforced']++;
+                }
+            } catch (Throwable $failure) {
+                report($failure);
+                $report['service_call_timeout_failures'][] = [
+                    'call_id' => $callId,
+                    'message' => $failure->getMessage(),
                 ];
             }
         }
@@ -370,7 +402,10 @@ final class TaskWatchdog
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_candidates: int,
      *     activity_timeouts_enforced: int,
-     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>,
+     *     service_call_timeout_candidates: int,
+     *     service_call_timeouts_enforced: int,
+     *     service_call_timeout_failures: list<array{call_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -403,6 +438,9 @@ final class TaskWatchdog
             'activity_timeout_candidates' => 0,
             'activity_timeouts_enforced' => 0,
             'activity_timeout_failures' => [],
+            'service_call_timeout_candidates' => 0,
+            'service_call_timeouts_enforced' => 0,
+            'service_call_timeout_failures' => [],
         ];
     }
 

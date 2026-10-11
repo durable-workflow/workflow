@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\UtcScheduleTimestamp;
 
 class WorkflowServiceCall extends Model
 {
@@ -40,6 +41,7 @@ class WorkflowServiceCall extends Model
         'caller_principal_claims' => 'array',
         'retry_after_seconds' => 'integer',
         'accepted_at' => 'datetime',
+        'call_deadline_at' => UtcScheduleTimestamp::class,
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
         'failed_at' => 'datetime',
