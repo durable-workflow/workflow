@@ -309,7 +309,7 @@ final class DefaultServiceControlPlaneRetryPolicyTest extends TestCase
             $this->assertSame($retry, $entry['retry_scheduled']);
             $this->assertSame($retry ? ServiceCallStatus::Started->value : $status->value, $entry['status']);
             $this->assertSame($retry ? ServiceCallOutcome::Accepted->value : $outcome->value, $entry['outcome']);
-            $this->assertSame('2026-10-08T04:30:00+00:00', $entry['started_at']);
+            $this->assertSame('2026-10-08T04:30:00.000000Z', $entry['started_at']);
             if ($retry) {
                 $this->assertSame($delays[$index], (float) $entry['scheduled_backoff_seconds']);
                 $this->assertSame('TransientApprovalFailure', $entry['failure_type']);
@@ -319,7 +319,7 @@ final class DefaultServiceControlPlaneRetryPolicyTest extends TestCase
             } else {
                 $this->assertArrayNotHasKey('scheduled_backoff_seconds', $entry);
                 $this->assertArrayNotHasKey($completed ? 'failed_at' : 'completed_at', $entry);
-                $this->assertSame('2026-10-08T04:30:00+00:00', $entry[$completed ? 'completed_at' : 'failed_at']);
+                $this->assertSame('2026-10-08T04:30:00.000000Z', $entry[$completed ? 'completed_at' : 'failed_at']);
             }
         }
         if ($completed) {
