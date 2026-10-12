@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-cooperative-original-call-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusCancellationCleanupCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-12T08:00:00Z"},
+    {"sequence": 2, "event_type": "ServiceCallStarted", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "endpoint_name": "php-service",
+      "service_name": "greeter", "operation_name": "greet", "status": "started",
+      "operation_mode": "sync", "wait_for": "completed",
+      "service_call": {"service_call_id": "original-service-call", "status": "started"}
+    }, "recorded_at": "2026-10-12T08:00:01Z"},
+    {"sequence": 3, "event_type": "CooperativeCancellationRequested", "payload": {
+      "workflow_command_id": "original-cancellation", "command_type": "request_cancellation",
+      "cancellation": {
+        "schema": "durable-workflow.cancellation-context/v1",
+        "request_id": "original-cancellation", "root_request_id": "original-cancellation",
+        "root_workflow_instance_id": "caller", "root_workflow_run_id": "caller-run",
+        "parent_request_id": null, "reason": "maintenance", "requester": {"type": "operator", "id": "operator-1"},
+        "source": "control_plane", "requested_at": "2026-10-12T08:00:02.000000Z",
+        "cleanup_deadline_at": "2026-10-12T08:00:32.000000Z",
+        "lineage": [{"request_id": "original-cancellation", "workflow_instance_id": "caller", "workflow_run_id": "caller-run"}]
+      }
+    }, "recorded_at": "2026-10-12T08:00:02Z"},
+    {"sequence": 4, "event_type": "ServiceCallCancelled", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "status": "cancelled",
+      "endpoint_name": "php-service", "service_name": "greeter", "operation_name": "greet",
+      "operation_mode": "sync", "wait_for": "completed"
+    }, "recorded_at": "2026-10-12T08:00:11Z"},
+    {"sequence": 5, "event_type": "CooperativeCancellationDelivered", "payload": {
+      "workflow_command_id": "original-cancellation", "sequence": 1, "call_kind": "service_operation"
+    }, "recorded_at": "2026-10-12T08:00:11Z"}
+  ],
+  "cancellation_origin": {
+    "caller_run": {"id": "caller-run", "workflow_instance_id": "caller", "namespace": "caller"},
+    "target_run": {"id": "target-run", "workflow_instance_id": "target", "namespace": "service"},
+    "service_call": {
+      "id": "original-service-call", "caller_namespace": "caller", "target_namespace": "service",
+      "caller_workflow_instance_id": "caller", "caller_workflow_run_id": "caller-run",
+      "linked_workflow_instance_id": "target", "linked_workflow_run_id": "target-run", "resolved_binding_kind": "workflow_run",
+      "cancellation_policy": {"allow_cancel": true, "propagate_to_linked_workflow": true},
+      "metadata": {"control_plane": {
+        "started": true, "outcome": "started_new", "workflow_instance_id": "target", "workflow_run_id": "target-run"
+      }}
+    }
+  },
+  "expected": {"completed": false, "result": null, "commands": [{"type": "upsert_memo"}, {"type": "start_timer", "delay_seconds": 1}]}
+}

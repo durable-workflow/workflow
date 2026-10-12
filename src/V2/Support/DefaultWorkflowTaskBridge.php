@@ -742,9 +742,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'operation_sequence' => $event?->payload['operation_sequence'] ?? null,
                 'operation_sequence_span' => $event === null ? null : ($event->payload['operation_sequence_span'] ?? 1),
                 'reason' => $reason,
-                ...(in_array($reason, ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity'], true) ? [
-                    'claim_released' => true,
-                ] : []),
+                ...(in_array($reason, ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity',
+                    'cancellation_waiting_for_service_operation'], true) ? [
+                        'claim_released' => true,
+                    ] : []),
             ];
             if ($task === null || $task->task_type !== TaskType::Workflow) {
                 return $response($task === null ? 'task_not_found' : 'task_not_workflow');
@@ -795,8 +796,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return $response($event === null ? (
-                isset($task->payload['cancellation_activity_wait'])
-                    ? 'cancellation_waiting_for_activity' : 'cancellation_waiting_for_child'
+                isset($task->payload['cancellation_service_wait']) ? 'cancellation_waiting_for_service_operation' : (
+                    isset($task->payload['cancellation_activity_wait'])
+                        ? 'cancellation_waiting_for_activity' : 'cancellation_waiting_for_child'
+                )
             ) : null, $run, $event);
         });
     }

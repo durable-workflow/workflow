@@ -1186,6 +1186,36 @@ final class WorkflowExecutor
 
                 $serviceEvent = $this->serviceOperationEvent($run, $sequence);
 
+                if (! self::serviceOperationResumesOnAdmission($current)) {
+                    $cancellationDelivery = $this->deliverCancellationAtCall(
+                        $run,
+                        $task,
+                        $sequence,
+                        'service_operation',
+                        $serviceEvent?->event_type === HistoryEventType::ServiceCallStarted ? null : $serviceEvent,
+                        $workflowExecution
+                    );
+                    if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
+                        return $this->waitForNextResumeSource($run, $task);
+                    }
+                    if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
+                        try {
+                            $this->syncWorkflowCursor($workflow, $sequence + 1);
+                            $current = $workflowExecution->throw(
+                                new WorkflowCancellationRequestedException(
+                                    cancellation: CooperativeCancellationDelivery::context($run),
+                                ),
+                                $run->cancellation_delivered_at,
+                            );
+                        } catch (Throwable $throwable) {
+                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+                            return null;
+                        }
+                        ++$sequence;
+                        continue;
+                    }
+                }
+
                 if ($serviceEvent === null) {
                     try {
                         $serviceEvent = $this->recordServiceOperationEvent($run, $task, $sequence, $current);
@@ -5621,14 +5651,15 @@ final class WorkflowExecutor
             return CancellationDeliveryState::None;
         }
 
-        $waitingBoundary = ActivityCancellationWait::validateBoundary(
-            $run,
-            $sequence,
-            $callKind,
-            $parallelCall instanceof AllCall ? count($parallelCall->leafDescriptors($sequence)) : 1,
-            $operationSequence,
-            $operationSequenceSpan,
-        );
+        $waitingBoundary = ServiceOperationCancellation::validateBoundary($run, $sequence, $callKind)
+            ?? ActivityCancellationWait::validateBoundary(
+                $run,
+                $sequence,
+                $callKind,
+                $parallelCall instanceof AllCall ? count($parallelCall->leafDescriptors($sequence)) : 1,
+                $operationSequence,
+                $operationSequenceSpan,
+            );
         if ($waitingBoundary !== null) {
             throw new LogicException($waitingBoundary);
         }
@@ -5694,6 +5725,9 @@ final class WorkflowExecutor
     ): bool {
         if ($callKind === 'child') {
             return ChildCancellation::prepare($run, $task, $sequence);
+        }
+        if ($callKind === 'service_operation') {
+            return ServiceOperationCancellation::prepare($run, $task, $sequence);
         }
         if (in_array($callKind, ['timer', 'condition', 'signal'], true)) {
             /** @var WorkflowTimer|null $timer */

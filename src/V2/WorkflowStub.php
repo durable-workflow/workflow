@@ -71,6 +71,7 @@ use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
+use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
@@ -2114,6 +2115,20 @@ final class WorkflowStub
                     $this->commandTargetScope(),
                 );
 
+                return;
+            }
+            $unsupported = ServiceOperationCancellation::unsupportedReason($run, $parentContext?->rootRequestId);
+            if ($unsupported !== null) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::RequestCancellation,
+                    'nexus_cooperative_cancellation_not_supported',
+                    $this->commandTargetScope(),
+                    [
+                        'payload' => Serializer::serializeWithCodec($run->payload_codec, $unsupported),
+                    ]
+                );
                 return;
             }
             if ($scopeOrigin !== null && $scopeParent !== null && $scopeTarget !== null) {

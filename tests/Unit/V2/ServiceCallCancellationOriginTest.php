@@ -117,6 +117,17 @@ final class ServiceCallCancellationOriginTest extends TestCase
         yield 'missing caller' => [[
             'caller_workflow_run_id' => 'missing-run',
         ], 'nexus_cancellation_owner_unavailable'];
+        yield 'no original start proof' => [[
+            'metadata' => null,
+        ], 'nexus_cancellation_target_not_created_by_call'];
+        yield 'existing run start proof' => [[
+            'metadata' => [
+                'control_plane' => [
+                    'started' => true,
+                    'outcome' => 'returned_existing_active',
+                ],
+            ],
+        ], 'nexus_cancellation_target_not_created_by_call'];
     }
 
     public function testMissingRecordedAdmissionCannotAuthorizeTargetCancellation(): void
@@ -156,6 +167,14 @@ final class ServiceCallCancellationOriginTest extends TestCase
             'target_namespace' => 'caller',
             'linked_workflow_instance_id' => $caller->id(),
             'linked_workflow_run_id' => $caller->runId(),
+            'metadata' => [
+                'control_plane' => [
+                    'started' => true,
+                    'outcome' => 'started_new',
+                    'workflow_instance_id' => $caller->id(),
+                    'workflow_run_id' => $caller->runId(),
+                ],
+            ],
         ])->save();
         $result = $caller->attemptRequestCancellationFromServiceCall($call->id);
         $this->assertSame('nexus_cancellation_lineage_cycle', $result->rejectionReason());
@@ -168,9 +187,9 @@ final class ServiceCallCancellationOriginTest extends TestCase
     public function testOriginalTargetRequestWinsAnIndependentRootConflict(): void
     {
         [$caller, $target, $call] = $this->ownedCall();
+        $caller->requestCancellation('caller owner', 30);
         $original = $target->requestCancellation('target owner', 20)
             ->cancellationContext();
-        $caller->requestCancellation('caller owner', 30);
         $result = $target->attemptRequestCancellationFromServiceCall($call->id);
         $this->assertSame('cancellation_root_conflict', $result->rejectionReason());
         $this->assertSame(
@@ -246,6 +265,14 @@ final class ServiceCallCancellationOriginTest extends TestCase
             ],
             'call_deadline_at' => now()
                 ->addSeconds(120),
+            'metadata' => [
+                'control_plane' => [
+                    'started' => true,
+                    'outcome' => 'started_new',
+                    'workflow_instance_id' => $target->id(),
+                    'workflow_run_id' => $target->runId(),
+                ],
+            ],
         ]);
         WorkflowHistoryEvent::record($caller->run(), HistoryEventType::ServiceCallStarted, [
             'sequence' => 1,

@@ -24,6 +24,7 @@ final class CooperativeCancellationDelivery
         'condition' => WorkflowStepHistory::CONDITION_WAIT,
         'signal' => WorkflowStepHistory::SIGNAL_WAIT,
         'child' => WorkflowStepHistory::CHILD_WORKFLOW,
+        'service_operation' => WorkflowStepHistory::SERVICE_OPERATION,
     ];
 
     private const RESOLUTION_TYPES = [
@@ -40,6 +41,9 @@ final class CooperativeCancellationDelivery
         HistoryEventType::ChildRunFailed,
         HistoryEventType::ChildRunCancelled,
         HistoryEventType::ChildRunTerminated,
+        HistoryEventType::ServiceCallCompleted,
+        HistoryEventType::ServiceCallFailed,
+        HistoryEventType::ServiceCallCancelled,
         HistoryEventType::SelectionResolved,
         HistoryEventType::SelectionOperationCancelled,
     ];
@@ -105,14 +109,15 @@ final class CooperativeCancellationDelivery
             return 'cancellation_delivery_history_missing';
         }
 
-        $waitingBoundary = ActivityCancellationWait::validateBoundary(
-            $run,
-            $sequence,
-            $callKind,
-            $sequenceSpan,
-            $operationSequence,
-            $operationSequenceSpan
-        );
+        $waitingBoundary = ServiceOperationCancellation::validateBoundary($run, $sequence, $callKind)
+            ?? ActivityCancellationWait::validateBoundary(
+                $run,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan
+            );
         if ($waitingBoundary !== null) {
             return $waitingBoundary;
         }
@@ -302,6 +307,7 @@ final class CooperativeCancellationDelivery
                 HistoryEventType::ConditionWaitOpened => 'condition',
                 HistoryEventType::SignalWaitOpened => 'signal',
                 HistoryEventType::ChildWorkflowScheduled => 'child',
+                HistoryEventType::ServiceCallStarted => 'service_operation',
                 HistoryEventType::TimerScheduled => match ($event->payload['timer_kind'] ?? null) {
                     'condition_timeout' => 'condition',
                     'signal_timeout' => 'signal',
@@ -335,6 +341,7 @@ final class CooperativeCancellationDelivery
                 HistoryEventType::ActivityScheduled => 'activity',
                 HistoryEventType::TimerScheduled => 'timer',
                 HistoryEventType::ChildWorkflowScheduled => 'child_workflow',
+                HistoryEventType::ServiceCallStarted => 'service_operation',
                 HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => '',
                 default => null,
             };
