@@ -15,9 +15,11 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\HistoryEventPayloadContract;
+use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Support\WorkflowStepHistory;
@@ -65,6 +67,22 @@ final class ReplayRegressionCorpusTest extends TestCase
     public function testFixtureExecutesThroughColdReplayRunner(array $fixture): void
     {
         $this->assertHistoryPayloadContract($fixture);
+
+        if ($fixture['id'] === 'nexus-owned-cancellation-origin') {
+            $origin = $fixture['cancellation_origin'];
+            $caller = new WorkflowRun($origin['caller_run']);
+            $caller->setRelation('historyEvents', collect($fixture['history'])->map(
+                static fn (array $event): WorkflowHistoryEvent => new WorkflowHistoryEvent([
+                    ...$event,
+                    'workflow_run_id' => $caller->id,
+                ])
+            ));
+            $this->assertNull(ServiceCallCancellationOrigin::validateOwnership(
+                new WorkflowServiceCall($origin['service_call']),
+                $caller,
+                new WorkflowRun($origin['target_run'])
+            ));
+        }
 
         if ($fixture['id'] === 'root-delivery-scoped-operation-membership') {
             $run = new WorkflowRun([

@@ -75,7 +75,9 @@ final class ServiceCallCancellationOrigin
             || $call->linked_workflow_run_id !== $target->id) {
             return 'nexus_cancellation_owner_target_mismatch';
         }
-        $caller->loadMissing('historyEvents');
+        if (! $caller->relationLoaded('historyEvents')) {
+            $caller->loadMissing('historyEvents');
+        }
         $started = $caller->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
             $event->event_type === HistoryEventType::ServiceCallStarted
             && $event->workflow_run_id === $caller->id
