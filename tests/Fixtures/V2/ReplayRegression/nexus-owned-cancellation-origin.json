@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "nexus-owned-cancellation-origin",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusWaitingCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {"sequence": 2, "event_type": "ServiceCallStarted", "payload": {
+      "sequence": 1, "service_call_id": "original-service-call", "endpoint_name": "php-service",
+      "service_name": "greeter", "operation_name": "greet", "status": "started",
+      "operation_mode": "sync", "wait_for": "completed",
+      "service_call": {"service_call_id": "original-service-call", "status": "started"}
+    }}
+  ],
+  "cancellation_origin": {
+    "caller_run": {"id": "caller-run", "workflow_instance_id": "caller", "namespace": "caller"},
+    "target_run": {"id": "target-run", "workflow_instance_id": "target", "namespace": "service"},
+    "service_call": {
+      "id": "original-service-call", "caller_namespace": "caller", "target_namespace": "service",
+      "caller_workflow_instance_id": "caller", "caller_workflow_run_id": "caller-run",
+      "linked_workflow_instance_id": "target", "linked_workflow_run_id": "target-run",
+      "resolved_binding_kind": "workflow_run",
+      "cancellation_policy": {"allow_cancel": true, "propagate_to_linked_workflow": true}
+    }
+  },
+  "expected": {"completed": false, "result": null, "commands": []}
+}

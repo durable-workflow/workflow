@@ -70,6 +70,7 @@ use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
+use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
@@ -1729,6 +1730,14 @@ final class WorkflowStub
     }
 
     /**
+     * @internal Inherit the accepted context of an original owned Nexus caller.
+     */
+    public function attemptRequestCancellationFromServiceCall(string $serviceCallId): CommandResult
+    {
+        return $this->recordCancellationRequest(null, 600, serviceCallId: $serviceCallId);
+    }
+
+    /**
      * @internal Read the frozen scope origin from canonical parent history.
      */
     public function attemptRequestCancellationFromScope(
@@ -1900,6 +1909,7 @@ final class WorkflowStub
         int $cleanupTimeoutSeconds,
         ?string $parentWorkflowRunId = null,
         ?array $scopeTarget = null,
+        ?string $serviceCallId = null,
     ): CommandResult {
         if ($cleanupTimeoutSeconds < 1 || $cleanupTimeoutSeconds > 3600) {
             throw new LogicException('Cancellation cleanup timeout must be between 1 and 3600 seconds.');
@@ -1915,7 +1925,8 @@ final class WorkflowStub
             $reason,
             $cleanupTimeoutSeconds,
             $parentWorkflowRunId,
-            $scopeTarget
+            $scopeTarget,
+            $serviceCallId
         ): void {
             $command = null;
             $task = null;
@@ -1997,6 +2008,22 @@ final class WorkflowStub
                 }
                 $scopeOrigin = $scopePreparation->context;
                 $parentContext = $scopeOrigin->rootContext;
+            } elseif ($serviceCallId !== null) {
+                try {
+                    $parentContext = ServiceCallCancellationOrigin::forTarget($serviceCallId, $run);
+                } catch (LogicException $error) {
+                    if (! str_starts_with($error->getMessage(), 'nexus_cancellation_')) {
+                        throw $error;
+                    }
+                    $command = $this->rejectCommand(
+                        $instance,
+                        $run,
+                        CommandType::RequestCancellation,
+                        $error->getMessage(),
+                        $this->commandTargetScope()
+                    );
+                    return;
+                }
             } elseif ($parentWorkflowRunId !== null) {
                 $linked = WorkflowLink::query()
                     ->where('parent_workflow_run_id', $parentWorkflowRunId)
