@@ -19,7 +19,7 @@ final class ServiceOperationCancellation
     /**
      * @return array<string, mixed>|null
      */
-    public static function unsupportedReason(WorkflowRun $run): ?array
+    public static function unsupportedReason(WorkflowRun $run, ?string $incomingRootRequestId = null): ?array
     {
         if (! $run->relationLoaded('historyEvents')) {
             $run->loadMissing('historyEvents');
@@ -53,6 +53,11 @@ final class ServiceOperationCancellation
                 $reason = $call === null || $target === null ? 'nexus_cancellation_owner_unavailable'
                     : (ServiceCallCancellationOrigin::validateOwnership($call, $run, $target)
                         ?? ServiceCallCancellationOrigin::validateTargetCreation($call));
+                if ($reason === null && ! $target->status->isTerminal()
+                    && is_string($target->cancellation_request_command_id)
+                    && CooperativeCancellationDelivery::context($target)?->rootRequestId !== $incomingRootRequestId) {
+                    $reason = 'nexus_cancellation_target_root_conflict';
+                }
             } catch (LogicException $error) {
                 if (! str_starts_with($error->getMessage(), 'nexus_cancellation_')) {
                     throw $error;

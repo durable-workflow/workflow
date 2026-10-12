@@ -187,9 +187,9 @@ final class ServiceCallCancellationOriginTest extends TestCase
     public function testOriginalTargetRequestWinsAnIndependentRootConflict(): void
     {
         [$caller, $target, $call] = $this->ownedCall();
+        $caller->requestCancellation('caller owner', 30);
         $original = $target->requestCancellation('target owner', 20)
             ->cancellationContext();
-        $caller->requestCancellation('caller owner', 30);
         $result = $target->attemptRequestCancellationFromServiceCall($call->id);
         $this->assertSame('cancellation_root_conflict', $result->rejectionReason());
         $this->assertSame(

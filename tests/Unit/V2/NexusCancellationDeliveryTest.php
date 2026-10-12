@@ -239,6 +239,29 @@ final class NexusCancellationDeliveryTest extends TestCase
         $this->assertSame($request->requestId, $delivery->payload['workflow_command_id']);
     }
 
+    public function testIndependentTargetRequestRefusesANewCallerRootBeforeCommit(): void
+    {
+        $this->catalog();
+        $caller = WorkflowStub::make(TestNexusWaitingCallerWorkflow::class, 'nexus-caller', 'caller');
+        $caller->start('world');
+        $this->runTask($this->ready($caller));
+        $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $caller->runId())->sole();
+        $target = WorkflowStub::loadRun($call->linked_workflow_run_id);
+        $original = $target->requestCancellation('independent owner', 20)
+            ->cancellationContext();
+        $refusal = $caller->attemptRequestCancellation('new root', 30);
+        $this->assertSame('nexus_cooperative_cancellation_not_supported', $refusal->rejectionReason());
+        $this->assertNull($caller->run()->fresh()->cancellation_request_command_id);
+        $this->assertSame('nexus_cancellation_target_root_conflict', ServiceOperationCancellation::unsupportedReason(
+            $caller->run()
+                ->fresh('historyEvents')
+        )['unavailable_reason']);
+        $this->assertSame(
+            $original->toArray(),
+            CooperativeCancellationDelivery::context($target->run()->fresh())->toArray()
+        );
+    }
+
     private function catalog(): WorkflowServiceOperation
     {
         $endpoint = WorkflowServiceEndpoint::query()->create([

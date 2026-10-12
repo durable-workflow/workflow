@@ -2117,7 +2117,7 @@ final class WorkflowStub
 
                 return;
             }
-            $unsupported = ServiceOperationCancellation::unsupportedReason($run);
+            $unsupported = ServiceOperationCancellation::unsupportedReason($run, $parentContext?->rootRequestId);
             if ($unsupported !== null) {
                 $command = $this->rejectCommand(
                     $instance,
