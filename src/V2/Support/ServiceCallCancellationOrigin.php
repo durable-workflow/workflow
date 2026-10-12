@@ -31,7 +31,7 @@ final class ServiceCallCancellationOrigin
         if ($call === null || $caller === null) {
             throw new LogicException('nexus_cancellation_owner_unavailable');
         }
-        $failure = self::validateOwnership($call, $caller, $target);
+        $failure = self::validateOwnership($call, $caller, $target) ?? self::validateTargetCreation($call);
         if ($failure !== null) {
             throw new LogicException($failure);
         }
@@ -88,6 +88,19 @@ final class ServiceCallCancellationOrigin
             || ($started->payload['operation_mode'] ?? null) !== 'sync'
             || ($started->payload['wait_for'] ?? null) !== 'completed') {
             return 'nexus_cancellation_original_admission_missing';
+        }
+
+        return null;
+    }
+
+    public static function validateTargetCreation(WorkflowServiceCall $call): ?string
+    {
+        $start = $call->metadata['control_plane'] ?? null;
+        if (! is_array($start) || ($start['started'] ?? null) !== true
+            || ($start['outcome'] ?? null) !== 'started_new'
+            || ($start['workflow_instance_id'] ?? null) !== $call->linked_workflow_instance_id
+            || ($start['workflow_run_id'] ?? null) !== $call->linked_workflow_run_id) {
+            return 'nexus_cancellation_target_not_created_by_call';
         }
 
         return null;

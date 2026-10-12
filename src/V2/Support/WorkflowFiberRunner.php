@@ -333,6 +333,7 @@ final class WorkflowFiberRunner
                     $current instanceof SignalCall => 'signal',
                     $current instanceof AwaitCall, $current instanceof AwaitWithTimeoutCall => 'condition',
                     $current instanceof ChildWorkflowCall => 'child',
+                    $current instanceof ServiceOperationCall => 'service_operation',
                     $current instanceof AllCall => 'parallel',
                     $current instanceof DurableOperationHandle => 'selection_handle',
                     default => null,

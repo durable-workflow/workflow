@@ -68,7 +68,11 @@ final class ReplayRegressionCorpusTest extends TestCase
     {
         $this->assertHistoryPayloadContract($fixture);
 
-        if ($fixture['id'] === 'nexus-owned-cancellation-origin') {
+        if (in_array(
+            $fixture['id'],
+            ['nexus-owned-cancellation-origin', 'nexus-cooperative-original-call-cold-replay'],
+            true
+        )) {
             $origin = $fixture['cancellation_origin'];
             $caller = new WorkflowRun($origin['caller_run']);
             $caller->setRelation('historyEvents', collect($fixture['history'])->map(
