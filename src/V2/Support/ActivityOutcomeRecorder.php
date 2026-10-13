@@ -118,6 +118,11 @@ final class ActivityOutcomeRecorder
                 return self::ignored('activity_deadline_elapsed');
             }
 
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            if ($expiredReason !== null) {
+                return self::ignored($expiredReason);
+            }
+
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
                 ? $run->payload_codec
                 : null;
@@ -155,6 +160,19 @@ final class ActivityOutcomeRecorder
                 }
             }
 
+            $exceptionPayload = null;
+            $encodedException = null;
+            if ($throwable !== null) {
+                $exceptionPayload = self::failurePayload($throwable, $codec);
+                $encodedException = self::serializeWithCodec($exceptionPayload, null, $runCodec);
+            }
+
+            // Payload preparation can outlive a claim even while its rows stay locked.
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            if ($expiredReason !== null) {
+                return self::ignored($expiredReason);
+            }
+
             if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
                 $lockedExecution->forceFill([
                     'status' => $throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed,
@@ -166,7 +184,7 @@ final class ActivityOutcomeRecorder
                         : $lockedExecution->payload_codec,
                     'exception' => $throwable === null
                         ? $lockedExecution->exception
-                        : self::serializeWithCodec(self::failurePayload($throwable, $codec), null, $runCodec)['blob'],
+                        : $encodedException['blob'],
                     'closed_at' => $lockedExecution->closed_at ?? now(),
                 ])->save();
 
@@ -191,6 +209,11 @@ final class ActivityOutcomeRecorder
             );
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
             $resolutionEvent = null;
+
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            if ($expiredReason !== null) {
+                return self::ignored($expiredReason);
+            }
 
             if ($throwable === null) {
                 $lockedExecution->forceFill([
@@ -228,7 +251,6 @@ final class ActivityOutcomeRecorder
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } elseif (self::shouldRetry($lockedExecution, $throwable, $attemptCount, $maxAttempts)) {
-                $exceptionPayload = self::failurePayload($throwable, $codec);
                 $historyExceptionPayload = self::publicFailurePayload($throwable, $exceptionPayload);
                 $retryAvailableAt = now()
                     ->addSeconds($backoffSeconds);
@@ -241,7 +263,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Pending,
-                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
+                    'exception' => $encodedException['blob'],
                     'last_heartbeat_at' => null,
                 ])->save();
 
@@ -310,7 +332,6 @@ final class ActivityOutcomeRecorder
 
                 return self::recorded($retryTask);
             } else {
-                $exceptionPayload = self::failurePayload($throwable, $codec);
                 $activityFailureCategory = $throwable instanceof StructuralLimitExceededException
                     ? FailureCategory::StructuralLimit
                     : FailureFactory::classify('activity', 'activity_execution', $throwable);
@@ -332,7 +353,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Failed,
-                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
+                    'exception' => $encodedException['blob'],
                     'closed_at' => now(),
                 ])->save();
                 $historyExceptionPayload = self::publicFailurePayload($throwable, $exceptionPayload);

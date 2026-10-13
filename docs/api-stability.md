@@ -193,6 +193,21 @@ list, command-kind map, generated identity prefixes, path rules, or structural
 size checks; compatible grammar evolution belongs in the Workflow package and
 is consumed through those methods.
 
+## Activity attempt authority
+
+An activity task's authority ends at its current lease expiry or an applicable
+execution deadline. New completion, failure and heartbeat renewal recheck these
+bounds under the runtime's mutation locks. Matching identifiers and an
+unreclaimed row do not grant extra time. Outcome preparation does not extend
+authority, so the runtime checks again after preparing its payload.
+
+Embedded PHP and the activity-task bridge refuse heartbeat progress and renewal
+after an execution deadline. An attached task lease cannot be revived after its
+expiry. A heartbeat accepted while authority is live can renew the lease and
+heartbeat deadline. Timeout enforcement rechecks the latest durable state under
+locks, so a stale scanner candidate cannot undo that valid renewal. Timeout and
+repair remain responsible for recovering work after refused late outcomes.
+
 ## Cooperative workflow-task bridge
 
 `Workflow\V2\Contracts\CooperativeWorkflowTaskBridge` extends

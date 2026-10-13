@@ -185,8 +185,14 @@ final class ActivityTimeoutEnforcer
      */
     public static function hasExpiredDeadline(ActivityExecution $execution, CarbonInterface $now): bool
     {
+        return self::expiredDeadlineKind($execution, $now) !== null;
+    }
+
+    public static function expiredDeadlineKind(ActivityExecution $execution, CarbonInterface $now): ?string
+    {
         return in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)
-            && self::resolveTimeoutKind($execution, $now) !== null;
+            ? self::resolveTimeoutKind($execution, $now)
+            : null;
     }
 
     private static function deadlineBoundary(CarbonInterface $deadline): string
