@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 laravel_version="${LARAVEL_VERSION:?Set LARAVEL_VERSION to a supported Laravel constraint such as 12.*}"
 workflow_v2_version="${WORKFLOW_V2_VERSION:-}"
 workflow_v2_path="${WORKFLOW_V2_PATH:-}"
@@ -381,6 +383,8 @@ fi
 
 php artisan migrate --force --no-interaction
 php artisan queue:restart --no-interaction
+
+php "$script_directory/sqlite-queue-reservation-smoke.php"
 
 artisan_output workflow:v2:doctor --strict >/dev/null
 doctor_json=$(artisan_output workflow:v2:doctor --strict --json)

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Providers;
 
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\QueueManager;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -23,6 +24,7 @@ use Workflow\Commands\V2ReplayVerifyCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\V2UpgradeStatusCommand;
 use Workflow\Commands\WorkflowMakeCommand;
+use Workflow\Queue\DatabaseQueueCompatibility;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
@@ -72,6 +74,12 @@ final class WorkflowServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/workflows.php', 'workflows');
+
+        $this->callAfterResolving('queue', static function (mixed $manager): void {
+            if ($manager instanceof QueueManager) {
+                DatabaseQueueCompatibility::install($manager);
+            }
+        });
 
         $this->app->singletonIf(
             OperatorObservabilityRepository::class,
