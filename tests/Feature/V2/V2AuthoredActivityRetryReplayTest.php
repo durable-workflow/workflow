@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestAuthoredRetryReplayWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
@@ -45,7 +46,11 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
         $run = WorkflowRun::query()->findOrFail($stub->runId());
         $activity = ActivityExecution::query()->where('workflow_run_id', $run->id)->firstOrFail();
         $policy = $activity->retry_policy;
-        $deadlines = [$activity->schedule_deadline_at, $activity->schedule_to_close_deadline_at];
+        $deadlines = [
+            $activity->schedule_deadline_at?->format('Y-m-d H:i:s.u'),
+            $activity->schedule_to_close_deadline_at?->format('Y-m-d H:i:s.u'),
+        ];
+        self::assertNotNull($deadlines[1]);
         $prefix = $run->historyEvents()
             ->orderBy('sequence')
             ->get()
@@ -53,16 +58,12 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
         $resume = WorkflowTask::query()->where('workflow_run_id', $run->id)
             ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->firstOrFail();
 
-        TestAuthoredRetryReplayWorkflow::$overrides = new ActivityOptions(maxAttempts: 1, backoff: [
-            1,
-            2,
-            5,
-            10,
-            15,
-            30,
-            60,
-            121,
-        ]);
+        TestAuthoredRetryReplayWorkflow::$overrides = new ActivityOptions(
+            startToCloseTimeout: 120,
+            scheduleToCloseTimeout: 600,
+            maxAttempts: 1,
+            backoff: [1, 2, 5, 10, 15, 30, 60, 121],
+        );
         foreach (['query', 'fiber'] as $consumer) {
             try {
                 if ($consumer === 'query') {
@@ -83,6 +84,7 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
                 self::assertSame('backoff_seconds', $exception->policyField);
             }
         }
+        $this->assertColdReplay($run->id, $mode, true);
         $this->runReady($run->id, TaskType::Workflow);
         self::assertFalse($run->fresh()->status->isTerminal());
         self::assertNull($run->fresh()->closed_at);
@@ -92,11 +94,17 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
         self::assertSame($policy, $activity->fresh()->retry_policy);
         self::assertSame(
             $deadlines,
-            [$activity->fresh()->schedule_deadline_at, $activity->fresh()->schedule_to_close_deadline_at]
+            [
+                $activity->fresh()
+                    ->schedule_deadline_at?->format('Y-m-d H:i:s.u'),
+                $activity->fresh()
+                    ->schedule_to_close_deadline_at?->format('Y-m-d H:i:s.u'),
+            ]
         );
         self::assertSame(1, $activity->fresh()->attempt_count);
 
         TestAuthoredRetryReplayWorkflow::$overrides = null;
+        $this->assertColdReplay($run->id, $mode, false);
         self::assertTrue(WorkflowStub::loadRun($run->id)->attemptRepair()->accepted());
         $this->runReady($run->id, TaskType::Workflow);
         self::assertTrue($run->fresh()->status->isTerminal());
@@ -107,19 +115,27 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
         self::assertSame($policy, $activity->fresh()->retry_policy);
         self::assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled->value)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityScheduled->value)->count()
         );
         self::assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityCompleted->value)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCompleted->value)->count()
         );
         self::assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::WorkflowCompleted->value)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowCompleted->value)->count()
         );
         self::assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::WorkflowFailed->value)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowFailed->value)->count()
+        );
+        self::assertSame(
+            $prefix,
+            array_slice($run->historyEvents()->orderBy('sequence')->get()->toArray(), 0, count($prefix))
         );
     }
 
@@ -136,5 +152,31 @@ final class V2AuthoredActivityRetryReplayTest extends TestCase
             ->where('status', TaskStatus::Ready->value)->firstOrFail();
         $job = $type === TaskType::Activity ? new RunActivityTask($task->id) : new RunWorkflowTask($task->id);
         $this->app->call([$job, 'handle']);
+    }
+
+    private function assertColdReplay(string $runId, string $mode, bool $changed): void
+    {
+        $connection = (string) config('database.default');
+        $database = config("database.connections.{$connection}");
+        $process = new Process([PHP_BINARY, __DIR__ . '/../../Fixtures/V2/authored_retry_cold_replay.php'], env: [
+            'RETRY_REPLAY_DB_CONFIG' => json_encode($database, JSON_THROW_ON_ERROR),
+            'RETRY_REPLAY_RUN_ID' => $runId,
+            'RETRY_REPLAY_MODE' => $mode,
+            'RETRY_REPLAY_CHANGED' => $changed ? '1' : '0',
+        ]);
+        $process->setTimeout(30);
+        $process->mustRun();
+        $result = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+        if ($changed) {
+            self::assertSame([
+                'rejected' => true,
+                'sequence' => 1,
+                'field' => 'backoff_seconds',
+            ], $result);
+        } else {
+            self::assertSame(false, $result['rejected']);
+            self::assertSame(true, $result['completed']);
+            self::assertSame($mode === 'all' ? ['Hello, Ada!'] : 'Hello, Ada!', $result['result']);
+        }
     }
 }

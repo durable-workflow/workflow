@@ -6,10 +6,16 @@ namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\ActivityReplayIdentity;
 use Workflow\V2\Support\ActivityRetryPolicy;
+use Workflow\V2\Support\AllCall;
+use Workflow\V2\Support\DurableOperationHandle;
 
 final class ActivityReplayIdentityTest extends TestCase
 {
@@ -86,6 +92,12 @@ final class ActivityReplayIdentityTest extends TestCase
         yield 'heartbeat' => [[
             'heartbeat_timeout' => 30,
         ], new ActivityOptions(heartbeatTimeout: 31), 'heartbeat_timeout'];
+        yield 'removed timeout' => [[
+            'heartbeat_timeout' => 30,
+        ], new ActivityOptions(), 'heartbeat_timeout'];
+        yield 'removed failure types' => [[
+            'non_retryable_error_types' => ['Old'],
+        ], new ActivityOptions(), 'non_retryable_error_types'];
         yield 'failure types' => [[
             'non_retryable_error_types' => ['Old'],
         ], new ActivityOptions(nonRetryableErrorTypes: ['New']), 'non_retryable_error_types'];
@@ -122,5 +134,42 @@ final class ActivityReplayIdentityTest extends TestCase
             1,
         );
         self::assertTrue(true);
+    }
+
+    public function testNestedGroupAndRetainedHandleUseOriginalSequence(): void
+    {
+        $run = new WorkflowRun();
+        $run->setRelation('historyEvents', collect([
+            new WorkflowHistoryEvent([
+                'event_type' => HistoryEventType::ActivityScheduled,
+                'payload' => [
+                    'sequence' => '7',
+                    'retry_policy' => [
+                        'max_attempts' => 1,
+                        'backoff_seconds' => [120],
+                    ],
+                ],
+            ]),
+        ]));
+        $call = new ActivityCall('test-activity', [], new ActivityOptions(maxAttempts: 1, backoff: [121]));
+        $group = new AllCall([new AllCall([$call])]);
+        $handle = new DurableOperationHandle(
+            'activity',
+            0,
+            'activity',
+            'original-identity',
+            7,
+            1,
+            'original-group',
+            $group
+        );
+        foreach ([$group, $handle] as $authored) {
+            try {
+                ActivityReplayIdentity::assertCall($run, $authored, 1, static fn (int $position): int => $position + 6);
+                self::fail('Nested/retained activity policy must be checked at its original sequence.');
+            } catch (ActivityRetryPolicyMismatchException $exception) {
+                self::assertSame(7, $exception->workflowSequence);
+            }
+        }
     }
 }

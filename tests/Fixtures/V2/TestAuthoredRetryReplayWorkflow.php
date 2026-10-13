@@ -16,6 +16,8 @@ final class TestAuthoredRetryReplayWorkflow extends Workflow
         $options = self::$overrides ?? new ActivityOptions(
             maxAttempts: 1,
             backoff: [1, 2, 5, 10, 15, 30, 60, $lastInterval],
+            startToCloseTimeout: 120,
+            scheduleToCloseTimeout: 600,
         );
         $call = static fn (): mixed => Workflow::activity(TestGreetingActivity::class, $options, 'Ada');
 

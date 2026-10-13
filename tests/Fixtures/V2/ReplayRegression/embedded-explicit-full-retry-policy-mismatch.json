@@ -24,9 +24,9 @@
             "snapshot_version": 1,
             "max_attempts": 1,
             "backoff_seconds": [1,2,5,10,15,30,60,120],
-            "start_to_close_timeout": null,
+            "start_to_close_timeout": 120,
             "schedule_to_start_timeout": null,
-            "schedule_to_close_timeout": null,
+            "schedule_to_close_timeout": 600,
             "heartbeat_timeout": null,
             "non_retryable_error_types": []
           }

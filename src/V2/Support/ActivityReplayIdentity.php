@@ -38,10 +38,16 @@ final class ActivityReplayIdentity
         }
 
         $sequence = $historySequence === null ? $sequence : $historySequence($sequence);
-        $run->loadMissing('historyEvents');
+        if (! $run->relationLoaded('historyEvents')) {
+            $run->load('historyEvents');
+        }
         foreach ($run->historyEvents as $event) {
+            $recordedSequence = $event->payload['sequence'] ?? null;
+            if (is_string($recordedSequence) && is_numeric($recordedSequence)) {
+                $recordedSequence = (int) $recordedSequence;
+            }
             if ($event->event_type !== HistoryEventType::ActivityScheduled
-                || ($event->payload['sequence'] ?? null) !== $sequence
+                || $recordedSequence !== $sequence
                 || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
                 || ($event->payload['activity']['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
                 continue;
@@ -80,6 +86,9 @@ final class ActivityReplayIdentity
             'non_retryable_error_types' => $options?->nonRetryableErrorTypes ?: null,
         ];
 
+        $normalized = ActivityRetryPolicy::snapshotExternal(null, $options) ?? [
+            'non_retryable_error_types' => [],
+        ];
         foreach ($snapshot as $field => $recorded) {
             $valid = match ($field) {
                 'snapshot_version' => $recorded === ActivityRetryPolicy::SNAPSHOT_VERSION,
@@ -100,11 +109,14 @@ final class ActivityReplayIdentity
             }
 
             $current = $authored[$field] ?? null;
-            if ($current === null) {
+            if (in_array($field, ['max_attempts', 'backoff_seconds'], true) && $current === null) {
+                // These two fields can originate from activity-class defaults.
+                continue;
+            }
+            if (! array_key_exists($field, $authored)) {
                 continue;
             }
             // Apply exactly the same normalization as initial scheduling.
-            $normalized = ActivityRetryPolicy::snapshotExternal(null, $options);
             if ($recorded !== ($normalized[$field] ?? null)) {
                 throw new ActivityRetryPolicyMismatchException($sequence, $field);
             }
