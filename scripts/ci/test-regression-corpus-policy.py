@@ -1532,6 +1532,38 @@ exit(0);
         self.assertEqual(1, counts["new_fixture_evidence"])
         self.assertEqual(1, counts["counterfactual_fixture_paths"])
 
+    def test_invalid_recorded_version_range_is_distinct_replay_evidence(self) -> None:
+        fixture = self.official_history_replay_fixture()
+        fixture["id"] = "invalid-recorded-version-range-requires-change"
+        fixture["history"][1]["event_type"] = "VersionMarkerRecorded"
+        fixture["history"][1]["payload"] = {
+            "sequence": 7,
+            "change_id": "same",
+            "version": 1,
+            "min_supported": 2,
+            "max_supported": 5,
+        }
+        del fixture["expected"]
+        fixture["expected_failure"] = {
+            "type": "version_marker_history_range_invalid",
+            "exception": "LogicException",
+        }
+        self.write_json(
+            "tests/Fixtures/V2/ReplayRegression/invalid-recorded-version-range.json",
+            fixture,
+        )
+        (self.root / "src/V2/Support/WorkflowFiberRunner.php").write_text(
+            "<?php\nreturn 'changed';\n",
+            encoding="utf-8",
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        counts = json.loads(result.stdout)["counts"]["replay"]
+        self.assertEqual(1, counts["new_fixture_evidence"])
+        self.assertEqual(1, counts["counterfactual_fixture_paths"])
+
     def test_malformed_payload_envelopes_are_rejected(self) -> None:
         base = self.official_history_replay_fixture()
         self.write_json(
