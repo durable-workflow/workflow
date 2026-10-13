@@ -18,10 +18,12 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityAttemptAuthority;
 use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityRowLockOrder;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\LocalActivityRuntime;
 
@@ -141,6 +143,13 @@ abstract class Activity
                     ->find($this->taskId);
 
             if (! $this->ownsHeartbeatAttempt($execution, $task)) {
+                return;
+            }
+
+            $expired = $task instanceof WorkflowTask
+                ? ActivityAttemptAuthority::expiredReason($task, $execution, now()) !== null
+                : ActivityTimeoutEnforcer::hasExpiredDeadline($execution, now());
+            if ($expired) {
                 return;
             }
 
