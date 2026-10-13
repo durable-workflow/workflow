@@ -99,9 +99,9 @@ jobs:
 
       - name: Retain two-worker outcomes including failures
         if: always() && inputs.sqlite_timer_qualification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: sqlite-queue-${{ matrix.laravel }}-php-${{ matrix.php }}
+          name: sqlite-queue-job-${{ strategy.job-index }}-php-${{ matrix.php }}
           path: sqlite-queue-qualification.json
           if-no-files-found: error
           retention-days: 90

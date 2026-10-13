@@ -386,10 +386,6 @@ php artisan queue:restart --no-interaction
 
 php "$script_directory/sqlite-queue-reservation-smoke.php"
 
-if [ "${WORKFLOW_SQLITE_TIMER_QUALIFICATION:-0}" = 1 ]; then
-  php "$script_directory/sqlite-two-worker-timers-smoke.php"
-fi
-
 artisan_output workflow:v2:doctor --strict >/dev/null
 doctor_json=$(artisan_output workflow:v2:doctor --strict --json)
 printf '%s' "$doctor_json" | php -r '
@@ -440,6 +436,10 @@ v1_state_after=$(hash_tables "$v1_tables")
 if [ "$v1_state_before" != "$v1_state_after" ]; then
   echo 'Installing and migrating v2 changed v1 durable state.' >&2
   exit 1
+fi
+
+if [ "${WORKFLOW_SQLITE_TIMER_QUALIFICATION:-0}" = 1 ]; then
+  php "$script_directory/sqlite-two-worker-timers-smoke.php"
 fi
 
 write_v2_sources() {
