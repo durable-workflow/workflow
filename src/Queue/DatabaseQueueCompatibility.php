@@ -19,7 +19,7 @@ final class DatabaseQueueCompatibility extends QueueManager
         // Custom managers and connectors remain owned by their application.
         if ($manager::class !== QueueManager::class
             || ! class_exists(Application::class)
-            || version_compare(Application::VERSION, '12.54.0', '<')
+            || version_compare(Application::VERSION, '9.0.0', '<')
             || version_compare(Application::VERSION, '14.0.0', '>=')
         ) {
             return;
