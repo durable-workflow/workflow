@@ -38,6 +38,10 @@ Run a Laravel queue worker or Horizon to execute workflows and activities:
 php artisan queue:work
 ```
 
+For the default database queue on SQLite, failed reservation writes preserve
+unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)
+for the supported framework versions and custom-connector boundary.
+
 ## Your First Workflow
 
 ```php
