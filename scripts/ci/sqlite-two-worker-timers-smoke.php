@@ -22,8 +22,7 @@ if (($argv[1] ?? null) === 'worker') {
     $status = Artisan::call('queue:work', [
         'connection' => 'database', '--queue' => 'timer-embedded', '--sleep' => 1,
         '--tries' => 3, '--timeout' => 60, '--max-time' => 150,
-    ]);
-    fwrite(STDOUT, Artisan::output());
+    ], new Symfony\Component\Console\Output\ConsoleOutput());
     exit($status);
 }
 
