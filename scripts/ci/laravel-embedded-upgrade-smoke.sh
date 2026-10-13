@@ -386,6 +386,10 @@ php artisan queue:restart --no-interaction
 
 php "$script_directory/sqlite-queue-reservation-smoke.php"
 
+if [ "${WORKFLOW_SQLITE_TIMER_QUALIFICATION:-0}" = 1 ]; then
+  php "$script_directory/sqlite-two-worker-timers-smoke.php"
+fi
+
 artisan_output workflow:v2:doctor --strict >/dev/null
 doctor_json=$(artisan_output workflow:v2:doctor --strict --json)
 printf '%s' "$doctor_json" | php -r '

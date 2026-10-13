@@ -10,6 +10,10 @@ on:
       tag:
         description: 'Stable 2.x release tag, for example 2.0.1'
         required: true
+      sqlite_timer_qualification:
+        description: 'Also execute the real two-worker SQLite timer workload'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,5 +93,16 @@ jobs:
         env:
           LARAVEL_VERSION: ${{ matrix.laravel }}
           WORKFLOW_V2_VERSION: ${{ needs.published-package.outputs.release_tag }}
+          WORKFLOW_SQLITE_TIMER_QUALIFICATION: ${{ inputs.sqlite_timer_qualification && '1' || '0' }}
+          WORKFLOW_QUEUE_QUALIFICATION_EVIDENCE: ${{ github.workspace }}/sqlite-queue-qualification.json
         run: scripts/ci/laravel-embedded-upgrade-smoke.sh
+
+      - name: Retain two-worker outcomes including failures
+        if: always() && inputs.sqlite_timer_qualification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sqlite-queue-${{ matrix.laravel }}-php-${{ matrix.php }}
+          path: sqlite-queue-qualification.json
+          if-no-files-found: error
+          retention-days: 90
 
