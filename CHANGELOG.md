@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.13 - 2026-10-13
+
+- Reject version markers with missing or non-integer canonical bounds,
+  inverted recorded ranges or a recorded version outside those bounds.
+  Validate retained duplicates before replay can skip them.
+- Preserve one numeric decision per change ID across version, patch and
+  deprecation helpers. Valid historical duplicates retain their physical
+  positions and clocks, including when their recorded ranges differ.
+- This compatible backport starts from 2.5.12 and does not include later
+  main/Nexus changes. Marker and command wire shapes are unchanged.
+
 ## 2.5.12 - 2026-10-11
 
 - Enforce a Nexus service call's original deadline during admission, background
