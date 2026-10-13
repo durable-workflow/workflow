@@ -51,6 +51,7 @@ final class VersionDecisions
             if (! is_string($changeId) || $changeId === '' || ! is_int($version)) {
                 throw new LogicException('Workflow version markers require a change ID and integer version.');
             }
+            VersionResolver::assertRecordedRange($event, $sequence);
             $original = $this->decisions[$changeId]['version'] ?? $versions[$changeId] ?? $version;
             if ($version !== $original) {
                 throw new LogicException(sprintf(
