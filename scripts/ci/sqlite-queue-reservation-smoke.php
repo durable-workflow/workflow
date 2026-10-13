@@ -8,10 +8,15 @@ use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
 use Illuminate\Queue\DatabaseQueue;
 use Workflow\Queue\SqliteDatabaseQueue;
+use Workflow\Queue\SqliteAcknowledgingDatabaseQueue;
 
 require getcwd() . '/vendor/autoload.php';
 $app = require getcwd() . '/bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
+set_exception_handler(static function (Throwable $exception): void {
+    fwrite(STDERR, get_class($exception) . ': ' . $exception->getMessage() . "\n");
+    exit(1);
+});
 $path = tempnam(sys_get_temp_dir(), 'workflow-reservation-');
 if ($path === false) {
     throw new RuntimeException('Cannot create isolated reservation database.');
@@ -37,7 +42,9 @@ try {
     ]);
     $queue = $app['queue']->connection('workflow-reservation');
     $expected = version_compare(Application::VERSION, '12.54.0', '>=')
-        ? SqliteDatabaseQueue::class : DatabaseQueue::class;
+        ? SqliteDatabaseQueue::class
+        : (class_exists(SqliteAcknowledgingDatabaseQueue::class)
+            ? SqliteAcknowledgingDatabaseQueue::class : DatabaseQueue::class);
     $assert($queue::class === $expected, 'The default connector selected an unexpected queue.');
     $database = $queue->getDatabase();
     $pdo = $database->getPdo();

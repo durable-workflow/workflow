@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\Queue;
 
 use Illuminate\Database\QueryException;
-use Illuminate\Queue\DatabaseQueue;
 use Illuminate\Queue\Jobs\DatabaseJob;
 use PDO;
 use PDOException;
@@ -19,7 +18,7 @@ use Throwable;
  * The upstream notice is retained in resources/licenses/laravel-database-queue.txt.
  * Selection, reservation, payload validation and job execution remain inherited.
  */
-final class SqliteDatabaseQueue extends DatabaseQueue
+final class SqliteDatabaseQueue extends SqliteAcknowledgingDatabaseQueue
 {
     public function pop($queue = null)
     {
