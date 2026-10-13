@@ -1280,6 +1280,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
         WORKFLOW_HISTORY_SHAPE_MISMATCH,
         VERSION_MARKER_INCOMPATIBLE_RANGE,
         VERSION_MARKER_HISTORY_RANGE_INVALID,
+        "activity_retry_policy_mismatch",
         UNSUPPORTED_PAYLOAD_CODEC,
     }:
         raise CorpusError(f"{context}.type is unsupported")
