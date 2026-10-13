@@ -184,27 +184,19 @@ class SqliteDatabaseQueueTest extends TestCase
     {
         $id = $this->push();
         $writer = $this->writer();
-        $container = $this->queue->getContainer();
-        $this->queue = new class($this->connection, 'jobs', 'default', 60) extends DatabaseQueue {
-            protected function marshalJob($queue, $job)
-            {
-                $this->database->table('other_rows')
-                    ->where('id', 1)
-                    ->update([
-                        'value' => 1,
-                    ]);
-
-                return parent::marshalJob($queue, $job);
-            }
-        };
-        $this->queue->setContainer($container);
-        $this->queue->setConnectionName('sqlite');
-        $this->connection->beforeExecuting(static function (string $sql) use ($writer): void {
-            if (! str_starts_with($sql, 'update "other_rows"') || $writer->inTransaction()) {
+        $injected = false;
+        $this->connection->beforeExecuting(function (string $sql) use ($writer, &$injected): void {
+            if ($injected || ! str_starts_with($sql, 'update "jobs" set "reserved_at"')) {
                 return;
             }
+            $injected = true;
             $writer->beginTransaction();
             $writer->exec('UPDATE other_rows SET value = value');
+            $this->connection->table('other_rows')
+                ->where('id', 1)
+                ->update([
+                    'value' => 1,
+                ]);
         });
         $this->events->listen(TransactionRolledBack::class, static function () use ($writer): void {
             if ($writer->inTransaction()) {
@@ -214,6 +206,42 @@ class SqliteDatabaseQueueTest extends TestCase
         $error = $this->expectBusy();
         $this->assertStringStartsWith('update "other_rows"', $error->getSql());
         $this->assertNull($this->connection->table('jobs')->where('id', $id)->first());
+        $this->assertSame(1, $this->failureEvents);
+    }
+
+    public function testBusyOnTheSameStatementForAnotherJobIsNotReservationRecovery(): void
+    {
+        $id = $this->push();
+        $otherId = $this->push();
+        $writer = $this->writer();
+        $injected = false;
+        $this->connection->beforeExecuting(function (string $sql, array $bindings) use (
+            $writer,
+            &$injected,
+            $otherId
+        ): void {
+            if ($injected || ! str_starts_with($sql, 'update "jobs" set "reserved_at"')) {
+                return;
+            }
+            $injected = true;
+            $writer->beginTransaction();
+            $writer->exec('UPDATE jobs SET available_at = available_at');
+            $this->connection->table('jobs')
+                ->where('id', $otherId)
+                ->update([
+                    'reserved_at' => $bindings[0],
+                    'attempts' => $bindings[1],
+                ]);
+        });
+        $this->events->listen(TransactionRolledBack::class, static function () use ($writer): void {
+            if ($writer->inTransaction()) {
+                $writer->commit();
+            }
+        });
+        $error = $this->expectBusy();
+        $this->assertSame($otherId, $error->getBindings()[2]);
+        $this->assertNull($this->connection->table('jobs')->where('id', $id)->first());
+        $this->assertSame(0, $this->connection->table('jobs')->where('id', $otherId)->value('attempts'));
         $this->assertSame(1, $this->failureEvents);
     }
 

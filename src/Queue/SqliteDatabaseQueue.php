@@ -68,7 +68,11 @@ final class SqliteDatabaseQueue extends DatabaseQueue
                 if ($exception->getSql() === $query->getGrammar()->compileUpdate($query, [
                     'reserved_at' => null,
                     'attempts' => null,
-                ])) {
+                ]) && $exception->getBindings() === [
+                    $jobRecord->reserved_at,
+                    $jobRecord->attempts,
+                    $jobRecord->id,
+                ]) {
                     // The existing worker reports the error and backs off before reselecting.
                     throw $exception;
                 }
