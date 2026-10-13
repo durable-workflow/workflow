@@ -24,6 +24,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -254,6 +255,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     ->first();
                 $blockedPayload = is_array($blockedTask?->payload) ? $blockedTask->payload : [];
                 $expectedReplayBlockReason = match ($fixture['expected_failure']['exception']) {
+                    ActivityRetryPolicyMismatchException::class => 'activity_retry_policy_mismatch',
                     HistoryEventShapeMismatchException::class => 'history_shape_mismatch',
                     VersionRangeMismatchException::class => 'version_marker_incompatible_range',
                     default => null,
