@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.16 - 2026-10-13
+
+- Refuse changed explicitly authored activity retry policies during embedded
+  replay before consuming an original result or scheduling new work. Compare
+  complete recorded backoff lists, including unused entries.
+- Preserve the original run and task for matching-code repair. Apply the check
+  to direct, grouped, selected and query replay while retaining class-derived
+  retry defaults and legacy histories without a recorded policy.
+
 ## 2.5.15 - 2026-10-13
 
 - Preserve unclaimed database-queue jobs when SQLite refuses a reservation write
