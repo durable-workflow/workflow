@@ -12,6 +12,29 @@ use Workflow\V2\WorkflowStub;
 
 final class VersionResolver
 {
+    public static function assertRecordedRange(WorkflowHistoryEvent $event, int $sequence): void
+    {
+        $version = $event->payload['version'] ?? null;
+        $minSupported = $event->payload['min_supported'] ?? null;
+        $maxSupported = $event->payload['max_supported'] ?? null;
+        if (! is_int($version) || ! is_int($minSupported) || ! is_int($maxSupported)) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] requires integer version, min_supported and max_supported.',
+                $sequence,
+            ));
+        }
+
+        if ($minSupported > $maxSupported || $version < $minSupported || $version > $maxSupported) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] has invalid recorded range [%d, %d] for version [%d].',
+                $sequence,
+                $minSupported,
+                $maxSupported,
+                $version,
+            ));
+        }
+    }
+
     public static function reuse(
         int $version,
         VersionCall $versionCall,
@@ -75,6 +98,7 @@ final class VersionResolver
             ));
         }
 
+        self::assertRecordedRange($event, $sequence);
         self::assertSupported($version, $versionCall, $sequence);
 
         return $version;

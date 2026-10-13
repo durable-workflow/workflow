@@ -109,6 +109,8 @@ final class LegacyVersionOfflineReplayTest extends TestCase
                 'sequence' => 1,
                 'change_id' => 'legacy-upgrade',
                 'version' => 1,
+                'min_supported' => -1,
+                'max_supported' => 2,
             ];
             if ($case === 'missing-change-id') {
                 unset($payload['change_id']);
