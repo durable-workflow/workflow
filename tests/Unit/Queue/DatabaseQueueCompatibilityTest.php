@@ -14,6 +14,7 @@ use Illuminate\Queue\QueueManager;
 use Illuminate\Queue\QueueServiceProvider;
 use PHPUnit\Framework\TestCase;
 use Workflow\Queue\DatabaseQueueCompatibility;
+use Workflow\Queue\SqliteAcknowledgingDatabaseQueue;
 use Workflow\Queue\SqliteDatabaseQueue;
 
 final class DatabaseQueueCompatibilityTest extends TestCase
@@ -28,7 +29,7 @@ final class DatabaseQueueCompatibilityTest extends TestCase
         $queue = $manager->connection('database');
 
         $expected = version_compare(Application::VERSION, '12.54.0', '>=')
-            ? SqliteDatabaseQueue::class : DatabaseQueue::class;
+            ? SqliteDatabaseQueue::class : SqliteAcknowledgingDatabaseQueue::class;
         self::assertSame($expected, $queue::class);
         self::assertSame($manager, $app['queue']);
         self::assertSame($config, $app['config']->all());
