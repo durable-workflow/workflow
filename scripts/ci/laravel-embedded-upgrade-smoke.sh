@@ -440,6 +440,14 @@ fi
 
 if [ "${WORKFLOW_SQLITE_TIMER_QUALIFICATION:-0}" = 1 ]; then
   php "$script_directory/sqlite-two-worker-timers-smoke.php"
+  php -r '
+    $path = getenv("WORKFLOW_QUEUE_QUALIFICATION_EVIDENCE");
+    $report = $path && is_file($path) ? json_decode(file_get_contents($path), true) : null;
+    if (!is_array($report) || ($report["outcome"] ?? null) !== "passed") {
+        fwrite(STDERR, "The retained two-worker qualification did not pass.\n");
+        exit(1);
+    }
+  '
 fi
 
 write_v2_sources() {

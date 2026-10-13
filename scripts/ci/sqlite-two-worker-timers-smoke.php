@@ -19,10 +19,12 @@ $pdo = DB::connection()->getPdo();
 $pdo->exec('PRAGMA busy_timeout = 5000');
 
 if (($argv[1] ?? null) === 'worker') {
-    exit(Artisan::call('queue:work', [
+    $status = Artisan::call('queue:work', [
         'connection' => 'database', '--queue' => 'timer-embedded', '--sleep' => 1,
         '--tries' => 3, '--timeout' => 60, '--max-time' => 150,
-    ]));
+    ]);
+    fwrite(STDOUT, Artisan::output());
+    exit($status);
 }
 
 $assert = static function (bool $condition, string $message): void {
@@ -184,7 +186,6 @@ try {
 } catch (Throwable $exception) {
     $report['outcome'] = 'failed';
     $report['error'] = get_class($exception) . ': ' . $exception->getMessage();
-    throw $exception;
 } finally {
     foreach ($workers as $worker) {
         $worker->stop(5);
@@ -204,5 +205,8 @@ try {
     $report['final_queue'] = $queueRows();
     $save();
 }
-$assert($report['outcome'] === 'passed', $report['error'] ?? 'Qualification did not pass.');
+if ($report['outcome'] !== 'passed') {
+    fwrite(STDERR, ($report['error'] ?? 'Qualification did not pass.') . "\n");
+    exit(1);
+}
 echo json_encode(['outcome' => $report['outcome'], 'workflow' => $report['workflow'], 'laravel' => $report['laravel'], 'php' => $report['php'], 'completed' => 30], JSON_THROW_ON_ERROR), "\n";
