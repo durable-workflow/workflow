@@ -86,6 +86,16 @@ final class QueryStateReplayer
                 return new ReplayState($workflow, $sequence, null);
             }
 
+            ActivityReplayIdentity::assertCall(
+                $run,
+                $current,
+                $sequence,
+                fn (int $position): int => $this->historySequenceForReplayPosition(
+                    $historySequencesByPosition,
+                    $position
+                ),
+            );
+
             if ($current instanceof CancelDurableOperationCall) {
                 $cancelled = $this->selectionOperationCancelledEvent($run, $current->handle);
                 if (! $cancelled instanceof WorkflowHistoryEvent && ! $this->unmarkedCancellationWasCommitted(

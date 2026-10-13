@@ -319,6 +319,12 @@ final class WorkflowFiberRunner
                 ));
             }
 
+            ActivityReplayIdentity::assertCall(
+                $this->workflow->run,
+                $current,
+                $this->historySequenceForCurrentPosition() ?? $this->sequence,
+            );
+
             $this->applyRecordedUpdatesForCurrentPosition();
 
             $historySequence = $this->historySequenceForCurrentPosition();

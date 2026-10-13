@@ -32,6 +32,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Exceptions\DurableOperationCancelledException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
@@ -111,6 +112,7 @@ final class WorkflowExecutor
                     ++$sequence;
                     $this->syncWorkflowCursor($workflow, $sequence);
                 }
+                ActivityReplayIdentity::assertCall($run, $current, $sequence);
             } catch (Throwable $throwable) {
                 $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -4355,6 +4357,25 @@ final class WorkflowExecutor
 
         if ($throwable instanceof UnresolvedWorkflowFailureException) {
             $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
+
+            return;
+        }
+
+        if ($throwable instanceof ActivityRetryPolicyMismatchException) {
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $payload['replay_blocked'] = true;
+            $payload['replay_blocked_reason'] = 'activity_retry_policy_mismatch';
+            $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+            $payload['replay_blocked_policy_field'] = $throwable->policyField;
+            $task->forceFill([
+                'status' => TaskStatus::Failed,
+                'payload' => $payload,
+                'last_error' => $throwable->getMessage(),
+                'lease_expires_at' => null,
+            ])->save();
+            $this->projectRun(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
 
             return;
         }

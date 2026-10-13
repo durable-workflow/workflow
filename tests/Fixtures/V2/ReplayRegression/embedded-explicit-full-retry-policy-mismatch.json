@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-explicit-full-retry-policy-mismatch",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "query-state-replayer", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestAuthoredRetryReplayWorkflow",
+    "arguments": [121],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-13T12:42:00.000001Z"},
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity": {
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [1,2,5,10,15,30,60,120],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          }
+        }
+      },
+      "recorded_at": "2026-10-13T12:42:00.000002Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_execution_id": "01j00000000000000000000001",
+        "result": "wwHioz3/VYAiNwoecmVjb3JkZWQtcmVzdWx0",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-10-13T12:42:00.000003Z"
+    }
+  ],
+  "expected_failure": {
+    "type": "activity_retry_policy_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\ActivityRetryPolicyMismatchException"
+  }
+}
