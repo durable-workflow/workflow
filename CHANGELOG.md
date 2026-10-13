@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.15 - 2026-10-13
+
+- Preserve unclaimed database-queue jobs when SQLite refuses a reservation write
+  and the original root transaction has fully rolled back. Laravel's worker
+  reports the error and reselects work without failing the workflow before its
+  handler runs.
+- Install the guard for the default SQLite database connector on affected Laravel
+  12/13 versions. Preserve custom connectors, queue managers, other database
+  drivers and existing handling of invalid jobs or uncertain transaction outcomes.
+- Restart queue workers after upgrading. Already failed workflows remain failed.
+
 ## 2.5.13 - 2026-10-13
 
 - Reject version markers with missing or non-integer canonical bounds,
