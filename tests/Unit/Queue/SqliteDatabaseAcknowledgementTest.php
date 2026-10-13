@@ -219,7 +219,9 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
     {
         $job = $this->job();
         $this->connection->getPdo()
-            ->exec("CREATE TRIGGER refuse_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'delete-constraint'); END");
+            ->exec(
+                "CREATE TRIGGER refuse_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'delete-constraint'); END"
+            );
         try {
             $job->delete();
             self::fail('Expected the real SQLite constraint failure.');
