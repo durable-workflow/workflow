@@ -633,6 +633,15 @@ site before the patch marker existed.
 
 **Evolution rules:**
 
+The numeric version is frozen once per change ID across all three helpers.
+Each invocation validates its own supported range and returns its integer,
+boolean or void projection. Consistent historical duplicate markers keep
+their physical positions and recorded clocks. Their bounds may differ from
+each other and from current code, provided each recorded range contains the
+same frozen version. Canonical markers require both integer bounds;
+inverted ranges, versions outside those bounds and malformed fields are
+invalid history rather than supported version decisions.
+
 An existing recorded version, or the legacy default for a pre-marker run,
 outside the current authored supported range is a replay compatibility fault.
 The embedded engine blocks the affected workflow task with

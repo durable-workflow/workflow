@@ -86,6 +86,8 @@ final class VersionDecisionsTest extends TestCase
                 'sequence' => $sequence,
                 'change_id' => 'same',
                 'version' => $version,
+                'min_supported' => -1,
+                'max_supported' => 2,
             ],
         ]);
     }
