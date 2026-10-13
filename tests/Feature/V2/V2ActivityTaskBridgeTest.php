@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -29,6 +31,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityRecovery;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\ExternalPayloadReference;
@@ -36,6 +39,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\TaskRepair;
 
 final class V2ActivityTaskBridgeTest extends TestCase
 {
@@ -72,6 +76,239 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $bridge = $this->app->make(ActivityTaskBridge::class);
 
         $this->assertInstanceOf(DefaultActivityTaskBridge::class, $bridge);
+    }
+
+    public function testExpiredCurrentLeaseCannotCompleteBeforeRepair(): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'expiry-original');
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+        Date::setTestNow($task->fresh()->lease_expires_at->addMicrosecond());
+        try {
+            $outcome = $this->bridge->complete($claim['activity_attempt_id'], 'late result');
+
+            $this->assertFalse($outcome['recorded']);
+            $this->assertSame('lease_expired', $outcome['reason']);
+            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
+            $this->assertSame(
+                ActivityAttemptStatus::Running,
+                ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status
+            );
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testExpiredCurrentLeaseCannotRecordApplicationFailureBeforeRepair(): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'expiry-original');
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+        Date::setTestNow($task->fresh()->lease_expires_at);
+        try {
+            $outcome = $this->bridge->fail($claim['activity_attempt_id'], new \RuntimeException('late failure'));
+
+            $this->assertFalse($outcome['recorded']);
+            $this->assertSame('lease_expired', $outcome['reason']);
+            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
+            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testExpiredLeaseCannotBeRevivedByAnActivityHeartbeat(): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'expiry-original');
+        $expiry = $task->fresh()
+->lease_expires_at;
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+        Date::setTestNow($expiry->copy()->addSecond());
+        try {
+            $status = $this->bridge->heartbeat($claim['activity_attempt_id'], [
+                'message' => 'late heartbeat',
+            ]);
+
+            $this->assertFalse($status['can_continue']);
+            $this->assertFalse($status['heartbeat_recorded']);
+            $this->assertSame('lease_expired', $status['reason']);
+            $this->assertTrue($task->fresh()->lease_expires_at->equalTo($expiry));
+            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertNull($execution->fresh()->last_heartbeat_at);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testStatusStopsExactlyAtCurrentLeaseBoundary(): void
+    {
+        Queue::fake();
+        [, , $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'expiry-original');
+
+        Date::setTestNow($task->fresh()->lease_expires_at);
+        try {
+            $status = $this->bridge->status($claim['activity_attempt_id']);
+
+            $this->assertFalse($status['can_continue']);
+            $this->assertFalse($status['heartbeat_recorded']);
+            $this->assertSame('lease_expired', $status['reason']);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testResultPreparationCrossingLeaseExpiryCannotCommit(): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'expiry-original');
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+        $policy = new class($task->fresh()->lease_expires_at) implements ExternalPayloadStoragePolicy {
+            public function __construct(
+                private readonly \Carbon\CarbonInterface $expiry
+            ) {
+            }
+
+            public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+            {
+                Date::setTestNow($this->expiry);
+
+                return null;
+            }
+
+            public function thresholdBytesFor(?string $namespace): ?int
+            {
+                return null;
+            }
+        };
+        $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
+
+        try {
+            $outcome = $this->bridge->complete($claim['activity_attempt_id'], 'result prepared across expiry');
+
+            $this->assertFalse($outcome['recorded']);
+            $this->assertSame('lease_expired', $outcome['reason']);
+            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function executionDeadlines(): iterable
+    {
+        yield 'schedule-to-close' => ['schedule_to_close_deadline_at', 'schedule_to_close_timeout'];
+        yield 'start-to-close' => ['close_deadline_at', 'start_to_close_timeout'];
+        yield 'heartbeat' => ['heartbeat_deadline_at', 'heartbeat_timeout'];
+    }
+
+    #[DataProvider('executionDeadlines')]
+    public function testExpiredExecutionDeadlineFencesOutcomeAndRenewalWithLiveLease(
+        string $field,
+        string $reason
+    ): void {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'deadline-original');
+        $deadline = now()
+            ->addSecond();
+        $execution->forceFill([
+            $field => $deadline,
+        ])->save();
+        $expiry = $task->fresh()
+->lease_expires_at;
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+        Date::setTestNow($deadline);
+        try {
+            $this->assertTrue(now()->lt($expiry));
+            $status = $this->bridge->status($claim['activity_attempt_id']);
+            $heartbeat = $this->bridge->heartbeat($claim['activity_attempt_id']);
+            $complete = $this->bridge->complete($claim['activity_attempt_id'], 'late result');
+            $fail = $this->bridge->fail($claim['activity_attempt_id'], new \RuntimeException('late failure'));
+
+            $this->assertFalse($status['can_continue']);
+            $this->assertSame($reason, $status['reason']);
+            $this->assertFalse($heartbeat['heartbeat_recorded']);
+            $this->assertSame($reason, $heartbeat['reason']);
+            $this->assertFalse($complete['recorded']);
+            $this->assertSame($reason, $complete['reason']);
+            $this->assertFalse($fail['recorded']);
+            $this->assertSame($reason, $fail['reason']);
+            $this->assertTrue($task->fresh()->lease_expires_at->equalTo($expiry));
+            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+
+            $timeout = ActivityTimeoutEnforcer::enforce($execution->id);
+            $this->assertTrue($timeout['enforced']);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityTimedOut)->count());
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testValidHeartbeatRenewalAllowsCompletionBeyondInitialLease(): void
+    {
+        Queue::fake();
+        [, , $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'renewal-original');
+        $initialExpiry = $task->fresh()
+->lease_expires_at;
+
+        Date::setTestNow($initialExpiry->copy()->subSecond());
+        try {
+            $heartbeat = $this->bridge->heartbeat($claim['activity_attempt_id']);
+            $this->assertTrue($heartbeat['heartbeat_recorded']);
+            $this->assertTrue($task->fresh()->lease_expires_at->gt($initialExpiry));
+
+            Date::setTestNow($initialExpiry->copy()->addSecond());
+            $this->assertTrue($this->bridge->status($claim['activity_attempt_id'])['can_continue']);
+            $this->assertTrue($this->bridge->complete($claim['activity_attempt_id'], 'renewed result')['recorded']);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testExpiredAttemptRecoveryCompletesSameExecutionWithOneCompletion(): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $original = $this->bridge->claimStatus($task->id, 'lost-original');
+
+        Date::setTestNow($task->fresh()->lease_expires_at->copy()->addSecond());
+        try {
+            $this->assertFalse($this->bridge->complete($original['activity_attempt_id'], 'late original')['recorded']);
+            $this->assertNotNull(TaskRepair::recoverExistingTask($task->fresh(), $run->fresh()));
+            $replacement = $this->bridge->claimStatus($task->id, 'replacement');
+            $this->assertTrue($replacement['claimed']);
+            $this->assertSame($execution->id, $replacement['activity_execution_id']);
+            $this->assertSame($run->id, $replacement['workflow_run_id']);
+            $this->assertNotSame($original['activity_attempt_id'], $replacement['activity_attempt_id']);
+            $this->assertFalse($this->bridge->complete($original['activity_attempt_id'], 'stale original')['recorded']);
+            $this->assertTrue(
+                $this->bridge->complete($replacement['activity_attempt_id'], 'replacement result')['recorded']
+            );
+            $this->assertFalse($this->bridge->complete($replacement['activity_attempt_id'], 'duplicate')['recorded']);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityCompleted)->count());
+        } finally {
+            Date::setTestNow();
+        }
     }
 
     public function testPollReturnsReadyActivityTasks(): void
