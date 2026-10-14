@@ -73,6 +73,7 @@ use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -946,7 +947,7 @@ final class WorkflowStub
         $task = null;
         $startedRun = null;
 
-        DB::transaction(function () use ($metadata, $startOptions, &$task, &$command, &$startedRun): void {
+        SqliteTransaction::run(function () use ($metadata, $startOptions, &$task, &$command, &$startedRun): void {
             $task = null;
             $command = null;
             $startedRun = null;
@@ -2723,7 +2724,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (
+        SqliteTransaction::run(function () use (
             $name,
             $arguments,
             $payloadCodec,
@@ -2732,6 +2733,9 @@ final class WorkflowStub
             &$command,
             &$task
         ): void {
+            $command = null;
+            $task = null;
+
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
