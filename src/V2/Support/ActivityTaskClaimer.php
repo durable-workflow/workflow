@@ -45,7 +45,7 @@ final class ActivityTaskClaimer
         ?string $leaseOwner = null,
         bool $releaseFutureTasks = false,
     ): array {
-        return DB::transaction(static function () use ($taskId, $leaseOwner, $releaseFutureTasks): array {
+        return SqliteTransaction::run(static function () use ($taskId, $leaseOwner, $releaseFutureTasks): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()

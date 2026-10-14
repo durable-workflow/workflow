@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\StickyExecution;
+use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -115,7 +116,7 @@ final class RunWorkflowTask implements ShouldQueue
 
     private function claimTask(): bool
     {
-        return DB::transaction(function (): bool {
+        return SqliteTransaction::run(function (): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
