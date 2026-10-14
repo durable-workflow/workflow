@@ -115,7 +115,7 @@ final class RunWorkflowTask implements ShouldQueue
 
     private function claimTask(): bool
     {
-        return SqliteTransaction::run(function (): bool {
+        return SqliteTransaction::forTask($this->taskId, function (): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
