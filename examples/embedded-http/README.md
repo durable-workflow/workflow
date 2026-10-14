@@ -120,6 +120,23 @@ replay failures and missing tasks before accepting the result.
 These commands provide measurements,
 not a performance recommendation by themselves.
 
+For CLI database costs, set `QUALIFICATION_CLI_QUERY_METRICS` to a writable path
+under `/state` before preparing the stack. It records cumulative counts per
+process, including idle queue polls, and a final record on normal shutdown.
+Use deltas within the measured window and report these separately from the HTTP
+response query counts. No SQL text or bindings are recorded. The option is off
+by default.
+
+`php qualification/query-metrics.php` checks the disabled path or, when selected,
+that CLI counts survive a request-scope reset. Run it against an independent
+prepared example database. The final JSON line after normal process exit must
+have `final=true`.
+
+Freeze `EXAMPLE_QUEUE_MAX_JOBS` before admission when selecting a benchmark
+window. The recipe defaults to 500. A measurement that crosses a container
+restart must account for reset cgroup CPU counters and missing sample intervals.
+Exercise recycling separately as part of the lifecycle and memory profile.
+
 Stop the stack when finished:
 
 ```sh

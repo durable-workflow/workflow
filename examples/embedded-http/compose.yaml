@@ -20,6 +20,7 @@ x-application: &application
     COMPOSER_HOME: /tmp/composer
     DW_V1_ENABLED: "false"
     QUALIFICATION_EAGER: ${QUALIFICATION_EAGER:-false}
+    QUALIFICATION_CLI_QUERY_METRICS: ${QUALIFICATION_CLI_QUERY_METRICS:-}
   volumes:
     - .:/app
     - ${EXAMPLE_STATE_DIRECTORY:-./data}:/state
@@ -56,7 +57,7 @@ services:
 
   queue:
     <<: *application
-    command: php artisan queue:work database --queue=default --sleep=1 --tries=1 --timeout=60 --max-jobs=500
+    command: php artisan queue:work database --queue=default --sleep=1 --tries=1 --timeout=60 --max-jobs=${EXAMPLE_QUEUE_MAX_JOBS:-500}
     depends_on:
       prepare:
         condition: service_completed_successfully
