@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\Events\TransactionRolledBack;
@@ -40,10 +41,12 @@ final class SqliteTransactionTest extends TestCase
             'driver' => 'sqlite',
         ]);
         $container = new Container();
+        $container->instance('config', new Repository());
         $this->events = new Dispatcher($container);
         $this->connection->setEventDispatcher($this->events);
         $this->previousApplication = Facade::getFacadeApplication();
         Facade::setFacadeApplication($container);
+        Facade::clearResolvedInstance('config');
         DB::swap(new class($this->connection) {
             public function __construct(
                 private readonly SQLiteConnection $database
@@ -65,6 +68,7 @@ final class SqliteTransactionTest extends TestCase
         }
         $this->connection->disconnect();
         DB::clearResolvedInstance('db');
+        Facade::clearResolvedInstance('config');
         Facade::setFacadeApplication($this->previousApplication);
         foreach (['', '-wal', '-shm'] as $suffix) {
             if (is_file($this->path . $suffix)) {
@@ -93,6 +97,62 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(0, $result);
         $this->assertSame(2, $calls);
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+        $this->assertSame(0, $this->connection->transactionLevel());
+        $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
+    public function testConfiguredStorageMutationRollsBackItsOwnRoot(): void
+    {
+        $primary = $this->separateApplicationConnection();
+        $boundStorage = false;
+        $storageActive = false;
+        $primaryActive = false;
+        try {
+            SqliteTransaction::run(function ($database) use (
+                $primary,
+                &$boundStorage,
+                &$storageActive,
+                &$primaryActive
+            ): void {
+                $boundStorage = $database === $this->connection;
+                $storageActive = $this->connection->getPdo()
+                    ->inTransaction();
+                $primaryActive = $primary->getPdo()
+                    ->inTransaction();
+                $this->connection->update('UPDATE state SET value=value+1 WHERE id=1');
+                $this->connection->insert('INSERT INTO state VALUES (1,99)');
+            });
+            $this->fail('The real constraint failure must propagate.');
+        } catch (PDOException $exception) {
+            $this->assertSame(19, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(0, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+        $this->assertTrue($boundStorage);
+        $this->assertTrue($storageActive);
+        $this->assertFalse($primaryActive);
+        $this->assertSame(0, $primary->transactionLevel());
+        $this->assertSame(0, $this->connection->transactionLevel());
+        $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
+    public function testConfiguredStorageRetriesItsFreshWalSnapshot(): void
+    {
+        $primary = $this->separateApplicationConnection();
+        $writer = $this->writer();
+        $calls = 0;
+        SqliteTransaction::run(function ($database) use ($writer, $primary, &$calls): void {
+            $this->assertSame($this->connection, $database);
+            $this->assertFalse($primary->getPdo()->inTransaction());
+            $calls++;
+            $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+            if ($calls === 1) {
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+            }
+            $this->connection->update('UPDATE state SET value=value+1 WHERE id=1');
+        });
+        $this->assertSame(2, $calls);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+        $this->assertSame(0, $primary->transactionLevel());
         $this->assertSame(0, $this->connection->transactionLevel());
         $this->assertFalse($this->connection->getPdo()->inTransaction());
     }
@@ -399,6 +459,28 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, $calls);
         $this->assertSame(0, $this->connection->transactionLevel());
         $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
+    private function separateApplicationConnection(): SQLiteConnection
+    {
+        $primary = new SQLiteConnection(new PDO('sqlite::memory:'), ':memory:', '', [
+            'driver' => 'sqlite',
+        ]);
+        Facade::getFacadeApplication()->make('config')->set('workflows.storage.connection', 'engine');
+        DB::swap(new class($primary, $this->connection) {
+            public function __construct(
+                private SQLiteConnection $primary,
+                private SQLiteConnection $storage
+            ) {
+            }
+
+            public function connection(?string $name = null): SQLiteConnection
+            {
+                return $name === 'engine' ? $this->storage : $this->primary;
+            }
+        });
+
+        return $primary;
     }
 
     private function writer(): PDO
