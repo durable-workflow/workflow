@@ -9,4 +9,5 @@ Route::middleware('qualification')->group(function (): void {
     Route::get('/workflows/{instance}/query', [QualificationController::class, 'query']);
     Route::post('/workflows/{instance}/signal', [QualificationController::class, 'signal']);
     Route::post('/workflows/{instance}/cancel', [QualificationController::class, 'cancel']);
+    Route::post('/workflows/{instance}/request-cancellation', [QualificationController::class, 'requestCancellation']);
 });

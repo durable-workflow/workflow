@@ -9,8 +9,9 @@ x-application: &application
     APP_ENV: production
     APP_DEBUG: "false"
     APP_KEY: ${APP_KEY:?Set a local application key before starting}
-    DB_CONNECTION: qualified
+    DB_CONNECTION: ${EXAMPLE_DB_CONNECTION:-qualified}
     DB_DATABASE: /state/workflow.sqlite
+    DB_ALT_DATABASE: /state/alternate.sqlite
     QUEUE_CONNECTION: database
     CACHE_STORE: file
     SESSION_DRIVER: array
@@ -28,7 +29,7 @@ services:
     command: >-
       sh -ec 'mkdir -p /state/storage/framework/cache/data /state/storage/framework/sessions
       /state/storage/framework/views /state/storage/logs;
-      touch /state/workflow.sqlite;
+      touch /state/workflow.sqlite /state/alternate.sqlite;
       composer install --no-dev --no-interaction --prefer-dist;
       test -x rr || php vendor/bin/rr get-binary --filter=2025.1.15 --no-interaction;
       php artisan octane:install --server=roadrunner --no-interaction;

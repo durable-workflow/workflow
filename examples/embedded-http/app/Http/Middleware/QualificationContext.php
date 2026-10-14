@@ -52,7 +52,7 @@ final class QualificationContext
                 'queries' => $metrics->queries, 'history_queries' => $metrics->historyQueries,
                 'connections' => array_keys($metrics->connections),
             ]);
-            Log::withoutContext();
+            Log::withoutContext(array_keys($context));
         }
     }
 }

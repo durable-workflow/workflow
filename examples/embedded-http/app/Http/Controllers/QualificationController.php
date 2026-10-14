@@ -13,9 +13,13 @@ final class QualificationController
     public function start(Request $request)
     {
         $input = $request->validate(['instance_id' => ['required', 'string', 'max:80'],
-            'mode' => ['required', 'in:fast,timer,signal,cancel,continue,fault']]);
+            'mode' => ['required', 'in:fast,timer,signal,cancel,continue,fault,cleanup']]);
         $identity = $request->attributes->get('qualification_identity');
-        $workflowClass = $input['mode'] === 'fault' ? \App\Workflows\FaultWorkflow::class : HttpWorkflow::class;
+        $workflowClass = match ($input['mode']) {
+            'fault' => \App\Workflows\FaultWorkflow::class,
+            'cleanup' => \App\Workflows\CleanupWorkflow::class,
+            default => HttpWorkflow::class,
+        };
         $stub = WorkflowStub::make($workflowClass, $input['instance_id'], $identity['namespace']);
         $stub->start($identity['user'], $input['mode']);
 
@@ -27,7 +31,7 @@ final class QualificationController
         $stub = $this->load($request, $instance);
 
         return response()->json(['instance_id' => $instance, 'run_id' => $stub->runId(),
-            'status' => $stub->status(), 'output' => $stub->output()]);
+            'status' => $stub->status(), 'output' => $stub->output(), 'memo' => $stub->memo()]);
     }
 
     public function query(Request $request, string $instance)
@@ -48,6 +52,14 @@ final class QualificationController
         $command = $this->load($request, $instance)->cancel('qualification user cancellation');
 
         return response()->json(['accepted' => $command->accepted(), 'outcome' => $command->outcome()]);
+    }
+
+    public function requestCancellation(Request $request, string $instance)
+    {
+        $command = $this->load($request, $instance)->requestCancellation('qualification cooperative cleanup', 30);
+
+        return response()->json(['accepted' => $command->accepted(), 'outcome' => $command->outcome(),
+            'command_id' => $command->commandId()]);
     }
 
     private function load(Request $request, string $instance): WorkflowStub

@@ -15,7 +15,7 @@ There is no measured performance recommendation yet.
 Keep storage connections, configured models and backend authority fixed for
 each process. Pass an authenticated namespace to workflow operations. Resolve
 request data inside the current request, including in services resolved at
-boot. Restore logging context when a request ends.
+boot. Clear request-owned logging fields when a request ends.
 
 The example uses synthetic users and application-owned API routes for start,
 status, result, signal, query and terminal cancellation. Its V2 workflows use
