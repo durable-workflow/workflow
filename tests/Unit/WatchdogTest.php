@@ -365,6 +365,30 @@ final class WatchdogTest extends TestCase
         }
     }
 
+    public function testWakeBeforeLeaseExpiryDoesNotPostponeReplacement(): void
+    {
+        config([
+            'cache.default' => 'array',
+        ]);
+        Queue::fake();
+        $this->freezeTime();
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis');
+        $originalGeneration = Cache::get('workflow:watchdog');
+        $this->travel(359)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 1);
+        $this->assertSame($originalGeneration, Cache::get('workflow:watchdog'));
+
+        $this->travel(2)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 2);
+        $this->assertNotSame($originalGeneration, Cache::get('workflow:watchdog'));
+    }
+
     public function testHandleTouchesWorkflowBeforeRedispatch(): void
     {
         Queue::fake();
