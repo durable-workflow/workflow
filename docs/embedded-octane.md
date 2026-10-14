@@ -6,9 +6,10 @@ The database owns histories, activity outcomes and timer deadlines.
 
 The [embedded HTTP example](../examples/embedded-http/README.md) compares
 RoadRunner with nginx/PHP-FPM using the same application and dependencies.
-Qualification and measurements are in progress in
-[the embedded HTTP qualification](https://github.com/durable-workflow/workflow/issues/747).
-There is no measured performance recommendation yet.
+The [measured application profile](embedded-octane-measurements.md) reports
+three pairs, a drift control, lifecycle soak and failed upper-load originals.
+It measured lower median HTTP latency and a larger memory footprint.
+Workflow completion did not improve consistently.
 
 ## Application boundaries
 

@@ -1,9 +1,10 @@
 # Embedded HTTP example
 
-This optional Laravel application is being qualified for Workflow #747.
+This optional Laravel application is qualified through Workflow #747.
 It exercises V2 workflows through authenticated application routes and a
-separate Laravel queue worker. Measurements and the final recommendation are
-pending. The exact package set is in `composer.lock`.
+separate Laravel queue worker. The [measured profile and limits](../../docs/embedded-octane-measurements.md)
+report three comparisons, lifecycle checks and unsuccessful upper-load originals.
+The exact package set is in `composer.lock`.
 
 The initial profile uses Linux amd64, SQLite WAL, a database queue and file
 cache. It has two HTTP PHP workers, one queue worker and nginx. Their combined
