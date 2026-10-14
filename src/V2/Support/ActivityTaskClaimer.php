@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -45,7 +44,11 @@ final class ActivityTaskClaimer
         ?string $leaseOwner = null,
         bool $releaseFutureTasks = false,
     ): array {
-        return DB::transaction(static function () use ($taskId, $leaseOwner, $releaseFutureTasks): array {
+        return SqliteTransaction::forTask($taskId, static function () use (
+            $taskId,
+            $leaseOwner,
+            $releaseFutureTasks
+        ): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
