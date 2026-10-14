@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -31,12 +32,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $this->artisan('migrate', [
             '--force' => true,
         ])->run();
-        DB::statement('CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            queue TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
-            reserved_at INTEGER, available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
-        DB::statement('CREATE TABLE IF NOT EXISTS failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            uuid TEXT NOT NULL UNIQUE, connection TEXT NOT NULL, queue TEXT NOT NULL,
-            payload TEXT NOT NULL, exception TEXT NOT NULL, failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+        $this->createQueueTables(DB::connection());
         DB::statement('CREATE TABLE contention_probe (id INTEGER PRIMARY KEY)');
         SqliteContentionActivity::$invocations = 0;
     }
@@ -53,7 +49,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
 
     public static function phases(): array
     {
-        return [
+        $phases = [
             'workflow claim' => ['workflow_claim'],
             'workflow execution admission' => ['workflow_execution'],
             'activity claim' => ['activity_claim'],
@@ -63,12 +59,32 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             'timer claim admission' => ['timer_claim'],
             'timer firing admission' => ['timer_fire'],
         ];
+        $cases = [];
+        foreach ($phases as $name => [$phase]) {
+            $cases[$name] = [$phase, false];
+            $cases[$name . ' with separate application database'] = [$phase, true];
+        }
+
+        return $cases;
     }
 
     #[DataProvider('phases')]
-    public function testOriginalRunCompletesOnceAfterRealWalWrite(string $phase): void
+    public function testOriginalRunCompletesOnceAfterRealWalWrite(string $phase, bool $separate): void
     {
-        $connection = DB::connection();
+        if ($separate) {
+            config()->set('database.connections.application_sqlite', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+            DB::setDefaultConnection('application_sqlite');
+            $this->createQueueTables(DB::connection());
+            config()
+                ->set('queue.failed.database', 'application_sqlite');
+            $this->assertFalse(DB::connection()->getSchemaBuilder()->hasTable('workflow_tasks'));
+        }
+        $connection = DB::connection('contention_sqlite');
         $writer = new PDO('sqlite:' . $this->path);
         $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $writer->exec('PRAGMA busy_timeout=20');
@@ -197,6 +213,8 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $this->assertSame(0, DB::table('jobs')->count());
         $this->assertSame(0, $connection->transactionLevel());
         $this->assertFalse($connection->getPdo()->inTransaction());
+        $this->assertSame(0, DB::connection()->transactionLevel());
+        $this->assertFalse(DB::connection()->getPdo()->inTransaction());
     }
 
     protected function getPackageProviders($app): array
@@ -233,6 +251,16 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         ]);
         $app['config']->set('cache.default', 'array');
         $app['config']->set('logging.default', 'stderr');
+    }
+
+    private function createQueueTables(Connection $database): void
+    {
+        $database->statement('CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL,
+            reserved_at INTEGER, available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
+        $database->statement('CREATE TABLE IF NOT EXISTS failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL UNIQUE, connection TEXT NOT NULL, queue TEXT NOT NULL,
+            payload TEXT NOT NULL, exception TEXT NOT NULL, failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
     }
 
     private function workOnce(): void
