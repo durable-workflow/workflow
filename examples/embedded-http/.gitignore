@@ -6,4 +6,5 @@
 /bootstrap/cache/*
 !/bootstrap/cache/.gitignore
 /receipts/
+!/composer.lock
 .rr.yaml

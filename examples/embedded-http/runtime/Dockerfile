@@ -15,4 +15,3 @@ COPY --from=composer /usr/bin/composer /usr/bin/composer
 COPY opcache.ini /usr/local/etc/php/conf.d/99-qualification.ini
 WORKDIR /app
 USER 1000:1000
-
