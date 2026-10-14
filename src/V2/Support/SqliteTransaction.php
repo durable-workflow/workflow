@@ -30,6 +30,7 @@ final class SqliteTransaction
             return $connection->transaction($operation, $attempts ?? 1);
         }
 
+        $connection->reconnectIfMissingConnection();
         $pdo = $connection->getPdo();
         if ($pdo->inTransaction()) {
             return $connection->transaction($operation, $attempts ?? 1);
@@ -61,7 +62,7 @@ final class SqliteTransaction
                     } catch (Throwable $exception) {
                         $mutationError = $exception;
                         $failedInRoot = $database->transactionLevel() === 1
-                            && $database->getPdo() === $pdo && $pdo->inTransaction();
+                            && $database->getRawPdo() === $pdo && $pdo->inTransaction();
 
                         throw $exception;
                     }
@@ -74,7 +75,7 @@ final class SqliteTransaction
                 if ($exception !== $mutationError || ! $failedInRoot || $returned || $bodyMustNotRepeat
                     || $attempt >= $maximumAttempts || hrtime(true) >= $deadline
                     || ! self::isContention($exception) || $connection->transactionLevel() !== 0
-                    || $connection->getPdo() !== $pdo || $pdo->inTransaction()) {
+                    || $connection->getRawPdo() !== $pdo || $pdo->inTransaction()) {
                     throw $exception;
                 }
 

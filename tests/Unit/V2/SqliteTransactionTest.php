@@ -59,8 +59,8 @@ final class SqliteTransactionTest extends TestCase
 
     protected function tearDown(): void
     {
-        $pdo = $this->connection->getPdo();
-        if ($pdo->inTransaction()) {
+        $pdo = $this->connection->getRawPdo();
+        if ($pdo instanceof PDO && $pdo->inTransaction()) {
             $pdo->rollBack();
         }
         $this->connection->disconnect();
@@ -223,6 +223,77 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, $calls);
         $this->assertSame($replacement, $this->connection->getPdo());
         $this->assertSame(0, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testDisconnectedPdoAfterRollbackPreservesOriginalError(): void
+    {
+        $writer = $this->writer();
+        $reconnections = 0;
+        $this->connection->setReconnector(static function () use (&$reconnections): void {
+            $reconnections++;
+            throw new \RuntimeException('The retry guard must not reconnect.');
+        });
+        $this->events->listen(TransactionRolledBack::class, function (): void {
+            $this->connection->setPdo(null);
+        });
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use ($writer, &$calls): void {
+                $calls++;
+                $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+                $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+            });
+            $this->fail('The disconnected transaction must keep its native error.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(1, $calls);
+        $this->assertSame(0, $reconnections);
+        $this->assertNull($this->connection->getRawPdo());
+    }
+
+    public function testLazyPdoReplacementAfterRollbackDoesNotOpenConnection(): void
+    {
+        $writer = $this->writer();
+        $opened = 0;
+        $replacement = static function () use (&$opened): PDO {
+            $opened++;
+            throw new \RuntimeException('The rollback guard must not open the replacement.');
+        };
+        $this->events->listen(TransactionRolledBack::class, function () use ($replacement): void {
+            $this->connection->setPdo($replacement);
+        });
+        try {
+            SqliteTransaction::run(function () use ($writer): void {
+                $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+                $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+            });
+            $this->fail('The lazy replacement must keep the native error.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(0, $opened);
+        $this->assertSame($replacement, $this->connection->getRawPdo());
+    }
+
+    public function testInitiallyDisconnectedConnectionUsesNormalReconnectOnce(): void
+    {
+        $this->connection->disconnect();
+        $connections = 0;
+        $this->connection->setReconnector(function ($database) use (&$connections): void {
+            $connections++;
+            $database->setPdo(new PDO('sqlite:' . $this->path));
+        });
+        $calls = 0;
+        SqliteTransaction::run(function () use (&$calls): void {
+            $calls++;
+            $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+        });
+        $this->assertSame(1, $connections);
+        $this->assertSame(1, $calls);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
     }
 
     public function testExplicitExistingAttemptLimitIsPreserved(): void
