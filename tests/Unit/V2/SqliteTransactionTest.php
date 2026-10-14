@@ -185,6 +185,80 @@ final class SqliteTransactionTest extends TestCase
         $this->assertFalse($this->connection->getPdo()->inTransaction());
     }
 
+    public function testConstraintViolationDoesNotRepeatMutation(): void
+    {
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use (&$calls): void {
+                $calls++;
+                $this->connection->insert('INSERT INTO state VALUES (1, 99)');
+            });
+            $this->fail('The constraint violation must propagate.');
+        } catch (PDOException $exception) {
+            $this->assertSame(19, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(1, $calls);
+        $this->assertSame(0, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testChangedPdoAfterRollbackDoesNotRepeatMutation(): void
+    {
+        $writer = $this->writer();
+        $replacement = new PDO('sqlite:' . $this->path);
+        $this->events->listen(TransactionRolledBack::class, function () use ($replacement): void {
+            $this->connection->setPdo($replacement);
+        });
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use ($writer, &$calls): void {
+                $calls++;
+                $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+                $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+            });
+            $this->fail('Connection replacement must propagate the original failure.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(1, $calls);
+        $this->assertSame($replacement, $this->connection->getPdo());
+        $this->assertSame(0, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testExplicitExistingAttemptLimitIsPreserved(): void
+    {
+        $writer = $this->writer();
+        $calls = 0;
+        SqliteTransaction::run(function () use ($writer, &$calls): void {
+            $calls++;
+            $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+            if ($calls < 5) {
+                $writer->exec('UPDATE state SET value=value+1 WHERE id=2');
+            }
+            $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+        }, 5);
+        $this->assertSame(5, $calls);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testExplicitSingleAttemptDoesNotAddRetries(): void
+    {
+        $writer = $this->writer();
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use ($writer, &$calls): void {
+                $calls++;
+                $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+                $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+            }, 1);
+            $this->fail('The configured one-attempt failure must propagate.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(1, $calls);
+    }
+
     private function writer(): PDO
     {
         $writer = new PDO('sqlite:' . $this->path);

@@ -19,21 +19,23 @@ final class SqliteTransaction
      *
      * @template T
      * @param Closure(Connection): T $operation
+     * @param int|null $attempts Explicit existing attempt limits also pass through to other drivers.
      * @return T
      */
-    public static function run(Closure $operation): mixed
+    public static function run(Closure $operation, ?int $attempts = null): mixed
     {
         $connection = DB::connection();
         if ($connection->getDriverName() !== 'sqlite' || $connection->transactionLevel() !== 0) {
-            return $connection->transaction($operation);
+            return $connection->transaction($operation, $attempts ?? 1);
         }
 
         $pdo = $connection->getPdo();
         if ($pdo->inTransaction()) {
-            return $connection->transaction($operation);
+            return $connection->transaction($operation, $attempts ?? 1);
         }
 
         $deadline = hrtime(true) + 5_000_000_000;
+        $maximumAttempts = max(1, $attempts ?? 3);
         for ($attempt = 1; ; $attempt++) {
             $failedInRoot = false;
             $returned = false;
@@ -60,7 +62,7 @@ final class SqliteTransaction
                     return $result;
                 });
             } catch (Throwable $exception) {
-                if ($exception !== $mutationError || ! $failedInRoot || $returned || $attempt >= 3 || hrtime(
+                if ($exception !== $mutationError || ! $failedInRoot || $returned || $attempt >= $maximumAttempts || hrtime(
                     true
                 ) >= $deadline
                     || ! self::isContention($exception) || $connection->transactionLevel() !== 0
