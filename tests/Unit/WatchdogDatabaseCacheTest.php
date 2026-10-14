@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
+use Throwable;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
@@ -127,6 +128,25 @@ final class WatchdogDatabaseCacheTest extends TestCase
         $this->assertNotSame($firstGeneration, Cache::get('workflow:watchdog'));
     }
 
+    public function testWakeBeforeLeaseExpiryDoesNotPostponeDatabaseReplacement(): void
+    {
+        $this->createPendingWorkflow();
+        Watchdog::wake('redis');
+        $originalGeneration = Cache::get('workflow:watchdog');
+
+        $this->travel(359)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 1);
+        $this->assertSame($originalGeneration, Cache::get('workflow:watchdog'));
+
+        $this->travel(2)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 2);
+        $this->assertNotSame($originalGeneration, Cache::get('workflow:watchdog'));
+    }
+
     public function testFailedDispatchReleasesTheRenewedThrottleForImmediateRetry(): void
     {
         $this->seedExpiredThrottle();
@@ -181,6 +201,121 @@ final class WatchdogDatabaseCacheTest extends TestCase
 
         $this->expectException(QueryException::class);
         Watchdog::wake('redis');
+    }
+
+    public function testIndependentWorkersConvergeAfterDatabaseThrottleExpiry(): void
+    {
+        if (DB::connection('watchdog-cache')->getDriverName() !== 'mysql') {
+            $this->markTestSkipped('Independent MySQL connections are required.');
+        }
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('Process control is required.');
+        }
+
+        $this->createPendingWorkflow();
+        foreach ([false, true] as $expired) {
+            Cache::forget('workflow:watchdog');
+            Cache::forget('workflow:watchdog:looping');
+            if ($expired) {
+                $this->seedExpiredThrottle();
+            }
+            DB::purge();
+            DB::purge('watchdog-cache');
+            Cache::purge('watchdog');
+            $children = [];
+            try {
+                for ($worker = 0; $worker < 4; $worker++) {
+                    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                    $this->assertIsArray($sockets);
+                    $pid = pcntl_fork();
+                    $this->assertNotSame(-1, $pid);
+                    if ($pid === 0) {
+                        fclose($sockets[0]);
+                        stream_set_timeout($sockets[1], 10);
+                        $ok = false;
+                        try {
+                            DB::reconnect();
+                            DB::reconnect('watchdog-cache');
+                            Cache::purge('watchdog');
+                            $id = DB::connection('watchdog-cache')->selectOne('SELECT CONNECTION_ID() AS id')->id;
+                            fwrite($sockets[1], json_encode([
+                                'connection_id' => $id,
+                            ], JSON_THROW_ON_ERROR) . "\n");
+                            if (fgets($sockets[1]) !== "go\n") {
+                                throw new RuntimeException('Wake barrier was not released.');
+                            }
+                            Queue::fake();
+                            for ($wake = 0; $wake < 25; $wake++) {
+                                Watchdog::wake('redis');
+                            }
+                            fwrite($sockets[1], json_encode([
+                                'queued' => Queue::pushed(Watchdog::class)->count(),
+                            ], JSON_THROW_ON_ERROR) . "\n");
+                            $ok = true;
+                        } catch (Throwable $error) {
+                            fwrite($sockets[1], json_encode([
+                                'error' => $error->getMessage(),
+                            ], JSON_THROW_ON_ERROR) . "\n");
+                        } finally {
+                            DB::disconnect();
+                            DB::disconnect('watchdog-cache');
+                            fclose($sockets[1]);
+                        }
+                        exit($ok ? 0 : 1);
+                    }
+                    fclose($sockets[1]);
+                    stream_set_timeout($sockets[0], 10);
+                    $children[$pid] = $sockets[0];
+                }
+
+                $connectionIds = [];
+                foreach ($children as $socket) {
+                    $ready = $this->readWorkerMessage($socket);
+                    $connectionIds[] = $ready['connection_id'];
+                }
+                $this->assertCount(4, array_unique($connectionIds));
+                foreach ($children as $socket) {
+                    fwrite($socket, "go\n");
+                }
+                $queued = 0;
+                foreach ($children as $pid => $socket) {
+                    $result = $this->readWorkerMessage($socket);
+                    $queued += $result['queued'];
+                    pcntl_waitpid($pid, $status);
+                    unset($children[$pid]);
+                    fclose($socket);
+                    $this->assertTrue(pcntl_wifexited($status));
+                    $this->assertSame(0, pcntl_wexitstatus($status));
+                }
+                $this->assertSame(1, $queued);
+                DB::reconnect('watchdog-cache');
+                $this->assertSame(Cache::get('workflow:watchdog'), Cache::get('workflow:watchdog:looping'));
+            } finally {
+                foreach ($children as $pid => $socket) {
+                    posix_kill($pid, SIGKILL);
+                    pcntl_waitpid($pid, $status);
+                    fclose($socket);
+                }
+                DB::purge();
+                DB::purge('watchdog-cache');
+                Cache::purge('watchdog');
+            }
+        }
+    }
+
+    /**
+     * @param resource $socket
+     * @return array<string, mixed>
+     */
+    private function readWorkerMessage($socket): array
+    {
+        $line = fgets($socket);
+        $this->assertIsString($line, 'Independent worker did not respond.');
+        $message = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($message);
+        $this->assertArrayNotHasKey('error', $message, $message['error'] ?? '');
+
+        return $message;
     }
 
     private function competeAfterThrottleRead(bool $existing): void

@@ -134,7 +134,8 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         $store = $cache->getStore();
 
         if (! $store instanceof DatabaseStore || $store->getConnection() instanceof SqlServerConnection) {
-            return $cache->add(self::LOOP_THROTTLE_KEY, $generation, $seconds);
+            return ! $cache->has(self::CACHE_KEY)
+                && $cache->add(self::LOOP_THROTTLE_KEY, $generation, $seconds);
         }
 
         // DatabaseStore::add() deletes the expired row before inserting a new one. Concurrent
@@ -146,6 +147,15 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
             ->useWritePdo()
             ->where('key', $key);
         $now = Carbon::now()->getTimestamp();
+        $markerExpiration = $store->getConnection()
+            ->table($table)
+            ->useWritePdo()
+            ->where('key', $store->getPrefix() . self::CACHE_KEY)
+            ->value('expiration');
+        if ($markerExpiration !== null && $markerExpiration >= $now) {
+            // An active chain must not postpone its own replacement by a fresh throttle window.
+            $seconds = min($seconds, max(1, (int) $markerExpiration - $now));
+        }
         $expiration = $query->value('expiration');
         $values = [
             'value' => serialize($generation),
