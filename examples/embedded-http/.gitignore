@@ -1,0 +1,9 @@
+/vendor/
+/rr
+/.env
+/data/
+/storage/
+/bootstrap/cache/*
+!/bootstrap/cache/.gitignore
+/receipts/
+.rr.yaml

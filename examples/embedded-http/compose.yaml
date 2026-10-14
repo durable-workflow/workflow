@@ -1,0 +1,77 @@
+name: dw-embedded-http-example
+
+x-application: &application
+  image: ${EXAMPLE_RUNTIME_IMAGE:-dw-embedded-http-example:local}
+  build: ./runtime
+  user: "1000:1000"
+  working_dir: /app
+  environment: &environment
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Set a local application key before starting}
+    DB_CONNECTION: qualified
+    DB_DATABASE: /state/workflow.sqlite
+    QUEUE_CONNECTION: database
+    CACHE_STORE: file
+    SESSION_DRIVER: array
+    LOG_CHANNEL: single
+    COMPOSER_HOME: /tmp/composer
+    DW_V1_ENABLED: "false"
+    QUALIFICATION_EAGER: ${QUALIFICATION_EAGER:-false}
+  volumes:
+    - .:/app
+    - ${EXAMPLE_STATE_DIRECTORY:-./data}:/state
+
+services:
+  prepare:
+    <<: *application
+    command: >-
+      sh -ec 'mkdir -p /state/storage/framework/cache/data /state/storage/framework/sessions
+      /state/storage/framework/views /state/storage/logs;
+      touch /state/workflow.sqlite;
+      composer install --no-dev --no-interaction --prefer-dist;
+      test -x rr || php vendor/bin/rr get-binary --filter=2025.1.15 --no-interaction;
+      php artisan octane:install --server=roadrunner --no-interaction;
+      php artisan migrate --force;
+      php artisan config:cache'
+    cpus: 1
+    mem_limit: 1g
+    memswap_limit: 1g
+
+  http-app:
+    <<: *application
+    command: php artisan octane:start --server=roadrunner --host=0.0.0.0 --port=8000 --workers=2 --max-requests=500
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    cpus: 0.9
+    mem_limit: 640m
+    memswap_limit: 640m
+
+  queue:
+    <<: *application
+    command: php artisan queue:work database --queue=default --sleep=1 --tries=1 --timeout=60 --max-jobs=500
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 65s
+    cpus: 1
+    mem_limit: 320m
+    memswap_limit: 320m
+
+  nginx:
+    image: nginx@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    user: "1000:1000"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:${EXAMPLE_HTTP_PORT:-8087}:8080"
+    volumes:
+      - ./runtime/nginx-octane.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - http-app
+    restart: unless-stopped
+    cpus: 0.1
+    mem_limit: 64m
+    memswap_limit: 64m
