@@ -1,0 +1,127 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use OpenTelemetry\API\Baggage\Baggage;
+use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
+use OpenTelemetry\API\Globals;
+use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
+use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\Context\Context;
+use Throwable;
+
+/**
+ * Bounded telemetry metadata, kept separate from business payloads and authority.
+ *
+ * @internal
+ */
+final class TraceCarrier
+{
+    private const SCHEMA = 'durable-workflow.trace-context';
+
+    private const LIMITS = [
+        'traceparent' => 256,
+        'tracestate' => 512,
+        'baggage' => 2048,
+    ];
+
+    /**
+     * @param list<string> $baggageAllowlist
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function capture(array $baggageAllowlist = []): ?array
+    {
+        if (! class_exists(Globals::class)) {
+            return null;
+        }
+
+        try {
+            $carrier = [];
+            Globals::propagator()->inject($carrier);
+
+            // Applications may also inject unrelated propagation formats.
+            $carrier = array_intersect_key($carrier, self::LIMITS);
+
+            return self::normalize([
+                'schema' => self::SCHEMA,
+                'version' => 1,
+                'carrier' => $carrier,
+            ], $baggageAllowlist);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @param list<string> $baggageAllowlist
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function normalize(mixed $value, array $baggageAllowlist = []): ?array
+    {
+        if (! is_array($value) || ($value['schema'] ?? null) !== self::SCHEMA
+            || ($value['version'] ?? null) !== 1 || ! is_array($value['carrier'] ?? null)
+            || array_diff(array_keys($value), ['schema', 'version', 'carrier']) !== []
+            || ! class_exists(TraceContextPropagator::class)) {
+            return null;
+        }
+
+        $carrier = $value['carrier'];
+        if (! isset($carrier['traceparent']) || array_diff(array_keys($carrier), array_keys(self::LIMITS)) !== []) {
+            return null;
+        }
+        foreach ($carrier as $key => $header) {
+            if (! is_string($header) || strlen($header) > self::LIMITS[$key]) {
+                return null;
+            }
+        }
+
+        try {
+            if (strlen(json_encode($value, JSON_THROW_ON_ERROR)) > 4096) {
+                return null;
+            }
+
+            // Invalid metadata must never fall back to a worker's ambient span.
+            $context = TraceContextPropagator::getInstance()->extract($carrier, context: Context::getRoot());
+            if (! Span::fromContext($context)->getContext()->isValid()) {
+                return null;
+            }
+
+            $normalized = [];
+            TraceContextPropagator::getInstance()->inject($normalized, context: $context);
+            if ($baggageAllowlist !== [] && isset($carrier['baggage'])) {
+                $baggageContext = BaggagePropagator::getInstance()->extract($carrier, context: Context::getRoot());
+                $builder = Baggage::getBuilder();
+                $count = 0;
+                foreach (Baggage::fromContext($baggageContext)->getAll() as $key => $entry) {
+                    if (! in_array($key, $baggageAllowlist, true)) {
+                        continue;
+                    }
+                    if (++$count > 32) {
+                        return null;
+                    }
+                    $builder->set($key, $entry->getValue(), $entry->getMetadata());
+                }
+                BaggagePropagator::getInstance()->inject(
+                    $normalized,
+                    context: $builder->build()
+                        ->storeInContext(Context::getRoot()),
+                );
+            }
+
+            if (isset($normalized['baggage']) && strlen($normalized['baggage']) > self::LIMITS['baggage']) {
+                return null;
+            }
+            $result = [
+                'schema' => self::SCHEMA,
+                'version' => 1,
+                'carrier' => $normalized,
+            ];
+
+            return strlen(json_encode($result, JSON_THROW_ON_ERROR)) <= 4096 ? $result : null;
+        } catch (Throwable) {
+            return null;
+        }
+    }
+}
