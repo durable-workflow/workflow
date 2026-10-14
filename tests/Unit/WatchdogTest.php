@@ -352,6 +352,7 @@ final class WatchdogTest extends TestCase
 
         try {
             Watchdog::wake('redis');
+            Queue::assertPushed(Watchdog::class, 1);
 
             Carbon::setTestNow(now()->addSeconds(Watchdog::DEFAULT_TIMEOUT));
             Watchdog::wake('redis');
@@ -363,6 +364,31 @@ final class WatchdogTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function testWakeBeforeLeaseExpiryDoesNotPostponeReplacement(): void
+    {
+        config([
+            'cache.default' => 'array',
+        ]);
+        Queue::fake();
+        $this->freezeTime();
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis');
+        $originalGeneration = Cache::get('workflow:watchdog');
+
+        $this->travel(359)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 1);
+        $this->assertSame($originalGeneration, Cache::get('workflow:watchdog'));
+
+        $this->travel(2)
+            ->seconds();
+        Watchdog::wake('redis');
+        Queue::assertPushed(Watchdog::class, 2);
+        $this->assertNotSame($originalGeneration, Cache::get('workflow:watchdog'));
     }
 
     public function testHandleTouchesWorkflowBeforeRedispatch(): void
@@ -864,6 +890,73 @@ final class WatchdogTest extends TestCase
         $sync->handle();
 
         Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testWakeRechecksTheMarkerAfterAcquiringTheChainLock(): void
+    {
+        Queue::fake();
+        $store = new class() extends \Illuminate\Cache\ArrayStore {
+            public function lock($name, $seconds = 0, $owner = null)
+            {
+                $this->put('workflow:watchdog', 'another-worker', 360);
+
+                return parent::lock($name, $seconds, $owner);
+            }
+        };
+        Cache::extend('racing-watchdog', fn () => $this->app['cache']->repository($store));
+        config([
+            'cache.default' => 'racing-watchdog',
+            'cache.stores.racing-watchdog' => [
+                'driver' => 'racing-watchdog',
+            ],
+        ]);
+
+        Watchdog::wake('redis');
+
+        Queue::assertNothingPushed();
+        $this->assertSame('another-worker', Cache::get('workflow:watchdog'));
+    }
+
+    public function testRedisWakeThrottleUsesNativeAtomicAdd(): void
+    {
+        if (! class_exists(\Redis::class) || ! (getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null))) {
+            $this->markTestSkipped('Redis is not available in this environment.');
+        }
+
+        config([
+            'cache.default' => 'redis',
+        ]);
+        Queue::fake();
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis', 'high');
+        Watchdog::wake('redis', 'low');
+
+        Queue::assertPushed(Watchdog::class, 1);
+        Queue::assertPushed(Watchdog::class, static fn (Watchdog $watchdog): bool => $watchdog->queue === 'high');
+    }
+
+    public function testSqlServerKeepsItsSupportedCacheAddOperation(): void
+    {
+        $store = $this->createMock(\Illuminate\Cache\DatabaseStore::class);
+        $store->method('getConnection')
+            ->willReturn($this->createStub(\Illuminate\Database\SqlServerConnection::class));
+        $store->expects($this->once())
+            ->method('add')
+            ->with('workflow:watchdog:looping', $this->callback(static fn ($value): bool => is_string($value)), 60)
+            ->willReturn(false);
+        Cache::extend('sql-server-watchdog', fn () => $this->app['cache']->repository($store));
+        config([
+            'cache.default' => 'sql-server-watchdog',
+            'cache.stores.sql-server-watchdog' => [
+                'driver' => 'sql-server-watchdog',
+            ],
+        ]);
+        Queue::fake();
+
+        Watchdog::wake('redis');
+
+        Queue::assertNothingPushed();
     }
 
     private function createStalePendingWorkflow(array $attributes = []): StoredWorkflow

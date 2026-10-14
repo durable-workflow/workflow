@@ -6,9 +6,11 @@ namespace Workflow;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Cache\DatabaseStore;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\SqlServerConnection;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Carbon;
@@ -55,21 +57,22 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
             $generation = self::newGeneration();
 
+            // Throttle before reading the marker: database cache reads delete expired rows.
+            if (! self::acquireWakeThrottle($generation, self::bootstrapWindow($timeout))) {
+                return;
+            }
+
+            if (Cache::has(self::CACHE_KEY)) {
+                return;
+            }
+
             $watchdog = Cache::lock(self::CHAIN_LOCK_KEY, self::leaseDuration($timeout))
                 ->get(static function () use ($connection, $queue, $timeout, $generation): ?self {
                     if (Cache::has(self::CACHE_KEY)) {
                         return null;
                     }
 
-                    if (! Cache::add(self::LOOP_THROTTLE_KEY, $generation, self::bootstrapWindow($timeout))) {
-                        return null;
-                    }
-
-                    if (! self::hasRecoverablePendingWorkflows($timeout)) {
-                        return null;
-                    }
-
-                    if (Cache::has(self::CACHE_KEY)) {
+                    if (! self::hasRecoverablePendingWorkflows($timeout) || Cache::has(self::CACHE_KEY)) {
                         return null;
                     }
 
@@ -123,6 +126,57 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         if ($nextWatchdog instanceof self) {
             self::dispatch($nextWatchdog, $nextWatchdog->generation, $timeout);
         }
+    }
+
+    private static function acquireWakeThrottle(string $generation, int $seconds): bool
+    {
+        $cache = Cache::store();
+        $store = $cache->getStore();
+
+        if (! $store instanceof DatabaseStore || $store->getConnection() instanceof SqlServerConnection) {
+            return ! $cache->has(self::CACHE_KEY)
+                && $cache->add(self::LOOP_THROTTLE_KEY, $generation, $seconds);
+        }
+
+        // DatabaseStore::add() deletes the expired row before inserting a new one. Concurrent
+        // wake-ups deadlock on that delete/insert cycle, so renew the existing row in place.
+        $table = config('cache.stores.' . Cache::getDefaultDriver() . '.table', 'cache');
+        $key = $store->getPrefix() . self::LOOP_THROTTLE_KEY;
+        $query = $store->getConnection()
+            ->table($table)
+            ->useWritePdo()
+            ->where('key', $key);
+        $now = Carbon::now()->getTimestamp();
+        $markerExpiration = $store->getConnection()
+            ->table($table)
+            ->useWritePdo()
+            ->where('key', $store->getPrefix() . self::CACHE_KEY)
+            ->value('expiration');
+        if ($markerExpiration !== null && $markerExpiration >= $now) {
+            // An active chain must not postpone its own replacement by a fresh throttle window.
+            $seconds = min($seconds, max(1, (int) $markerExpiration - $now));
+        }
+        $expiration = $query->value('expiration');
+        $values = [
+            'value' => serialize($generation),
+            'expiration' => $now + $seconds,
+        ];
+
+        if ($expiration === null) {
+            return $store->getConnection()
+                ->table($table)
+                ->insertOrIgnore([
+                    'key' => $key,
+                    ...$values,
+                ]) === 1;
+        }
+
+        if ($expiration > $now) {
+            return false;
+        }
+
+        return $query->where('expiration', '<=', $now)
+            ->update($values) === 1;
     }
 
     private function claim(int $timeout): bool
