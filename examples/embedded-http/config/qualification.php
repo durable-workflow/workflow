@@ -2,6 +2,7 @@
 
 return [
     'eager' => (bool) env('QUALIFICATION_EAGER', false),
+    'storage_connection' => env('DW_STORAGE_CONNECTION'),
     'users' => [
         'qualification-alpha' => ['user' => 'alpha', 'namespace' => 'qualification-alpha'],
         'qualification-beta' => ['user' => 'beta', 'namespace' => 'qualification-beta'],

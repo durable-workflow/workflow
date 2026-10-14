@@ -79,6 +79,14 @@ regenerating the configuration cache and restarting the processes.
 connection at process boot. It does not switch shared backend authority during
 a request.
 
+To keep the application's queue database separate from workflow storage, set
+`EXAMPLE_DB_CONNECTION=qualified` and `EXAMPLE_WORKFLOW_CONNECTION=qualified_alt`
+before preparing a fresh stack. Jobs remain in `/state/workflow.sqlite`, while
+Workflow models and migrations use `/state/alternate.sqlite`. Regenerate the
+configuration cache and restart both HTTP and queue workers after changing this
+boot-time setting. Pass both paths to `qualification/database.php` when auditing
+this layout.
+
 ## Qualification commands
 
 Run the Node drivers from a separate Node container on the Compose network.

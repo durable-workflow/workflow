@@ -8,6 +8,11 @@ $db = new PDO('sqlite:' . $database);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $db->exec('PRAGMA query_only = ON');
 $db->exec('PRAGMA busy_timeout = 5000');
+$queueDatabase = $argv[3] ?? $database;
+$queue = $queueDatabase === $database ? $db : new PDO('sqlite:' . $queueDatabase);
+$queue->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$queue->exec('PRAGMA query_only = ON');
+$queue->exec('PRAGMA busy_timeout = 5000');
 $runs = $db->prepare('SELECT id, status FROM workflow_runs WHERE workflow_instance_id LIKE ?');
 $runs->execute([$profile . '-%']);
 $rows = $runs->fetchAll(PDO::FETCH_ASSOC);
@@ -30,7 +35,7 @@ echo json_encode([
     'runs' => count($rows),
     'statuses' => array_count_values(array_column($rows, 'status')),
     'tasks' => $tasks->fetchAll(PDO::FETCH_ASSOC),
-    'queue_jobs' => (int) $db->query('SELECT COUNT(*) FROM jobs')->fetchColumn(),
-    'failed_jobs' => (int) $db->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn(),
+    'queue_jobs' => (int) $queue->query('SELECT COUNT(*) FROM jobs')->fetchColumn(),
+    'failed_jobs' => (int) $queue->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn(),
     'timer_due_to_workflow_completion_ms' => $latencies,
 ], JSON_THROW_ON_ERROR), "\n";

@@ -12,6 +12,7 @@ x-application: &application
     DB_CONNECTION: ${EXAMPLE_DB_CONNECTION:-qualified}
     DB_DATABASE: /state/workflow.sqlite
     DB_ALT_DATABASE: /state/alternate.sqlite
+    DW_STORAGE_CONNECTION: ${EXAMPLE_WORKFLOW_CONNECTION:-}
     QUEUE_CONNECTION: database
     CACHE_STORE: file
     SESSION_DRIVER: array
@@ -33,6 +34,7 @@ services:
       composer install --no-dev --no-interaction --prefer-dist;
       test -x rr || php vendor/bin/rr get-binary --filter=2025.1.15 --no-interaction;
       php artisan octane:install --server=roadrunner --no-interaction;
+      php artisan config:clear;
       php artisan migrate --force;
       php artisan config:cache'
     cpus: 1
