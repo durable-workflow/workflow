@@ -1178,7 +1178,16 @@ final class WorkflowStub
             self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
 
             $startedRun = $run;
-        }, self::storageTransactionAttempts());
+        }, self::storageTransactionAttempts(), admission: function (): void {
+            $instance = self::instanceQuery();
+            $key = $instance->getModel()
+                ->getKeyName();
+            $instance->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
+        });
 
         if ($startedRun instanceof WorkflowRun) {
             LifecycleEventDispatcher::workflowStarted($startedRun);

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -82,13 +81,6 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
                     $writer->commit();
                 }
             });
-        DB::listen(static function (QueryExecuted $query) use ($writer, $phase, &$armed, &$injected): void {
-            if ($phase === 'start' && $armed && ! $injected && $query->connection->transactionLevel() === 1
-                && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'workflow_instances')) {
-                $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
-                $injected = true;
-            }
-        });
         $connection->beforeExecuting(static function (string $sql, array $bindings, $database) use (
             $writer,
             $phase,
@@ -114,7 +106,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
                 $admissions++;
                 $matches = $admissions === ($phase === 'timer_fire' ? 2 : 1);
             }
-            if ($phase === 'signal') {
+            if (in_array($phase, ['start', 'signal'], true)) {
                 $matches = str_starts_with($sql, 'update "workflow_instances" set "id" =');
             }
             if (! $matches) {
@@ -123,7 +115,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             if ($database->transactionLevel() !== 1 || ! $database->getPdo()->inTransaction()) {
                 throw new RuntimeException('Expected the original root mutation transaction.');
             }
-            if ($writeAdmission || $phase === 'signal') {
+            if ($writeAdmission || in_array($phase, ['start', 'signal'], true)) {
                 $writer->beginTransaction();
             }
             $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
