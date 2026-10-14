@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -41,7 +40,7 @@ final class ActivityOutcomeRecorder
         int $backoffSeconds,
         ?string $codec = null,
     ): array {
-        return DB::transaction(static function () use (
+        return SqliteTransaction::run(static function () use (
             $taskId,
             $attemptId,
             $attemptCount,
