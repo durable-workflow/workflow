@@ -1,6 +1,7 @@
 services:
   http-app:
     command: php-fpm -F -y /app/runtime/fpm.conf
+    stop_signal: SIGQUIT
   nginx:
     volumes:
       - ./runtime/nginx-fpm.conf:/etc/nginx/nginx.conf:ro

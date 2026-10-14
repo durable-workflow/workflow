@@ -61,6 +61,11 @@ HTTP recycling defaults to 500 requests. The queue worker recycles after
 The supervisor restarts both processes. Choose an execution timeout that
 covers your application's activities.
 
+The HTTP container uses an init process to reap children. Octane receives
+`SIGTERM` on shutdown. The FPM override uses `SIGQUIT`, the graceful stop signal
+for the base image's FPM process. Keep these signals specific to the selected
+HTTP mode when adapting the example.
+
 ## Ordinary PHP hosting
 
 ```sh
@@ -105,8 +110,14 @@ driver. Completion latency includes its 250 ms status-poll interval.
 Sample `qualification/resources.sh` inside each HTTP, queue and nginx container
 throughout the run. It reads Linux cgroup CPU, memory, swap and sampled total
 process RSS. Keep cgroup memory and RSS separate. Use `qualification/database.php`
-after the driver stops to check original statuses, queue drain and actual
-timer due-to-workflow-completion latency. These commands provide measurements,
+after the driver stops to check original statuses, event counts, automatic repairs,
+failed jobs, queue drain and actual timer due-to-workflow-completion latency.
+Completion alone does not establish a clean run. Inspect failed jobs and repaired
+tasks. The watchdog can redispatch an overdue ready task before its first claim,
+so a repair counter alone does not prove a failed or repeated execution. Report
+task types and attempt counts alongside repairs, and investigate reclaimed leases,
+replay failures and missing tasks before accepting the result.
+These commands provide measurements,
 not a performance recommendation by themselves.
 
 Stop the stack when finished:

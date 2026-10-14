@@ -30,11 +30,26 @@ foreach ($timers->fetchAll(PDO::FETCH_ASSOC) as $timer) {
 $tasks = $db->prepare('SELECT t.status, COUNT(*) AS count FROM workflow_tasks t
     JOIN workflow_runs r ON r.id = t.workflow_run_id WHERE r.workflow_instance_id LIKE ? GROUP BY t.status');
 $tasks->execute([$profile . '-%']);
+$repairs = $db->prepare('SELECT COALESCE(SUM(t.repair_count), 0) FROM workflow_tasks t
+    JOIN workflow_runs r ON r.id = t.workflow_run_id WHERE r.workflow_instance_id LIKE ?');
+$repairs->execute([$profile . '-%']);
+$taskTypes = $db->prepare('SELECT t.task_type, COUNT(*) AS count,
+    COALESCE(SUM(t.repair_count), 0) AS repair_count, MAX(t.attempt_count) AS max_attempt_count
+    FROM workflow_tasks t JOIN workflow_runs r ON r.id = t.workflow_run_id
+    WHERE r.workflow_instance_id LIKE ? GROUP BY t.task_type ORDER BY t.task_type');
+$taskTypes->execute([$profile . '-%']);
+$events = $db->prepare('SELECT e.event_type, COUNT(*) AS count FROM workflow_history_events e
+    JOIN workflow_runs r ON r.id = e.workflow_run_id
+    WHERE r.workflow_instance_id LIKE ? GROUP BY e.event_type ORDER BY e.event_type');
+$events->execute([$profile . '-%']);
 echo json_encode([
     'profile' => $profile,
     'runs' => count($rows),
     'statuses' => array_count_values(array_column($rows, 'status')),
     'tasks' => $tasks->fetchAll(PDO::FETCH_ASSOC),
+    'repair_count' => (int) $repairs->fetchColumn(),
+    'task_types' => $taskTypes->fetchAll(PDO::FETCH_ASSOC),
+    'event_counts' => $events->fetchAll(PDO::FETCH_ASSOC),
     'queue_jobs' => (int) $queue->query('SELECT COUNT(*) FROM jobs')->fetchColumn(),
     'failed_jobs' => (int) $queue->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn(),
     'timer_due_to_workflow_completion_ms' => $latencies,
