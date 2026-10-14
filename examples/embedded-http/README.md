@@ -91,7 +91,7 @@ For the measured workload, run `qualification/benchmark.mjs` with fixed
 `OFFERED_RATE`, `DURATION_SECONDS` and `DRAIN_SECONDS`. Set `MIXED=true` to
 include durable timers and signal/query paths. It reports offered, accepted,
 completed and unfinished counts, HTTP and observed completion percentiles,
-query counts and the measured drain. A failed original is not retried by the
+HTTP errors and transport failures, query counts and the measured drain. A failed original is not retried by the
 driver. Completion latency includes its 250 ms status-poll interval.
 
 Sample `qualification/resources.sh` inside each HTTP, queue and nginx container

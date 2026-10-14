@@ -26,9 +26,16 @@ async function request(kind, method, path, user, input) {
     if (input) headers['Content-Type'] = 'application/json';
     const remaining = hardEnd - begin;
     if (remaining <= 0) throw new Error('observation_deadline');
-    const response = await fetch(base + path, {method, headers, body: input ? JSON.stringify(input) : undefined,
-        signal: AbortSignal.timeout(Math.max(1, Math.min(10000, Math.floor(remaining))))});
-    const text = await response.text();
+    let response, text;
+    try {
+        response = await fetch(base + path, {method, headers, body: input ? JSON.stringify(input) : undefined,
+            signal: AbortSignal.timeout(Math.max(1, Math.min(10000, Math.floor(remaining))))});
+        text = await response.text();
+    } catch (error) {
+        requests[kind].push({ms: performance.now() - begin, status: response?.status ?? null,
+            transport_error: String(error)});
+        throw error;
+    }
     requests[kind].push({ms: performance.now() - begin, status: response.status});
     pids.add(response.headers.get('x-worker-pid'));
     queries += Number(response.headers.get('x-db-queries') ?? 0);
@@ -108,7 +115,8 @@ const result = {profile, rate, duration_seconds: duration, drain_budget_seconds:
     maximum_schedule_lag_ms: maximumScheduleLagMs, completed_per_second: completedAtOfferEnd / duration,
     workflow_latency: distribution(completed.map(outcome => outcome.latency_ms)),
     http: Object.fromEntries(Object.entries(requests).map(([kind, values]) => [kind,
-        {...distribution(values.map(value => value.ms)), errors: values.filter(value => value.status >= 400).length}])),
+        {...distribution(values.map(value => value.ms)), errors: values.filter(value => value.status >= 400).length,
+            transport_errors: values.filter(value => value.transport_error).length}])),
     db_queries: queries, history_queries: historyQueries, pids: [...pids],
     errors: outcomes.filter(outcome => outcome.error), outcomes};
 await writeFile(`/evidence/${profile}.json`, JSON.stringify(result));
