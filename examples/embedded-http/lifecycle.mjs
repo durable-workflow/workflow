@@ -17,6 +17,7 @@ async function request(method, path, user, input, optional) {
   assert.equal(response.headers.get('x-qualification-user'),user);
   assert.equal(response.headers.get('x-qualification-namespace'),`qualification-${user}`);
   assert.equal(response.headers.get('x-optional-context'),optional??'');
+  if (process.env.EXPECTED_CONNECTION) assert.equal(response.headers.get('x-db-connections'), process.env.EXPECTED_CONNECTION);
   return {...receipt,json:JSON.parse(body)};
 }
 async function status(instance,user) {
@@ -69,6 +70,7 @@ try {
   }
   const pids=[...new Set(receipts.map(r=>r.headers['x-worker-pid']))];
   if(process.env.EXPECT_ONE_PID==='true') assert.equal(pids.length,1);
+  if(process.env.EXPECT_RECYCLED==='true') assert.ok(pids.length>1);
   await writeFile(`/evidence/${profile}.json`,JSON.stringify({pass:true,profile,cases,pids,receipts},null,2));
   console.log(JSON.stringify({pass:true,profile,cases,requests:receipts.length,pids}));
 } catch(error) {

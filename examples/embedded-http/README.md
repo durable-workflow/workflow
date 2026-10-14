@@ -42,6 +42,11 @@ Signal a waiting workflow with `POST /api/workflows/{instance}/signal`, query it
 with `GET /api/workflows/{instance}/query`, or use the explicitly terminal
 `POST /api/workflows/{instance}/cancel` operation.
 
+The `cleanup` path waits durably and executes a cleanup activity and timer in
+`finally`. Request cooperation with `POST /api/workflows/{instance}/request-cancellation`.
+The example fixes the cleanup budget at 30 seconds and exposes the original
+command identity. Terminal cancellation is a separate operation.
+
 ## HTTP lifecycle
 
 ```sh
@@ -70,6 +75,31 @@ workflow IDs for an independent comparison.
 Storage/model configuration is fixed at process boot. `QUALIFICATION_EAGER`
 selects boot-time resolution for the lifecycle tests. Changing it requires
 regenerating the configuration cache and restarting the processes.
+`EXAMPLE_DB_CONNECTION=qualified_alt` selects an independent named SQLite
+connection at process boot. It does not switch shared backend authority during
+a request.
+
+## Qualification commands
+
+Run the Node drivers from a separate Node container on the Compose network.
+Set `BASE_URL=http://nginx:8080`, a unique `PROFILE_NAME`, and mount an empty
+writable directory at `/evidence`. `lifecycle.mjs` checks authenticated users,
+namespaces, signals, queries, timers, terminal cancellation and continuation.
+`qualification/cleanup.mjs` checks cooperative cleanup and duplicate identity.
+
+For the measured workload, run `qualification/benchmark.mjs` with fixed
+`OFFERED_RATE`, `DURATION_SECONDS` and `DRAIN_SECONDS`. Set `MIXED=true` to
+include durable timers and signal/query paths. It reports offered, accepted,
+completed and unfinished counts, HTTP and observed completion percentiles,
+query counts and the measured drain. A failed original is not retried by the
+driver. Completion latency includes its 250 ms status-poll interval.
+
+Sample `qualification/resources.sh` inside each HTTP, queue and nginx container
+throughout the run. It reads Linux cgroup CPU, memory, swap and sampled total
+process RSS. Keep cgroup memory and RSS separate. Use `qualification/database.php`
+after the driver stops to check original statuses, queue drain and actual
+timer due-to-workflow-completion latency. These commands provide measurements,
+not a performance recommendation by themselves.
 
 Stop the stack when finished:
 
