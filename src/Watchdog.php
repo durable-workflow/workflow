@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\Support\CacheThrottle;
 
 class Watchdog implements ShouldBeEncrypted, ShouldQueue
 {
@@ -60,13 +61,18 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
             $generation = self::newGeneration();
 
+            if (! CacheThrottle::acquire(
+                self::LOOP_THROTTLE_KEY,
+                $generation,
+                self::bootstrapWindow($timeout),
+                self::CACHE_KEY,
+            ) || Cache::has(self::CACHE_KEY)) {
+                return;
+            }
+
             $watchdog = Cache::lock(self::CHAIN_LOCK_KEY, self::leaseDuration($timeout))
                 ->get(static function () use ($connection, $queue, $timeout, $generation): ?self {
                     if (! self::storedWorkflowTableExists() || Cache::has(self::CACHE_KEY)) {
-                        return null;
-                    }
-
-                    if (! Cache::add(self::LOOP_THROTTLE_KEY, $generation, self::bootstrapWindow($timeout))) {
                         return null;
                     }
 

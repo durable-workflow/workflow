@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
+use Workflow\Support\CacheThrottle;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
@@ -97,7 +98,7 @@ final class TaskWatchdog
         }
 
         if ($respectThrottle) {
-            if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
+            if (! CacheThrottle::acquire(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
                 return self::emptyReport(
                     $connection,
                     $queue,
