@@ -30,7 +30,9 @@ final class SqliteTransaction
             return $connection->transaction($operation, $attempts ?? 1);
         }
 
-        $connection->reconnectIfMissingConnection();
+        if ($connection->getRawPdo() === null) {
+            $connection->reconnect();
+        }
         $pdo = $connection->getPdo();
         if ($pdo->inTransaction()) {
             return $connection->transaction($operation, $attempts ?? 1);
