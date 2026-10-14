@@ -284,6 +284,32 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
     }
 
+    public function testExhaustedAdmissionNeverEntersBody(): void
+    {
+        $writer = $this->writer();
+        $writer->beginTransaction();
+        $writer->exec('UPDATE state SET value=1 WHERE id=2');
+        $admissions = 0;
+        $calls = 0;
+        try {
+            SqliteTransaction::run(static function () use (&$calls): void {
+                $calls++;
+            }, admission: function () use (&$admissions): void {
+                $admissions++;
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            });
+            $this->fail('Persistent contention must keep the native error.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        } finally {
+            $writer->rollBack();
+        }
+        $this->assertSame(3, $admissions);
+        $this->assertSame(0, $calls);
+        $this->assertSame(0, $this->connection->transactionLevel());
+        $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
     public function testAdmittedBodyDoesNotRetryItsOwnContention(): void
     {
         $writer = $this->writer();

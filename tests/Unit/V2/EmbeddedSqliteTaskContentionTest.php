@@ -18,6 +18,7 @@ use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\WorkflowStub;
 
 final class EmbeddedSqliteTaskContentionTest extends TestCase
@@ -154,7 +155,11 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $this->assertSame(1, (int) $activity->fresh()->attempt_count);
         $armed = false;
         $this->workOnce();
+        $timer = null;
+        $originalFireAt = null;
         if (in_array($phase, ['timer_claim', 'timer_fire'], true)) {
+            $timer = WorkflowTimer::query()->where('workflow_run_id', $runId)->sole();
+            $originalFireAt = $timer->fire_at->toJSON();
             $this->travel(2)
                 ->seconds();
             $armed = true;
@@ -187,6 +192,12 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $this->assertSame(1, $types['ActivityStarted']);
         $this->assertSame(1, $types['ActivityCompleted']);
         $this->assertSame(1, $types['WorkflowCompleted']);
+        if ($timer !== null) {
+            $this->assertSame($originalFireAt, $timer->fresh()->fire_at->toJSON());
+            $this->assertSame(1, $types['TimerFired']);
+            $fired = $events->firstWhere('event_type', \Workflow\V2\Enums\HistoryEventType::TimerFired);
+            $this->assertSame($timer->id, $fired->payload['timer_id']);
+        }
         $this->assertSame($originalTaskId, $firstTask->fresh()->id);
         $this->assertSame($activityTaskId, $activity->fresh()->id);
         $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)->sum('repair_count'));
