@@ -7,7 +7,7 @@ The database owns histories, activity outcomes and timer deadlines.
 The [embedded HTTP example](../examples/embedded-http/README.md) compares
 RoadRunner with nginx/PHP-FPM using the same application and dependencies.
 Qualification and measurements are in progress in
-[Workflow #747](https://github.com/durable-workflow/workflow/issues/747).
+[the embedded HTTP qualification](https://github.com/durable-workflow/workflow/issues/747).
 There is no measured performance recommendation yet.
 
 ## Application boundaries
@@ -34,4 +34,4 @@ for HTTP hosting. Keep durable timers on the Workflow runtime and run the
 application's configured queues with `queue:work` or Horizon.
 
 Service-mode PHP applications have a separate profile in
-[PHP SDK #112](https://github.com/durable-workflow/sdk-php/issues/112).
+[the PHP SDK HTTP qualification](https://github.com/durable-workflow/sdk-php/issues/112).
