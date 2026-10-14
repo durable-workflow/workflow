@@ -20,9 +20,10 @@ final class SqliteTransaction
      * @template T
      * @param Closure(Connection): T $operation
      * @param int|null $attempts Explicit existing attempt limits also pass through to other drivers.
+     * @param Closure(Connection): void|null $admission Acquire the write lock before a body that must not repeat.
      * @return T
      */
-    public static function run(Closure $operation, ?int $attempts = null): mixed
+    public static function run(Closure $operation, ?int $attempts = null, ?Closure $admission = null): mixed
     {
         $connection = DB::connection();
         if ($connection->getDriverName() !== 'sqlite' || $connection->transactionLevel() !== 0) {
@@ -39,16 +40,23 @@ final class SqliteTransaction
         for ($attempt = 1; ; $attempt++) {
             $failedInRoot = false;
             $returned = false;
+            $entered = false;
             $mutationError = null;
             try {
                 return $connection->transaction(static function (Connection $database) use (
                     $operation,
+                    $admission,
                     $pdo,
                     &$failedInRoot,
                     &$returned,
+                    &$entered,
                     &$mutationError
                 ): mixed {
                     try {
+                        if ($admission !== null) {
+                            $admission($database);
+                        }
+                        $entered = true;
                         $result = $operation($database);
                     } catch (Throwable $exception) {
                         $mutationError = $exception;
@@ -62,9 +70,9 @@ final class SqliteTransaction
                     return $result;
                 });
             } catch (Throwable $exception) {
-                if ($exception !== $mutationError || ! $failedInRoot || $returned || $attempt >= $maximumAttempts || hrtime(
-                    true
-                ) >= $deadline
+                $bodyMustNotRepeat = $admission !== null && $entered;
+                if ($exception !== $mutationError || ! $failedInRoot || $returned || $bodyMustNotRepeat
+                    || $attempt >= $maximumAttempts || hrtime(true) >= $deadline
                     || ! self::isContention($exception) || $connection->transactionLevel() !== 0
                     || $connection->getPdo() !== $pdo || $pdo->inTransaction()) {
                     throw $exception;
@@ -76,6 +84,28 @@ final class SqliteTransaction
                 }
             }
         }
+    }
+
+    /**
+     * Acquire SQLite's writer before reading state or executing workflow code.
+     * The primary-key value, ORM timestamps and model events remain unchanged.
+     *
+     * @template T
+     * @param Closure(Connection): T $operation
+     * @return T
+     */
+    public static function forTask(string $taskId, Closure $operation): mixed
+    {
+        return self::run($operation, admission: static function () use ($taskId): void {
+            $task = ConfiguredV2Models::query('task_model', \Workflow\V2\Models\WorkflowTask::class);
+            $key = $task->getModel()
+                ->getKeyName();
+            $task->whereKey($taskId)
+                ->toBase()
+                ->update([
+                    $key => $taskId,
+                ]);
+        });
     }
 
     private static function isContention(Throwable $exception): bool

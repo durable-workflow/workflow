@@ -259,6 +259,51 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, $calls);
     }
 
+    public function testWriteAdmissionRetriesBeforeEnteringBody(): void
+    {
+        $writer = $this->writer();
+        $writer->beginTransaction();
+        $writer->exec('UPDATE state SET value=1 WHERE id=2');
+        $this->events->listen(TransactionRolledBack::class, static function () use ($writer): void {
+            if ($writer->inTransaction()) {
+                $writer->commit();
+            }
+        });
+        $admissions = 0;
+        $calls = 0;
+        SqliteTransaction::run(function () use (&$calls): void {
+            $calls++;
+            $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+            $this->connection->update('UPDATE state SET value=1 WHERE id=1');
+        }, admission: function () use (&$admissions): void {
+            $admissions++;
+            $this->connection->update('UPDATE state SET id=id WHERE id=1');
+        });
+        $this->assertSame(2, $admissions);
+        $this->assertSame(1, $calls);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testAdmittedBodyDoesNotRetryItsOwnContention(): void
+    {
+        $writer = $this->writer();
+        $calls = 0;
+        try {
+            SqliteTransaction::run(static function () use ($writer, &$calls): void {
+                $calls++;
+                $writer->exec('UPDATE state SET value=1 WHERE id=2');
+            }, admission: function (): void {
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            });
+            $this->fail('The body must keep its original contention failure.');
+        } catch (PDOException $exception) {
+            $this->assertSame(5, $exception->errorInfo[1] & 255);
+        }
+        $this->assertSame(1, $calls);
+        $this->assertSame(0, $this->connection->transactionLevel());
+        $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
     private function writer(): PDO
     {
         $writer = new PDO('sqlite:' . $this->path);

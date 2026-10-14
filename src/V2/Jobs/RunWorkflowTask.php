@@ -9,7 +9,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
@@ -56,7 +55,7 @@ final class RunWorkflowTask implements ShouldQueue
         $nextTask = null;
 
         try {
-            $nextTask = DB::transaction(function () use ($executor): ?WorkflowTask {
+            $nextTask = SqliteTransaction::forTask($this->taskId, function () use ($executor): ?WorkflowTask {
                 /** @var WorkflowTask $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -85,7 +84,7 @@ final class RunWorkflowTask implements ShouldQueue
                 return $executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
-            DB::transaction(function () use ($throwable): void {
+            SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()

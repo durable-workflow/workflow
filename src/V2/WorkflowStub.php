@@ -2981,6 +2981,15 @@ final class WorkflowStub
             } else {
                 self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             }
+        }, admission: function (): void {
+            $instance = self::instanceQuery();
+            $key = $instance->getModel()
+                ->getKeyName();
+            $instance->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
         });
 
         $this->refresh();

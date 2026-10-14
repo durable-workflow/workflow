@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\TestCase;
@@ -54,10 +55,13 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
     {
         return [
             'workflow claim' => ['workflow_claim'],
+            'workflow execution admission' => ['workflow_execution'],
             'activity claim' => ['activity_claim'],
             'activity outcome after callback' => ['activity_outcome'],
             'start control API' => ['start'],
             'signal control API' => ['signal'],
+            'timer claim admission' => ['timer_claim'],
+            'timer firing admission' => ['timer_fire'],
         ];
     }
 
@@ -70,6 +74,13 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $writer->exec('PRAGMA busy_timeout=20');
         $armed = $phase === 'start';
         $injected = false;
+        $admissions = 0;
+        $connection->getEventDispatcher()
+            ->listen(TransactionRolledBack::class, static function () use ($writer): void {
+                if ($writer->inTransaction()) {
+                    $writer->commit();
+                }
+            });
         DB::listen(static function (QueryExecuted $query) use ($writer, $phase, &$armed, &$injected): void {
             if ($phase === 'start' && $armed && ! $injected && $query->connection->transactionLevel() === 1
                 && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'workflow_instances')) {
@@ -82,6 +93,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             $phase,
             &$armed,
             &$injected,
+            &$admissions,
         ): void {
             if (! $armed || $injected) {
                 return;
@@ -95,18 +107,30 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
                     && str_contains($sql, 'last_command_sequence'),
                 default => false,
             };
+            $writeAdmission = in_array($phase, ['workflow_execution', 'timer_claim', 'timer_fire'], true)
+                && str_starts_with($sql, 'update "workflow_tasks" set "id" =');
+            if ($writeAdmission) {
+                $admissions++;
+                $matches = $admissions === ($phase === 'timer_fire' ? 2 : 1);
+            }
+            if ($phase === 'signal') {
+                $matches = str_starts_with($sql, 'update "workflow_instances" set "id" =');
+            }
             if (! $matches) {
                 return;
             }
             if ($database->transactionLevel() !== 1 || ! $database->getPdo()->inTransaction()) {
                 throw new RuntimeException('Expected the original root mutation transaction.');
             }
+            if ($writeAdmission || $phase === 'signal') {
+                $writer->beginTransaction();
+            }
             $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
             $injected = true;
         });
 
         $stub = WorkflowStub::make(SqliteContentionWorkflow::class, 'original-' . $phase, 'contention-test');
-        $stub->start($phase === 'signal');
+        $stub->start($phase === 'signal', in_array($phase, ['timer_claim', 'timer_fire'], true));
         $runId = $stub->runId();
         $firstTask = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
         $originalTaskId = $firstTask->id;
@@ -115,7 +139,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             ->get()
             ->map->getAttributes()
             ->all();
-        $armed = $phase === 'workflow_claim';
+        $armed = in_array($phase, ['workflow_claim', 'workflow_execution'], true);
         $this->workOnce();
         $this->assertSame(1, (int) $firstTask->fresh()->attempt_count);
         $armed = in_array($phase, ['activity_claim', 'activity_outcome'], true);
@@ -130,6 +154,15 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $this->assertSame(1, (int) $activity->fresh()->attempt_count);
         $armed = false;
         $this->workOnce();
+        if (in_array($phase, ['timer_claim', 'timer_fire'], true)) {
+            $this->travel(2)
+                ->seconds();
+            $armed = true;
+            $admissions = 0;
+            $this->workOnce();
+            $armed = false;
+            $this->workOnce();
+        }
         if ($phase === 'signal') {
             $this->assertSame('waiting', $stub->refresh()->status());
             $armed = true;
