@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -21,6 +22,9 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TaskRepairCandidates;
+use Workflow\V2\Support\TaskRepairPolicy;
+use Workflow\V2\TaskWatchdog;
 
 final class TaskRepairRecoveryTest extends TestCase
 {
@@ -28,6 +32,90 @@ final class TaskRepairRecoveryTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public static function delayedDispatches(): array
+    {
+        return [
+            'long timer dispatched before availability' => [-60, 20, 23],
+            'timer never dispatched' => [null, 20, 23],
+            'later dispatch restarts redispatch cadence' => [25, 20, 28],
+            'legacy missing availability' => [-60, null, -57],
+        ];
+    }
+
+    #[DataProvider('delayedDispatches')]
+    public function testRedispatchWaitsForTheOriginalAvailabilityAndLatestDispatch(
+        ?int $dispatchOffset,
+        ?int $availableOffset,
+        int $dueOffset,
+    ): void {
+        $run = $this->createRun();
+        $base = now();
+        $task = $this->task($run, [
+            'task_type' => TaskType::Timer,
+            'available_at' => $availableOffset === null ? null : $base->copy()
+                ->addSeconds($availableOffset),
+            'last_dispatched_at' => $dispatchOffset === null ? null : $base->copy()
+                ->addSeconds($dispatchOffset),
+            'created_at' => $base->copy()
+                ->subMinute(),
+        ]);
+        $before = $task->fresh()
+            ->getAttributes();
+
+        foreach ([
+            -1 => false,
+            0 => true,
+        ] as $offset => $eligible) {
+            Carbon::setTestNow($base->copy()->addSeconds($dueOffset + $offset));
+            $this->assertSame($eligible, TaskRepairPolicy::dispatchOverdue($task));
+            $this->assertSame($eligible ? [$task->id] : [], TaskRepairCandidates::taskIds(runIds: [$run->id]));
+        }
+        $this->assertSame($before, $task->fresh()->getAttributes());
+    }
+
+    public function testDiagnosticWriteFailureDoesNotReplaceTheRepairErrorOrAbortOtherCandidates(): void
+    {
+        $run = $this->createRun();
+        $first = $this->task($run);
+        $second = $this->task($run);
+        $repairFailed = false;
+        $diagnosticFailed = false;
+        DB::connection()->beforeExecuting(static function (string $sql, array $bindings) use (
+            $first,
+            $run,
+            &$repairFailed,
+            &$diagnosticFailed,
+        ): void {
+            if (! in_array($first->id, $bindings, true)) {
+                return;
+            }
+            if (! $repairFailed && str_starts_with($sql, 'select ')
+                && in_array($run->id, $bindings, true)) {
+                $repairFailed = true;
+                throw new RuntimeException('original repair failure');
+            }
+            if ($repairFailed && ! $diagnosticFailed && str_starts_with($sql, 'update ')
+                && str_contains($sql, 'last_error')) {
+                $diagnosticFailed = true;
+                throw new RuntimeException('diagnostic write unavailable');
+            }
+        });
+        $report = TaskWatchdog::runPass(runIds: [$run->id]);
+        $this->assertTrue($repairFailed);
+        $this->assertTrue($diagnosticFailed);
+        $this->assertSame([
+            [
+                'candidate_id' => $first->id,
+                'message' => 'original repair failure',
+            ],
+        ], $report['existing_task_failures']);
+        $this->assertSame(1, $report['repaired_existing_tasks']);
+        $this->assertSame(TaskStatus::Ready, $first->fresh()->status);
+        $this->assertSame('original-error', $first->fresh()->last_error);
+        $this->assertSame(2, $first->fresh()->repair_count);
+        $this->assertSame(3, $second->fresh()->repair_count);
     }
 
     #[DataProvider('candidateOrder')]
