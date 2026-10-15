@@ -2012,6 +2012,22 @@ def _guard_matches(
     matching = sorted(path for path in changed if _matches(path, _string(guard["glob"], "guard.glob")))
     if not matching:
         return False
+    bridge_path = "src/V2/Support/DefaultWorkflowTaskBridge.php"
+    if guard["glob"] == bridge_path and matching == [bridge_path]:
+        # This private helper is used only by typed task discovery. Keep every
+        # other bridge edit guarded, including its signature and replay methods.
+        classifier = Path(__file__).with_name("classify-discovery-helper-change.php")
+        base = _run(["git", "show", f"{base_ref}:{bridge_path}"], root)
+        current = (root / bridge_path).read_text(encoding="utf-8")
+        classification = subprocess.run(
+            ["php", str(classifier)],
+            input=json.dumps({"base": base, "current": current}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if classification.returncode == 0 and classification.stdout == "true":
+            return False
     patterns = guard.get("content_patterns")
     if patterns is None:
         return True
