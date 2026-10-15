@@ -39,6 +39,8 @@ final class ExecutionTracing
 {
     private const PACKAGE_NAME = 'durable-workflow/workflow';
 
+    private const CONTROL_CHARACTERS = '/[\x00-\x1f\x7f]/';
+
     private const FIELDS = [
         'workflow_instance_id', 'workflow_run_id', 'workflow_type', 'namespace',
         'task_id', 'activity_id', 'activity_type', 'activity_attempt_id',
@@ -577,7 +579,7 @@ final class ExecutionTracing
         foreach (['outcome', 'reason'] as $key) {
             $value = $receipt[$key] ?? null;
             if (is_string($value) && $value !== '' && strlen($value) <= 256
-                && ! preg_match('/[\x00-\x1f\x7f]/', $value)) {
+                && ! preg_match(self::CONTROL_CHARACTERS, $value)) {
                 $attributes['durable.schedule.' . $key] = $value;
             }
         }
@@ -595,7 +597,7 @@ final class ExecutionTracing
             $value = $attributes[$key] ?? null;
             if (($key === 'activity_attempt_number' && is_int($value) && $value > 0)
                 || ($key !== 'activity_attempt_number' && is_string($value) && $value !== '' && strlen($value) <= 512
-                    && ! preg_match('/[\x00-\x1f\x7f]/', $value))) {
+                    && ! preg_match(self::CONTROL_CHARACTERS, $value))) {
                 $fields[$key] = $value;
             }
         }
@@ -626,7 +628,7 @@ final class ExecutionTracing
         }
         foreach ($decisions as $key => $value) {
             if (is_string($value) && $value !== '' && strlen($value) <= 256
-                && ! preg_match('/[\x00-\x1f\x7f]/', $value)) {
+                && ! preg_match(self::CONTROL_CHARACTERS, $value)) {
                 $attributes[$key] = $value;
             }
         }
