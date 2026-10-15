@@ -250,6 +250,29 @@ final class ExecutionTracingTest extends TestCase
         }
     }
 
+    public function testUnboundFiberDoesNotReadTheMainFibersDurableContext(): void
+    {
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new RuntimeException($message);
+        });
+        try {
+            ExecutionTracing::activity(self::fields(), self::carrier(), static function (): void {
+                $fields = ExecutionTracing::current();
+                $fiber = new Fiber(static function (): void {
+                    self::assertSame([], ExecutionTracing::current());
+                    Fiber::suspend();
+                    self::assertSame([], ExecutionTracing::current());
+                });
+                $fiber->start();
+                self::assertSame($fields, ExecutionTracing::current());
+                $fiber->resume();
+                self::assertSame($fields, ExecutionTracing::current());
+            }, enabled: true);
+        } finally {
+            restore_error_handler();
+        }
+    }
+
     public function testDisabledInstrumentationLeavesTheApplicationContextUntouched(): void
     {
         $calls = 0;

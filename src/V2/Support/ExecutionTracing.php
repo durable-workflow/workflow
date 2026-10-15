@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Composer\InstalledVersions;
+use Fiber;
 use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Instrumentation\Configurator;
@@ -17,6 +18,7 @@ use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ContextKeyInterface;
 use OpenTelemetry\Context\ScopeInterface;
 use Throwable;
+use WeakMap;
 
 /** @internal */
 final class ExecutionTracing
@@ -28,6 +30,11 @@ final class ExecutionTracing
     ];
 
     private static ?ContextKeyInterface $correlationKey = null;
+
+    /**
+     * @var WeakMap<Fiber, int>|null
+     */
+    private static ?WeakMap $activeFibers = null;
 
     public static function bind(callable $callback): callable
     {
@@ -45,15 +52,13 @@ final class ExecutionTracing
             $scope = null;
             try {
                 $scope = $context->activate();
+                self::enterFiberScope();
             } catch (Throwable) {
             }
             try {
                 return $callback(...$arguments);
             } finally {
-                try {
-                    $scope?->detach();
-                } catch (Throwable) {
-                }
+                self::close($scope, null);
             }
         };
     }
@@ -106,6 +111,12 @@ final class ExecutionTracing
     public static function current(): array
     {
         if (self::$correlationKey === null || ! class_exists(Context::class)) {
+            return [];
+        }
+
+        // The SDK's compatibility fallback to the main Fiber is not a durable binding.
+        $fiber = Fiber::getCurrent();
+        if ($fiber !== null && ! isset(self::$activeFibers[$fiber])) {
             return [];
         }
 
@@ -178,6 +189,7 @@ final class ExecutionTracing
             self::$correlationKey ??= Context::createKey('durable-workflow.correlation');
             $scope = $span->storeInContext($parent)
                 ->with(self::$correlationKey, $fields)->activate();
+            self::enterFiberScope();
         } catch (Throwable) {
             self::close($scope, $span);
 
@@ -219,10 +231,25 @@ final class ExecutionTracing
             $scope?->detach();
         } catch (Throwable) {
         }
+        $fiber = Fiber::getCurrent();
+        if ($scope !== null && $fiber !== null && isset(self::$activeFibers[$fiber])) {
+            if (--self::$activeFibers[$fiber] === 0) {
+                unset(self::$activeFibers[$fiber]);
+            }
+        }
         try {
             // The application owns buffering and provider shutdown. Never flush per task.
             $span?->end();
         } catch (Throwable) {
+        }
+    }
+
+    private static function enterFiberScope(): void
+    {
+        $fiber = Fiber::getCurrent();
+        if ($fiber !== null) {
+            self::$activeFibers ??= new WeakMap();
+            self::$activeFibers[$fiber] = (self::$activeFibers[$fiber] ?? 0) + 1;
         }
     }
 }
