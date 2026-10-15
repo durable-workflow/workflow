@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Composer\Autoload\ClassLoader;
+use Illuminate\Config\Repository;
 use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
@@ -371,6 +372,102 @@ final class ActivityExecutionTracingTest extends TestCase
         );
     }
 
+    public static function unavailableTracingConfiguration(): array
+    {
+        return [
+            'disabled control' => [null, false],
+            'unavailable tracing key' => ['workflows.tracing.enabled', false],
+            'unavailable baggage allowlist' => ['workflows.tracing.baggage_allowlist', true],
+        ];
+    }
+
+    #[DataProvider('unavailableTracingConfiguration')]
+    public function testOptionalTracingConfigurationCannotReplaceTheBusinessFailure(
+        ?string $unavailable,
+        bool $enabled
+    ): void {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $stub = WorkflowStub::make(FailingTracedWorkflow::class, 'unavailable-tracing-config', '0');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45));
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $preserved = array_flip(['observability_context', 'execution_deadline_at', 'run_deadline_at']);
+        $original = array_intersect_key($run->getRawOriginal(), $preserved);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn ($event): array => $event->getRawOriginal())
+            ->all();
+        $configuration = $this->app['config'];
+        $this->app->instance('config', $this->unavailableConfiguration($unavailable));
+        try {
+            $this->workOnce();
+        } finally {
+            $this->app->instance('config', $configuration);
+        }
+        $run->refresh();
+        self::assertSame('failed', $run->status->value);
+        self::assertSame('application detail must not be exported', $run->failures()->sole()->message);
+        self::assertSame($original, array_intersect_key($run->getRawOriginal(), $preserved));
+        self::assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
+        self::assertSame($prefix, array_slice($run->historyEvents()->orderBy('sequence')->get()
+            ->map(static fn ($event): array => $event->getRawOriginal())
+            ->all(), 0, count($prefix)));
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+        self::assertCount($enabled ? 3 : 0, $this->exporter->getSpans());
+    }
+
+    #[DataProvider('unavailableTracingConfiguration')]
+    public function testOptionalConfigurationCannotBlockAdmissionTimerOrActivity(
+        ?string $unavailable,
+        bool $enabled
+    ): void {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $configuration = $this->app['config'];
+        $this->app->instance('config', $this->unavailableConfiguration($unavailable));
+        try {
+            $stub = WorkflowStub::make(TimerTracedWorkflow::class, 'unavailable-config-completion', '0');
+            $stub->start(new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45));
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+            $prefix = $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all();
+            $this->workOnce();
+            sleep(2);
+            for ($remaining = 4; $remaining > 0; --$remaining) {
+                $this->workOnce();
+            }
+            $run->refresh();
+            self::assertSame('completed', $run->status->value);
+            self::assertSame([9007199254740993, null, '雪'], $stub->refresh()->output());
+            self::assertSame(
+                $deadlines,
+                [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')]
+            );
+            self::assertSame($prefix, array_slice($run->historyEvents()->orderBy('sequence')->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all(), 0, count($prefix)));
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowCompleted')->count());
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'ActivityCompleted')->count());
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'TimerFired')->count());
+            self::assertSame(5, WorkflowTask::query()->where('status', 'completed')->count());
+            self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+            self::assertSame(0, DB::table('jobs')->count());
+            self::assertSame(0, DB::table('failed_jobs')->count());
+            self::assertCount($enabled ? 11 : 0, $this->exporter->getSpans());
+        } finally {
+            $this->app->instance('config', $configuration);
+        }
+    }
+
     public function testFailedWorkflowExportsItsProcessingSegmentOutsideTheDatabaseTransaction(): void
     {
         config([
@@ -697,6 +794,27 @@ final class ActivityExecutionTracingTest extends TestCase
         $app['config']->set('logging.default', 'stderr');
     }
 
+    private function unavailableConfiguration(?string $unavailable): Repository
+    {
+        return new class($this->app['config']->all(), $unavailable) extends Repository {
+            public function __construct(
+                array $items,
+                private readonly ?string $unavailable
+            ) {
+                parent::__construct($items);
+            }
+
+            public function get($key, $default = null)
+            {
+                if ($key === $this->unavailable) {
+                    throw new RuntimeException('Optional tracing setting is unavailable');
+                }
+
+                return parent::get($key, $default);
+            }
+        };
+    }
+
     private function workOnce(): void
     {
         self::assertSame(0, Artisan::call('queue:work', [
@@ -738,6 +856,16 @@ final class TracedWorkflow extends Workflow
     public function handle(bool $retry): array
     {
         return self::activity(TracedActivity::class, $retry);
+    }
+}
+
+final class TimerTracedWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        self::timer(1);
+
+        return self::activity(TracedActivity::class, false);
     }
 }
 

@@ -59,7 +59,7 @@ final class RunWorkflowTask implements ShouldQueue
             return;
         }
 
-        if (config('workflows.tracing.enabled', false) !== true) {
+        if (! ExecutionTracing::enabled()) {
             $this->executeClaim($executor);
 
             return;
@@ -67,7 +67,7 @@ final class RunWorkflowTask implements ShouldQueue
 
         /** @var WorkflowRun $run */
         $run = $task->getRelation('run');
-        $allowlist = config('workflows.tracing.baggage_allowlist', []);
+        $allowlist = ExecutionTracing::baggageAllowlist();
         $storedContext = TraceCarrier::fromRun($run);
         // Activate and end the segment outside the execution transaction.
         ExecutionTracing::workflow(
@@ -81,7 +81,7 @@ final class RunWorkflowTask implements ShouldQueue
             ],
             $storedContext,
             fn () => $this->executeClaim($executor),
-            is_array($allowlist) ? $allowlist : [],
+            $allowlist,
             true,
             $this->dispatchObservabilityContext,
         );

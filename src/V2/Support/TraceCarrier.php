@@ -35,12 +35,10 @@ final class TraceCarrier
     public static function captureConfigured(): ?array
     {
         try {
-            if (config('workflows.tracing.enabled', false) !== true) {
+            if (! ExecutionTracing::enabled()) {
                 return null;
             }
-            $allowlist = config('workflows.tracing.baggage_allowlist', []);
-
-            return self::capture(is_array($allowlist) ? $allowlist : []);
+            return self::capture(ExecutionTracing::baggageAllowlist());
         } catch (Throwable) {
             return null;
         }
@@ -74,9 +72,7 @@ final class TraceCarrier
             if (! is_array($stored)) {
                 return null;
             }
-            $allowlist = config('workflows.tracing.baggage_allowlist', []);
-
-            return self::normalize($stored, is_array($allowlist) ? $allowlist : []);
+            return self::normalize($stored, ExecutionTracing::baggageAllowlist());
         } catch (Throwable) {
             // Optional telemetry metadata must not interrupt child admission or retries.
             return null;

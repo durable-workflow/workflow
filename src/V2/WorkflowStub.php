@@ -945,10 +945,9 @@ final class WorkflowStub
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         // Capture outside the storage transaction and preserve it across its retries.
         $observabilityContext = null;
-        $tracing = config('workflows.tracing.enabled', false) === true;
+        $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $allowlist = config('workflows.tracing.baggage_allowlist', []);
-            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
+            $observabilityContext = TraceCarrier::capture(ExecutionTracing::baggageAllowlist());
         }
         if (! $tracing) {
             return $this->admitStart($metadata, $startOptions, $observabilityContext);
@@ -3090,10 +3089,9 @@ final class WorkflowStub
         $intakeGroupId = (string) Str::ulid();
         // Capture before locking. An existing run retains its original admission carrier.
         $observabilityContext = null;
-        $tracing = config('workflows.tracing.enabled', false) === true;
+        $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $allowlist = config('workflows.tracing.baggage_allowlist', []);
-            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
+            $observabilityContext = TraceCarrier::capture(ExecutionTracing::baggageAllowlist());
         }
         $operation = fn (): SignalWithStartResult => $this->admitSignalWithStart(
             $name,

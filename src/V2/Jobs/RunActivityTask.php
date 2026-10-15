@@ -69,13 +69,13 @@ final class RunActivityTask implements ShouldQueue
             return;
         }
 
-        if (config('workflows.tracing.enabled', false) !== true) {
+        if (! ExecutionTracing::enabled()) {
             $this->executeClaim($claim);
 
             return;
         }
 
-        $allowlist = config('workflows.tracing.baggage_allowlist', []);
+        $allowlist = ExecutionTracing::baggageAllowlist();
         $storedContext = TraceCarrier::fromRun($claim->run);
         ExecutionTracing::activity(
             [
@@ -92,7 +92,7 @@ final class RunActivityTask implements ShouldQueue
             ],
             $storedContext,
             fn () => $this->executeClaim($claim),
-            is_array($allowlist) ? $allowlist : [],
+            $allowlist,
             true,
             $this->dispatchObservabilityContext,
         );
@@ -144,7 +144,7 @@ final class RunActivityTask implements ShouldQueue
         }
 
         $maxAttempts = ActivityRetryPolicy::maxAttempts($execution, $activity);
-        if ($throwable !== null && config('workflows.tracing.enabled', false) === true) {
+        if ($throwable !== null && ExecutionTracing::enabled()) {
             ExecutionTracing::recordFailure($throwable);
         }
         $backoffSeconds = ActivityRetryPolicy::backoffSeconds($execution, $activity, $attemptCount);

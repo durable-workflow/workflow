@@ -60,6 +60,33 @@ final class ExecutionTracing
      */
     private static ?WeakMap $activeFibers = null;
 
+    public static function enabled(): bool
+    {
+        try {
+            return config('workflows.tracing.enabled', false) === true;
+        } catch (Throwable) {
+            // Optional configuration must not interrupt admission or execution.
+            return false;
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function baggageAllowlist(): array
+    {
+        try {
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+
+            return is_array($allowlist)
+                ? array_values(array_filter($allowlist, static fn (mixed $value): bool => is_string($value)))
+                : [];
+        } catch (Throwable) {
+            // Without a readable allowlist, propagate no baggage.
+            return [];
+        }
+    }
+
     public static function bind(callable $callback): callable
     {
         try {

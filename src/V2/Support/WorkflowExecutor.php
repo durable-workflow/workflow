@@ -3238,7 +3238,7 @@ final class WorkflowExecutor
             'value' => ExternalPayloads::historyValue($storedValue, $run->payload_codec, $run->namespace),
             ...($parallelMetadata ?? []),
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
-        if (config('workflows.tracing.enabled', false) === true) {
+        if (ExecutionTracing::enabled()) {
             ExecutionTracing::linkSignal($run, $command);
         }
 
@@ -4362,7 +4362,7 @@ final class WorkflowExecutor
             throw $throwable;
         }
 
-        if (config('workflows.tracing.enabled', false) === true) {
+        if (ExecutionTracing::enabled()) {
             ExecutionTracing::recordFailure($throwable);
         }
 
@@ -5746,7 +5746,7 @@ final class WorkflowExecutor
             $operationSequence,
             $operationSequenceSpan,
         );
-        if (config('workflows.tracing.enabled', false) === true) {
+        if (ExecutionTracing::enabled()) {
             ExecutionTracing::linkCancellation($run);
         }
 
@@ -6467,7 +6467,7 @@ final class WorkflowExecutor
                     ]),
                     new ReflectionMethod($workflow, $resolvedTarget['method']),
                 );
-                if ($command instanceof WorkflowCommand && config('workflows.tracing.enabled', false) === true) {
+                if ($command instanceof WorkflowCommand && ExecutionTracing::enabled()) {
                     ExecutionTracing::linkUpdate($run, $command);
                 }
                 $result = $workflow->{$resolvedTarget['method']}(...$parameters);

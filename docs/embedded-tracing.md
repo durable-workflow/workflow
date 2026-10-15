@@ -11,6 +11,11 @@ exporters and process shutdown. Durable Workflow uses those providers when
 `workflows.tracing.enabled` is true. It does not replace application providers or
 flush an exporter after each task. Tracing is disabled by default.
 
+An unavailable tracing-enabled setting disables instrumentation for that
+operation. An unavailable or non-array baggage allowlist permits no baggage;
+only string entries are used. Neither optional setting can prevent admission,
+timer or activity execution, or replace the workflow's own failure.
+
 ## Keep collector outages outside business work
 
 PHP exporters can perform synchronous HTTP requests. A batch processor alone

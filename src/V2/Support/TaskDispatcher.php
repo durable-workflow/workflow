@@ -80,13 +80,7 @@ final class TaskDispatcher
                 return;
             }
 
-            $tracing = false;
-            try {
-                $tracing = config('workflows.tracing.enabled', false) === true;
-            } catch (Throwable) {
-                // Optional tracing configuration cannot block queue dispatch.
-            }
-            if ($tracing) {
+            if (ExecutionTracing::enabled()) {
                 ExecutionTracing::dispatch(
                     $task,
                     $job,

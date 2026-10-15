@@ -104,14 +104,14 @@ final class RunTimerTask implements ShouldQueue
 
         /** @var WorkflowTimer $timer */
         $timer = $claimedTask->getRelation('timer');
-        if (config('workflows.tracing.enabled', false) !== true) {
+        if (! ExecutionTracing::enabled()) {
             $this->executeClaim($timer->id);
 
             return;
         }
         /** @var WorkflowRun $run */
         $run = $claimedTask->getRelation('run');
-        $allowlist = config('workflows.tracing.baggage_allowlist', []);
+        $allowlist = ExecutionTracing::baggageAllowlist();
         ExecutionTracing::timer(
             [
                 'workflow_instance_id' => $run->workflow_instance_id,
@@ -124,7 +124,7 @@ final class RunTimerTask implements ShouldQueue
             ],
             TraceCarrier::fromRun($run),
             fn () => $this->executeClaim($timer->id),
-            is_array($allowlist) ? $allowlist : [],
+            $allowlist,
             true,
             $this->dispatchObservabilityContext,
         );
