@@ -342,6 +342,7 @@ jobs:
         --bootstrap .github/tracing-http/bootstrap.php
         --do-not-record-test-run-history --fail-on-warning --fail-on-skipped
         tests/Unit/V2/HttpExecutionTracingTest.php
+        tests/Unit/V2/ExporterExecutionTracingTest.php
 
   pr-unit-contracts:
     needs: preflight

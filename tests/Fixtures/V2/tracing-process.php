@@ -278,7 +278,16 @@ $app = TracingProcessApplication::create(
     ],
 );
 $exporter = new InMemoryExporter();
-$provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+$processors = [new SimpleSpanProcessor($exporter)];
+$exportEndpoint = getenv('DW_TEST_TRACING_EXPORTER_ENDPOINT');
+$exportJournal = getenv('DW_TEST_TRACING_EXPORTER_JOURNAL');
+$exportRequests = static fn (): int => $exportJournal && is_file($exportJournal)
+    ? count(file($exportJournal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+$initialExportRequests = $exportRequests();
+if ($exportEndpoint) {
+    $processors[] = TracingExporter::processor($exportEndpoint);
+}
+$provider = new TracerProvider($processors);
 $propagator = new MultiTextMapPropagator([
     TraceContextPropagator::getInstance(),
     BaggagePropagator::getInstance(),
@@ -492,6 +501,9 @@ try {
                 ->toArray(),
         ], $exporter->getSpans()),
     ];
+    if ($exportEndpoint) {
+        $output['exports_before_shutdown'] = $exportRequests() - $initialExportRequests;
+    }
     if ($signalStart) {
         $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
         $output['signal_start_outcome'] = $signalStartResult?->startOutcome();
@@ -569,6 +581,10 @@ try {
     }
 } finally {
     $configuration->detach();
+    $shutdownStarted = hrtime(true);
     $provider->shutdown();
+}
+if ($exportEndpoint) {
+    $output['export_shutdown_seconds'] = (hrtime(true) - $shutdownStarted) / 1e9;
 }
 echo json_encode($output, JSON_THROW_ON_ERROR), PHP_EOL;
