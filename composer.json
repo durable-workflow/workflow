@@ -68,6 +68,7 @@
     "require-dev": {
         "doctrine/dbal": "^3.7",
         "open-telemetry/api": "^1.10",
+        "open-telemetry/exporter-otlp": "^1.4",
         "open-telemetry/sdk": "^1.0",
         "orchestra/testbench": "^8.0|^11.0",
         "phpstan/phpstan": "^2.0",
