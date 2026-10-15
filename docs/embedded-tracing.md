@@ -107,6 +107,12 @@ activity and parent workers. Child admission and retries preserve the original
 carrier, retry policy and execution deadline. This does not add retry-policy
 options to the PHP `Workflow::child` helper.
 
+Independent-process cancellation controls cover a waiting workflow, a cooperative
+request followed by its cleanup activity, and immediate cancellation or
+termination. Existing carrier metadata and deadlines remain unchanged. Cleanup
+uses the original run's parent, and task scopes restore the worker's context.
+These controls do not yet add causal links to the cancellation caller.
+
 Disabling tracing stops new context capture and span emission. These qualified
 embedded transitions and child-retry paths still inherit valid stored admission
 context while the optional propagation API remains installed. The current

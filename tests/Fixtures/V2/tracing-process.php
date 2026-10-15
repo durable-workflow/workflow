@@ -35,6 +35,7 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -60,6 +61,7 @@ $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 $transition = getenv('DW_TEST_TRACING_TRANSITION');
 $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
+$cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
@@ -139,6 +141,23 @@ final class TracingRetryChildWorkflow extends Workflow
         }
 
         return self::activity(TracingProcessActivity::class, false);
+    }
+}
+
+#[Signal('ready')]
+final class TracingCancellationWorkflow extends Workflow
+{
+    public function handle(): void
+    {
+        try {
+            self::awaitSignal('ready');
+        } finally {
+            Log::info('cancellation cleanup');
+            $result = self::activity(TracingProcessActivity::class, false);
+            self::upsertMemo([
+                'cleanup' => $result,
+            ]);
+        }
     }
 }
 
@@ -387,6 +406,7 @@ try {
     $outsideHttp = null;
     $repairReport = null;
     $signalStartResult = null;
+    $cancellationResult = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -453,6 +473,10 @@ try {
                 foreach ($completion['created_task_ids'] as $taskId) {
                     TaskDispatcher::dispatch(WorkflowTask::query()->findOrFail($taskId));
                 }
+            } elseif ($cancellation) {
+                WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($signalStart) {
                 $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
                     ->signalWithStart(
@@ -477,6 +501,18 @@ try {
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
             }
+        } elseif ($mode === 'cancel' && $cancellation) {
+            $stub = WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0');
+            $result = match ($cancellation) {
+                'request' => $stub->requestCancellation('deliberate cancellation', 20),
+                'cancel' => $stub->cancel('deliberate cancellation'),
+                'terminate' => $stub->terminate('deliberate termination'),
+                default => throw new \RuntimeException('Unknown cancellation mode.'),
+            };
+            $cancellationResult = [
+                'accepted' => $result->accepted(),
+                'command_id' => $result->commandId(),
+            ];
         } elseif ($mode === 'duplicate' && $signalStart) {
             $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
                 ->signalWithStart('ready', [['later']], StartOptions::returnExistingActive());
@@ -637,6 +673,26 @@ try {
             'leased_at' => $row->getRawOriginal('leased_at'),
         ])->all();
         $output['history_payloads'] = WorkflowHistoryEvent::query()->orderBy('id')->pluck('payload')->all();
+    }
+    if ($cancellation) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['cancellation'] = [
+            'result' => $cancellationResult,
+            'deadline' => $run->getRawOriginal('cancellation_deadline_at'),
+            'memo' => WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0')->memo(),
+            'commands' => WorkflowCommand::query()->orderBy('id')->get(['id', 'command_type'])->toArray(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'history_hashes' => $history->map(static function ($event): string {
+                return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+            })->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
+            'activities' => ActivityExecution::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+            'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+        ];
     }
     if ($recovery) {
         $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
