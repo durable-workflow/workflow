@@ -35,6 +35,8 @@ use Workflow\V2\StartResult;
 /** @internal */
 final class ExecutionTracing
 {
+    private const PACKAGE_NAME = 'durable-workflow/workflow';
+
     private const FIELDS = [
         'workflow_instance_id', 'workflow_run_id', 'workflow_type', 'namespace',
         'task_id', 'activity_id', 'activity_type', 'activity_attempt_id',
@@ -75,6 +77,7 @@ final class ExecutionTracing
                 $scope = $context->activate();
                 self::enterFiberScope();
             } catch (Throwable) {
+                // Optional tracing setup must leave the original Fiber callback usable.
             }
             try {
                 return $callback(...$arguments);
@@ -351,8 +354,8 @@ final class ExecutionTracing
                     $spanAttributes[$key] = $value;
                 }
             }
-            $version = InstalledVersions::isInstalled('durable-workflow/workflow')
-                ? InstalledVersions::getPrettyVersion('durable-workflow/workflow')
+            $version = InstalledVersions::isInstalled(self::PACKAGE_NAME)
+                ? InstalledVersions::getPrettyVersion(self::PACKAGE_NAME)
                 : null;
             if ($name === 'durable.task.dispatch' && in_array(
                 $attributes['durable.task.type'] ?? null,
@@ -361,7 +364,7 @@ final class ExecutionTracing
             )) {
                 $spanAttributes['durable.task.type'] = $attributes['durable.task.type'];
             }
-            $builder = Globals::tracerProvider()->getTracer('durable-workflow/workflow', $version)
+            $builder = Globals::tracerProvider()->getTracer(self::PACKAGE_NAME, $version)
                 ->spanBuilder($name)
                 ->setSpanKind(match ($name) {
                     'durable.workflow.admission' => SpanKind::KIND_INTERNAL,
@@ -487,17 +490,18 @@ final class ExecutionTracing
         try {
             $scope?->detach();
         } catch (Throwable) {
+            // A telemetry scope failure cannot replace the business result or exception.
         }
         $fiber = Fiber::getCurrent();
-        if ($scope !== null && $fiber !== null && isset(self::$activeFibers[$fiber])) {
-            if (--self::$activeFibers[$fiber] === 0) {
-                unset(self::$activeFibers[$fiber]);
-            }
+        if ($scope !== null && $fiber !== null && isset(self::$activeFibers[$fiber])
+            && --self::$activeFibers[$fiber] === 0) {
+            unset(self::$activeFibers[$fiber]);
         }
         try {
             // The application owns buffering and provider shutdown. Never flush per task.
             $span?->end();
         } catch (Throwable) {
+            // Exporter errors cannot replace an already determined business outcome.
         }
     }
 

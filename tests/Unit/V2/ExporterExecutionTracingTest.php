@@ -58,7 +58,7 @@ final class ExporterExecutionTracingTest extends TestCase
             foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $key) {
                 self::assertSame($admitted[$key], $finished[$key]);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount(3, $spans);
             foreach ($spans as $span) {
                 self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $span['trace_id']);
@@ -66,18 +66,18 @@ final class ExporterExecutionTracingTest extends TestCase
             }
             $requests = $this->requests($directory);
             self::assertCount($mode === 'refused' ? 0 : 4, $requests);
-            foreach ($requests as $request) {
+            foreach ($requests as $index => $request) {
                 self::assertSame('POST', $request['method']);
                 self::assertSame('/v1/traces', $request['path']);
                 self::assertSame('application/x-protobuf', $request['content_type']);
-                self::assertCount(1, $request['spans']);
+                self::assertCount($index < 3 ? 2 : 1, $request['spans']);
             }
             if ($mode !== 'refused') {
-                self::assertSame(['durable.workflow.admission', 'durable.workflow.task',
-                    'durable.activity.attempt', 'durable.workflow.task'], array_map(
-                        static fn (array $request): string => $request['spans'][0]['name'],
-                        $requests
-                    ));
+                self::assertSame([
+                    'durable.task.dispatch', 'durable.workflow.admission',
+                    'durable.task.dispatch', 'durable.workflow.task',
+                    'durable.task.dispatch', 'durable.activity.attempt', 'durable.workflow.task',
+                ], array_column(array_merge(...array_column($requests, 'spans')), 'name'));
             }
         } finally {
             $server->stop();
