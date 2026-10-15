@@ -353,6 +353,11 @@ jobs:
       env:
         REDIS_HOST: 127.0.0.1
 
+    - name: Run optional embedded activity tracing controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
+        --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
+
     - name: Run cancellation timeline unit cases
       run: >-
         vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php

@@ -37,6 +37,7 @@ class WorkflowRun extends Model
 
     protected $casts = [
         'status' => RunStatus::class,
+        'observability_context' => 'array',
         'visibility_labels' => 'array',
         'priority' => 'integer',
         'fairness_weight' => 'integer',

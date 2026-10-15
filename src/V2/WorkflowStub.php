@@ -78,6 +78,7 @@ use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TimerCancellation;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\UpdateWaitPolicy;
@@ -944,10 +945,23 @@ final class WorkflowStub
 
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
+        // Capture outside the storage transaction and preserve it across its retries.
+        $observabilityContext = null;
+        if (config('workflows.tracing.enabled', false) === true) {
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
+        }
         $task = null;
         $startedRun = null;
 
-        SqliteTransaction::run(function () use ($metadata, $startOptions, &$task, &$command, &$startedRun): void {
+        SqliteTransaction::run(function () use (
+            $metadata,
+            $startOptions,
+            $observabilityContext,
+            &$task,
+            &$command,
+            &$startedRun,
+        ): void {
             $task = null;
             $command = null;
             $startedRun = null;
@@ -1077,6 +1091,7 @@ final class WorkflowStub
             $run = self::runQuery()->create([
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
+                'observability_context' => $observabilityContext,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
                 'namespace' => $instance->namespace,
