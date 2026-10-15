@@ -551,6 +551,40 @@ final class ExecutionTracingTest extends TestCase
         self::assertSame($original, $command->getAttributes());
     }
 
+    public function testTimerSpanKeepsFiniteTimingsOutsideLoggingContextAndPreservesTheOriginalFailure(): void
+    {
+        $error = new RuntimeException('original-timer-failure');
+        try {
+            ExecutionTracing::timer([
+                ...self::fields(),
+                'timer_id' => 'timer-1',
+                'durable.task.queue_wait_seconds' => 0.250001,
+                'durable.task.retry_backoff_seconds' => 7,
+                'durable.timer.requested_wait_seconds' => NAN,
+                'durable.timer.lateness_seconds' => -1,
+                'private.payload' => 'excluded-body',
+            ], self::carrier(), static function () use ($error): never {
+                self::assertArrayNotHasKey('durable.task.queue_wait_seconds', ExecutionTracing::current());
+                self::assertSame('timer-1', ExecutionTracing::current()['timer_id']);
+                throw $error;
+            }, enabled: true);
+            self::fail('Expected the original failure.');
+        } catch (RuntimeException $caught) {
+            self::assertSame($error, $caught);
+        }
+        $span = $this->exporter->getSpans()[0];
+        self::assertSame('durable.timer.task', $span->getName());
+        self::assertTrue($span->hasEnded());
+        self::assertSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+        $attributes = $span->getAttributes()
+            ->toArray();
+        self::assertSame(0.250001, $attributes['durable.task.queue_wait_seconds']);
+        self::assertSame(7, $attributes['durable.task.retry_backoff_seconds']);
+        self::assertArrayNotHasKey('durable.timer.requested_wait_seconds', $attributes);
+        self::assertArrayNotHasKey('durable.timer.lateness_seconds', $attributes);
+        self::assertArrayNotHasKey('private.payload', $attributes);
+    }
+
     private static function signalRun(): WorkflowRun
     {
         $run = new WorkflowRun();

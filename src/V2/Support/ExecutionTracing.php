@@ -31,6 +31,12 @@ final class ExecutionTracing
         'workflow_instance_id', 'workflow_run_id', 'workflow_type', 'namespace',
         'task_id', 'activity_id', 'activity_type', 'activity_attempt_id',
         'activity_attempt_number', 'request_id',
+        'timer_id',
+    ];
+
+    private const TIMINGS = [
+        'durable.task.queue_wait_seconds', 'durable.task.retry_backoff_seconds',
+        'durable.timer.requested_wait_seconds', 'durable.timer.lateness_seconds',
     ];
 
     private static ?ContextKeyInterface $correlationKey = null;
@@ -103,6 +109,27 @@ final class ExecutionTracing
     ): mixed {
         return self::segment(
             'durable.workflow.task',
+            $attributes,
+            $persistedContext,
+            $operation,
+            $baggageAllowlist,
+            $enabled
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @param list<string> $baggageAllowlist
+     */
+    public static function timer(
+        array $attributes,
+        mixed $persistedContext,
+        callable $operation,
+        array $baggageAllowlist = [],
+        bool $enabled = false,
+    ): mixed {
+        return self::segment(
+            'durable.timer.task',
             $attributes,
             $persistedContext,
             $operation,
@@ -244,6 +271,13 @@ final class ExecutionTracing
                 ->withResponsePropagator(Globals::responsePropagator())
                 ->storeInContext($parent);
             $fields = self::fields($attributes);
+            $spanAttributes = $fields;
+            foreach (self::TIMINGS as $key) {
+                $value = $attributes[$key] ?? null;
+                if ((is_int($value) || is_float($value)) && is_finite((float) $value) && $value >= 0) {
+                    $spanAttributes[$key] = $value;
+                }
+            }
             $version = InstalledVersions::isInstalled('durable-workflow/workflow')
                 ? InstalledVersions::getPrettyVersion('durable-workflow/workflow')
                 : null;
@@ -251,7 +285,7 @@ final class ExecutionTracing
                 ->spanBuilder($name)
                 ->setSpanKind(SpanKind::KIND_CONSUMER)
                 ->setParent($parent)
-                ->setAttributes($fields)
+                ->setAttributes($spanAttributes)
                 ->startSpan();
             if ($span->getContext()->isValid()) {
                 $fields['trace_id'] = $span->getContext()->getTraceId();

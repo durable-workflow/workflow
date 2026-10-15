@@ -187,3 +187,33 @@ The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been
 adopted by the native Server. Other admission paths, broader trigger links,
 runtime coverage and performance qualification remain unfinished.
+
+## Processing duration and durable waits
+
+Workflow, activity-attempt and `durable.timer.task` spans cover actual processing.
+A timer span starts after its task is claimed and ends after that processing
+attempt. No span remains open during the durable wait. Timer scope setup and
+teardown happen outside the existing execution transaction.
+
+These optional span attributes describe separate observations, in seconds:
+
+| Attribute | Meaning |
+| --- | --- |
+| `durable.task.queue_wait_seconds` | Claimed task's `leased_at` minus its `available_at`. The scheduled delay before eligibility is excluded. |
+| `durable.task.retry_backoff_seconds` | Exact backoff recorded on a queued activity retry. It is requested delay, not measured execution or total elapsed retry time. |
+| `durable.timer.requested_wait_seconds` | Delay recorded on the claimed timer. |
+| `durable.timer.lateness_seconds` | Timer task claim minus the original timer deadline. |
+
+The values come from the already-claimed snapshot and add no telemetry query.
+Missing, unreadable, malformed or negative timing observations are omitted.
+Second and fractional database precision are supported. Stored clock deltas can
+reflect clock adjustments and queue/scheduler delays; they are not monotonic
+latency or a new authority rule. Existing eligibility, deadlines, retry policy
+and history remain authoritative. Timing attributes are not added to log
+correlation fields or automatically used as metric labels.
+
+The current controls cover cold embedded timer workers and a real queued
+activity failure/backoff/retry, including disabled emission and a legacy
+admission. Broader backend/runtime, local-activity, timeout and exporter-failure
+qualification for timer processing remains unfinished. No performance gain or
+overhead acceptance is claimed by these functional checks.

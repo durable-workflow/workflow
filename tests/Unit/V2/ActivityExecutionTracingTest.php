@@ -465,12 +465,17 @@ final class ActivityExecutionTracingTest extends TestCase
             $segments = [];
             foreach ([$workflow, $completion] as $segment) {
                 $span = $segment['spans'][0];
-                $segments[$span['fields']['task_id']] = $span['fields'] + [
+                self::assertArrayHasKey('durable.task.queue_wait_seconds', $span['fields']);
+                self::assertGreaterThanOrEqual(0, $span['fields']['durable.task.queue_wait_seconds']);
+                $correlation = $span['fields'];
+                unset($correlation['durable.task.queue_wait_seconds']);
+                $segments[$span['fields']['task_id']] = $correlation + [
                     'trace_id' => $span['trace_id'],
                     'span_id' => $span['span_id'],
                 ];
             }
             foreach ($workflowLogs as $record) {
+                self::assertArrayNotHasKey('durable.task.queue_wait_seconds', $record['context']);
                 self::assertArrayHasKey($record['context']['task_id'], $segments);
                 self::assertSame($segments[$record['context']['task_id']], $record['context']);
             }

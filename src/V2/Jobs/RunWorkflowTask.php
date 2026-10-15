@@ -23,6 +23,7 @@ use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -73,6 +74,7 @@ final class RunWorkflowTask implements ShouldQueue
                 'workflow_type' => $run->workflow_type,
                 'namespace' => $run->namespace,
                 'task_id' => $task->id,
+                ...TaskTraceTimings::forTask($task),
             ],
             $storedContext,
             fn () => $this->executeClaim($executor),

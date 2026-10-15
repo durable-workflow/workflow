@@ -20,6 +20,7 @@ use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -84,6 +85,7 @@ final class RunActivityTask implements ShouldQueue
                 'activity_type' => $claim->execution->activity_type,
                 'activity_attempt_id' => $claim->attemptId(),
                 'activity_attempt_number' => $claim->attemptNumber(),
+                ...TaskTraceTimings::forTask($claim->task),
             ],
             $storedContext,
             fn () => $this->executeClaim($claim),

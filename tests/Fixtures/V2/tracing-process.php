@@ -43,6 +43,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityOptions;
@@ -66,6 +67,7 @@ $transition = getenv('DW_TEST_TRACING_TRANSITION');
 $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
+$timings = getenv('DW_TEST_TRACING_TIMINGS') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -107,6 +109,21 @@ final class TracingRecoveryWorkflow extends Workflow
             startToCloseTimeout: 2,
             scheduleToCloseTimeout: 10,
         ), false);
+    }
+}
+
+final class TracingTimingWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        self::timer(1);
+
+        return self::activity(TracingProcessActivity::class, new ActivityOptions(
+            maxAttempts: 2,
+            backoff: [1],
+            startToCloseTimeout: 10,
+            scheduleToCloseTimeout: 30,
+        ), true);
     }
 }
 
@@ -557,6 +574,10 @@ try {
                 foreach ($completion['created_task_ids'] as $taskId) {
                     TaskDispatcher::dispatch(WorkflowTask::query()->findOrFail($taskId));
                 }
+            } elseif ($timings) {
+                WorkflowStub::make(TracingTimingWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($updateLinks) {
                 WorkflowStub::make(TracingUpdateLinksWorkflow::class, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
@@ -870,6 +891,36 @@ try {
             'history_payloads' => $history->pluck('payload')
                 ->all(),
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+        ];
+    }
+    if ($timings) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['timings'] = [
+            'history_hashes' => $history->map(static function ($event): string {
+                return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+            })->all(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
+            'tasks' => WorkflowTask::query()->orderBy('created_at')->get()->map(static fn ($task): array => [
+                'id' => $task->id,
+                'type' => $task->task_type->value,
+                'status' => $task->status->value,
+                'attempt_count' => $task->attempt_count,
+                'available_at' => $task->getRawOriginal('available_at'),
+                'leased_at' => $task->getRawOriginal('leased_at'),
+                'payload' => $task->payload,
+            ])->all(),
+            'timer' => WorkflowTimer::query()->first()?->getRawOriginal(),
+            'attempts' => ActivityAttempt::query()->orderBy('attempt_number')->get([
+                'id', 'attempt_number', 'status',
+            ])->toArray(),
+            'policy' => ActivityExecution::query()->first()?->retry_policy,
+            'completion_count' => $history->where('event_type.value', 'ActivityCompleted')
+                ->count(),
         ];
     }
     if ($signalLinks) {

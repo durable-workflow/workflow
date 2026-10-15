@@ -19,12 +19,15 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TimerRecovery;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowTaskLease;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -79,7 +82,7 @@ final class RunTimerTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        [$timerId, $releaseIn] = $this->claimTask();
+        [$claimedTask, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
             // Relay capped/early wakeups without spending the queue job's failure budget.
@@ -92,10 +95,39 @@ final class RunTimerTask implements ShouldQueue
             return;
         }
 
-        if ($timerId === null) {
+        if ($claimedTask === null) {
             return;
         }
 
+        /** @var WorkflowTimer $timer */
+        $timer = $claimedTask->getRelation('timer');
+        if (config('workflows.tracing.enabled', false) !== true) {
+            $this->executeClaim($timer->id);
+
+            return;
+        }
+        /** @var WorkflowRun $run */
+        $run = $claimedTask->getRelation('run');
+        $allowlist = config('workflows.tracing.baggage_allowlist', []);
+        ExecutionTracing::timer(
+            [
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'task_id' => $claimedTask->id,
+                'timer_id' => $timer->id,
+                ...TaskTraceTimings::forTask($claimedTask, $timer),
+            ],
+            TraceCarrier::fromRun($run),
+            fn () => $this->executeClaim($timer->id),
+            is_array($allowlist) ? $allowlist : [],
+            true
+        );
+    }
+
+    private function executeClaim(string $timerId): void
+    {
         $resumeTask = SqliteTransaction::forTask($this->taskId, function () use ($timerId): ?WorkflowTask {
             /** @var WorkflowTask $task */
             $task = WorkflowTask::query()
@@ -264,7 +296,7 @@ final class RunTimerTask implements ShouldQueue
     }
 
     /**
-     * @return array{0: ?string, 1: ?int}
+     * @return array{0: WorkflowTask|null, 1: int|null}
      */
     private function claimTask(): array
     {
@@ -334,7 +366,7 @@ final class RunTimerTask implements ShouldQueue
 
             $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return [$timerId, null];
+            return [$task->setRelation('run', $run)->setRelation('timer', $timer), null];
         });
     }
 
