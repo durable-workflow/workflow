@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -256,8 +257,9 @@ final class TaskWatchdog
      */
     private static function recoverExistingTask(string $candidateId): array
     {
+        $acquiringTask = false;
         try {
-            $task = DB::transaction(static function () use ($candidateId): ?WorkflowTask {
+            $task = DB::transaction(static function () use ($candidateId, &$acquiringTask): ?WorkflowTask {
                 $runId = WorkflowTask::query()->whereKey($candidateId)->value('workflow_run_id');
                 if (! is_string($runId)) {
                     return null;
@@ -270,11 +272,15 @@ final class TaskWatchdog
                     ->lockForUpdate()
                     ->findOrFail($runId);
 
+                // Workers can already hold this task while waiting for the run.
+                // Never wait for their task while retaining our run lock.
+                $acquiringTask = true;
                 /** @var WorkflowTask|null $task */
                 $task = WorkflowTask::query()
                     ->where('workflow_run_id', $run->id)
-                    ->lockForUpdate()
+                    ->lock('for update nowait')
                     ->find($candidateId);
+                $acquiringTask = false;
 
                 if ($task === null) {
                     return null;
@@ -314,13 +320,27 @@ final class TaskWatchdog
                 );
             }
         } catch (Throwable $throwable) {
+            if ($acquiringTask && self::taskLockUnavailable($throwable)) {
+                // DB::transaction has rolled back, including PostgreSQL's
+                // aborted transaction. A later pass rechecks durable state.
+                return [
+                    'task' => null,
+                    'error' => null,
+                ];
+            }
             report($throwable);
 
-            WorkflowTask::query()
-                ->whereKey($candidateId)
-                ->update([
-                    'last_error' => $throwable->getMessage(),
-                ]);
+            try {
+                WorkflowTask::query()
+                    ->whereKey($candidateId)
+                    ->update([
+                        'last_error' => $throwable->getMessage(),
+                    ]);
+            } catch (Throwable $diagnosticFailure) {
+                // Diagnostic persistence must not abort the remaining scan or
+                // replace the original repair failure.
+                report($diagnosticFailure);
+            }
 
             return [
                 'task' => null,
@@ -528,9 +548,14 @@ final class TaskWatchdog
     private static function createDeadlineExpiredTask(string $runId): array
     {
         $cancellationEnforced = false;
+        $acquiringTask = false;
 
         try {
-            $task = DB::transaction(static function () use ($runId, &$cancellationEnforced): ?WorkflowTask {
+            $task = DB::transaction(static function () use (
+                $runId,
+                &$cancellationEnforced,
+                &$acquiringTask,
+            ): ?WorkflowTask {
                 $cancellationEnforced = false;
 
                 /** @var WorkflowRun|null $run */
@@ -542,12 +567,14 @@ final class TaskWatchdog
                     return null;
                 }
 
+                $acquiringTask = true;
                 $existingWorkflowTask = WorkflowTask::query()
                     ->where('workflow_run_id', $run->id)
                     ->where('task_type', TaskType::Workflow->value)
                     ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-                    ->lockForUpdate()
+                    ->lock('for update nowait')
                     ->first();
+                $acquiringTask = false;
 
                 $now = now();
                 $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
@@ -618,6 +645,15 @@ final class TaskWatchdog
                 TaskDispatcher::dispatch($task);
             }
         } catch (Throwable $throwable) {
+            if ($acquiringTask && self::taskLockUnavailable($throwable)) {
+                // A locked existing task is not an absent task. Roll back the
+                // pass instead of creating a second deadline-control task.
+                return [
+                    'task' => null,
+                    'error' => null,
+                    'cancellation_enforced' => false,
+                ];
+            }
             report($throwable);
 
             return [
@@ -632,6 +668,21 @@ final class TaskWatchdog
             'error' => null,
             'cancellation_enforced' => $cancellationEnforced,
         ];
+    }
+
+    private static function taskLockUnavailable(Throwable $error): bool
+    {
+        if (! $error instanceof QueryException) {
+            return false;
+        }
+
+        $state = $error->errorInfo[0] ?? null;
+        $code = (int) ($error->errorInfo[1] ?? 0);
+
+        // NOWAIT is supported on every row-locking database we support,
+        // including MariaDB 10.5, which predates its SKIP LOCKED support.
+        return $state === '55P03'
+            || ($state === 'HY000' && in_array($code, [3572, 1205], true));
     }
 
     private static function historyProjectionRole(): HistoryProjectionRole
