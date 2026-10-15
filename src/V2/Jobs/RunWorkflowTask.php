@@ -23,6 +23,7 @@ use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowTaskLease;
@@ -63,9 +64,7 @@ final class RunWorkflowTask implements ShouldQueue
         /** @var WorkflowRun $run */
         $run = $task->getRelation('run');
         $allowlist = config('workflows.tracing.baggage_allowlist', []);
-        $storedContext = array_key_exists('observability_context', $run->getAttributes())
-            ? $run->getAttribute('observability_context')
-            : null;
+        $storedContext = TraceCarrier::fromRun($run);
         // Activate and end the segment outside the execution transaction.
         ExecutionTracing::workflow(
             [

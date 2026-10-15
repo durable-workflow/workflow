@@ -117,7 +117,10 @@ Disabling tracing stops new context capture and span emission. These qualified
 embedded transitions and child-retry paths still inherit valid stored admission
 context while the optional propagation API remains installed. The current
 baggage allowlist still applies. Missing or unreadable metadata produces no
-inherited parent.
+inherited parent. Task execution also discards unreadable telemetry metadata
+without failing business work or rewriting the stored carrier. Task span
+wrappers skip their metadata read when emission is disabled. Transition
+inheritance follows the preservation rule above.
 
 The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been

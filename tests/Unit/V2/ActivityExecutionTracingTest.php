@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Composer\Autoload\ClassLoader;
+use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -174,6 +176,88 @@ final class ActivityExecutionTracingTest extends TestCase
             'single attempt' => [false],
             'cold retry' => [true],
         ];
+    }
+
+    public static function unreadableMetadataModes(): iterable
+    {
+        foreach (['workflow', 'activity'] as $phase) {
+            yield $phase . ', enabled' => [$phase, true];
+            yield $phase . ', disabled' => [$phase, false];
+        }
+    }
+
+    #[DataProvider('unreadableMetadataModes')]
+    public function testUnreadableOptionalRunMetadataCannotInterruptClaimedBusinessWork(
+        string $phase,
+        bool $enabled
+    ): void {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $scope = TraceContextPropagator::getInstance()->extract([
+            'traceparent' => '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+        ])->activate();
+        try {
+            $stub = WorkflowStub::make(TracedWorkflow::class, 'unreadable-tracing', '0');
+            $stub->start(false, new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45));
+        } finally {
+            $scope->detach();
+        }
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $preserved = array_flip(['observability_context', 'execution_deadline_at', 'run_deadline_at']);
+        $original = array_intersect_key($run->getRawOriginal(), $preserved);
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map(static fn ($event): array => $event->getRawOriginal())
+            ->all();
+        if ($phase === 'activity') {
+            $this->workOnce();
+        }
+        UnreadableTraceCast::$metadataReads = 0;
+        WorkflowRun::retrieved(static function (WorkflowRun $retrievedRun): void {
+            if ($retrievedRun->workflow_instance_id === 'unreadable-tracing') {
+                $retrievedRun->mergeCasts([
+                    'observability_context' => UnreadableTraceCast::class,
+                ]);
+            }
+        });
+        for ($remaining = 4; $remaining > 0 && DB::table('jobs')->count() > 0; --$remaining) {
+            $this->workOnce();
+            self::assertSame([], ExecutionTracing::current());
+        }
+        $run->refresh();
+        self::assertSame('completed', $run->status->value);
+        self::assertSame([9007199254740993, null, '雪'], $run->workflowOutput());
+        self::assertSame($original, array_intersect_key($run->getRawOriginal(), $preserved));
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(3, WorkflowTask::query()->where('status', 'completed')->where('attempt_count', 1)->count());
+        self::assertSame(
+            1,
+            ActivityAttempt::query()->where('status', 'completed')->where('attempt_number', 1)->count()
+        );
+        self::assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count());
+        self::assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'WorkflowCompleted')->count());
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map(static fn ($event): array => $event->getRawOriginal())
+            ->all();
+        self::assertSame($prefix, array_slice($history, 0, count($prefix)));
+        self::assertSame($enabled ? ($phase === 'workflow' ? 3 : 2) : 0, UnreadableTraceCast::$metadataReads);
+        $spans = $this->exporter->getSpans();
+        self::assertCount($enabled ? 3 : 0, $spans);
+        foreach ($spans as $index => $span) {
+            self::assertSame($run->id, $span->getAttributes()->get('workflow_run_id'));
+            self::assertSame($phase === 'activity' && $index === 0, $span->getParentContext()->isValid());
+        }
+        self::assertCount(
+            1,
+            array_filter(
+                TracedActivity::$observations,
+                static fn (array $observation): bool => $observation[0] === 'callback'
+            )
+        );
     }
 
     public function testFailedWorkflowExportsItsProcessingSegmentOutsideTheDatabaseTransaction(): void
@@ -470,6 +554,22 @@ final class ActivityExecutionTracingTest extends TestCase
             $this->exporter->getSpans(),
             static fn ($span): bool => $span->getName() === 'durable.activity.attempt'
         ));
+    }
+}
+
+final class UnreadableTraceCast implements CastsAttributes
+{
+    public static int $metadataReads = 0;
+
+    public function get(Model $model, string $key, mixed $value, array $attributes): mixed
+    {
+        ++self::$metadataReads;
+        throw new RuntimeException('optional application telemetry cast failed');
+    }
+
+    public function set(Model $model, string $key, mixed $value, array $attributes): mixed
+    {
+        return $value;
     }
 }
 

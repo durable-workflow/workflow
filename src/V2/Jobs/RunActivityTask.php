@@ -20,6 +20,7 @@ use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Testing\ActivityFakeContext;
@@ -71,9 +72,7 @@ final class RunActivityTask implements ShouldQueue
         }
 
         $allowlist = config('workflows.tracing.baggage_allowlist', []);
-        $storedContext = array_key_exists('observability_context', $claim->run->getAttributes())
-            ? $claim->run->getAttribute('observability_context')
-            : null;
+        $storedContext = TraceCarrier::fromRun($claim->run);
         ExecutionTracing::activity(
             [
                 'workflow_instance_id' => $claim->run->workflow_instance_id,
