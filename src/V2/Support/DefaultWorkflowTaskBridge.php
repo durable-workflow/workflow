@@ -7248,10 +7248,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function nonEmptyStrings(array $values): array
     {
-        return array_values(array_filter(array_map(
-            static fn (mixed $value): ?string => self::nonEmptyString($value),
-            $values,
-        )));
+        return array_values(array_filter(
+            array_map(static fn (mixed $value): ?string => self::nonEmptyString($value), $values),
+            static fn (?string $value): bool => $value !== null,
+        ));
     }
 
     /**
