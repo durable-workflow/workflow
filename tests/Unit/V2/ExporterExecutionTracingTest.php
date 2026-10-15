@@ -120,7 +120,7 @@ final class ExporterExecutionTracingTest extends TestCase
             self::assertCount(4, array_merge(...array_column($failed, 'spans')));
             self::assertCount(2, $logs->getRecords());
             foreach ($logs->getRecords() as $record) {
-                self::assertSame('Export failure', $record->message);
+                self::assertSame('Export failure', $record['message']);
             }
             file_put_contents($directory . '/mode', 'healthy');
             ExecutionTracing::activity([
