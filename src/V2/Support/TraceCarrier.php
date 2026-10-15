@@ -146,25 +146,11 @@ final class TraceCarrier
 
             $normalized = [];
             TraceContextPropagator::getInstance()->inject($normalized, context: $context);
-            if ($baggageAllowlist !== [] && isset($carrier['baggage'])) {
-                $baggageContext = BaggagePropagator::getInstance()->extract($carrier, context: Context::getRoot());
-                $builder = Baggage::getBuilder();
-                $count = 0;
-                foreach (Baggage::fromContext($baggageContext)->getAll() as $key => $entry) {
-                    if (! in_array($key, $baggageAllowlist, true)) {
-                        continue;
-                    }
-                    if (++$count > 32) {
-                        return null;
-                    }
-                    $builder->set($key, $entry->getValue(), $entry->getMetadata());
-                }
-                BaggagePropagator::getInstance()->inject(
-                    $normalized,
-                    context: $builder->build()
-                        ->storeInContext(Context::getRoot()),
-                );
+            $baggage = self::normalizedBaggage($carrier, $baggageAllowlist);
+            if ($baggage === null) {
+                return null;
             }
+            $normalized = array_replace($normalized, $baggage);
 
             if (isset($normalized['baggage']) && strlen($normalized['baggage']) > self::LIMITS['baggage']) {
                 return null;
@@ -179,5 +165,37 @@ final class TraceCarrier
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /**
+     * @param array<string, string> $carrier
+     * @param list<string> $allowlist
+     * @return array<string, string>|null
+     */
+    private static function normalizedBaggage(array $carrier, array $allowlist): ?array
+    {
+        if ($allowlist === [] || ! isset($carrier['baggage'])) {
+            return [];
+        }
+        $context = BaggagePropagator::getInstance()->extract($carrier, context: Context::getRoot());
+        $builder = Baggage::getBuilder();
+        $count = 0;
+        foreach (Baggage::fromContext($context)->getAll() as $key => $entry) {
+            if (! in_array($key, $allowlist, true)) {
+                continue;
+            }
+            if (++$count > 32) {
+                return null;
+            }
+            $builder->set($key, $entry->getValue(), $entry->getMetadata());
+        }
+        $normalized = [];
+        BaggagePropagator::getInstance()->inject(
+            $normalized,
+            context: $builder->build()
+                ->storeInContext(Context::getRoot()),
+        );
+
+        return $normalized;
     }
 }

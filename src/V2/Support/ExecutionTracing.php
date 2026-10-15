@@ -15,6 +15,7 @@ use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\Context\ContextKeyInterface;
 use OpenTelemetry\Context\ScopeInterface;
 use Throwable;
@@ -329,41 +330,12 @@ final class ExecutionTracing
         $span = null;
         $scope = null;
         try {
-            // Local admission keeps the caller's context. Workers recover only stored authority.
-            $localParent = $name === 'durable.workflow.admission'
-                || ($name === 'durable.task.dispatch' && self::current() !== []);
-            $parent = $localParent ? Context::getCurrent() : Context::getRoot();
-            $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
-            if ($carrier !== null) {
-                $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
-                $parent = BaggagePropagator::getInstance()->extract($carrier['carrier'], context: $parent);
-            }
-            // Preserve application providers without inheriting unrelated worker context.
-            $parent = Configurator::create()
-                ->withTracerProvider(Globals::tracerProvider())
-                ->withMeterProvider(Globals::meterProvider())
-                ->withLoggerProvider(Globals::loggerProvider())
-                ->withPropagator(Globals::propagator())
-                ->withResponsePropagator(Globals::responsePropagator())
-                ->storeInContext($parent);
+            $parent = self::parentContext($name, $persistedContext, $baggageAllowlist);
             $fields = self::fields($attributes);
-            $spanAttributes = $fields;
-            foreach (self::TIMINGS as $key) {
-                $value = $attributes[$key] ?? null;
-                if ((is_int($value) || is_float($value)) && is_finite((float) $value) && $value >= 0) {
-                    $spanAttributes[$key] = $value;
-                }
-            }
+            $spanAttributes = self::spanAttributes($name, $attributes, $fields);
             $version = InstalledVersions::isInstalled(self::PACKAGE_NAME)
                 ? InstalledVersions::getPrettyVersion(self::PACKAGE_NAME)
                 : null;
-            if ($name === 'durable.task.dispatch' && in_array(
-                $attributes['durable.task.type'] ?? null,
-                ['workflow', 'activity', 'timer'],
-                true
-            )) {
-                $spanAttributes['durable.task.type'] = $attributes['durable.task.type'];
-            }
             $builder = Globals::tracerProvider()->getTracer(self::PACKAGE_NAME, $version)
                 ->spanBuilder($name)
                 ->setSpanKind(match ($name) {
@@ -411,21 +383,7 @@ final class ExecutionTracing
 
         try {
             $result = $operation();
-            if ($name === 'durable.task.dispatch' && $span !== null) {
-                try {
-                    $span->setAttribute('durable.dispatch.outcome', 'returned');
-                } catch (Throwable) {
-                    // A queue return is not completion or telemetry-delivery authority.
-                }
-            }
-            if ($name === 'durable.workflow.admission'
-                && ($result instanceof StartResult || $result instanceof SignalWithStartResult) && $span !== null) {
-                try {
-                    self::recordAdmissionResult($span, $result);
-                } catch (Throwable) {
-                    // A telemetry receipt read cannot replace the committed decision.
-                }
-            }
+            self::recordResult($span, $name, $result);
 
             return $result;
         } catch (Throwable $error) {
@@ -433,6 +391,77 @@ final class ExecutionTracing
             throw $error;
         } finally {
             self::close($scope, $span);
+        }
+    }
+
+    /**
+     * @param list<string> $baggageAllowlist
+     */
+    private static function parentContext(
+        string $name,
+        mixed $persistedContext,
+        array $baggageAllowlist
+    ): ContextInterface {
+        // Local admission keeps the caller's context. Workers recover only stored authority.
+        $localParent = $name === 'durable.workflow.admission'
+            || ($name === 'durable.task.dispatch' && self::current() !== []);
+        $parent = $localParent ? Context::getCurrent() : Context::getRoot();
+        $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
+        if ($carrier !== null) {
+            $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
+            $parent = BaggagePropagator::getInstance()->extract($carrier['carrier'], context: $parent);
+        }
+
+        // Preserve application providers without inheriting unrelated worker context.
+        return Configurator::create()
+            ->withTracerProvider(Globals::tracerProvider())
+            ->withMeterProvider(Globals::meterProvider())
+            ->withLoggerProvider(Globals::loggerProvider())
+            ->withPropagator(Globals::propagator())
+            ->withResponsePropagator(Globals::responsePropagator())
+            ->storeInContext($parent);
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @param array<string, string|int> $fields
+     * @return array<string, string|int|float>
+     */
+    private static function spanAttributes(string $name, array $attributes, array $fields): array
+    {
+        $spanAttributes = $fields;
+        foreach (self::TIMINGS as $key) {
+            $value = $attributes[$key] ?? null;
+            if ((is_int($value) || is_float($value)) && is_finite((float) $value) && $value >= 0) {
+                $spanAttributes[$key] = $value;
+            }
+        }
+        if ($name === 'durable.task.dispatch' && in_array(
+            $attributes['durable.task.type'] ?? null,
+            ['workflow', 'activity', 'timer'],
+            true
+        )) {
+            $spanAttributes['durable.task.type'] = $attributes['durable.task.type'];
+        }
+
+        return $spanAttributes;
+    }
+
+    private static function recordResult(?SpanInterface $span, string $name, mixed $result): void
+    {
+        if ($span === null) {
+            return;
+        }
+        try {
+            if ($name === 'durable.task.dispatch') {
+                $span->setAttribute('durable.dispatch.outcome', 'returned');
+            }
+            if ($name === 'durable.workflow.admission'
+                && ($result instanceof StartResult || $result instanceof SignalWithStartResult)) {
+                self::recordAdmissionResult($span, $result);
+            }
+        } catch (Throwable) {
+            // Optional receipt metadata cannot replace a returned business value.
         }
     }
 
