@@ -160,8 +160,28 @@ share a link identified by the first applied command. Further additions are
 dropped, with the count in `durable.links.dropped`. Application SDK limits may
 be lower. The link state ends with its processing scope.
 
-This does not add service wire propagation, native catalog support, update
-links, schedule links or complete fan-in tracing.
+This does not add service wire propagation, native catalog support, schedule
+links or complete fan-in tracing.
+
+## Update caller links
+
+New accepted embedded updates capture their independent caller in the same
+proposed command column before the admission transaction. Idempotent duplicate
+requests keep the first carrier. Rejected commands do not retain it.
+
+The processing span links to the captured caller immediately before invoking
+the accepted handler. This records the processing attempt even when the handler
+fails. It does not prove that a transaction committed or that the update
+succeeded. The run's parent and baggage remain active. Later replay of a
+recorded update adds no new update-application link, even though it can execute
+the handler to reconstruct workflow state.
+
+Cold-process controls cover successful and failed updates, duplicate admission,
+a rejected undeclared update, later signal/activity completion and legacy or
+disabled tracing. They preserve canonical update results/failures, command
+identity, typed values, original history and deadlines. The existing per-segment
+link bounds also apply to updates. Service/native update propagation and wider
+concurrent update cases remain unqualified.
 
 The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been

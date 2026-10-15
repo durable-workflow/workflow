@@ -31,8 +31,10 @@ use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\Foundation\Application;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
+use Workflow\UpdateMethod;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Signal;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -41,6 +43,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -62,6 +65,7 @@ $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 $transition = getenv('DW_TEST_TRACING_TRANSITION');
 $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
+$updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -163,6 +167,40 @@ final class TracingCancellationWorkflow extends Workflow
                 'cleanup' => $result,
             ]);
         }
+    }
+}
+
+#[Signal('ready')]
+final class TracingUpdateLinksWorkflow extends Workflow
+{
+    private array $values = [];
+
+    public function handle(): array
+    {
+        self::awaitSignal('ready');
+
+        return [
+            'updates' => $this->values,
+            'activity' => self::activity(TracingProcessActivity::class, false),
+        ];
+    }
+
+    #[UpdateMethod]
+    public function accept(array $value): array
+    {
+        Log::info('update handler', [
+            'approved_baggage' => ExecutionTracing::current() === []
+                ? null : Baggage::fromContext(Context::getCurrent())->getValue('approved'),
+        ]);
+        $this->values[] = $value;
+
+        return $value;
+    }
+
+    #[UpdateMethod]
+    public function refuse(): never
+    {
+        throw new \RuntimeException('deliberate update failure');
     }
 }
 
@@ -367,7 +405,7 @@ $propagator = new MultiTextMapPropagator([
     BaggagePropagator::getInstance(),
 ]);
 $recordedPropagator = null;
-if ($signalStart || $signalLinks || $cancellation) {
+if ($signalStart || $signalLinks || $cancellation || $updateLinks) {
     $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
         public array $transactionLevels = [];
 
@@ -414,12 +452,17 @@ try {
     if ($signalLinks && $mode === 'signal') {
         $headers['traceparent'] = getenv('DW_TEST_TRACING_SIGNAL_CALLER');
         $headers['baggage'] = 'approved=caller';
+    } elseif ($updateLinks && $mode === 'update') {
+        $headers['traceparent'] = getenv('DW_TEST_TRACING_UPDATE_CALLER');
+        $headers['baggage'] = 'approved=update-caller';
+    } elseif ($updateLinks && $mode === 'signal') {
+        $headers['traceparent'] = '00-77777777777777777777777777777777-8888888888888888-01';
     } elseif ($cancellation && $mode === 'cancel') {
         $headers['traceparent'] = getenv('DW_TEST_TRACING_CANCEL_DUPLICATE') === 'true'
             ? '00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01'
             : '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
         $headers['baggage'] = 'approved=caller';
-    } elseif (($signalLinks || $cancellation) && $mode === 'admit') {
+    } elseif (($signalLinks || $cancellation || $updateLinks) && $mode === 'admit') {
         $headers['baggage'] = 'approved=origin';
     }
     if ($mode === 'admit' && getenv('DW_TEST_TRACING_HTTP_URL')) {
@@ -447,6 +490,7 @@ try {
     $repairReport = null;
     $signalStartResult = null;
     $cancellationResult = null;
+    $updateResult = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -513,6 +557,10 @@ try {
                 foreach ($completion['created_task_ids'] as $taskId) {
                     TaskDispatcher::dispatch(WorkflowTask::query()->findOrFail($taskId));
                 }
+            } elseif ($updateLinks) {
+                WorkflowStub::make(TracingUpdateLinksWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($signalLinks) {
                 WorkflowStub::make(TracingSignalLinksWorkflow::class, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
@@ -545,6 +593,27 @@ try {
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
             }
+        } elseif ($mode === 'update' && $updateLinks) {
+            $step = getenv('DW_TEST_TRACING_UPDATE_STEP');
+            $stub = WorkflowStub::make(TracingUpdateLinksWorkflow::class, 'cold-tracing', '0')
+                ->withCommandContext(CommandContext::phpApi()->with([
+                    'request' => [
+                        'request_id' => 'tracing-update-' . $step,
+                    ],
+                ]));
+            $result = match ($step) {
+                'first' => $stub->submitUpdate('accept', [9007199254740993, null, '雪']),
+                'failure' => $stub->submitUpdate('refuse'),
+                'invalid' => $stub->submitUpdate('notDeclared'),
+                default => throw new \RuntimeException('Unknown update step.'),
+            };
+            $updateResult = [
+                'accepted' => $result->accepted(),
+                'command_id' => $result->commandId(),
+                'update_id' => $result->updateId(),
+            ];
+        } elseif ($mode === 'signal' && $updateLinks) {
+            WorkflowStub::make(TracingUpdateLinksWorkflow::class, 'cold-tracing', '0')->signal('ready');
         } elseif ($mode === 'signal' && $signalLinks) {
             WorkflowStub::make(TracingSignalLinksWorkflow::class, 'cold-tracing', '0')->signal(
                 'ready',
@@ -764,6 +833,42 @@ try {
             'history_payloads' => $history->pluck('payload')
                 ->all(),
             'activities' => ActivityExecution::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+            'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+        ];
+    }
+    if ($updateLinks) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['updates'] = [
+            'submitted' => $updateResult,
+            'signal_command_id' => WorkflowCommand::query()->where('command_type', 'signal')->value('id'),
+            'capture_transaction_levels' => $recordedPropagator->transactionLevels,
+            'commands' => WorkflowCommand::query()->where('command_type', 'update')->orderBy('command_sequence')->get()
+                ->map(static fn ($command): array => [
+                    'id' => $command->id,
+                    'status' => $command->status->value,
+                    'outcome' => $command->outcome?->value,
+                    'carrier' => $command->getRawOriginal('observability_context'),
+                    'immutable' => array_intersect_key($command->getRawOriginal(), array_flip([
+                        'id', 'workflow_run_id', 'command_sequence', 'payload_codec', 'payload', 'context',
+                        'request_id', 'observability_context',
+                    ])),
+                ])->all(),
+            'rows' => WorkflowUpdate::query()->orderBy('command_sequence')->get()->map(static fn ($update): array => [
+                'id' => $update->id,
+                'command_id' => $update->workflow_command_id,
+                'status' => $update->status->value,
+                'result' => $update->updateResult(),
+                'failure_message' => $update->failure_message,
+            ])->all(),
+            'history_hashes' => $history->map(static function ($event): string {
+                return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+            })->all(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
         ];
     }

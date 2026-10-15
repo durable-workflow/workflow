@@ -159,6 +159,11 @@ final class ExecutionTracing
         self::linkCommand($run, $command, CommandType::Signal);
     }
 
+    public static function linkUpdate(WorkflowRun $run, WorkflowCommand $command): void
+    {
+        self::linkCommand($run, $command, CommandType::Update);
+    }
+
     public static function linkCancellation(WorkflowRun $run): void
     {
         try {

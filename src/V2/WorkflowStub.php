@@ -2307,6 +2307,7 @@ final class WorkflowStub
     private function recordAcceptedUpdateWithArguments(string $method, array $arguments): array
     {
         $this->refresh();
+        $incomingContext = TraceCarrier::captureConfigured();
 
         /** @var WorkflowCommand|null $command */
         $command = null;
@@ -2315,7 +2316,14 @@ final class WorkflowStub
         /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
 
-        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask): void {
+        DB::transaction(function () use (
+            $method,
+            $arguments,
+            &$command,
+            &$update,
+            &$resumeTask,
+            $incomingContext
+        ): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -2505,6 +2513,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'accepted_at' => now(),
+                'observability_context' => $incomingContext,
             ], $updateCommandAttributes)));
 
             /** @var WorkflowUpdate $update */

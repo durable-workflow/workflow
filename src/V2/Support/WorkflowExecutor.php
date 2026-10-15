@@ -6467,6 +6467,9 @@ final class WorkflowExecutor
                     ]),
                     new ReflectionMethod($workflow, $resolvedTarget['method']),
                 );
+                if ($command instanceof WorkflowCommand && config('workflows.tracing.enabled', false) === true) {
+                    ExecutionTracing::linkUpdate($run, $command);
+                }
                 $result = $workflow->{$resolvedTarget['method']}(...$parameters);
 
                 $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
