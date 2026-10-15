@@ -62,6 +62,15 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
     #[DataProvider('watchdogPaths')]
     public function testWatchdogLeavesTasksAvailableWhileWaitingForRepairRunLock(bool $deadline): void
     {
+        if (DB::connection()->getDriverName() === 'mysql' && str_contains(
+            strtolower((string) DB::selectOne('SELECT VERSION() AS version')->version),
+            'mariadb',
+        )) {
+            // This existing observer requires MySQL performance_schema or
+            // PostgreSQL pg_locks. The independent contention/recovery and
+            // worker/execution cases below also run on MariaDB.
+            $this->markTestSkipped('The existing run-lock waiter observer does not support MariaDB.');
+        }
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
         $workflow->start('Ada');
         $runId = $workflow->runId();
@@ -215,6 +224,7 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
                 fwrite($sockets[1], json_encode([
                     'report' => TaskWatchdog::runPass(runIds: [$runId]),
                     'transaction_level' => DB::transactionLevel(),
+                    'pdo_in_transaction' => DB::connection()->getPdo()->inTransaction(),
                 ], JSON_THROW_ON_ERROR) . PHP_EOL);
                 $ok = true;
             } catch (Throwable $error) {
@@ -237,6 +247,7 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
                 fwrite($sockets[0], "go\n");
                 $result = $this->readMessage($sockets[0]);
                 $this->assertSame(0, $result['transaction_level']);
+                $this->assertFalse($result['pdo_in_transaction']);
                 $report = $result['report'];
                 $this->assertSame([], $report['existing_task_failures']);
                 $this->assertSame([], $report['deadline_expired_failures']);
@@ -395,16 +406,9 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
 
     private function awaitRunWait(int $connectionId): void
     {
-        $query = 'SELECT COUNT(*) AS waiting FROM pg_locks WHERE pid = ? AND NOT granted';
-        if (DB::connection()->getDriverName() === 'mysql') {
-            $maria = str_contains(
-                strtolower((string) DB::selectOne('SELECT VERSION() AS version')->version),
-                'mariadb'
-            );
-            $query = $maria
-                ? 'SELECT COUNT(*) AS waiting FROM information_schema.INNODB_LOCK_WAITS w JOIN information_schema.INNODB_TRX t ON t.trx_id = w.requesting_trx_id WHERE t.trx_mysql_thread_id = ?'
-                : 'SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits w JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID WHERE t.PROCESSLIST_ID = ?';
-        }
+        $query = DB::connection()->getDriverName() === 'mysql'
+            ? 'SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits w JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID WHERE t.PROCESSLIST_ID = ?'
+            : 'SELECT COUNT(*) AS waiting FROM pg_locks WHERE pid = ? AND NOT granted';
         $until = microtime(true) + 5;
         do {
             if ((int) DB::selectOne($query, [$connectionId])->waiting > 0) {
