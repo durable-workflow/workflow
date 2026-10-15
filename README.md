@@ -1,5 +1,7 @@
 # Durable Workflow for Laravel
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_workflow&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_workflow)
+
 <p align="center">
   <a href="https://github.com/durable-workflow/workflow/actions/workflows/php.yml?query=branch%3Amain"><img src="https://github.com/durable-workflow/workflow/actions/workflows/php.yml/badge.svg?branch=main" alt="Build status"></a>
   <a href="https://codecov.io/gh/durable-workflow/workflow/branch/main"><img src="https://codecov.io/gh/durable-workflow/workflow/branch/main/graph/badge.svg" alt="Code coverage"></a>
