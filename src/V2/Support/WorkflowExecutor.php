@@ -3229,7 +3229,7 @@ final class WorkflowExecutor
             is_string($run->namespace) ? $run->namespace : null,
         );
 
-        return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
             'workflow_command_id' => $command->id,
             'signal_id' => $signal?->id,
             'signal_name' => $signalCall->name,
@@ -3238,6 +3238,11 @@ final class WorkflowExecutor
             'value' => ExternalPayloads::historyValue($storedValue, $run->payload_codec, $run->namespace),
             ...($parallelMetadata ?? []),
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
+        if (config('workflows.tracing.enabled', false) === true) {
+            ExecutionTracing::linkSignal($run, $command);
+        }
+
+        return $event;
     }
 
     private function recordSignalWait(

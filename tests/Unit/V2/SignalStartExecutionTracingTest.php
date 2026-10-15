@@ -57,6 +57,7 @@ final class SignalStartExecutionTracingTest extends TestCase
             $admitted = $worker('admit');
             self::assertSame('started_new', $admitted['signal_start_outcome']);
             self::assertSame($admissionEnabled, $admitted['carrier'] !== null);
+            self::assertSame($admissionEnabled, $admitted['signal_commands'][0]['carrier'] !== null);
             self::assertSame($admissionEnabled ? [0] : [], $admitted['capture_transaction_levels']);
             $existing = $worker('duplicate');
             self::assertSame('returned_existing_active', $existing['signal_start_outcome']);
@@ -65,6 +66,8 @@ final class SignalStartExecutionTracingTest extends TestCase
                 self::assertSame(0, $level);
             }
             self::assertSame(2, $existing['signal_count']);
+            self::assertSame($admitted['signal_commands'][0], $existing['signal_commands'][0]);
+            self::assertSame($workerEnabled, $existing['signal_commands'][1]['carrier'] !== null);
             self::assertSame(
                 $admitted['history_hashes'],
                 array_slice($existing['history_hashes'], 0, count($admitted['history_hashes']))
@@ -88,6 +91,7 @@ final class SignalStartExecutionTracingTest extends TestCase
             self::assertSame(0, $finished['repairs']);
             self::assertSame(0, $finished['jobs']);
             self::assertSame(0, $finished['failed_jobs']);
+            self::assertSame($existing['signal_commands'], $finished['signal_commands']);
             foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $key) {
                 self::assertSame($admitted[$key], $existing[$key]);
                 self::assertSame($admitted[$key], $finished[$key]);

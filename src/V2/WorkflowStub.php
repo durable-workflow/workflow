@@ -2747,6 +2747,7 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
+        $observabilityContext = $runtimeReserved ? null : TraceCarrier::captureConfigured();
 
         SqliteTransaction::run(function () use (
             $name,
@@ -2754,6 +2755,7 @@ final class WorkflowStub
             $payloadCodec,
             $payloadBlob,
             $runtimeReserved,
+            $observabilityContext,
             &$command,
             &$task
         ): void {
@@ -2944,6 +2946,7 @@ final class WorkflowStub
             $storedExternally = $payloadBlob !== null && ExternalPayloads::isStoredReference($payloadBlob);
             $commandAttributes = $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
+                'observability_context' => $observabilityContext,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::SignalReceived->value,
@@ -3186,6 +3189,7 @@ final class WorkflowStub
                     $commandContext,
                     [
                         'command_type' => CommandType::Signal->value,
+                        'observability_context' => $observabilityContext,
                         'target_scope' => 'instance',
                         'status' => CommandStatus::Accepted->value,
                         'outcome' => CommandOutcome::SignalReceived->value,
@@ -3447,6 +3451,7 @@ final class WorkflowStub
                 $commandContext,
                 [
                     'command_type' => CommandType::Signal->value,
+                    'observability_context' => $observabilityContext,
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::SignalReceived->value,

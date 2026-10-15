@@ -122,6 +122,41 @@ without failing business work or rewriting the stored carrier. Task span
 wrappers skip their metadata read when emission is disabled. Transition
 inheritance follows the preservation rule above.
 
+## Signal caller links
+
+This draft also proposes a nullable `workflow_commands.observability_context`
+column. New accepted embedded signals and signal-with-start commands capture
+their own bounded carrier before the admission transaction. Existing command
+metadata, including null, stays unchanged. The column is separate from command
+context, payloads, history and idempotency. It is hidden from ordinary model JSON.
+Each captured run or command carrier is limited to 4 KiB. Links add no durable
+history events.
+
+When the embedded executor applies a signal, its processing span links to that
+command's captured caller. This includes signals received before the first task
+runs and after a real wait. The run's original parent and baggage stay active.
+Legacy admissions without a parent keep independent processing segments with
+links to their new signal callers. Replaying an already applied signal adds no
+new signal-application link.
+
+```mermaid
+flowchart LR
+    A[Captured admission span] -->|parent| W[Workflow processing segment]
+    A -->|parent| X[Activity attempt]
+    B[Independent signal caller] -.->|link on application| W
+    X -->|parent| H[Instrumented HTTP client]
+```
+
+Links are added during processing. They do not change an earlier head-sampling
+decision and are not proof that a transaction committed. Up to 32 distinct
+caller trace/span contexts are retained per processing segment. Repeated callers
+share a link identified by the first applied command. Further additions are
+dropped, with the count in `durable.links.dropped`. Application SDK limits may
+be lower. The link state ends with its processing scope.
+
+This does not add service wire propagation, native catalog support, update or
+cancellation-caller links, schedule links or complete fan-in tracing.
+
 The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been
 adopted by the native Server. Other admission paths, broader trigger links,

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Monolog\Formatter\JsonFormatter;
+use OpenTelemetry\API\Baggage\Baggage;
 use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
@@ -60,6 +61,7 @@ $retry = $argv[3] === 'retry';
 $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 $transition = getenv('DW_TEST_TRACING_TRANSITION');
 $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
+$signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -158,6 +160,30 @@ final class TracingCancellationWorkflow extends Workflow
                 'cleanup' => $result,
             ]);
         }
+    }
+}
+
+#[Signal('ready')]
+final class TracingSignalLinksWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        $first = self::awaitSignal('ready');
+        Log::info('signal applied', [
+            'approved_baggage' => ExecutionTracing::current() === []
+                        ? null : Baggage::fromContext(Context::getCurrent())->getValue('approved'),
+        ]);
+        $second = self::awaitSignal('ready');
+        Log::info('signal applied', [
+            'approved_baggage' => ExecutionTracing::current() === []
+                        ? null : Baggage::fromContext(Context::getCurrent())->getValue('approved'),
+        ]);
+
+        return [
+            'first' => $first,
+            'second' => $second,
+            'activity' => self::activity(TracingProcessActivity::class, false),
+        ];
     }
 }
 
@@ -338,7 +364,7 @@ $propagator = new MultiTextMapPropagator([
     BaggagePropagator::getInstance(),
 ]);
 $recordedPropagator = null;
-if ($signalStart) {
+if ($signalStart || $signalLinks) {
     $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
         public array $transactionLevels = [];
 
@@ -382,6 +408,12 @@ try {
     $headers = [
         'traceparent' => $parent,
     ];
+    if ($signalLinks && $mode === 'signal') {
+        $headers['traceparent'] = getenv('DW_TEST_TRACING_SIGNAL_CALLER');
+        $headers['baggage'] = 'approved=caller';
+    } elseif ($signalLinks && $mode === 'admit') {
+        $headers['baggage'] = 'approved=origin';
+    }
     if ($mode === 'admit' && getenv('DW_TEST_TRACING_HTTP_URL')) {
         $headers['tracestate'] = 'dwtest=one';
         $headers['baggage'] = 'approved=tenant-a,private=must-not-propagate';
@@ -473,6 +505,10 @@ try {
                 foreach ($completion['created_task_ids'] as $taskId) {
                     TaskDispatcher::dispatch(WorkflowTask::query()->findOrFail($taskId));
                 }
+            } elseif ($signalLinks) {
+                WorkflowStub::make(TracingSignalLinksWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($cancellation) {
                 WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
@@ -501,6 +537,15 @@ try {
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
             }
+        } elseif ($mode === 'signal' && $signalLinks) {
+            WorkflowStub::make(TracingSignalLinksWorkflow::class, 'cold-tracing', '0')->signal(
+                'ready',
+                getenv('DW_TEST_TRACING_SIGNAL_STEP') === 'first' ? [9007199254740993, null, '雪'] : [
+                    false,
+                    null,
+                    'é',
+                ]
+            );
         } elseif ($mode === 'cancel' && $cancellation) {
             $stub = WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0');
             $result = match ($cancellation) {
@@ -609,6 +654,14 @@ try {
                 ->getSpanId(),
             'fields' => $span->getAttributes()
                 ->toArray(),
+            'links' => array_map(static fn ($link): array => [
+                'trace_id' => $link->getSpanContext()
+                    ->getTraceId(),
+                'span_id' => $link->getSpanContext()
+                    ->getSpanId(),
+                'fields' => $link->getAttributes()
+                    ->toArray(),
+            ], $span->getLinks()),
         ], $exporter->getSpans()),
     ];
     if ($exportEndpoint) {
@@ -626,6 +679,14 @@ try {
             json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
         ))->all();
         $output['history_payloads'] = $history->pluck('payload')->all();
+        $output['signal_commands'] = WorkflowCommand::query()->where('command_type', 'signal')->orderBy(
+            'command_sequence'
+        )
+            ->get()
+            ->map(static fn ($command): array => [
+                'id' => $command->id,
+                'carrier' => $command->getRawOriginal('observability_context'),
+            ])->all();
     }
     if ($transition === 'child' || $transition === 'continue') {
         $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($run): array => [
@@ -691,6 +752,30 @@ try {
             'history_payloads' => $history->pluck('payload')
                 ->all(),
             'activities' => ActivityExecution::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+            'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+        ];
+    }
+    if ($signalLinks) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['signals'] = [
+            'capture_transaction_levels' => $recordedPropagator->transactionLevels,
+            'commands' => WorkflowCommand::query()->where('command_type', 'signal')->orderBy('command_sequence')
+                ->get()
+                ->map(static fn ($command): array => [
+                    'id' => $command->id,
+                    'carrier' => $command->getRawOriginal('observability_context'),
+                    'immutable' => array_intersect_key($command->getRawOriginal(), array_flip([
+                        'id', 'workflow_run_id', 'command_sequence', 'message_sequence', 'payload_codec', 'payload', 'context',
+                        'observability_context',
+                    ])),
+                ])->all(),
+            'history_hashes' => $history->map(static function ($event): string {
+                return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+            })->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
         ];
     }

@@ -11,6 +11,7 @@ use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\Context\Context;
 use Throwable;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
 
 /**
@@ -27,6 +28,39 @@ final class TraceCarrier
         'tracestate' => 512,
         'baggage' => 2048,
     ];
+
+    /**
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function captureConfigured(): ?array
+    {
+        try {
+            if (config('workflows.tracing.enabled', false) !== true) {
+                return null;
+            }
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+
+            return self::capture(is_array($allowlist) ? $allowlist : []);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function fromCommand(WorkflowCommand $command): ?array
+    {
+        try {
+            $stored = array_key_exists('observability_context', $command->getAttributes())
+                ? $command->getAttribute('observability_context') : null;
+
+            // A link never imports the triggering caller's baggage into execution.
+            return self::normalize($stored);
+        } catch (Throwable) {
+            return null;
+        }
+    }
 
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null

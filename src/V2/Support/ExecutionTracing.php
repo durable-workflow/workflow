@@ -19,6 +19,10 @@ use OpenTelemetry\Context\ContextKeyInterface;
 use OpenTelemetry\Context\ScopeInterface;
 use Throwable;
 use WeakMap;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowRun;
 
 /** @internal */
 final class ExecutionTracing
@@ -30,6 +34,8 @@ final class ExecutionTracing
     ];
 
     private static ?ContextKeyInterface $correlationKey = null;
+
+    private static ?ContextKeyInterface $linkKey = null;
 
     /**
      * @var WeakMap<Fiber, int>|null
@@ -148,6 +154,35 @@ final class ExecutionTracing
         }
     }
 
+    public static function linkSignal(WorkflowRun $run, WorkflowCommand $command): void
+    {
+        try {
+            $fields = self::current();
+            if (self::$linkKey === null || ($fields['workflow_run_id'] ?? null) !== $run->id
+                || ($fields['namespace'] ?? null) !== $run->namespace
+                || $command->workflow_run_id !== $run->id
+                || $command->workflow_instance_id !== $run->workflow_instance_id
+                || $command->command_type !== CommandType::Signal || $command->status !== CommandStatus::Accepted) {
+                return;
+            }
+            $state = Context::getCurrent()->get(self::$linkKey);
+            if (! $state instanceof TraceLinkState || ! $state->isRecording()) {
+                return;
+            }
+            $carrier = TraceCarrier::fromCommand($command);
+            if ($carrier === null) {
+                return;
+            }
+            $context = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: Context::getRoot());
+            $state->add(Span::fromContext($context)->getContext(), [
+                'workflow_command_id' => $command->id,
+                'command_type' => 'signal',
+            ]);
+        } catch (Throwable) {
+            // Optional causal links cannot replace a signal's durable decision.
+        }
+    }
+
     /**
      * @param array<string, mixed> $attributes
      * @param list<string> $baggageAllowlist
@@ -197,8 +232,13 @@ final class ExecutionTracing
                 $fields['span_id'] = $span->getContext()->getSpanId();
             }
             self::$correlationKey ??= Context::createKey('durable-workflow.correlation');
-            $scope = $span->storeInContext($parent)
-                ->with(self::$correlationKey, $fields)->activate();
+            $active = $span->storeInContext($parent)
+                ->with(self::$correlationKey, $fields);
+            if ($name === 'durable.workflow.task') {
+                self::$linkKey ??= Context::createKey('durable-workflow.trace-links');
+                $active = $active->with(self::$linkKey, new TraceLinkState($span));
+            }
+            $scope = $active->activate();
             self::enterFiberScope();
         } catch (Throwable) {
             self::close($scope, $span);

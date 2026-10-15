@@ -29,6 +29,7 @@ use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -300,6 +301,35 @@ final class ActivityExecutionTracingTest extends TestCase
             $scope->detach();
             $provider->shutdown();
         }
+    }
+
+    public function testCommandCarrierMigrationPreservesLegacyRowsAndKeepsMetadataOutOfPublicContext(): void
+    {
+        $stub = WorkflowStub::make(TracedWorkflow::class, 'legacy-command', '0');
+        $stub->start(false);
+        $migration = require __DIR__ . '/../../../src/migrations/2026_10_15_000200_add_observability_context_to_workflow_commands.php';
+        $migration->down();
+        $before = (array) DB::table('workflow_commands')->sole();
+        $migration->up();
+        $migration->up();
+        $after = (array) DB::table('workflow_commands')->sole();
+        self::assertArrayHasKey('observability_context', $after);
+        self::assertNull($after['observability_context']);
+        unset($after['observability_context']);
+        self::assertSame($before, $after);
+        $command = WorkflowCommand::query()->sole();
+        $context = $command->commandContext();
+        $publicContext = $command->publicContext();
+        $command->observability_context = [
+            'schema' => 'durable-workflow.trace-context',
+            'version' => 1,
+            'carrier' => [
+                'traceparent' => '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+            ],
+        ];
+        self::assertSame($context, $command->commandContext());
+        self::assertSame($publicContext, $command->publicContext());
+        self::assertArrayNotHasKey('observability_context', $command->toArray());
     }
 
     #[DataProvider('coldModes')]

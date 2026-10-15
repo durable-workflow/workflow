@@ -22,6 +22,8 @@ use OpenTelemetry\SDK\Trace\TracerProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Tracing\LogContext;
@@ -366,6 +368,178 @@ final class ExecutionTracingTest extends TestCase
             $configuration->detach();
             $provider->shutdown();
         }
+    }
+
+    public function testSignalLinksStayOnTheProcessingSpanAndHaveABoundedPerSegmentLifetime(): void
+    {
+        $run = self::signalRun();
+        $first = null;
+        $result = ExecutionTracing::workflow(self::fields(), self::carrier(), function () use ($run, &$first): int {
+            $nested = $this->provider->getTracer('application')
+                ->spanBuilder('application child')
+                ->startSpan();
+            $scope = $nested->activate();
+            try {
+                $original = ExecutionTracing::current();
+                for ($index = 0; $index < 36; ++$index) {
+                    $carrier = self::carrier();
+                    $carrier['carrier']['traceparent'] = '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-'
+                        . str_pad(dechex($index + 1), 16, '0', STR_PAD_LEFT) . '-01';
+                    $command = self::signalCommand($carrier, 'signal-' . $index);
+                    $first ??= $command;
+                    ExecutionTracing::linkSignal($run, $command);
+                    self::assertSame($original, ExecutionTracing::current());
+                }
+                $duplicate = clone $first;
+                $duplicate->id = 'another-command-from-the-first-caller';
+                ExecutionTracing::linkSignal($run, $duplicate);
+            } finally {
+                $scope->detach();
+                $nested->end();
+            }
+
+            return 7;
+        }, enabled: true);
+        self::assertSame(7, $result);
+        $spans = $this->exporter->getSpans();
+        self::assertCount(2, $spans);
+        self::assertSame([], $spans[0]->getLinks());
+        self::assertCount(32, $spans[1]->getLinks());
+        self::assertSame(4, $spans[1]->getAttributes()->get('durable.links.dropped'));
+        self::assertSame('signal-0', $spans[1]->getLinks()[0]->getAttributes()->get('workflow_command_id'));
+        self::assertSame(self::TRACE_ID, $spans[1]->getContext()->getTraceId());
+        self::assertSame(self::PARENT_ID, $spans[1]->getParentContext()->getSpanId());
+        ExecutionTracing::linkSignal($run, $first);
+        self::assertCount(32, $spans[1]->getLinks());
+        ExecutionTracing::workflow(self::fields(), self::carrier(), static function () use ($run, $first): void {
+            ExecutionTracing::linkSignal($run, $first);
+        }, enabled: true);
+        $next = $this->exporter->getSpans()[2];
+        self::assertCount(1, $next->getLinks());
+        self::assertNull($next->getAttributes()->get('durable.links.dropped'));
+    }
+
+    public function testInvalidForeignAndUnboundSignalMetadataCannotLinkOrReplaceTheBusinessResult(): void
+    {
+        $run = self::signalRun();
+        $valid = self::carrier();
+        $valid['carrier']['traceparent'] = '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
+        $valid['carrier']['baggage'] = 'approved=caller';
+        $command = self::signalCommand($valid);
+        $result = ExecutionTracing::workflow(self::fields(), self::carrier(), static function () use (
+            $run,
+            $command,
+            $valid
+        ): int {
+            $original = ExecutionTracing::current();
+            $invalid = [null, 'invalid', [
+                'schema' => 'unknown',
+                'version' => 1,
+                'carrier' => [],
+            ],
+                array_replace($valid, [
+                    'version' => 2,
+                ]),
+                array_replace($valid, [
+                    'carrier' => [
+                        'traceparent' => str_repeat('a', 257),
+                    ],
+                ]),
+                array_replace($valid, [
+                    'carrier' => [
+                        'traceparent' => $valid['carrier']['traceparent'],
+                        'baggage' => str_repeat('a', 2049),
+                    ],
+                ]),
+                array_replace($valid, [
+                    'carrier' => [
+                        'traceparent' => '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0000000000000000-01',
+                    ],
+                ]),
+            ];
+            foreach ($invalid as $carrier) {
+                ExecutionTracing::linkSignal($run, self::signalCommand($carrier));
+            }
+            foreach ([
+                'workflow_run_id' => 'other-run',
+                'workflow_instance_id' => 'other-instance',
+                'status' => 'rejected',
+                'command_type' => 'update',
+            ] as $key => $value) {
+                $foreign = clone $command;
+                $foreign->{$key} = $value;
+                ExecutionTracing::linkSignal($run, $foreign);
+            }
+            $foreignRun = clone $run;
+            $foreignRun->namespace = 'other';
+            ExecutionTracing::linkSignal($foreignRun, $command);
+            $unreadable = new class() extends WorkflowCommand {
+                public function getAttribute($key): mixed
+                {
+                    if ($key === 'observability_context') {
+                        throw new RuntimeException('private-telemetry-cast');
+                    }
+
+                    return parent::getAttribute($key);
+                }
+            };
+            $unreadable->setRawAttributes($command->getRawOriginal());
+            ExecutionTracing::linkSignal($run, $unreadable);
+            (new Fiber(static function () use ($run, $command): void {
+                ExecutionTracing::linkSignal($run, $command);
+            }))->start();
+            self::assertSame($original, ExecutionTracing::current());
+            ExecutionTracing::linkSignal($run, $command);
+            self::assertSame($original, ExecutionTracing::current());
+
+            return 9;
+        }, enabled: true);
+        self::assertSame(9, $result);
+        $span = $this->exporter->getSpans()[0];
+        self::assertCount(1, $span->getLinks());
+        self::assertSame('signal-1', $span->getLinks()[0]->getAttributes()->get('workflow_command_id'));
+        self::assertSame(self::TRACE_ID, $span->getContext()->getTraceId());
+        self::assertSame(self::PARENT_ID, $span->getParentContext()->getSpanId());
+        self::assertStringNotContainsString(
+            'private-telemetry-cast',
+            json_encode($span->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+        );
+        self::assertSame(11, ExecutionTracing::workflow(self::fields(), self::carrier(), static function () use (
+            $run,
+            $command
+        ): int {
+            ExecutionTracing::linkSignal($run, $command);
+
+            return 11;
+        }, enabled: false));
+        self::assertCount(1, $this->exporter->getSpans());
+    }
+
+    private static function signalRun(): WorkflowRun
+    {
+        $run = new WorkflowRun();
+        $run->setRawAttributes([
+            'id' => 'run-1',
+            'workflow_instance_id' => 'instance-1',
+            'namespace' => '0',
+        ]);
+
+        return $run;
+    }
+
+    private static function signalCommand(mixed $carrier, string $id = 'signal-1'): WorkflowCommand
+    {
+        $command = new WorkflowCommand();
+        $command->setRawAttributes([
+            'id' => $id,
+            'workflow_instance_id' => 'instance-1',
+            'workflow_run_id' => 'run-1',
+            'command_type' => 'signal',
+            'status' => 'accepted',
+            'observability_context' => json_encode($carrier, JSON_THROW_ON_ERROR),
+        ]);
+
+        return $command;
     }
 
     private static function fields(string $run = 'run-1', string $attempt = 'attempt-1'): array
