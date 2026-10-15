@@ -4366,6 +4366,91 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('test-greeting-workflow', $results[0]['workflow_type']);
     }
 
+    #[DataProvider('numericWorkflowTypeFilters')]
+    public function testPollPreservesExactNumericWorkflowTypes(array $workflowTypes, array $expectedTypes): void
+    {
+        $tasks = [];
+        $expectedTaskIds = [];
+
+        foreach (['17', '0', '017', 'numeric.control'] as $workflowType) {
+            $task = $this->createTypedReadyWorkflowTask($workflowType);
+            $tasks[$task->id] = $task->getAttributes();
+
+            if (in_array($workflowType, $expectedTypes, true)) {
+                $expectedTaskIds[] = $task->id;
+            }
+        }
+
+        $results = $this->bridge->poll('redis', 'typed-work', 10, 'build-a', 'tenant-a', $workflowTypes);
+        $actualTaskIds = array_column($results, 'task_id');
+        $actualTypes = array_column($results, 'workflow_type');
+        sort($expectedTaskIds, SORT_STRING);
+        sort($actualTaskIds, SORT_STRING);
+        sort($expectedTypes, SORT_STRING);
+        sort($actualTypes, SORT_STRING);
+
+        $this->assertSame($expectedTaskIds, $actualTaskIds);
+        $this->assertSame($expectedTypes, $actualTypes);
+
+        foreach ($tasks as $taskId => $attributes) {
+            $this->assertSame($attributes, WorkflowTask::query()->findOrFail($taskId)->getAttributes());
+        }
+
+        $this->assertSame(0, WorkflowHistoryEvent::query()->count());
+    }
+
+    public static function numericWorkflowTypeFilters(): array
+    {
+        return [
+            'zero only' => [['0'], ['0']],
+            'mixed numeric names' => [['17', '0', '017'], ['17', '0', '017']],
+            'leading zero remains distinct' => [['017'], ['017']],
+            'ordinary name' => [['numeric.control'], ['numeric.control']],
+            'invalid values do not broaden discovery' => [['', 0, false, null], []],
+            'valid zero among invalid values' => [['', 0, false, null, '0'], ['0']],
+            'omitted filter keeps unrestricted discovery' => [[], ['17', '0', '017', 'numeric.control']],
+        ];
+    }
+
+    public function testZeroWorkflowTypePollPreservesRoutingAndAvailabilityGuards(): void
+    {
+        $matchingTask = $this->createTypedReadyWorkflowTask('0');
+        $neighbors = [
+            $this->createTypedReadyWorkflowTask('0', 'tenant-b'),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'queue' => 'another-queue',
+            ]),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'connection' => 'another-connection',
+            ]),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'compatibility' => 'build-b',
+            ]),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'available_at' => now()->addMinutes(5),
+            ]),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'status' => TaskStatus::Leased->value,
+            ]),
+            $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
+                'task_type' => TaskType::Activity->value,
+            ]),
+        ];
+        $before = array_map(static fn (WorkflowTask $task): array => $task->getAttributes(), $neighbors);
+
+        $results = $this->bridge->poll('redis', 'typed-work', 10, 'build-a', 'tenant-a', ['0']);
+
+        $this->assertSame([$matchingTask->id], array_column($results, 'task_id'));
+        $this->assertSame(['0'], array_column($results, 'workflow_type'));
+        $this->assertSame($matchingTask->getAttributes(), $matchingTask->fresh()->getAttributes());
+
+        foreach ($neighbors as $index => $task) {
+            $this->assertSame($before[$index], $task->fresh()->getAttributes());
+        }
+
+        $this->assertSame(0, WorkflowHistoryEvent::query()->count());
+    }
+
     public function testPollFiltersByWorkflowTypeBeforeApplyingLimit(): void
     {
         $firstRun = $this->createWaitingRun();
@@ -13258,6 +13343,30 @@ SQL);
         $this->assertTrue($request->accepted());
 
         return [$run->refresh(), $task];
+    }
+
+    private function createTypedReadyWorkflowTask(
+        string $workflowType,
+        string $namespace = 'tenant-a',
+        array $taskAttributes = []
+    ): WorkflowTask {
+        $run = $this->createWaitingRun($namespace);
+        $run->forceFill([
+            'workflow_type' => $workflowType,
+        ])->save();
+
+        return WorkflowTask::query()->create(array_replace([
+            'workflow_run_id' => $run->id,
+            'namespace' => $namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'typed-work',
+            'compatibility' => 'build-a',
+        ], $taskAttributes))->refresh();
     }
 
     private function createWaitingRun(?string $namespace = null): WorkflowRun
