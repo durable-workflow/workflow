@@ -379,6 +379,7 @@ jobs:
         vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
         tests/Unit/V2/IncomingHttpTracingTest.php
         tests/Unit/V2/RecoveryExecutionTracingTest.php
+        tests/Unit/V2/TransitionExecutionTracingTest.php
         --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
 
     - name: Run database-independent unit contracts

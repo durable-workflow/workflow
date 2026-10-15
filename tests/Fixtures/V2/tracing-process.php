@@ -47,6 +47,7 @@ if ($incomingHttp) {
 }
 $retry = $argv[3] === 'retry';
 $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
+$transition = getenv('DW_TEST_TRACING_TRANSITION');
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
@@ -86,6 +87,26 @@ final class TracingRecoveryWorkflow extends Workflow
             startToCloseTimeout: 2,
             scheduleToCloseTimeout: 10,
         ), false);
+    }
+}
+
+final class TracingChildParentWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        return self::child(TracingProcessWorkflow::class, false);
+    }
+}
+
+final class TracingContinuationWorkflow extends Workflow
+{
+    public function handle(bool $continued = false): array
+    {
+        if (! $continued) {
+            return self::continueAsNew(true);
+        }
+
+        return self::activity(TracingProcessActivity::class, false);
     }
 }
 
@@ -310,6 +331,13 @@ try {
                 }
                 http_response_code(201);
                 header('Content-Type: application/json');
+            } elseif ($transition === 'child' || $transition === 'continue') {
+                $workflow = $transition === 'child'
+                    ? TracingChildParentWorkflow::class
+                    : TracingContinuationWorkflow::class;
+                WorkflowStub::make($workflow, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($recovery) {
                 WorkflowStub::make(TracingRecoveryWorkflow::class, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
@@ -363,7 +391,9 @@ try {
         $scope->detach();
         $requestSpan?->end();
     }
-    $run = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing')->sole();
+    $runs = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing');
+    $run = $transition === 'continue' ? $runs->orderByDesc('run_number')
+        ->firstOrFail() : $runs->sole();
     $output = [
         'pid' => getmypid(),
         'framework' => $app->version(),
@@ -394,6 +424,20 @@ try {
                 ->toArray(),
         ], $exporter->getSpans()),
     ];
+    if ($transition === 'child' || $transition === 'continue') {
+        $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($run): array => [
+            'id' => $run->id,
+            'instance_id' => $run->workflow_instance_id,
+            'status' => $run->status->value,
+            'closed_reason' => $run->closed_reason,
+            'carrier' => $run->getRawOriginal('observability_context'),
+            'execution_deadline' => $run->getRawOriginal('execution_deadline_at'),
+            'run_deadline' => $run->getRawOriginal('run_deadline_at'),
+        ])->all();
+        $output['activity_count'] = ActivityExecution::query()->count();
+        $output['completion_count'] = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count();
+        $output['history_payloads'] = WorkflowHistoryEvent::query()->orderBy('id')->pluck('payload')->all();
+    }
     if ($recovery) {
         $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
         $output['recovery'] = [
