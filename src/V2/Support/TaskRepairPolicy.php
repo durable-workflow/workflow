@@ -159,7 +159,9 @@ final class TaskRepairPolicy
             return false;
         }
 
-        if ($task->available_at !== null && $task->available_at->isFuture()) {
+        $now ??= now();
+
+        if ($task->available_at !== null && $task->available_at->gt($now)) {
             return false;
         }
 
@@ -177,7 +179,11 @@ final class TaskRepairPolicy
             return false;
         }
 
-        return $reference->lte(($now ?? now())->copy()->subSeconds(self::redispatchAfterSeconds()));
+        if ($task->available_at !== null && $task->available_at->gt($reference)) {
+            $reference = $task->available_at;
+        }
+
+        return $reference->lte($now->copy()->subSeconds(self::redispatchAfterSeconds()));
     }
 
     public static function claimFailed(WorkflowTask $task): bool

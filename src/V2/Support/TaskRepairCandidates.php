@@ -606,6 +606,10 @@ final class TaskRepairCandidates
                                 })
                                 ->orWhere(static function ($dispatchOverdue) use ($staleDispatchCutoff): void {
                                     $dispatchOverdue
+                                        ->where(static function ($available) use ($staleDispatchCutoff): void {
+                                            $available->whereNull('available_at')
+                                                ->orWhere('available_at', '<=', $staleDispatchCutoff);
+                                        })
                                         ->where(static function ($dispatchHealthy): void {
                                             self::applyDispatchHealthy($dispatchHealthy);
                                         })
