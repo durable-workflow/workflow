@@ -29,6 +29,7 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\StartResult;
@@ -44,6 +45,7 @@ final class ExecutionTracing
         'activity_attempt_number', 'request_id',
         'timer_id',
         'workflow_command_id',
+        'schedule_id',
     ];
 
     private const TIMINGS = [
@@ -264,8 +266,32 @@ final class ExecutionTracing
         } catch (Throwable) {
             // Optional identity reads do not replace admission.
         }
+        if (TraceCarrier::hasPreparedAdmission()) {
+            return self::withAdmissionFields($attributes, $operation);
+        }
 
         return self::segment('durable.workflow.admission', $attributes, null, $operation, [], true);
+    }
+
+    public static function scheduleAdmission(WorkflowSchedule $schedule, callable $operation, string $kind): mixed
+    {
+        if (! self::enabled() || ! class_exists(Globals::class) || TraceCarrier::hasPreparedAdmission()) {
+            return $operation();
+        }
+        $attributes = [];
+        try {
+            $attributes = [
+                'schedule_id' => $schedule->getRawOriginal('schedule_id'),
+                'namespace' => $schedule->getRawOriginal('namespace'),
+                'durable.schedule.trigger_kind' => $kind,
+            ];
+        } catch (Throwable) {
+            // Optional schedule identity does not replace its locked admission decision.
+        }
+
+        return TraceCarrier::withPreparedAdmission(
+            static fn (): mixed => self::segment('durable.schedule.trigger', $attributes, null, $operation, [], true)
+        );
     }
 
     public static function recordFailure(Throwable $error): void
@@ -338,6 +364,30 @@ final class ExecutionTracing
 
     /**
      * @param array<string, mixed> $attributes
+     */
+    private static function withAdmissionFields(array $attributes, callable $operation): mixed
+    {
+        $scope = null;
+        try {
+            self::$correlationKey ??= Context::createKey('durable-workflow.correlation');
+            $fields = array_replace(self::current(), self::fields($attributes));
+            $scope = Context::getCurrent()->with(self::$correlationKey, $fields)->activate();
+            self::enterFiberScope();
+        } catch (Throwable) {
+            self::close($scope, null);
+
+            return $operation();
+        }
+
+        try {
+            return $operation();
+        } finally {
+            self::close($scope, null);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
      * @param list<string> $baggageAllowlist
      */
     private static function segment(
@@ -366,7 +416,7 @@ final class ExecutionTracing
             $builder = Globals::tracerProvider()->getTracer(self::PACKAGE_NAME, $version)
                 ->spanBuilder($name)
                 ->setSpanKind(match ($name) {
-                    'durable.workflow.admission' => SpanKind::KIND_INTERNAL,
+                    'durable.workflow.admission', 'durable.schedule.trigger' => SpanKind::KIND_INTERNAL,
                     'durable.task.dispatch' => SpanKind::KIND_PRODUCER,
                     default => SpanKind::KIND_CONSUMER,
                 })
@@ -430,7 +480,7 @@ final class ExecutionTracing
         array $baggageAllowlist
     ): ContextInterface {
         // Local admission keeps the caller's context. Workers recover only stored authority.
-        $localParent = $name === 'durable.workflow.admission'
+        $localParent = in_array($name, ['durable.workflow.admission', 'durable.schedule.trigger'], true)
             || ($name === 'durable.task.dispatch' && self::current() !== []);
         $parent = $localParent ? Context::getCurrent() : Context::getRoot();
         $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
@@ -470,6 +520,13 @@ final class ExecutionTracing
         )) {
             $spanAttributes['durable.task.type'] = $attributes['durable.task.type'];
         }
+        if ($name === 'durable.schedule.trigger' && in_array(
+            $attributes['durable.schedule.trigger_kind'] ?? null,
+            ['manual', 'scheduled', 'buffered', 'backfill'],
+            true
+        )) {
+            $spanAttributes['durable.schedule.trigger_kind'] = $attributes['durable.schedule.trigger_kind'];
+        }
 
         return $spanAttributes;
     }
@@ -487,9 +544,44 @@ final class ExecutionTracing
                 && ($result instanceof StartResult || $result instanceof SignalWithStartResult)) {
                 self::recordAdmissionResult($span, $result);
             }
+            if ($name === 'durable.schedule.trigger') {
+                self::recordScheduleResult($span, $result);
+            }
         } catch (Throwable) {
             // Optional receipt metadata cannot replace a returned business value.
         }
+    }
+
+    private static function recordScheduleResult(SpanInterface $span, mixed $result): void
+    {
+        $receipt = match (true) {
+            $result instanceof ScheduleTriggerResult => [
+                'instance_id' => $result->instanceId,
+                'run_id' => $result->runId,
+                'outcome' => $result->outcome,
+                'reason' => $result->reason,
+            ],
+            is_array($result) => $result,
+            is_string($result) => [
+                'instance_id' => $result,
+                'outcome' => 'triggered',
+            ],
+            default => [
+                'outcome' => 'no_run',
+            ],
+        };
+        $attributes = self::fields([
+            'workflow_instance_id' => $receipt['instance_id'] ?? null,
+            'workflow_run_id' => $receipt['run_id'] ?? null,
+        ]);
+        foreach (['outcome', 'reason'] as $key) {
+            $value = $receipt[$key] ?? null;
+            if (is_string($value) && $value !== '' && strlen($value) <= 256
+                && ! preg_match('/[\x00-\x1f\x7f]/', $value)) {
+                $attributes['durable.schedule.' . $key] = $value;
+            }
+        }
+        $span->setAttributes($attributes);
     }
 
     /**

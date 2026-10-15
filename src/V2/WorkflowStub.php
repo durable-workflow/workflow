@@ -947,7 +947,7 @@ final class WorkflowStub
         $observabilityContext = null;
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $observabilityContext = TraceCarrier::capture(ExecutionTracing::baggageAllowlist());
+            $observabilityContext = TraceCarrier::admissionParent();
         }
         if (! $tracing) {
             return $this->admitStart($metadata, $startOptions, $observabilityContext);
@@ -3091,7 +3091,7 @@ final class WorkflowStub
         $observabilityContext = null;
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $observabilityContext = TraceCarrier::capture(ExecutionTracing::baggageAllowlist());
+            $observabilityContext = TraceCarrier::admissionParent();
         }
         $operation = fn (): SignalWithStartResult => $this->admitSignalWithStart(
             $name,

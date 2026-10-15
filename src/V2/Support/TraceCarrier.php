@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Fiber;
 use OpenTelemetry\API\Baggage\Baggage;
 use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\ContextKeyInterface;
 use Throwable;
+use WeakMap;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -28,6 +31,65 @@ final class TraceCarrier
         'tracestate' => 512,
         'baggage' => 2048,
     ];
+
+    private static ?ContextKeyInterface $admissionKey = null;
+
+    /**
+     * @var WeakMap<Fiber, int>|null
+     */
+    private static ?WeakMap $admissionFibers = null;
+
+    public static function withPreparedAdmission(callable $operation): mixed
+    {
+        $fiber = Fiber::getCurrent();
+        try {
+            self::$admissionKey ??= Context::createKey('durable-workflow.schedule-admission');
+            $scope = Context::getCurrent()->with(self::$admissionKey, [
+                'carrier' => self::captureConfigured(),
+                'fiber' => $fiber,
+            ])->activate();
+            if ($fiber !== null) {
+                self::$admissionFibers ??= new WeakMap();
+                self::$admissionFibers[$fiber] = (self::$admissionFibers[$fiber] ?? 0) + 1;
+            }
+        } catch (Throwable) {
+            return $operation();
+        }
+
+        try {
+            return $operation();
+        } finally {
+            try {
+                $scope->detach();
+            } catch (Throwable) {
+                // Optional carrier scope cleanup cannot replace the business result.
+            } finally {
+                if ($fiber !== null && isset(self::$admissionFibers[$fiber])) {
+                    $depth = self::$admissionFibers[$fiber] - 1;
+                    if ($depth === 0) {
+                        unset(self::$admissionFibers[$fiber]);
+                    } else {
+                        self::$admissionFibers[$fiber] = $depth;
+                    }
+                }
+            }
+        }
+    }
+
+    public static function hasPreparedAdmission(): bool
+    {
+        return self::preparedAdmission() !== null;
+    }
+
+    /**
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function admissionParent(): ?array
+    {
+        $prepared = self::preparedAdmission();
+
+        return $prepared !== null ? $prepared['carrier'] : self::captureConfigured();
+    }
 
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
@@ -158,6 +220,22 @@ final class TraceCarrier
             ];
 
             return strlen(json_encode($result, JSON_THROW_ON_ERROR)) <= 4096 ? $result : null;
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private static function preparedAdmission(): ?array
+    {
+        $fiber = Fiber::getCurrent();
+        if ($fiber !== null && ! isset(self::$admissionFibers[$fiber])) {
+            return null;
+        }
+        try {
+            $prepared = self::$admissionKey === null ? null : Context::getCurrent()->get(self::$admissionKey);
+
+            return is_array($prepared) && array_key_exists('carrier', $prepared)
+                && ($prepared['fiber'] ?? null) === $fiber ? $prepared : null;
         } catch (Throwable) {
             return null;
         }

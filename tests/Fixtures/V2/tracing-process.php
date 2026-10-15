@@ -48,6 +48,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -55,6 +56,7 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Tracing\LogContext;
 use Workflow\V2\Workflow;
@@ -75,6 +77,7 @@ $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
 $timings = getenv('DW_TEST_TRACING_TIMINGS') === 'true';
 $dispatchProbe = getenv('DW_TEST_TRACING_DISPATCH') === 'true';
+$scheduleProbe = getenv('DW_TEST_TRACING_SCHEDULE');
 $admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
     || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
@@ -416,9 +419,9 @@ $app = TracingProcessApplication::create(
     ],
 );
 $exporter = new InMemoryExporter();
-$admissionProcessor = ($admissionProbe || $dispatchProbe) ? new class(
+$admissionProcessor = ($admissionProbe || $dispatchProbe || $scheduleProbe) ? new class(
     $exporter,
-    $dispatchProbe ? 'durable.task.dispatch' : 'durable.workflow.admission'
+    $scheduleProbe ? 'durable.schedule.trigger' : ($dispatchProbe ? 'durable.task.dispatch' : 'durable.workflow.admission')
 ) extends SimpleSpanProcessor {
     public array $boundaries = [];
 
@@ -466,7 +469,7 @@ $propagator = new MultiTextMapPropagator([
     BaggagePropagator::getInstance(),
 ]);
 $recordedPropagator = null;
-if ($signalStart || $signalLinks || $cancellation || $updateLinks || $admissionProbe) {
+if ($signalStart || $signalLinks || $cancellation || $updateLinks || $admissionProbe || $scheduleProbe) {
     $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
         public array $transactionLevels = [];
 
@@ -639,6 +642,37 @@ try {
                 }
                 http_response_code(201);
                 header('Content-Type: application/json');
+            } elseif ($scheduleProbe) {
+                $creator = $propagator->extract([
+                    'traceparent' => '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+                ], context: $initial)->activate();
+                try {
+                    $schedule = ScheduleManager::create(
+                        scheduleId: 'cold-schedule',
+                        workflowClass: TracingProcessWorkflow::class,
+                        cronExpression: '* * * * *',
+                        arguments: [false],
+                        namespace: '0',
+                        executionTimeoutSeconds: 60,
+                        runTimeoutSeconds: 45
+                    );
+                } finally {
+                    $creator->detach();
+                }
+                if ($scheduleProbe === 'scheduled') {
+                    $schedule->forceFill([
+                        'next_fire_at' => now()
+                            ->subSecond(),
+                    ])->save();
+                    $triggered = ScheduleManager::tick(1);
+                    $instanceId = $triggered[0]['instance_id'] ?? null;
+                } else {
+                    $instanceId = ScheduleManager::trigger($schedule);
+                }
+                if (! is_string($instanceId) || $instanceId === '') {
+                    throw new \RuntimeException('The actual schedule did not admit a workflow.');
+                }
+                file_put_contents($directory . '/schedule-instance', $instanceId);
             } elseif ($childRetry) {
                 // A real bridge-authored policy, not an invented PHP child option or history edit.
                 config()
@@ -849,7 +883,9 @@ try {
         $scope->detach();
         $requestSpan?->end();
     }
-    $runs = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing');
+    $selectedInstance = $scheduleProbe
+        ? trim(file_get_contents($directory . '/schedule-instance')) : 'cold-tracing';
+    $runs = WorkflowRun::query()->where('workflow_instance_id', $selectedInstance);
     $run = $transition === 'continue' ? $runs->orderByDesc('run_number')
         ->firstOrFail() : $runs->sole();
     $output = [
@@ -905,6 +941,30 @@ try {
         ));
     }
     unset($executionSpan);
+    if ($scheduleProbe) {
+        $schedule = WorkflowSchedule::query()->where('schedule_id', 'cold-schedule')->sole();
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['schedule'] = [
+            'id' => $schedule->schedule_id,
+            'namespace' => $schedule->namespace,
+            'fires_count' => (int) $schedule->fires_count,
+            'latest_instance_id' => $schedule->latest_workflow_instance_id,
+            'instance_id' => $run->workflow_instance_id,
+            'boundaries' => $admissionProcessor->boundaries,
+            'capture_transaction_levels' => $recordedPropagator->transactionLevels,
+            'history_hashes' => $history->map(static fn ($event): string => hash(
+                'sha256',
+                json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR)
+            ))->all(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'tasks' => WorkflowTask::query()->orderBy('created_at')->get([
+                'id', 'status', 'attempt_count', 'repair_count',
+            ])->toArray(),
+        ];
+    }
     if ($exportEndpoint) {
         $output['exports_before_shutdown'] = $exportRequests() - $initialExportRequests;
     }

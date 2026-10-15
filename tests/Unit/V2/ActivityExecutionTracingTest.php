@@ -31,6 +31,8 @@ use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
+use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -38,6 +40,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -468,6 +471,260 @@ final class ActivityExecutionTracingTest extends TestCase
         }
     }
 
+    #[DataProvider('dispatchFailures')]
+    public function testScheduledAdmissionKeepsProcessorHooksOutsideTheScheduleTransaction(bool $enabled): void
+    {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $admissionContexts = [];
+        $this->app['events']->listen(WorkflowStarted::class, static function () use (&$admissionContexts): void {
+            $admissionContexts[] = ExecutionTracing::current();
+        });
+        $processor = new ScheduleTracingProcessor($this->exporter);
+        $provider = new TracerProvider($processor);
+        $instrumentation = Configurator::create()->withTracerProvider($provider)->activate();
+        try {
+            $creator = TraceContextPropagator::getInstance()->extract([
+                'traceparent' => '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+            ])->activate();
+            try {
+                $schedule = ScheduleManager::create(
+                    scheduleId: 'traced-manual-schedule',
+                    workflowClass: TracedWorkflow::class,
+                    cronExpression: '* * * * *',
+                    arguments: [false],
+                    connection: 'database',
+                    queue: 'default',
+                    namespace: '0',
+                    executionTimeoutSeconds: 60,
+                    runTimeoutSeconds: 45,
+                );
+            } finally {
+                $creator->detach();
+            }
+            $parent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+            $caller = TraceContextPropagator::getInstance()->extract([
+                'traceparent' => $parent,
+            ])->activate();
+            try {
+                $instanceId = ScheduleManager::trigger($schedule);
+            } finally {
+                $caller->detach();
+            }
+            self::assertSame(0, DB::transactionLevel());
+            self::assertNotNull($instanceId);
+            $run = WorkflowRun::query()->where('workflow_instance_id', $instanceId)->sole();
+            self::assertCount(1, $admissionContexts);
+            if ($enabled) {
+                self::assertSame($instanceId, $admissionContexts[0]['workflow_instance_id'] ?? null);
+                self::assertSame($run->workflow_type, $admissionContexts[0]['workflow_type'] ?? null);
+                self::assertSame('0', $admissionContexts[0]['namespace'] ?? null);
+                self::assertSame('traced-manual-schedule', $admissionContexts[0]['schedule_id'] ?? null);
+            } else {
+                self::assertSame([], $admissionContexts[0]);
+            }
+            $preserved = array_intersect_key($run->getRawOriginal(), array_flip([
+                'observability_context', 'execution_deadline_at', 'run_deadline_at',
+            ]));
+            self::assertSame($enabled ? $parent : null, $run->observability_context['carrier']['traceparent'] ?? null);
+            $prefix = $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all();
+            for ($remaining = 3; $remaining > 0; --$remaining) {
+                $this->workOnce();
+            }
+            $run->refresh();
+            $schedule->refresh();
+            self::assertSame('completed', $run->status->value);
+            self::assertSame([9007199254740993, null, '雪'], Serializer::unserializeWithCodec(
+                $run->payload_codec,
+                $run->output
+            ));
+            self::assertSame($preserved, array_intersect_key($run->getRawOriginal(), $preserved));
+            self::assertSame($prefix, array_slice($run->historyEvents()->orderBy('sequence')->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all(), 0, count($prefix)));
+            self::assertSame(1, (int) $schedule->fires_count);
+            self::assertSame($instanceId, $schedule->latest_workflow_instance_id);
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'ScheduleTriggered')->count());
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowCompleted')->count());
+            self::assertSame(1, $run->historyEvents()->where('event_type', 'ActivityCompleted')->count());
+            self::assertSame(3, WorkflowTask::query()->where('status', 'completed')->count());
+            self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+            self::assertSame(0, DB::table('jobs')->count());
+            self::assertSame(0, DB::table('failed_jobs')->count());
+            self::assertCount($enabled ? 7 : 0, $this->exporter->getSpans());
+            $triggers = array_values(array_filter(
+                $this->exporter->getSpans(),
+                static fn ($span): bool => $span->getName() === 'durable.schedule.trigger'
+            ));
+            self::assertCount($enabled ? 1 : 0, $triggers);
+            if ($enabled) {
+                self::assertSame('00f067aa0ba902b7', $triggers[0]->getParentContext()->getSpanId());
+                self::assertSame($run->id, $triggers[0]->getAttributes()->get('workflow_run_id'));
+                self::assertSame('traced-manual-schedule', $triggers[0]->getAttributes()->get('schedule_id'));
+                self::assertSame('triggered', $triggers[0]->getAttributes()->get('durable.schedule.outcome'));
+                self::assertSame('manual', $triggers[0]->getAttributes()->get('durable.schedule.trigger_kind'));
+            }
+            self::assertSame(array_fill(0, count($processor->transactionLevels), 0), $processor->transactionLevels);
+        } finally {
+            $instrumentation->detach();
+            $provider->shutdown();
+        }
+    }
+
+    #[DataProvider('dispatchFailures')]
+    public function testScheduledQueueStorageFailurePreservesItsCommittedAdmission(bool $enabled): void
+    {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+            'queue.connections.database.table' => 'missing_trace_jobs',
+        ]);
+        $schedule = ScheduleManager::create(
+            scheduleId: 'schedule-queue-failure',
+            workflowClass: TracedWorkflow::class,
+            cronExpression: '* * * * *',
+            arguments: [false],
+            namespace: '0',
+            executionTimeoutSeconds: 60,
+            runTimeoutSeconds: 45
+        );
+        try {
+            ScheduleManager::trigger($schedule);
+            self::fail('The actual post-commit queue INSERT must fail.');
+        } catch (QueryException $failure) {
+            self::assertStringContainsString('missing_trace_jobs', $failure->getMessage());
+        }
+        $schedule->refresh();
+        $run = WorkflowRun::query()->sole();
+        $task = WorkflowTask::query()->sole();
+        self::assertSame(1, (int) $schedule->fires_count);
+        self::assertSame($run->workflow_instance_id, $schedule->latest_workflow_instance_id);
+        self::assertSame('pending', $run->status->value);
+        self::assertSame('ready', $task->status->value);
+        self::assertNull($task->last_dispatched_at);
+        self::assertStringContainsString('missing_trace_jobs', $task->last_dispatch_error);
+        self::assertSame(0, (int) $task->repair_count);
+        self::assertTrue($run->started_at->copy()->addSeconds(60)->equalTo($run->execution_deadline_at));
+        self::assertTrue($run->started_at->copy()->addSeconds(45)->equalTo($run->run_deadline_at));
+        self::assertSame(0, ActivityAttempt::query()->count());
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        $triggers = array_values(array_filter(
+            $this->exporter->getSpans(),
+            static fn ($span): bool => $span->getName() === 'durable.schedule.trigger'
+        ));
+        self::assertCount($enabled ? 1 : 0, $triggers);
+        if ($enabled) {
+            self::assertSame(StatusCode::STATUS_ERROR, $triggers[0]->getStatus()->getCode());
+            self::assertSame(QueryException::class, $triggers[0]->getAttributes()->get('error.type'));
+            self::assertNull($triggers[0]->getAttributes()->get('durable.schedule.outcome'));
+        }
+    }
+
+    public static function queuedScheduleKinds(): array
+    {
+        return [
+            'buffered traced' => ['buffered', true],
+            'buffered disabled' => ['buffered', false],
+            'backfill traced' => ['backfill', true],
+            'backfill disabled' => ['backfill', false],
+        ];
+    }
+
+    #[DataProvider('queuedScheduleKinds')]
+    public function testBufferedAndBackfilledRunsKeepTheirAtomicScheduleState(string $kind, bool $enabled): void
+    {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $processor = new ScheduleTracingProcessor($this->exporter);
+        $provider = new TracerProvider($processor);
+        $scope = Configurator::create()->withTracerProvider($provider)->activate();
+        try {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'queued-' . $kind,
+                workflowClass: TracedWorkflow::class,
+                cronExpression: '* * * * *',
+                arguments: [false],
+                overlapPolicy: $kind === 'buffered' ? ScheduleOverlapPolicy::BufferOne : ScheduleOverlapPolicy::AllowAll,
+                namespace: '0',
+                executionTimeoutSeconds: 60,
+                runTimeoutSeconds: 45
+            );
+            if ($kind === 'buffered') {
+                self::assertNotNull(ScheduleManager::trigger($schedule));
+                self::assertNull(ScheduleManager::trigger($schedule));
+            } else {
+                $from = now()
+                    ->startOfMinute()
+                    ->subMinutes(2);
+                $receipts = ScheduleManager::backfill($schedule, $from, $from->copy()->addMinute());
+                self::assertCount(1, $receipts);
+                self::assertNotNull($receipts[0]['instance_id']);
+            }
+            $first = WorkflowRun::query()->sole();
+            $original = $first->getRawOriginal();
+            $prefix = $first->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all();
+            for ($remaining = 3; $remaining > 0; --$remaining) {
+                $this->workOnce();
+            }
+            if ($kind === 'buffered') {
+                $receipts = ScheduleManager::tick(1);
+                self::assertSame('drained', $receipts[0]['outcome']);
+                for ($remaining = 3; $remaining > 0; --$remaining) {
+                    $this->workOnce();
+                }
+            }
+            $schedule->refresh();
+            $first->refresh();
+            foreach (['observability_context', 'execution_deadline_at', 'run_deadline_at'] as $field) {
+                self::assertSame($original[$field], $first->getRawOriginal($field));
+            }
+            self::assertSame($prefix, array_slice($first->historyEvents()->orderBy('sequence')->get()
+                ->map(static fn ($event): array => $event->getRawOriginal())
+                ->all(), 0, count($prefix)));
+            $runCount = $kind === 'buffered' ? 2 : 1;
+            self::assertSame($runCount, (int) $schedule->fires_count);
+            self::assertSame($runCount, WorkflowRun::query()->where('status', 'completed')->count());
+            foreach (WorkflowRun::query()->get() as $run) {
+                self::assertSame([9007199254740993, null, '雪'], $run->workflowOutput());
+                self::assertTrue($run->started_at->copy()->addSeconds(60)->equalTo($run->execution_deadline_at));
+                self::assertTrue($run->started_at->copy()->addSeconds(45)->equalTo($run->run_deadline_at));
+            }
+            self::assertSame($runCount, ActivityAttempt::query()->where('status', 'completed')->count());
+            self::assertSame($runCount * 3, WorkflowTask::query()->where('status', 'completed')->count());
+            self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+            self::assertSame(0, DB::table('jobs')->count());
+            self::assertSame(0, DB::table('failed_jobs')->count());
+            $triggers = array_values(array_filter(
+                $this->exporter->getSpans(),
+                static fn ($span): bool => $span->getName() === 'durable.schedule.trigger'
+            ));
+            self::assertCount($enabled ? ($kind === 'buffered' ? 3 : 1) : 0, $triggers);
+            if ($enabled) {
+                $last = $triggers[count($triggers) - 1];
+                self::assertSame($kind, $last->getAttributes()->get('durable.schedule.trigger_kind'));
+                self::assertSame(
+                    $kind === 'buffered' ? 'drained' : 'triggered',
+                    $last->getAttributes()
+                        ->get('durable.schedule.outcome')
+                );
+            }
+            self::assertSame(array_fill(0, count($processor->transactionLevels), 0), $processor->transactionLevels);
+        } finally {
+            $scope->detach();
+            $provider->shutdown();
+        }
+    }
+
     public function testFailedWorkflowExportsItsProcessingSegmentOutsideTheDatabaseTransaction(): void
     {
         config([
@@ -832,6 +1089,23 @@ final class ActivityExecutionTracingTest extends TestCase
             $this->exporter->getSpans(),
             static fn ($span): bool => $span->getName() === 'durable.activity.attempt'
         ));
+    }
+}
+
+final class ScheduleTracingProcessor extends SimpleSpanProcessor
+{
+    public array $transactionLevels = [];
+
+    public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
+    {
+        $this->transactionLevels[] = DB::transactionLevel();
+        parent::onStart($span, $parentContext);
+    }
+
+    public function onEnd(ReadableSpanInterface $span): void
+    {
+        $this->transactionLevels[] = DB::transactionLevel();
+        parent::onEnd($span);
     }
 }
 

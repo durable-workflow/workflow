@@ -122,8 +122,8 @@ recorded, `durable.start.command_id`, `durable.start.status` and
 have no paired start command; tracing does not invent one. Each signal keeps
 its captured caller for later delivery links, while an existing run keeps its
 original parent and deadlines. Legacy and no-parent admissions are included in
-the cold-process controls. Service admission, schedules and wider runtime
-coverage have no admission-span qualification yet.
+the cold-process controls. Embedded schedule controls are described below;
+service admission and wider runtime coverage remain unqualified.
 
 Workflow processing and activity attempts receive separate spans. Persisted
 admission context survives the qualified cold-worker, child, continuation and
@@ -170,6 +170,34 @@ without failing business work or rewriting the stored carrier. Task span
 wrappers skip their metadata read when emission is disabled. Transition
 inheritance follows the preservation rule above.
 
+## Schedule triggers
+
+Embedded PHP schedules emit a short `durable.schedule.trigger` internal span
+around the trigger operation. Its processor starts and ends outside the
+runtime-owned schedule transaction. The schedule's occurrence, overlap, action
+budget and atomic admission decisions are unchanged. An application that wraps
+the call in its own transaction still owns that outer boundary.
+Synchronous start listeners retain the workflow instance and type in their
+correlation fields without starting another span under the schedule lock.
+
+The actual triggering caller is captured before the trigger span. An admitted
+run persists that caller for later workers; its cold processing spans do not
+become children of the short trigger span. Creating a schedule does not persist
+the creator's trace for future runs. Manual and periodic triggers have separate
+cold-worker controls, including disabled tracing and an unrelated worker parent.
+
+Span attributes include `schedule_id`, namespace and
+`durable.schedule.trigger_kind`: `manual`, `scheduled`, `buffered` or `backfill`.
+Returned identities, `durable.schedule.outcome` and `durable.schedule.reason`
+are attached when available. Backfill's instance-only return does not invent a
+run ID. A buffered receipt is not an admitted run or a completed workflow.
+
+Buffered draining and backfill have focused queue/state and transaction-boundary
+controls. The later drain currently captures its actual scheduler context.
+Preserving a buffered request's independent caller as a later link, wider cold
+backfill/drain coverage and full schedule tracing remain unqualified. The
+component adds no schedule metadata column or service wire field.
+
 ## Signal caller links
 
 This draft also proposes a nullable `workflow_commands.observability_context`
@@ -203,8 +231,8 @@ share a link identified by the first applied command. Further additions are
 dropped, with the count in `durable.links.dropped`. Application SDK limits may
 be lower. The link state ends with its processing scope.
 
-This does not add service wire propagation, native catalog support, schedule
-links or complete fan-in tracing.
+This does not add service wire propagation, native catalog support, buffered
+schedule caller links or complete fan-in tracing.
 
 ## Update caller links
 

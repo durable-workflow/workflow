@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Fiber;
 use OpenTelemetry\API\Baggage\Baggage;
 use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
@@ -20,6 +21,64 @@ use Workflow\V2\Support\TraceCarrier;
 final class TraceCarrierTest extends TestCase
 {
     private const PARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+
+    public function testPreparedAdmissionCannotLeakIntoAnUnboundFiber(): void
+    {
+        $initial = Context::getCurrent();
+        TraceCarrier::withPreparedAdmission(static function (): void {
+            self::assertTrue(TraceCarrier::hasPreparedAdmission());
+            $fiber = new Fiber(static fn (): bool => TraceCarrier::hasPreparedAdmission());
+            $fiber->start();
+            self::assertFalse($fiber->getReturn());
+            self::assertTrue(TraceCarrier::hasPreparedAdmission());
+        });
+        self::assertFalse(TraceCarrier::hasPreparedAdmission());
+        self::assertSame($initial, Context::getCurrent());
+    }
+
+    public function testPreparedAdmissionCanNestWithinAnExplicitlyBoundFiber(): void
+    {
+        $initial = Context::getCurrent();
+        $fiber = new Fiber(static function () use ($initial): void {
+            $bound = $initial->activate();
+            try {
+                TraceCarrier::withPreparedAdmission(static function (): void {
+                    $outer = Context::getCurrent();
+                    self::assertTrue(TraceCarrier::hasPreparedAdmission());
+                    TraceCarrier::withPreparedAdmission(static function (): void {
+                        self::assertTrue(TraceCarrier::hasPreparedAdmission());
+                    });
+                    self::assertTrue(TraceCarrier::hasPreparedAdmission());
+                    self::assertSame($outer, Context::getCurrent());
+                });
+                self::assertFalse(TraceCarrier::hasPreparedAdmission());
+            } finally {
+                $bound->detach();
+            }
+        });
+        $fiber->start();
+        self::assertTrue($fiber->isTerminated());
+        self::assertSame($initial, Context::getCurrent());
+    }
+
+    public function testPreparedAdmissionRestoresItsScopeAfterTheOriginalFailure(): void
+    {
+        $initial = Context::getCurrent();
+        $failure = new RuntimeException('original admission failure');
+        $calls = 0;
+        try {
+            TraceCarrier::withPreparedAdmission(static function () use ($failure, &$calls): never {
+                ++$calls;
+                throw $failure;
+            });
+            self::fail('The original business failure must be preserved.');
+        } catch (RuntimeException $caught) {
+            self::assertSame($failure, $caught);
+        }
+        self::assertSame(1, $calls);
+        self::assertFalse(TraceCarrier::hasPreparedAdmission());
+        self::assertSame($initial, Context::getCurrent());
+    }
 
     public function testValidCarrierPreservesTraceIdentityAndState(): void
     {
