@@ -14,7 +14,10 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Throwable;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -30,11 +33,7 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
             'cache.default' => 'array',
         ]);
         $driver = DB::connection()->getDriverName();
-        if (! in_array($driver, ['mysql', 'pgsql'], true)
-            || ($driver === 'mysql' && str_contains(
-                strtolower((string) DB::selectOne('SELECT VERSION() AS version')->version),
-                'mariadb'
-            ))) {
+        if (! in_array($driver, ['mysql', 'pgsql'], true)) {
             $this->markTestSkipped('MySQL or PostgreSQL row-lock observation is required.');
         }
         if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')
@@ -63,6 +62,15 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
     #[DataProvider('watchdogPaths')]
     public function testWatchdogLeavesTasksAvailableWhileWaitingForRepairRunLock(bool $deadline): void
     {
+        if (DB::connection()->getDriverName() === 'mysql' && str_contains(
+            strtolower((string) DB::selectOne('SELECT VERSION() AS version')->version),
+            'mariadb',
+        )) {
+            // This existing observer requires MySQL performance_schema or
+            // PostgreSQL pg_locks. The independent contention/recovery and
+            // worker/execution cases below also run on MariaDB.
+            $this->markTestSkipped('The existing run-lock waiter observer does not support MariaDB.');
+        }
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
         $workflow->start('Ada');
         $runId = $workflow->runId();
@@ -155,6 +163,236 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
                 $report[$deadline ? 'deadline_expired_candidates' : 'selected_existing_task_candidates']
             );
             $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $runId)->count());
+        } finally {
+            if (! $reaped) {
+                posix_kill($pid, SIGKILL);
+                pcntl_waitpid($pid, $status);
+            }
+            fclose($sockets[0]);
+            DB::purge();
+            DB::reconnect();
+        }
+    }
+
+    /**
+     * @return array<string, array{bool}>
+     */
+    public static function workerStages(): array
+    {
+        return [
+            'ready task claim' => [false],
+            'workflow execution' => [true],
+        ];
+    }
+
+    #[DataProvider('watchdogPaths')]
+    public function testContendedTaskIsDeferredAndRecoveredAfterTheOwnerReleasesIt(bool $deadline): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+        $workflow->start('Ada');
+        $runId = $workflow->runId();
+        if ($deadline) {
+            $this->assertTrue($workflow->requestCancellation('original cleanup deadline', 1)->accepted());
+            Carbon::setTestNow(now()->addSeconds(2));
+        }
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'attempt_count' => 1,
+            'lease_owner' => 'original-worker',
+            'lease_expires_at' => $deadline ? now()
+                ->addMinute() : now()
+                ->subMinute(),
+        ])->save();
+        $before = $task->getAttributes();
+        $history = WorkflowRun::query()->findOrFail($runId)->historyEvents()->get()->toArray();
+        $originalDeadline = WorkflowRun::query()->findOrFail($runId)->getRawOriginal('cancellation_deadline_at');
+        $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($sockets);
+        DB::purge();
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+        if ($pid === 0) {
+            fclose($sockets[0]);
+            stream_set_timeout($sockets[1], 15);
+            $ok = false;
+            try {
+                DB::reconnect();
+                if (fgets($sockets[1]) !== "go\n") {
+                    throw new RuntimeException('Original task lock was not acquired.');
+                }
+                fwrite($sockets[1], json_encode([
+                    'report' => TaskWatchdog::runPass(runIds: [$runId]),
+                    'transaction_level' => DB::transactionLevel(),
+                    'pdo_in_transaction' => DB::connection()->getPdo()->inTransaction(),
+                ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                $ok = true;
+            } catch (Throwable $error) {
+                fwrite($sockets[1], json_encode([
+                    'error' => $error->getMessage(),
+                ]) . PHP_EOL);
+            } finally {
+                DB::disconnect();
+                fclose($sockets[1]);
+            }
+            exit($ok ? 0 : 1);
+        }
+        fclose($sockets[1]);
+        stream_set_timeout($sockets[0], 15);
+        $reaped = false;
+        try {
+            DB::reconnect();
+            DB::transaction(function () use ($task, $runId, $sockets, $before, $history): void {
+                WorkflowTask::query()->lockForUpdate()->findOrFail($task->id);
+                fwrite($sockets[0], "go\n");
+                $result = $this->readMessage($sockets[0]);
+                $this->assertSame(0, $result['transaction_level']);
+                $this->assertFalse($result['pdo_in_transaction']);
+                $report = $result['report'];
+                $this->assertSame([], $report['existing_task_failures']);
+                $this->assertSame([], $report['deadline_expired_failures']);
+                $this->assertSame(0, $report['repaired_existing_tasks']);
+                $this->assertSame(0, $report['deadline_expired_tasks_created']);
+                $this->assertSame(0, $report['cancellation_deadlines_enforced']);
+                $this->assertSame($before, $task->fresh()->getAttributes());
+                $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $runId)->count());
+                $this->assertSame(
+                    $history,
+                    WorkflowRun::query()->findOrFail($runId)->historyEvents()->get()->toArray()
+                );
+            });
+            pcntl_waitpid($pid, $status);
+            $reaped = true;
+            $this->assertTrue(pcntl_wifexited($status));
+            $this->assertSame(0, pcntl_wexitstatus($status));
+            $report = TaskWatchdog::runPass(runIds: [$runId]);
+            $this->assertSame([], $report['existing_task_failures']);
+            $this->assertSame([], $report['deadline_expired_failures']);
+            $this->assertSame(1, $report[$deadline ? 'cancellation_deadlines_enforced' : 'repaired_existing_tasks']);
+            $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $runId)->count());
+            $this->assertSame($task->id, $task->fresh()->id);
+            $this->assertSame(
+                $originalDeadline,
+                WorkflowRun::query()->findOrFail($runId)->getRawOriginal('cancellation_deadline_at')
+            );
+        } finally {
+            if (! $reaped) {
+                posix_kill($pid, SIGKILL);
+                pcntl_waitpid($pid, $status);
+            }
+            fclose($sockets[0]);
+            DB::purge();
+            DB::reconnect();
+        }
+    }
+
+    #[DataProvider('workerStages')]
+    public function testWorkerAndWatchdogDoNotDeadlockOrFailTheOriginalTask(bool $execution): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+        $workflow->start('Ada');
+        $runId = $workflow->runId();
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
+        $task->forceFill([
+            'available_at' => now()
+                ->subMinute(),
+            'last_dispatched_at' => now()
+                ->subMinute(),
+        ])->save();
+        $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($sockets);
+        DB::purge();
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+        if ($pid === 0) {
+            fclose($sockets[0]);
+            stream_set_timeout($sockets[1], 15);
+            $ok = false;
+            try {
+                DB::reconnect();
+                if (fgets($sockets[1]) !== "go\n") {
+                    throw new RuntimeException('Worker did not acquire its original task.');
+                }
+                $paused = false;
+                DB::listen(static function (QueryExecuted $query) use (&$paused, $sockets): void {
+                    if ($paused || ! str_contains($query->sql, 'workflow_runs')
+                        || ! str_contains(strtolower($query->sql), 'for update')) {
+                        return;
+                    }
+                    $paused = true;
+                    fwrite($sockets[1], "run_locked\n");
+                    if (fgets($sockets[1]) !== "continue\n") {
+                        throw new RuntimeException('Worker did not continue the lock race.');
+                    }
+                });
+                $report = TaskWatchdog::runPass(runIds: [$runId]);
+                fwrite($sockets[1], json_encode([
+                    'report' => $report,
+                    'run_lock_observed' => $paused,
+                ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                $ok = true;
+            } catch (Throwable $error) {
+                fwrite($sockets[1], json_encode([
+                    'error' => $error->getMessage(),
+                ]) . PHP_EOL);
+            } finally {
+                DB::disconnect();
+                fclose($sockets[1]);
+            }
+            exit($ok ? 0 : 1);
+        }
+
+        fclose($sockets[1]);
+        stream_set_timeout($sockets[0], 15);
+        $reaped = false;
+        try {
+            DB::reconnect();
+            $taskLocks = 0;
+            $paused = false;
+            DB::listen(function (QueryExecuted $query) use (&$paused, &$taskLocks, $execution, $sockets, $task): void {
+                if (! str_contains($query->sql, 'workflow_tasks')
+                    || ! str_contains(strtolower($query->sql), 'for update')
+                    || ! in_array($task->id, $query->bindings, true)) {
+                    return;
+                }
+                $taskLocks++;
+                if ($taskLocks === 1) {
+                    fwrite($sockets[0], "go\n");
+                    $this->assertSame("run_locked\n", fgets($sockets[0]));
+                }
+                if ($taskLocks === ($execution ? 2 : 1)) {
+                    $paused = true;
+                    // Execution has a separate transaction after claiming. In
+                    // that case repair retains its run lock until this exact
+                    // original task is locked again by the real worker.
+                    fwrite($sockets[0], "continue\n");
+                }
+            });
+            $workerError = null;
+            try {
+                (new RunWorkflowTask($task->id))->handle(app(WorkflowExecutor::class));
+            } catch (Throwable $error) {
+                $workerError = $error->getMessage();
+            }
+            $result = $this->readMessage($sockets[0]);
+            pcntl_waitpid($pid, $status);
+            $reaped = true;
+            $this->assertTrue($paused);
+            $this->assertTrue($result['run_lock_observed']);
+            $this->assertTrue(pcntl_wifexited($status));
+            $this->assertSame(0, pcntl_wexitstatus($status));
+            $this->assertNull($workerError, $workerError ?? '');
+            $report = $result['report'];
+            $this->assertSame([], $report['existing_task_failures']);
+            $this->assertSame([], $report['deadline_expired_failures']);
+            $this->assertSame(1, $report['selected_existing_task_candidates']);
+            $this->assertSame(0, $report['repaired_existing_tasks']);
+            $task->refresh();
+            $this->assertSame(TaskStatus::Completed, $task->status);
+            $this->assertSame(1, $task->attempt_count);
+            $this->assertSame(0, $task->repair_count);
+            $this->assertNull($task->lease_expires_at);
+            $this->assertSame('waiting', WorkflowRun::query()->findOrFail($runId)->status->value);
         } finally {
             if (! $reaped) {
                 posix_kill($pid, SIGKILL);
