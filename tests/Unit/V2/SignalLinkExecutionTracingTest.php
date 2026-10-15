@@ -65,9 +65,19 @@ final class SignalLinkExecutionTracingTest extends TestCase
         };
         try {
             $admitted = $worker('admit');
-            self::assertSame($admissionEnabled ? [0] : [], $admitted['signals']['capture_transaction_levels']);
+            self::assertSame(
+                $admissionEnabled ? array_fill(
+                    0,
+                    1 + count($admitted['spans']) - count($admitted['execution_spans']),
+                    0
+                ) : [],
+                $admitted['signals']['capture_transaction_levels']
+            );
             $early = $worker('signal');
-            self::assertSame($workerEnabled ? [0] : [], $early['signals']['capture_transaction_levels']);
+            self::assertSame(
+                $workerEnabled ? array_fill(0, 1 + count($early['spans']) - count($early['execution_spans']), 0) : [],
+                $early['signals']['capture_transaction_levels']
+            );
             self::assertSame($workerEnabled, $early['signals']['commands'][0]['carrier'] !== null);
             $waiting = $worker('work');
             self::assertSame(
@@ -77,7 +87,10 @@ final class SignalLinkExecutionTracingTest extends TestCase
             );
             self::assertSame(0, $waiting['jobs']);
             $late = $worker('signal', 'second');
-            self::assertSame($workerEnabled ? [0] : [], $late['signals']['capture_transaction_levels']);
+            self::assertSame(
+                $workerEnabled ? array_fill(0, 1 + count($late['spans']) - count($late['execution_spans']), 0) : [],
+                $late['signals']['capture_transaction_levels']
+            );
             $workers = [$waiting];
             for ($remaining = 6; $remaining > 0 && $worker('inspect')['jobs'] > 0; --$remaining) {
                 $workers[] = $worker('work');
@@ -109,7 +122,7 @@ final class SignalLinkExecutionTracingTest extends TestCase
                 self::assertSame('completed', $task['status']);
                 self::assertSame(1, $task['attempt_count']);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount($workerEnabled ? 4 : 0, $spans);
             foreach ($spans as $span) {
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);

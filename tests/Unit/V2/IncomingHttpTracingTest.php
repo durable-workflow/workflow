@@ -52,13 +52,13 @@ final class IncomingHttpTracingTest extends TestCase
             self::assertFalse($server->isRunning());
             self::assertSame([], $admitted['outside_context']);
             self::assertTrue($admitted['scope_restored']);
-            self::assertCount(2, $admitted['spans']);
+            self::assertCount(2, $admitted['execution_spans']);
             $requestSpans = array_values(array_filter(
-                $admitted['spans'],
+                $admitted['execution_spans'],
                 static fn (array $span): bool => $span['kind'] === SpanKind::KIND_SERVER
             ));
             $admissionSpans = array_values(array_filter(
-                $admitted['spans'],
+                $admitted['execution_spans'],
                 static fn (array $span): bool => $span['name'] === 'durable.workflow.admission'
             ));
             self::assertCount(1, $requestSpans);
@@ -90,8 +90,8 @@ final class IncomingHttpTracingTest extends TestCase
             foreach ($workers as $worker) {
                 self::assertSame([], $worker['outside_context']);
                 self::assertTrue($worker['scope_restored']);
-                self::assertCount(1, $worker['spans']);
-                $span = $worker['spans'][0];
+                self::assertCount(1, $worker['execution_spans']);
+                $span = $worker['execution_spans'][0];
                 self::assertSame($requestSpan['trace_id'], $span['trace_id']);
                 self::assertSame($requestSpan['span_id'], $span['parent_id']);
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);

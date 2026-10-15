@@ -38,6 +38,9 @@ use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Events\WorkflowStarted;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -71,6 +74,7 @@ $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
 $timings = getenv('DW_TEST_TRACING_TIMINGS') === 'true';
+$dispatchProbe = getenv('DW_TEST_TRACING_DISPATCH') === 'true';
 $admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
     || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
@@ -412,12 +416,22 @@ $app = TracingProcessApplication::create(
     ],
 );
 $exporter = new InMemoryExporter();
-$admissionProcessor = $admissionProbe ? new class($exporter) extends SimpleSpanProcessor {
+$admissionProcessor = ($admissionProbe || $dispatchProbe) ? new class(
+    $exporter,
+    $dispatchProbe ? 'durable.task.dispatch' : 'durable.workflow.admission'
+) extends SimpleSpanProcessor {
     public array $boundaries = [];
+
+    public function __construct(
+        InMemoryExporter $exporter,
+        private readonly string $observedName
+    ) {
+        parent::__construct($exporter);
+    }
 
     public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
     {
-        if ($span->getName() === 'durable.workflow.admission') {
+        if ($span->getName() === $this->observedName) {
             $this->boundaries[] = [
                 'event' => 'start',
                 'transaction_level' => DB::transactionLevel(),
@@ -428,7 +442,7 @@ $admissionProcessor = $admissionProbe ? new class($exporter) extends SimpleSpanP
 
     public function onEnd(ReadableSpanInterface $span): void
     {
-        if ($span->getName() === 'durable.workflow.admission') {
+        if ($span->getName() === $this->observedName) {
             $this->boundaries[] = [
                 'event' => 'end',
                 'transaction_level' => DB::transactionLevel(),
@@ -490,6 +504,25 @@ $configuration = Configurator::create()->withTracerProvider($provider)
     ->activate();
 $initial = Context::getCurrent();
 $admissionForeignKey = Context::createKey('test.application.admission');
+$dispatchDelivered = [];
+$dispatchQueue = static function (): array {
+    return DB::table('jobs')->orderBy('id')->get(['id', 'payload'])->map(static function ($row): array {
+        $payload = json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
+        $job = unserialize($payload['data']['command'], [
+            'allowed_classes' => [RunWorkflowTask::class, RunActivityTask::class, RunTimerTask::class],
+        ]);
+        if (! $job instanceof RunWorkflowTask && ! $job instanceof RunActivityTask && ! $job instanceof RunTimerTask) {
+            throw new \RuntimeException('Unexpected queued tracing fixture job.');
+        }
+
+        return [
+            'id' => $row->id,
+            'class' => $job::class,
+            'task_id' => $job->taskId,
+            'trace' => $job->dispatchObservabilityContext ?? null,
+        ];
+    })->all();
+};
 $admissionCallbacks = [];
 if ($admissionProbe) {
     $app['events']->listen(WorkflowStarted::class, static function () use (
@@ -774,6 +807,9 @@ try {
                 throw new \RuntimeException('Child failure admission refused.');
             }
         } elseif ($mode === 'work') {
+            if ($dispatchProbe) {
+                $dispatchDelivered = $dispatchQueue();
+            }
             if (Artisan::call('queue:work', [
                 'connection' => 'database',
                 '--queue' => 'default',
@@ -856,6 +892,19 @@ try {
             ], $span->getLinks()),
         ], $exporter->getSpans()),
     ];
+    // Preserve the complete export for dispatch controls. Execution checks separately
+    // inspect their admission/consumer spans and application command links.
+    $output['execution_spans'] = array_values(array_filter(
+        $output['spans'],
+        static fn (array $span): bool => $span['name'] !== 'durable.task.dispatch'
+    ));
+    foreach ($output['execution_spans'] as &$executionSpan) {
+        $executionSpan['links'] = array_values(array_filter(
+            $executionSpan['links'],
+            static fn (array $link): bool => ($link['fields']['durable.link.type'] ?? null) !== 'queue_dispatch'
+        ));
+    }
+    unset($executionSpan);
     if ($exportEndpoint) {
         $output['exports_before_shutdown'] = $exportRequests() - $initialExportRequests;
     }
@@ -1023,6 +1072,24 @@ try {
             ])->toArray(),
             'policy' => ActivityExecution::query()->first()?->retry_policy,
             'completion_count' => $history->where('event_type.value', 'ActivityCompleted')
+                ->count(),
+        ];
+    }
+    if ($dispatchProbe) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['dispatch'] = [
+            'queued' => $dispatchQueue(),
+            'delivered' => $dispatchDelivered,
+            'boundaries' => $admissionProcessor->boundaries,
+            'history_hashes' => $history->map(static fn ($event): string => hash(
+                'sha256',
+                json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR)
+            ))->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
+            'activity_completions' => $history->where('event_type.value', 'ActivityCompleted')
                 ->count(),
         ];
     }

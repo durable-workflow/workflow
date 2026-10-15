@@ -80,7 +80,22 @@ final class TaskDispatcher
                 return;
             }
 
-            app(BusDispatcher::class)->dispatch($job);
+            $tracing = false;
+            try {
+                $tracing = config('workflows.tracing.enabled', false) === true;
+            } catch (Throwable) {
+                // Optional tracing configuration cannot block queue dispatch.
+            }
+            if ($tracing) {
+                ExecutionTracing::dispatch(
+                    $task,
+                    $job,
+                    static fn () => app(BusDispatcher::class)->dispatch($job),
+                    true
+                );
+            } else {
+                app(BusDispatcher::class)->dispatch($job);
+            }
             self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
         } catch (Throwable $throwable) {
             self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage(), $boundedWorkflowTaskProjection);
@@ -136,7 +151,7 @@ final class TaskDispatcher
             : 'Dispatch blocked under fail validation mode. ' . $reason;
     }
 
-    private static function makeJob(WorkflowTask $task): object
+    private static function makeJob(WorkflowTask $task): RunWorkflowTask|RunActivityTask|RunTimerTask
     {
         $job = match ($task->task_type) {
             TaskType::Workflow => new RunWorkflowTask($task->id),

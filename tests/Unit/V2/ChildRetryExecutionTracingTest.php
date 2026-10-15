@@ -156,7 +156,7 @@ final class ChildRetryExecutionTracingTest extends TestCase
             foreach ($finished['runs'] as $run) {
                 self::assertSame($admitted['carrier'], $run['carrier'], $run['id'] . ' generation ' . $run['number']);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             if ($workerEnabled) {
                 $observed = [];
                 foreach ($spans as $span) {
@@ -173,7 +173,7 @@ final class ChildRetryExecutionTracingTest extends TestCase
                 self::assertContains($admitted['run_id'], $observed);
                 if ($failure === 'work') {
                     $failureSpan = array_values(array_filter(
-                        $failed['spans'],
+                        $failed['execution_spans'],
                         static fn (array $span): bool => $span['fields']['workflow_run_id'] === $originalChild['id']
                     ));
                     self::assertCount(1, $failureSpan);

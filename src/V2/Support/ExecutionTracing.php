@@ -22,9 +22,13 @@ use WeakMap;
 use Workflow\V2\CommandResult;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\StartResult;
 
@@ -90,6 +94,7 @@ final class ExecutionTracing
         callable $operation,
         array $baggageAllowlist = [],
         bool $enabled = false,
+        mixed $dispatchContext = null,
     ): mixed {
         return self::segment(
             'durable.activity.attempt',
@@ -97,7 +102,8 @@ final class ExecutionTracing
             $persistedContext,
             $operation,
             $baggageAllowlist,
-            $enabled
+            $enabled,
+            $dispatchContext,
         );
     }
 
@@ -111,6 +117,7 @@ final class ExecutionTracing
         callable $operation,
         array $baggageAllowlist = [],
         bool $enabled = false,
+        mixed $dispatchContext = null,
     ): mixed {
         return self::segment(
             'durable.workflow.task',
@@ -118,7 +125,8 @@ final class ExecutionTracing
             $persistedContext,
             $operation,
             $baggageAllowlist,
-            $enabled
+            $enabled,
+            $dispatchContext,
         );
     }
 
@@ -132,6 +140,7 @@ final class ExecutionTracing
         callable $operation,
         array $baggageAllowlist = [],
         bool $enabled = false,
+        mixed $dispatchContext = null,
     ): mixed {
         return self::segment(
             'durable.timer.task',
@@ -139,7 +148,43 @@ final class ExecutionTracing
             $persistedContext,
             $operation,
             $baggageAllowlist,
-            $enabled
+            $enabled,
+            $dispatchContext,
+        );
+    }
+
+    public static function dispatch(
+        WorkflowTask $task,
+        RunWorkflowTask|RunActivityTask|RunTimerTask $job,
+        callable $operation,
+        bool $enabled = false,
+    ): mixed {
+        if (! $enabled || ! class_exists(Globals::class)) {
+            return $operation();
+        }
+        $attributes = [
+            'task_id' => $job->taskId,
+        ];
+        try {
+            $attributes += [
+                'workflow_run_id' => $task->getRawOriginal('workflow_run_id'),
+                'namespace' => $task->getRawOriginal('namespace'),
+                'durable.task.type' => $task->getRawOriginal('task_type'),
+            ];
+        } catch (Throwable) {
+            // Optional loaded identity cannot replace the queue operation.
+        }
+
+        return self::segment(
+            'durable.task.dispatch',
+            $attributes,
+            null,
+            $operation,
+            [],
+            true,
+            onActivated: static function () use ($job): void {
+                $job->dispatchObservabilityContext = TaskTraceCarrier::capture($job->taskId);
+            }
         );
     }
 
@@ -271,6 +316,8 @@ final class ExecutionTracing
         callable $operation,
         array $baggageAllowlist,
         bool $enabled,
+        mixed $dispatchContext = null,
+        ?callable $onActivated = null,
     ): mixed {
         if (! $enabled || ! class_exists(Globals::class)) {
             return $operation();
@@ -280,7 +327,9 @@ final class ExecutionTracing
         $scope = null;
         try {
             // Local admission keeps the caller's context. Workers recover only stored authority.
-            $parent = $name === 'durable.workflow.admission' ? Context::getCurrent() : Context::getRoot();
+            $localParent = $name === 'durable.workflow.admission'
+                || ($name === 'durable.task.dispatch' && self::current() !== []);
+            $parent = $localParent ? Context::getCurrent() : Context::getRoot();
             $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
             if ($carrier !== null) {
                 $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
@@ -305,14 +354,36 @@ final class ExecutionTracing
             $version = InstalledVersions::isInstalled('durable-workflow/workflow')
                 ? InstalledVersions::getPrettyVersion('durable-workflow/workflow')
                 : null;
-            $span = Globals::tracerProvider()->getTracer('durable-workflow/workflow', $version)
+            if ($name === 'durable.task.dispatch' && in_array(
+                $attributes['durable.task.type'] ?? null,
+                ['workflow', 'activity', 'timer'],
+                true
+            )) {
+                $spanAttributes['durable.task.type'] = $attributes['durable.task.type'];
+            }
+            $builder = Globals::tracerProvider()->getTracer('durable-workflow/workflow', $version)
                 ->spanBuilder($name)
-                ->setSpanKind(
-                    $name === 'durable.workflow.admission' ? SpanKind::KIND_INTERNAL : SpanKind::KIND_CONSUMER
-                )
+                ->setSpanKind(match ($name) {
+                    'durable.workflow.admission' => SpanKind::KIND_INTERNAL,
+                    'durable.task.dispatch' => SpanKind::KIND_PRODUCER,
+                    default => SpanKind::KIND_CONSUMER,
+                })
                 ->setParent($parent)
-                ->setAttributes($spanAttributes)
-                ->startSpan();
+                ->setAttributes($spanAttributes);
+            if ($dispatchContext !== null) {
+                $dispatch = TaskTraceCarrier::fromJob($dispatchContext, $fields['task_id'] ?? '');
+                if ($dispatch !== null) {
+                    $linked = TraceContextPropagator::getInstance()->extract(
+                        $dispatch['carrier'],
+                        context: Context::getRoot()
+                    );
+                    $builder->addLink(Span::fromContext($linked)->getContext(), [
+                        'durable.link.type' => 'queue_dispatch',
+                        'task_id' => $fields['task_id'],
+                    ]);
+                }
+            }
+            $span = $builder->startSpan();
             if ($span->getContext()->isValid()) {
                 $fields['trace_id'] = $span->getContext()->getTraceId();
                 $fields['span_id'] = $span->getContext()->getSpanId();
@@ -326,6 +397,9 @@ final class ExecutionTracing
             }
             $scope = $active->activate();
             self::enterFiberScope();
+            if ($onActivated !== null) {
+                $onActivated();
+            }
         } catch (Throwable) {
             self::close($scope, $span);
 
@@ -334,6 +408,13 @@ final class ExecutionTracing
 
         try {
             $result = $operation();
+            if ($name === 'durable.task.dispatch' && $span !== null) {
+                try {
+                    $span->setAttribute('durable.dispatch.outcome', 'returned');
+                } catch (Throwable) {
+                    // A queue return is not completion or telemetry-delivery authority.
+                }
+            }
             if ($name === 'durable.workflow.admission'
                 && ($result instanceof StartResult || $result instanceof SignalWithStartResult) && $span !== null) {
                 try {

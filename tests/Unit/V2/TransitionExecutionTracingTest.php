@@ -101,7 +101,7 @@ final class TransitionExecutionTracingTest extends TestCase
                 self::assertNotSame($finished['runs'][0]['instance_id'], $finished['runs'][1]['instance_id']);
             }
             self::assertSame(count($workers), count(array_unique(array_column($workers, 'pid'))));
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             if ($enabled) {
                 $observedRuns = [];
                 foreach ($spans as $span) {

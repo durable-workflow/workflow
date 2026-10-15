@@ -70,7 +70,14 @@ final class CancellationExecutionTracingTest extends TestCase
             $requested = $worker('cancel');
             self::assertTrue($requested['cancellation']['result']['accepted']);
             if ($command === 'request') {
-                self::assertSame($enabled ? [0] : [], $requested['cancellation']['capture_transaction_levels']);
+                self::assertSame(
+                    $enabled ? array_fill(
+                        0,
+                        1 + count($requested['spans']) - count($requested['execution_spans']),
+                        0
+                    ) : [],
+                    $requested['cancellation']['capture_transaction_levels']
+                );
                 self::assertSame($enabled, $requested['cancellation']['request_carrier'] !== null);
                 if ($enabled) {
                     self::assertSame('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01', json_decode(
@@ -151,7 +158,7 @@ final class CancellationExecutionTracingTest extends TestCase
             foreach ($finished['cancellation']['tasks'] as $task) {
                 self::assertSame(1, $task['attempt_count']);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount($enabled ? count($workers) : 0, $spans);
             $taskIds = array_column($finished['cancellation']['tasks'], 'id');
             foreach ($spans as $span) {

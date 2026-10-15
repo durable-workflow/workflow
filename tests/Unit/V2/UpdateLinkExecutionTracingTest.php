@@ -74,7 +74,14 @@ final class UpdateLinkExecutionTracingTest extends TestCase
             self::assertSame(0, $workers[0]['jobs']);
             $accepted = $worker('update');
             self::assertTrue($accepted['updates']['submitted']['accepted']);
-            self::assertSame($workerEnabled ? [0] : [], $accepted['updates']['capture_transaction_levels']);
+            self::assertSame(
+                $workerEnabled ? array_fill(
+                    0,
+                    1 + count($accepted['spans']) - count($accepted['execution_spans']),
+                    0
+                ) : [],
+                $accepted['updates']['capture_transaction_levels']
+            );
             $duplicate = $worker('update', duplicate: true);
             self::assertSame($accepted['updates']['submitted'], $duplicate['updates']['submitted']);
             self::assertSame($accepted['updates']['commands'], $duplicate['updates']['commands']);
@@ -131,7 +138,7 @@ final class UpdateLinkExecutionTracingTest extends TestCase
                 self::assertSame('completed', $task['status']);
                 self::assertSame(1, $task['attempt_count']);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount($workerEnabled ? 7 : 0, $spans);
             foreach ($spans as $index => $span) {
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);

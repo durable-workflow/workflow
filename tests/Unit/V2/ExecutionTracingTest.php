@@ -17,16 +17,22 @@ use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\Context\ScopeInterface;
+use OpenTelemetry\SDK\Common\Attribute\AttributesInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
+use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
+use OpenTelemetry\SDK\Trace\Sampler\AlwaysOnSampler;
+use OpenTelemetry\SDK\Trace\SamplingResult;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\StartResult;
 use Workflow\V2\Support\ExecutionTracing;
@@ -477,6 +483,161 @@ final class ExecutionTracingTest extends TestCase
             'private-start-receipt',
             json_encode($spans[0]->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
         );
+    }
+
+    public function testQueueDispatchUsesOnlyAnExplicitDurableParentAndPreservesTheOriginalFailure(): void
+    {
+        $task = new WorkflowTask();
+        $task->setRawAttributes([
+            'workflow_run_id' => 'run-1',
+            'namespace' => '0',
+            'task_type' => 'workflow',
+        ], true);
+        $job = new RunWorkflowTask('next-task');
+        $foreign = Context::createKey('unrelated-dispatch-state');
+        $ambient = Context::getCurrent()->with($foreign, 'private')->activate();
+        try {
+            self::assertSame(7, ExecutionTracing::dispatch($task, $job, static function () use ($foreign): int {
+                self::assertNull(Context::getCurrent()->get($foreign));
+                self::assertSame('next-task', ExecutionTracing::current()['task_id']);
+
+                return 7;
+            }, enabled: true));
+            self::assertSame('private', Context::getCurrent()->get($foreign));
+            self::assertFalse($this->exporter->getSpans()[0]->getParentContext()->isValid());
+            $failure = new RuntimeException('private-dispatch-failure');
+            ExecutionTracing::workflow(self::fields(), self::carrier(), static function () use (
+                $task,
+                $job,
+                $failure
+            ): void {
+                $context = ExecutionTracing::current();
+                try {
+                    ExecutionTracing::dispatch($task, $job, static fn () => throw $failure, enabled: true);
+                    self::fail('The original dispatch exception must survive.');
+                } catch (RuntimeException $observed) {
+                    self::assertSame($failure, $observed);
+                }
+                self::assertSame($context, ExecutionTracing::current());
+            }, enabled: true);
+            $spans = $this->exporter->getSpans();
+            self::assertCount(3, $spans);
+            self::assertSame($spans[2]->getContext()->getSpanId(), $spans[1]->getParentContext()->getSpanId());
+            self::assertSame(StatusCode::STATUS_ERROR, $spans[1]->getStatus()->getCode());
+            self::assertSame(RuntimeException::class, $spans[1]->getAttributes()->get('error.type'));
+            self::assertSame([], $spans[1]->getEvents());
+            self::assertNull($spans[1]->getAttributes()->get('durable.dispatch.outcome'));
+            self::assertStringNotContainsString('private-dispatch', $spans[1]->getStatus()->getDescription());
+        } finally {
+            $ambient->detach();
+        }
+    }
+
+    public function testDispatchSetupFailureAndDisabledInstrumentationCannotEnrichOrReplaceTheOperation(): void
+    {
+        $processor = new class(new InMemoryExporter()) extends SimpleSpanProcessor {
+            public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
+            {
+                throw new RuntimeException('optional-start-failure');
+            }
+        };
+        $provider = new TracerProvider($processor);
+        $configuration = Configurator::create()->withTracerProvider($provider)->activate();
+        $task = new class() extends WorkflowTask {
+            public int $reads = 0;
+
+            public function getRawOriginal($key = null, $default = null): mixed
+            {
+                ++$this->reads;
+                throw new RuntimeException('optional-task-metadata');
+            }
+        };
+        $job = new RunWorkflowTask('next-task');
+        $calls = 0;
+        $operation = static function () use (&$calls): array {
+            ++$calls;
+
+            return [7, null, '雪'];
+        };
+        try {
+            self::assertSame([7, null, '雪'], ExecutionTracing::dispatch($task, $job, $operation));
+            self::assertSame(0, $task->reads);
+            self::assertSame([7, null, '雪'], ExecutionTracing::dispatch($task, $job, $operation, enabled: true));
+            self::assertSame(1, $task->reads);
+            self::assertSame(2, $calls);
+            self::assertNull($job->dispatchObservabilityContext);
+            self::assertSame([], ExecutionTracing::current());
+        } finally {
+            $configuration->detach();
+            $provider->shutdown();
+        }
+    }
+
+    public function testAllConsumerKindsExposeTheDispatchLinkToTheSamplerWithoutReplacingTheirRunParent(): void
+    {
+        $sampler = new class() extends AlwaysOnSampler {
+            public array $links = [];
+
+            public function shouldSample(
+                ContextInterface $parentContext,
+                string $traceId,
+                string $spanName,
+                int $spanKind,
+                AttributesInterface $attributes,
+                array $links
+            ): SamplingResult {
+                if ($spanKind === SpanKind::KIND_CONSUMER) {
+                    $this->links[] = [$spanName, $links];
+                }
+
+                return parent::shouldSample($parentContext, $traceId, $spanName, $spanKind, $attributes, $links);
+            }
+        };
+        $provider = new TracerProvider(new SimpleSpanProcessor($this->exporter), sampler: $sampler);
+        $configuration = Configurator::create()->withTracerProvider($provider)
+            ->withPropagator(TraceContextPropagator::getInstance())->activate();
+        try {
+            $task = new WorkflowTask();
+            $task->setRawAttributes([
+                'workflow_run_id' => 'run-1',
+                'namespace' => '0',
+                'task_type' => 'workflow',
+            ], true);
+            $job = new RunWorkflowTask('next-task');
+            self::assertSame(7, ExecutionTracing::dispatch($task, $job, static fn () => 7, enabled: true));
+            self::assertNotNull($job->dispatchObservabilityContext);
+            $producer = $this->exporter->getSpans()[0];
+            self::assertNotSame(self::TRACE_ID, $producer->getContext()->getTraceId());
+            foreach (['workflow', 'activity', 'timer'] as $method) {
+                self::assertSame(9, ExecutionTracing::{$method}(
+                    array_replace(self::fields(), [
+                        'task_id' => 'next-task',
+                    ]),
+                    self::carrier(),
+                    static fn () => 9,
+                    enabled: true,
+                    dispatchContext: $job->dispatchObservabilityContext
+                ));
+            }
+            self::assertCount(3, $sampler->links);
+            foreach ($sampler->links as [$name, $links]) {
+                self::assertContains(
+                    $name,
+                    ['durable.workflow.task', 'durable.activity.attempt', 'durable.timer.task']
+                );
+                self::assertCount(1, $links);
+                self::assertSame($producer->getContext()->getSpanId(), $links[0]->getSpanContext()->getSpanId());
+                self::assertSame('next-task', $links[0]->getAttributes()->get('task_id'));
+            }
+            self::assertCount(4, $this->exporter->getSpans());
+            foreach (array_slice($this->exporter->getSpans(), 1) as $consumer) {
+                self::assertSame(self::TRACE_ID, $consumer->getContext()->getTraceId());
+                self::assertSame(self::PARENT_ID, $consumer->getParentContext()->getSpanId());
+            }
+        } finally {
+            $configuration->detach();
+            $provider->shutdown();
+        }
     }
 
     public function testOptionalApiAbsenceStillExecutesTheCallbackExactlyOnce(): void

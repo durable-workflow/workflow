@@ -125,6 +125,19 @@ admission context survives the qualified cold-worker, child, continuation and
 signal-with-start paths. Existing runs keep their original admission context.
 An untraced legacy admission does not borrow a worker's ambient parent.
 
+Queue dispatch emits a short `durable.task.dispatch` producer span outside the
+database transaction. It covers the queue dispatcher call. A returned call is
+not proof that a worker claimed or completed the task. Poll mode and fake
+execution do not emit queue producer spans.
+
+The queued job can carry a bounded trace context tied to its exact task ID.
+Cold workflow, activity and timer consumers link the producer as
+`durable.link.type=queue_dispatch`; their parent remains the original persisted
+run context. Queue metadata carries no baggage, payload, lease or deadline
+authority. Missing, malformed or mismatched metadata supplies no dispatch link.
+Legacy serialized jobs remain readable, and disabled tracing leaves newly
+created jobs' serialized form unchanged. The service protocol is unchanged.
+
 The existing bridge-authored child-retry policy is covered through both queued
 child failure and bridge-recorded failure, followed by separate cold retry,
 activity and parent workers. Child admission and retries preserve the original

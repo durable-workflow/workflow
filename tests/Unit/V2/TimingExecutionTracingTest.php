@@ -106,7 +106,7 @@ final class TimingExecutionTracingTest extends TestCase
                 self::assertSame('completed', $task['status']);
                 self::assertSame($task['payload']['retry_after_attempt'] ?? 0, $task['attempt_count'] - 1);
             }
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount($workerEnabled ? 6 : 0, $spans);
             foreach ($spans as $span) {
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);

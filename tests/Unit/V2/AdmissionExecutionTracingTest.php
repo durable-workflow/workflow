@@ -81,8 +81,11 @@ final class AdmissionExecutionTracingTest extends TestCase
                 ));
             }
             foreach ([$admitted, $duplicate, $rejected] as $index => $attempt) {
-                self::assertSame($enabled ? [0] : [], $attempt['admission']['capture_transaction_levels']);
-                self::assertCount($enabled ? 1 : 0, $attempt['spans']);
+                self::assertSame(
+                    $enabled ? array_fill(0, 1 + count($attempt['spans']) - count($attempt['execution_spans']), 0) : [],
+                    $attempt['admission']['capture_transaction_levels']
+                );
+                self::assertCount($enabled ? 1 : 0, $attempt['execution_spans']);
                 self::assertSame(
                     ['started_new', 'returned_existing_active', 'rejected_duplicate'][$index],
                     $attempt['admission']['result']['outcome']
@@ -101,7 +104,7 @@ final class AdmissionExecutionTracingTest extends TestCase
                         'transaction_level' => 0,
                     ],
                 ], $attempt['admission']['boundaries']);
-                $span = $attempt['spans'][0];
+                $span = $attempt['execution_spans'][0];
                 self::assertSame('durable.workflow.admission', $span['name']);
                 self::assertSame(SpanKind::KIND_INTERNAL, $span['kind']);
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
@@ -129,7 +132,7 @@ final class AdmissionExecutionTracingTest extends TestCase
             self::assertSame(0, $callback['transaction_level']);
             self::assertSame('caller-scope', $callback['foreign']);
             if ($enabled) {
-                self::assertSame($admitted['spans'][0]['span_id'], $callback['span_id']);
+                self::assertSame($admitted['execution_spans'][0]['span_id'], $callback['span_id']);
                 self::assertSame('cold-tracing', $callback['fields']['workflow_instance_id']);
             } else {
                 self::assertSame([], $callback['fields']);
@@ -144,11 +147,11 @@ final class AdmissionExecutionTracingTest extends TestCase
                 self::assertNull($admitted['carrier']);
             }
             foreach ($workers as $workerResult) {
-                self::assertCount($enabled ? 1 : 0, $workerResult['spans']);
+                self::assertCount($enabled ? 1 : 0, $workerResult['execution_spans']);
                 if ($enabled) {
-                    $span = $workerResult['spans'][0];
+                    $span = $workerResult['execution_spans'][0];
                     self::assertSame($withoutParent ? '0000000000000000' : '00f067aa0ba902b7', $span['parent_id']);
-                    self::assertNotSame($admitted['spans'][0]['span_id'], $span['parent_id']);
+                    self::assertNotSame($admitted['execution_spans'][0]['span_id'], $span['parent_id']);
                 }
             }
             $records = array_map(

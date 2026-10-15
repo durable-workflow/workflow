@@ -126,7 +126,7 @@ final class RecoveryExecutionTracingTest extends TestCase
             foreach ($workers as $worker) {
                 self::assertSame([], $worker['outside_context']);
                 self::assertTrue($worker['scope_restored']);
-                foreach ($worker['spans'] as $span) {
+                foreach ($worker['execution_spans'] as $span) {
                     if ($span['name'] === 'durable.activity.attempt') {
                         $spans[] = $span;
                     }

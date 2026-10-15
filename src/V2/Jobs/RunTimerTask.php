@@ -69,6 +69,9 @@ final class RunTimerTask implements ShouldQueue
 
     public int $tries = 5;
 
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
+
     public function __construct(
         public readonly string $taskId,
     ) {
@@ -122,7 +125,8 @@ final class RunTimerTask implements ShouldQueue
             TraceCarrier::fromRun($run),
             fn () => $this->executeClaim($timer->id),
             is_array($allowlist) ? $allowlist : [],
-            true
+            true,
+            $this->dispatchObservabilityContext,
         );
     }
 

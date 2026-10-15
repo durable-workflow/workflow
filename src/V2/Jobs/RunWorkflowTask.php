@@ -38,6 +38,9 @@ final class RunWorkflowTask implements ShouldQueue
 
     public int $tries = 1;
 
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
+
     public function __construct(
         public readonly string $taskId,
     ) {
@@ -80,6 +83,7 @@ final class RunWorkflowTask implements ShouldQueue
             fn () => $this->executeClaim($executor),
             is_array($allowlist) ? $allowlist : [],
             true,
+            $this->dispatchObservabilityContext,
         );
     }
 

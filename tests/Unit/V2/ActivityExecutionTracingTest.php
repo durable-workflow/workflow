@@ -7,11 +7,13 @@ namespace Tests\Unit\V2;
 use Composer\Autoload\ClassLoader;
 use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
+use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\Context\ScopeInterface;
@@ -80,6 +82,96 @@ final class ActivityExecutionTracingTest extends TestCase
             'enabled legacy run' => [true, false],
             'enabled retry' => [true, true],
         ];
+    }
+
+    public static function nonQueueModes(): array
+    {
+        return [
+            'poll bookkeeping' => ['poll'],
+            'fake execution' => ['fake'],
+        ];
+    }
+
+    #[DataProvider('nonQueueModes')]
+    public function testNonQueuePathsDoNotClaimQueueProducerSpans(string $mode): void
+    {
+        config([
+            'workflows.tracing.enabled' => true,
+        ]);
+        if ($mode === 'poll') {
+            config([
+                'workflows.v2.task_dispatch_mode' => 'poll',
+            ]);
+        } else {
+            WorkflowStub::fake();
+        }
+        $stub = WorkflowStub::make(TracedWorkflow::class, 'non-queue-' . $mode, '0');
+        $stub->start(false);
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame([], array_values(array_filter(
+            $this->exporter->getSpans(),
+            static fn ($span): bool => $span->getName() === 'durable.task.dispatch'
+        )));
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        self::assertSame($mode === 'poll' ? 'pending' : 'completed', $run->status->value);
+        if ($mode === 'fake') {
+            self::assertSame([9007199254740993, null, '雪'], $stub->refresh()->output());
+        }
+        self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+    }
+
+    public static function dispatchFailures(): array
+    {
+        return [
+            'disabled' => [false],
+            'enabled' => [true],
+        ];
+    }
+
+    #[DataProvider('dispatchFailures')]
+    public function testRealQueueStorageFailureRetainsTheOriginalAdmissionAndFailure(bool $enabled): void
+    {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+            'queue.connections.database.table' => 'missing_trace_jobs',
+        ]);
+        $stub = WorkflowStub::make(TracedWorkflow::class, 'queue-storage-failure', '0');
+        try {
+            $stub->start(false, new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45));
+            self::fail('The real queue INSERT must fail.');
+        } catch (QueryException $failure) {
+            self::assertStringContainsString('missing_trace_jobs', $failure->getMessage());
+        }
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'queue-storage-failure')->sole();
+        self::assertSame('pending', $run->status->value);
+        self::assertSame([false], Serializer::unserializeWithCodec($run->payload_codec, $run->arguments));
+        self::assertTrue($run->started_at->copy()->addSeconds(60)->equalTo($run->execution_deadline_at));
+        self::assertSame(45, $run->run_timeout_seconds);
+        self::assertTrue($run->started_at->copy()->addSeconds(45)->equalTo($run->run_deadline_at));
+        $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->sole();
+        self::assertSame('ready', $task->status->value);
+        self::assertNull($task->last_dispatched_at);
+        self::assertStringContainsString('missing_trace_jobs', $task->last_dispatch_error);
+        self::assertSame(0, (int) $task->repair_count);
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        self::assertSame(0, ActivityAttempt::query()->count());
+        self::assertSame('started_new', WorkflowCommand::query()->sole()->outcome->value);
+        $spans = array_values(array_filter(
+            $this->exporter->getSpans(),
+            static fn ($span): bool => $span->getName() === 'durable.task.dispatch'
+        ));
+        self::assertCount($enabled ? 1 : 0, $spans);
+        foreach ($spans as $span) {
+            self::assertSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+            self::assertSame(QueryException::class, $span->getAttributes()->get('error.type'));
+            self::assertNull($span->getAttributes()->get('durable.dispatch.outcome'));
+            self::assertSame([], $span->getEvents());
+            self::assertStringNotContainsString(
+                'missing_trace_jobs',
+                json_encode($span->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+            );
+        }
     }
 
     public function testAdmissionPersistsItsOriginalParentAndDuplicateCannotReplaceIt(): void
@@ -247,7 +339,11 @@ final class ActivityExecutionTracingTest extends TestCase
         self::assertSame($prefix, array_slice($history, 0, count($prefix)));
         self::assertSame($enabled ? ($phase === 'workflow' ? 3 : 2) : 0, UnreadableTraceCast::$metadataReads);
         $spans = $this->exporter->getSpans();
-        self::assertCount($enabled ? 4 : 0, $spans);
+        self::assertCount($enabled ? 7 : 0, $spans);
+        self::assertCount($enabled ? 3 : 0, array_filter(
+            $spans,
+            static fn ($span): bool => $span->getKind() === SpanKind::KIND_PRODUCER
+        ));
         $admissions = array_values(array_filter(
             $spans,
             static fn ($span): bool => $span->getName() === 'durable.workflow.admission'
@@ -259,7 +355,7 @@ final class ActivityExecutionTracingTest extends TestCase
         }
         $processing = array_values(array_filter(
             $spans,
-            static fn ($span): bool => $span->getName() !== 'durable.workflow.admission'
+            static fn ($span): bool => $span->getKind() === SpanKind::KIND_CONSUMER
         ));
         self::assertCount($enabled ? 3 : 0, $processing);
         foreach ($processing as $index => $span) {
@@ -301,16 +397,17 @@ final class ActivityExecutionTracingTest extends TestCase
             $stub->start();
             $this->workOnce();
             self::assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
-            self::assertSame([0, 0, 0, 0], $processor->transactionLevels);
+            self::assertSame([0, 0, 0, 0, 0, 0], $processor->transactionLevels);
             $spans = $this->exporter->getSpans();
-            self::assertCount(2, $spans);
-            self::assertSame('durable.workflow.admission', $spans[0]->getName());
-            self::assertSame('started_new', $spans[0]->getAttributes()->get('durable.command.outcome'));
-            self::assertSame('durable.workflow.task', $spans[1]->getName());
-            self::assertSame(StatusCode::STATUS_ERROR, $spans[1]->getStatus()->getCode());
-            self::assertSame(RuntimeException::class, $spans[1]->getAttributes()->get('error.type'));
+            self::assertSame(
+                ['durable.task.dispatch', 'durable.workflow.admission', 'durable.workflow.task'],
+                array_map(static fn ($span): string => $span->getName(), $spans)
+            );
+            self::assertSame('started_new', $spans[1]->getAttributes()->get('durable.command.outcome'));
+            self::assertSame(StatusCode::STATUS_ERROR, $spans[2]->getStatus()->getCode());
+            self::assertSame(RuntimeException::class, $spans[2]->getAttributes()->get('error.type'));
             self::assertSame($stub->runId(), FailingTracedWorkflow::$fields['workflow_run_id']);
-            self::assertSame($spans[1]->getContext()->getSpanId(), FailingTracedWorkflow::$fields['span_id']);
+            self::assertSame($spans[2]->getContext()->getSpanId(), FailingTracedWorkflow::$fields['span_id']);
             self::assertSame([], ExecutionTracing::current());
             self::assertSame(0, DB::table('failed_jobs')->count());
         } finally {
@@ -389,36 +486,48 @@ final class ActivityExecutionTracingTest extends TestCase
             $workerPids = [$workflow['pid'], $activity['pid'], $completion['pid']];
             if ($retried !== null) {
                 $workerPids[] = $retried['pid'];
-                self::assertCount(1, $retried['spans']);
+                self::assertCount(1, $retried['execution_spans']);
                 self::assertSame(
-                    $activity['spans'][0]['fields']['activity_id'],
-                    $retried['spans'][0]['fields']['activity_id']
+                    $activity['execution_spans'][0]['fields']['activity_id'],
+                    $retried['execution_spans'][0]['fields']['activity_id']
                 );
                 self::assertNotSame(
-                    $activity['spans'][0]['fields']['activity_attempt_id'],
-                    $retried['spans'][0]['fields']['activity_attempt_id']
+                    $activity['execution_spans'][0]['fields']['activity_attempt_id'],
+                    $retried['execution_spans'][0]['fields']['activity_attempt_id']
                 );
-                self::assertNotSame($activity['spans'][0]['span_id'], $retried['spans'][0]['span_id']);
-                self::assertSame($activity['spans'][0]['trace_id'], $retried['spans'][0]['trace_id']);
-                self::assertSame($activity['spans'][0]['parent_id'], $retried['spans'][0]['parent_id']);
+                self::assertNotSame(
+                    $activity['execution_spans'][0]['span_id'],
+                    $retried['execution_spans'][0]['span_id']
+                );
+                self::assertSame(
+                    $activity['execution_spans'][0]['trace_id'],
+                    $retried['execution_spans'][0]['trace_id']
+                );
+                self::assertSame(
+                    $activity['execution_spans'][0]['parent_id'],
+                    $retried['execution_spans'][0]['parent_id']
+                );
             }
             self::assertCount($retry ? 4 : 3, array_unique($workerPids));
             foreach ([$workflow, $completion] as $segment) {
-                self::assertCount(1, $segment['spans']);
-                self::assertSame('durable.workflow.task', $segment['spans'][0]['name']);
-                self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $segment['spans'][0]['trace_id']);
-                self::assertSame('00f067aa0ba902b7', $segment['spans'][0]['parent_id']);
-                self::assertSame($admitted['run_id'], $segment['spans'][0]['fields']['workflow_run_id']);
-                self::assertArrayNotHasKey('activity_attempt_id', $segment['spans'][0]['fields']);
+                self::assertCount(1, $segment['execution_spans']);
+                self::assertSame('durable.workflow.task', $segment['execution_spans'][0]['name']);
+                self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $segment['execution_spans'][0]['trace_id']);
+                self::assertSame('00f067aa0ba902b7', $segment['execution_spans'][0]['parent_id']);
+                self::assertSame($admitted['run_id'], $segment['execution_spans'][0]['fields']['workflow_run_id']);
+                self::assertArrayNotHasKey('activity_attempt_id', $segment['execution_spans'][0]['fields']);
             }
-            self::assertNotSame($workflow['spans'][0]['span_id'], $completion['spans'][0]['span_id']);
             self::assertNotSame(
-                $workflow['spans'][0]['fields']['task_id'],
-                $completion['spans'][0]['fields']['task_id']
+                $workflow['execution_spans'][0]['span_id'],
+                $completion['execution_spans'][0]['span_id']
             );
-            self::assertCount(1, $activity['spans']);
-            self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $activity['spans'][0]['trace_id']);
-            self::assertSame('00f067aa0ba902b7', $activity['spans'][0]['parent_id']);
+            self::assertNotSame(
+                $workflow['execution_spans'][0]['fields']['task_id'],
+                $completion['execution_spans'][0]['fields']['task_id']
+            );
+            self::assertCount(1, $activity['execution_spans']);
+            self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $activity['execution_spans'][0]['trace_id']);
+            self::assertSame('00f067aa0ba902b7', $activity['execution_spans'][0]['parent_id']);
             $finished = $run('inspect');
             self::assertSame('completed', $finished['status']);
             self::assertSame([9007199254740993, null, '雪'], $finished['output']);
@@ -439,7 +548,7 @@ final class ActivityExecutionTracingTest extends TestCase
             self::assertCount($retry ? 2 : 1, $callbacks);
             foreach ($callbacks as $callback) {
                 self::assertSame($admitted['run_id'], $callback['context']['workflow_run_id']);
-                self::assertSame($activity['spans'][0]['trace_id'], $callback['context']['trace_id']);
+                self::assertSame($activity['execution_spans'][0]['trace_id'], $callback['context']['trace_id']);
                 self::assertArrayHasKey('activity_attempt_id', $callback['context']);
                 self::assertSame('0', $callback['context']['namespace']);
                 $constructed = array_values(
@@ -470,7 +579,7 @@ final class ActivityExecutionTracingTest extends TestCase
                     self::assertArrayNotHasKey('workflow_run_id', $record['context']);
                 } elseif (isset($record['context']['activity_attempt_id'])) {
                     self::assertSame($admitted['run_id'], $record['context']['workflow_run_id']);
-                    self::assertSame($activity['spans'][0]['trace_id'], $record['context']['trace_id']);
+                    self::assertSame($activity['execution_spans'][0]['trace_id'], $record['context']['trace_id']);
                 }
             }
             $workflowLogs = array_values(array_filter(
@@ -480,7 +589,7 @@ final class ActivityExecutionTracingTest extends TestCase
             self::assertCount(9, $workflowLogs);
             $segments = [];
             foreach ([$workflow, $completion] as $segment) {
-                $span = $segment['spans'][0];
+                $span = $segment['execution_spans'][0];
                 self::assertArrayHasKey('durable.task.queue_wait_seconds', $span['fields']);
                 self::assertGreaterThanOrEqual(0, $span['fields']['durable.task.queue_wait_seconds']);
                 $correlation = $span['fields'];

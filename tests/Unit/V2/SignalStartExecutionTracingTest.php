@@ -70,10 +70,20 @@ final class SignalStartExecutionTracingTest extends TestCase
             $originalHasParent = $admissionEnabled && ! $withoutParent;
             self::assertSame($originalHasParent, $admitted['carrier'] !== null);
             self::assertSame($originalHasParent, $admitted['signal_commands'][0]['carrier'] !== null);
-            self::assertSame($admissionEnabled ? [0] : [], $admitted['capture_transaction_levels']);
+            self::assertSame(
+                $admissionEnabled ? array_fill(
+                    0,
+                    1 + count($admitted['spans']) - count($admitted['execution_spans']),
+                    0
+                ) : [],
+                $admitted['capture_transaction_levels']
+            );
             $existing = $worker('duplicate');
             self::assertSame('returned_existing_active', $existing['signal_start_outcome']);
-            self::assertLessThanOrEqual($workerEnabled ? 1 : 0, count($existing['capture_transaction_levels']));
+            self::assertLessThanOrEqual(
+                $workerEnabled ? 1 + count($existing['spans']) - count($existing['execution_spans']) : 0,
+                count($existing['capture_transaction_levels'])
+            );
             foreach ($existing['capture_transaction_levels'] as $level) {
                 self::assertSame(0, $level);
             }
@@ -127,7 +137,7 @@ final class SignalStartExecutionTracingTest extends TestCase
                 array_slice($finished['history_hashes'], 0, count($existing['history_hashes']))
             );
             self::assertSame(count($workers), count(array_unique(array_column($workers, 'pid'))));
-            $spans = array_merge(...array_column($workers, 'spans'));
+            $spans = array_merge(...array_column($workers, 'execution_spans'));
             self::assertCount($workerEnabled ? 3 : 0, $spans);
             foreach ($spans as $span) {
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
@@ -145,8 +155,11 @@ final class SignalStartExecutionTracingTest extends TestCase
             );
             foreach ([$admitted, $existing, $rejected] as $index => $attempt) {
                 $enabled = $index === 0 ? $admissionEnabled : $workerEnabled;
-                self::assertSame($enabled ? [0] : [], $attempt['capture_transaction_levels']);
-                self::assertCount($enabled ? 1 : 0, $attempt['spans']);
+                self::assertSame(
+                    $enabled ? array_fill(0, 1 + count($attempt['spans']) - count($attempt['execution_spans']), 0) : [],
+                    $attempt['capture_transaction_levels']
+                );
+                self::assertCount($enabled ? 1 : 0, $attempt['execution_spans']);
                 if (! $enabled) {
                     self::assertSame([], $attempt['admission']['boundaries']);
                     continue;
@@ -161,7 +174,7 @@ final class SignalStartExecutionTracingTest extends TestCase
                         'transaction_level' => 0,
                     ],
                 ], $attempt['admission']['boundaries']);
-                $span = $attempt['spans'][0];
+                $span = $attempt['execution_spans'][0];
                 $receipt = $attempt['signal_start_result'];
                 self::assertSame('durable.workflow.admission', $span['name']);
                 self::assertSame(SpanKind::KIND_INTERNAL, $span['kind']);
