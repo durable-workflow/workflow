@@ -52,11 +52,27 @@ final class IncomingHttpTracingTest extends TestCase
             self::assertFalse($server->isRunning());
             self::assertSame([], $admitted['outside_context']);
             self::assertTrue($admitted['scope_restored']);
-            self::assertCount(1, $admitted['spans']);
-            $requestSpan = $admitted['spans'][0];
+            self::assertCount(2, $admitted['spans']);
+            $requestSpans = array_values(array_filter(
+                $admitted['spans'],
+                static fn (array $span): bool => $span['kind'] === SpanKind::KIND_SERVER
+            ));
+            $admissionSpans = array_values(array_filter(
+                $admitted['spans'],
+                static fn (array $span): bool => $span['name'] === 'durable.workflow.admission'
+            ));
+            self::assertCount(1, $requestSpans);
+            self::assertCount(1, $admissionSpans);
+            $requestSpan = $requestSpans[0];
+            $admissionSpan = $admissionSpans[0];
             self::assertSame(SpanKind::KIND_SERVER, $requestSpan['kind']);
             self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $requestSpan['trace_id']);
             self::assertSame('00f067aa0ba902b7', $requestSpan['parent_id']);
+            self::assertSame(SpanKind::KIND_INTERNAL, $admissionSpan['kind']);
+            self::assertSame($requestSpan['trace_id'], $admissionSpan['trace_id']);
+            self::assertSame($requestSpan['span_id'], $admissionSpan['parent_id']);
+            self::assertSame($admitted['run_id'], $admissionSpan['fields']['workflow_run_id']);
+            self::assertSame('started_new', $admissionSpan['fields']['durable.command.outcome']);
             $carrier = json_decode($admitted['carrier'], true, flags: JSON_THROW_ON_ERROR)['carrier'];
             self::assertSame(
                 '00-' . $requestSpan['trace_id'] . '-' . $requestSpan['span_id'] . '-01',

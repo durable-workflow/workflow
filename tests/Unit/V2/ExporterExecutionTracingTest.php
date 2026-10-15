@@ -65,12 +65,19 @@ final class ExporterExecutionTracingTest extends TestCase
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
             }
             $requests = $this->requests($directory);
-            self::assertCount($mode === 'refused' ? 0 : 3, $requests);
+            self::assertCount($mode === 'refused' ? 0 : 4, $requests);
             foreach ($requests as $request) {
                 self::assertSame('POST', $request['method']);
                 self::assertSame('/v1/traces', $request['path']);
                 self::assertSame('application/x-protobuf', $request['content_type']);
                 self::assertCount(1, $request['spans']);
+            }
+            if ($mode !== 'refused') {
+                self::assertSame(['durable.workflow.admission', 'durable.workflow.task',
+                    'durable.activity.attempt', 'durable.workflow.task'], array_map(
+                        static fn (array $request): string => $request['spans'][0]['name'],
+                        $requests
+                    ));
             }
         } finally {
             $server->stop();

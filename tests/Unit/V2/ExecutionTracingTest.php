@@ -10,7 +10,9 @@ use Monolog\Handler\TestHandler;
 use Monolog\Logger;
 use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Instrumentation\Configurator;
+use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ContextInterface;
@@ -23,7 +25,9 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\StartResult;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Tracing\LogContext;
@@ -297,6 +301,98 @@ final class ExecutionTracingTest extends TestCase
         self::assertSame(9, $result);
         self::assertSame(1, $calls);
         self::assertSame([], $this->exporter->getSpans());
+    }
+
+    public function testAdmissionPreservesTheApplicationParentProviderAndOriginalException(): void
+    {
+        $instance = new WorkflowInstance();
+        $instance->setRawAttributes([
+            'id' => 'instance-1',
+            'workflow_type' => 'test.workflow',
+            'namespace' => '0',
+        ], true);
+        $foreign = Context::createKey('application-admission-state');
+        $parent = TraceContextPropagator::getInstance()->extract(
+            self::carrier()['carrier'],
+            context: Context::getCurrent()
+        )->with($foreign, 'application-value');
+        $scope = $parent->activate();
+        $error = new RuntimeException('private-original-admission-error');
+        $calls = 0;
+        try {
+            try {
+                ExecutionTracing::admission($instance, function () use ($foreign, $error, &$calls): never {
+                    ++$calls;
+                    self::assertSame($this->provider, Globals::tracerProvider());
+                    self::assertSame('application-value', Context::getCurrent()->get($foreign));
+                    self::assertSame('instance-1', ExecutionTracing::current()['workflow_instance_id']);
+                    throw $error;
+                }, enabled: true);
+                self::fail('Admission must preserve the original exception.');
+            } catch (RuntimeException $observed) {
+                self::assertSame($error, $observed);
+            }
+            self::assertSame($parent, Context::getCurrent());
+            self::assertSame([], ExecutionTracing::current());
+        } finally {
+            $scope->detach();
+        }
+        self::assertSame(1, $calls);
+        $spans = $this->exporter->getSpans();
+        self::assertCount(1, $spans);
+        self::assertSame(SpanKind::KIND_INTERNAL, $spans[0]->getKind());
+        self::assertSame(self::TRACE_ID, $spans[0]->getContext()->getTraceId());
+        self::assertSame(self::PARENT_ID, $spans[0]->getParentContext()->getSpanId());
+        self::assertSame(StatusCode::STATUS_ERROR, $spans[0]->getStatus()->getCode());
+        self::assertSame(RuntimeException::class, $spans[0]->getAttributes()->get('error.type'));
+        self::assertSame([], $spans[0]->getEvents());
+        self::assertStringNotContainsString('private-original', $spans[0]->getStatus()->getDescription());
+    }
+
+    public function testAdmissionOptionalIdentityAndReceiptReadsCannotReplaceTheResult(): void
+    {
+        $instance = new class() extends WorkflowInstance {
+            public int $reads = 0;
+
+            public function getRawOriginal($key = null, $default = null): mixed
+            {
+                ++$this->reads;
+                throw new RuntimeException('private-identity-read');
+            }
+        };
+        $command = new class() extends WorkflowCommand {
+            public int $reads = 0;
+
+            public function getAttribute($key): mixed
+            {
+                ++$this->reads;
+                throw new RuntimeException('private-receipt-read');
+            }
+        };
+        $receipt = StartResult::fromCommand($command);
+        $calls = 0;
+        $operation = static function () use (&$calls, $receipt): StartResult {
+            ++$calls;
+
+            return $receipt;
+        };
+        self::assertSame($receipt, ExecutionTracing::admission($instance, $operation));
+        self::assertSame(0, $instance->reads);
+        self::assertSame(0, $command->reads);
+        self::assertSame([], $this->exporter->getSpans());
+        self::assertSame($receipt, ExecutionTracing::admission($instance, $operation, enabled: true));
+        self::assertSame(2, $calls);
+        self::assertSame(1, $instance->reads);
+        self::assertSame(1, $command->reads);
+        $spans = $this->exporter->getSpans();
+        self::assertCount(1, $spans);
+        self::assertNull($spans[0]->getAttributes()->get('workflow_instance_id'));
+        self::assertNull($spans[0]->getAttributes()->get('durable.command.outcome'));
+        self::assertSame([], $spans[0]->getEvents());
+        self::assertStringNotContainsString(
+            'private-',
+            json_encode($spans[0]->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+        );
     }
 
     public function testOptionalApiAbsenceStillExecutesTheCallbackExactlyOnce(): void

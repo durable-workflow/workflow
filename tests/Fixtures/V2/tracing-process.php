@@ -25,6 +25,8 @@ use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
 use OpenTelemetry\Context\Propagation\PropagationGetterInterface;
 use OpenTelemetry\Context\Propagation\PropagationSetterInterface;
 use OpenTelemetry\Context\Propagation\TextMapPropagatorInterface;
+use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
+use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
@@ -35,6 +37,7 @@ use Workflow\UpdateMethod;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -68,6 +71,7 @@ $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
 $timings = getenv('DW_TEST_TRACING_TIMINGS') === 'true';
+$admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -407,7 +411,32 @@ $app = TracingProcessApplication::create(
     ],
 );
 $exporter = new InMemoryExporter();
-$processors = [new SimpleSpanProcessor($exporter)];
+$admissionProcessor = $admissionProbe ? new class($exporter) extends SimpleSpanProcessor {
+    public array $boundaries = [];
+
+    public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
+    {
+        if ($span->getName() === 'durable.workflow.admission') {
+            $this->boundaries[] = [
+                'event' => 'start',
+                'transaction_level' => DB::transactionLevel(),
+            ];
+        }
+        parent::onStart($span, $parentContext);
+    }
+
+    public function onEnd(ReadableSpanInterface $span): void
+    {
+        if ($span->getName() === 'durable.workflow.admission') {
+            $this->boundaries[] = [
+                'event' => 'end',
+                'transaction_level' => DB::transactionLevel(),
+            ];
+        }
+        parent::onEnd($span);
+    }
+} : null;
+$processors = [$admissionProcessor ?? new SimpleSpanProcessor($exporter)];
 $exportEndpoint = getenv('DW_TEST_TRACING_EXPORTER_ENDPOINT');
 $exportJournal = getenv('DW_TEST_TRACING_EXPORTER_JOURNAL');
 $exportRequests = static fn (): int => $exportJournal && is_file($exportJournal)
@@ -422,7 +451,7 @@ $propagator = new MultiTextMapPropagator([
     BaggagePropagator::getInstance(),
 ]);
 $recordedPropagator = null;
-if ($signalStart || $signalLinks || $cancellation || $updateLinks) {
+if ($signalStart || $signalLinks || $cancellation || $updateLinks || $admissionProbe) {
     $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
         public array $transactionLevels = [];
 
@@ -459,6 +488,26 @@ $configuration = Configurator::create()->withTracerProvider($provider)
     ->withPropagator($propagator)
     ->activate();
 $initial = Context::getCurrent();
+$admissionForeignKey = Context::createKey('test.application.admission');
+$admissionCallbacks = [];
+if ($admissionProbe) {
+    $app['events']->listen(WorkflowStarted::class, static function () use (
+        &$admissionCallbacks,
+        $admissionForeignKey
+    ): void {
+        $context = Span::getCurrent()->getContext();
+        $admissionCallbacks[] = [
+            'transaction_level' => DB::transactionLevel(),
+            'foreign' => Context::getCurrent()->get($admissionForeignKey),
+            'fields' => ExecutionTracing::current(),
+            'trace_id' => $context->getTraceId(),
+            'span_id' => $context->getSpanId(),
+        ];
+        Log::info('admission callback', [
+            'request_id' => 'application-request',
+        ]);
+    });
+}
 try {
     $parent = $mode === 'admit'
         ? '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
@@ -486,6 +535,15 @@ try {
         $headers['tracestate'] = 'dwtest=one';
         $headers['baggage'] = 'approved=tenant-a,private=must-not-propagate';
     }
+    if ($admissionProbe && in_array($mode, ['admit', 'duplicate', 'reject'], true)) {
+        $headers['traceparent'] = $mode === 'admit'
+            ? '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+            : '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
+        if (getenv('DW_TEST_TRACING_ADMISSION_NO_PARENT') === 'true') {
+            unset($headers['traceparent']);
+        }
+        $headers['baggage'] = 'approved=origin,private=caller-local';
+    }
     $request = $incomingHttp ? Request::capture() : null;
     if ($request !== null) {
         $headers = [];
@@ -497,6 +555,9 @@ try {
         }
     }
     $parentContext = $propagator->extract($headers, context: $initial);
+    if ($admissionProbe) {
+        $parentContext = $parentContext->with($admissionForeignKey, 'caller-scope');
+    }
     // The fixture application owns its HTTP instrumentation, as a real Laravel app would.
     $requestSpan = $incomingHttp ? $provider->getTracer('test.application')
         ->spanBuilder('POST /start')
@@ -508,6 +569,8 @@ try {
     $signalStartResult = null;
     $cancellationResult = null;
     $updateResult = null;
+    $admissionResult = null;
+    $admissionContextPreserved = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -609,10 +672,16 @@ try {
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
             } else {
-                WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->start(
+                $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->start(
                     $retry,
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
+                if ($admissionProbe) {
+                    $admissionResult = [
+                        'command_id' => $result->commandId(),
+                        'outcome' => $result->outcome(),
+                    ];
+                }
             }
         } elseif ($mode === 'update' && $updateLinks) {
             $step = getenv('DW_TEST_TRACING_UPDATE_STEP');
@@ -662,11 +731,26 @@ try {
             if (! $signalStartResult->returnedExistingActive()) {
                 throw new \RuntimeException('Expected the original signal-with-start admission.');
             }
+        } elseif ($mode === 'reject' && $admissionProbe) {
+            $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->attemptStart($retry);
+            if (! $result->rejected()) {
+                throw new \RuntimeException('Expected an ordinary duplicate refusal.');
+            }
+            $admissionResult = [
+                'command_id' => $result->commandId(),
+                'outcome' => $result->outcome(),
+            ];
         } elseif ($mode === 'duplicate') {
             $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')
                 ->attemptStart($retry, StartOptions::returnExistingActive());
             if (! $result->returnedExistingActive()) {
                 throw new \RuntimeException('Expected the original active admission.');
+            }
+            if ($admissionProbe) {
+                $admissionResult = [
+                    'command_id' => $result->commandId(),
+                    'outcome' => $result->outcome(),
+                ];
             }
         } elseif ($mode === 'bridge-fail' && $childRetry) {
             $child = WorkflowRun::query()->where('workflow_class', TracingRetryChildWorkflow::class)
@@ -714,6 +798,9 @@ try {
             $repairReport = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
         } elseif ($mode !== 'inspect') {
             throw new \RuntimeException('Unknown fixture command.');
+        }
+        if ($admissionProbe) {
+            $admissionContextPreserved = Context::getCurrent() === $parentContext;
         }
     } finally {
         $scope->detach();
@@ -921,6 +1008,24 @@ try {
             'policy' => ActivityExecution::query()->first()?->retry_policy,
             'completion_count' => $history->where('event_type.value', 'ActivityCompleted')
                 ->count(),
+        ];
+    }
+    if ($admissionProbe) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['admission'] = [
+            'result' => $admissionResult,
+            'context_preserved' => $admissionContextPreserved,
+            'boundaries' => $admissionProcessor->boundaries,
+            'callbacks' => $admissionCallbacks,
+            'capture_transaction_levels' => $recordedPropagator->transactionLevels,
+            'history_hashes' => $history->map(static function ($event): string {
+                return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+            })->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
+            'run_count' => WorkflowRun::query()->count(),
         ];
     }
     if ($signalLinks) {

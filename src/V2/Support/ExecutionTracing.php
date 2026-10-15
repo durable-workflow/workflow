@@ -22,7 +22,9 @@ use WeakMap;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\StartResult;
 
 /** @internal */
 final class ExecutionTracing
@@ -32,6 +34,7 @@ final class ExecutionTracing
         'task_id', 'activity_id', 'activity_type', 'activity_attempt_id',
         'activity_attempt_number', 'request_id',
         'timer_id',
+        'workflow_command_id',
     ];
 
     private const TIMINGS = [
@@ -168,6 +171,25 @@ final class ExecutionTracing
         return $fields;
     }
 
+    public static function admission(WorkflowInstance $instance, callable $operation, bool $enabled = false): mixed
+    {
+        if (! $enabled || ! class_exists(Globals::class)) {
+            return $operation();
+        }
+        $attributes = [];
+        try {
+            $attributes = [
+                'workflow_instance_id' => $instance->getRawOriginal('id'),
+                'workflow_type' => $instance->getRawOriginal('workflow_type'),
+                'namespace' => $instance->getRawOriginal('namespace'),
+            ];
+        } catch (Throwable) {
+            // Optional identity reads do not replace admission.
+        }
+
+        return self::segment('durable.workflow.admission', $attributes, null, $operation, [], true);
+    }
+
     public static function recordFailure(Throwable $error): void
     {
         try {
@@ -255,8 +277,8 @@ final class ExecutionTracing
         $span = null;
         $scope = null;
         try {
-            // A queue worker's ambient trace is not the run's causal authority.
-            $parent = Context::getRoot();
+            // Local admission keeps the caller's context. Workers recover only stored authority.
+            $parent = $name === 'durable.workflow.admission' ? Context::getCurrent() : Context::getRoot();
             $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
             if ($carrier !== null) {
                 $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
@@ -283,7 +305,9 @@ final class ExecutionTracing
                 : null;
             $span = Globals::tracerProvider()->getTracer('durable-workflow/workflow', $version)
                 ->spanBuilder($name)
-                ->setSpanKind(SpanKind::KIND_CONSUMER)
+                ->setSpanKind(
+                    $name === 'durable.workflow.admission' ? SpanKind::KIND_INTERNAL : SpanKind::KIND_CONSUMER
+                )
                 ->setParent($parent)
                 ->setAttributes($spanAttributes)
                 ->startSpan();
@@ -307,7 +331,16 @@ final class ExecutionTracing
         }
 
         try {
-            return $operation();
+            $result = $operation();
+            if ($name === 'durable.workflow.admission' && $result instanceof StartResult && $span !== null) {
+                try {
+                    self::recordAdmissionResult($span, $result);
+                } catch (Throwable) {
+                    // A telemetry receipt read cannot replace the committed decision.
+                }
+            }
+
+            return $result;
         } catch (Throwable $error) {
             self::recordFailure($error);
             throw $error;
@@ -333,6 +366,28 @@ final class ExecutionTracing
         }
 
         return $fields;
+    }
+
+    private static function recordAdmissionResult(SpanInterface $span, StartResult $result): void
+    {
+        $attributes = self::fields([
+            'workflow_instance_id' => $result->instanceId(),
+            'workflow_run_id' => $result->runId(),
+            'workflow_type' => $result->workflowType(),
+            'workflow_command_id' => $result->commandId(),
+        ]);
+        foreach ([
+            'durable.command.type' => $result->type(),
+            'durable.command.status' => $result->status(),
+            'durable.command.outcome' => $result->outcome(),
+            'durable.command.rejection_reason' => $result->rejectionReason(),
+        ] as $key => $value) {
+            if (is_string($value) && $value !== '' && strlen($value) <= 256
+                && ! preg_match('/[\x00-\x1f\x7f]/', $value)) {
+                $attributes[$key] = $value;
+            }
+        }
+        $span->setAttributes($attributes);
     }
 
     private static function close(?ScopeInterface $scope, ?SpanInterface $span): void

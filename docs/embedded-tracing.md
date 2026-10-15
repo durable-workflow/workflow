@@ -96,6 +96,22 @@ overhead, throughput or collector durability measurements.
 
 ## Current boundaries
 
+Ordinary embedded starts emit a short `durable.workflow.admission` span when
+tracing is enabled. It is an internal operation under the application's current
+context. The span reports the returned start receipt, including a new run,
+return of an existing active run or duplicate refusal. Unexpected application
+exceptions retain their original identity. Optional telemetry failures do not
+replace the admission result.
+
+The durable carrier is captured before this span starts. Later workers remain
+children of that original caller, rather than the admission span. Duplicate
+attempts have their own admission spans and keep the original run carrier and
+deadlines. Span creation and completion occur outside the admission transaction.
+The application owns processors, so a synchronous processor can still delay its
+caller. The bounded-export guidance above also applies to admission spans.
+Signal-with-start, service admission, schedules and wider runtime coverage have
+no admission-span qualification yet.
+
 Workflow processing and activity attempts receive separate spans. Persisted
 admission context survives the qualified cold-worker, child, continuation and
 signal-with-start paths. Existing runs keep their original admission context.

@@ -387,6 +387,7 @@ jobs:
         tests/Unit/V2/SignalLinkExecutionTracingTest.php
         tests/Unit/V2/UpdateLinkExecutionTracingTest.php
         tests/Unit/V2/TimingExecutionTracingTest.php
+        tests/Unit/V2/AdmissionExecutionTracingTest.php
         --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
 
     - name: Run database-independent unit contracts

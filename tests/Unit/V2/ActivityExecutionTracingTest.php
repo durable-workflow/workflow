@@ -247,8 +247,22 @@ final class ActivityExecutionTracingTest extends TestCase
         self::assertSame($prefix, array_slice($history, 0, count($prefix)));
         self::assertSame($enabled ? ($phase === 'workflow' ? 3 : 2) : 0, UnreadableTraceCast::$metadataReads);
         $spans = $this->exporter->getSpans();
-        self::assertCount($enabled ? 3 : 0, $spans);
-        foreach ($spans as $index => $span) {
+        self::assertCount($enabled ? 4 : 0, $spans);
+        $admissions = array_values(array_filter(
+            $spans,
+            static fn ($span): bool => $span->getName() === 'durable.workflow.admission'
+        ));
+        self::assertCount($enabled ? 1 : 0, $admissions);
+        if ($enabled) {
+            self::assertSame($run->id, $admissions[0]->getAttributes()->get('workflow_run_id'));
+            self::assertSame('00f067aa0ba902b7', $admissions[0]->getParentContext()->getSpanId());
+        }
+        $processing = array_values(array_filter(
+            $spans,
+            static fn ($span): bool => $span->getName() !== 'durable.workflow.admission'
+        ));
+        self::assertCount($enabled ? 3 : 0, $processing);
+        foreach ($processing as $index => $span) {
             self::assertSame($run->id, $span->getAttributes()->get('workflow_run_id'));
             self::assertSame($phase === 'activity' && $index === 0, $span->getParentContext()->isValid());
         }
@@ -287,14 +301,16 @@ final class ActivityExecutionTracingTest extends TestCase
             $stub->start();
             $this->workOnce();
             self::assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
-            self::assertSame([0, 0], $processor->transactionLevels);
+            self::assertSame([0, 0, 0, 0], $processor->transactionLevels);
             $spans = $this->exporter->getSpans();
-            self::assertCount(1, $spans);
-            self::assertSame('durable.workflow.task', $spans[0]->getName());
-            self::assertSame(StatusCode::STATUS_ERROR, $spans[0]->getStatus()->getCode());
-            self::assertSame(RuntimeException::class, $spans[0]->getAttributes()->get('error.type'));
+            self::assertCount(2, $spans);
+            self::assertSame('durable.workflow.admission', $spans[0]->getName());
+            self::assertSame('started_new', $spans[0]->getAttributes()->get('durable.command.outcome'));
+            self::assertSame('durable.workflow.task', $spans[1]->getName());
+            self::assertSame(StatusCode::STATUS_ERROR, $spans[1]->getStatus()->getCode());
+            self::assertSame(RuntimeException::class, $spans[1]->getAttributes()->get('error.type'));
             self::assertSame($stub->runId(), FailingTracedWorkflow::$fields['workflow_run_id']);
-            self::assertSame($spans[0]->getContext()->getSpanId(), FailingTracedWorkflow::$fields['span_id']);
+            self::assertSame($spans[1]->getContext()->getSpanId(), FailingTracedWorkflow::$fields['span_id']);
             self::assertSame([], ExecutionTracing::current());
             self::assertSame(0, DB::table('failed_jobs')->count());
         } finally {
