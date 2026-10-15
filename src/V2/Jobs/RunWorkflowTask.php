@@ -16,6 +16,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StickyExecution;
@@ -48,10 +49,41 @@ final class RunWorkflowTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        if (! $this->claimTask()) {
+        $task = $this->claimTask();
+        if ($task === null) {
             return;
         }
 
+        if (config('workflows.tracing.enabled', false) !== true) {
+            $this->executeClaim($executor);
+
+            return;
+        }
+
+        /** @var WorkflowRun $run */
+        $run = $task->getRelation('run');
+        $allowlist = config('workflows.tracing.baggage_allowlist', []);
+        $storedContext = array_key_exists('observability_context', $run->getAttributes())
+            ? $run->getAttribute('observability_context')
+            : null;
+        // Activate and end the segment outside the execution transaction.
+        ExecutionTracing::workflow(
+            [
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'task_id' => $task->id,
+            ],
+            $storedContext,
+            fn () => $this->executeClaim($executor),
+            is_array($allowlist) ? $allowlist : [],
+            true,
+        );
+    }
+
+    private function executeClaim(WorkflowExecutor $executor): void
+    {
         $nextTask = null;
 
         try {
@@ -113,16 +145,16 @@ final class RunWorkflowTask implements ShouldQueue
         }
     }
 
-    private function claimTask(): bool
+    private function claimTask(): ?WorkflowTask
     {
-        return SqliteTransaction::forTask($this->taskId, function (): bool {
+        return SqliteTransaction::forTask($this->taskId, function (): ?WorkflowTask {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Ready) {
-                return false;
+                return null;
             }
 
             /** @var WorkflowRun $run */
@@ -133,13 +165,13 @@ final class RunWorkflowTask implements ShouldQueue
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return false;
+                return null;
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return false;
+                return null;
             }
 
             $task->forceFill([
@@ -157,7 +189,7 @@ final class RunWorkflowTask implements ShouldQueue
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return true;
+            return $task->setRelation('run', $run);
         });
     }
 

@@ -32,9 +32,26 @@ foreach (array_slice($argv, 4) as $autoload) {
 
 final class TracingProcessWorkflow extends Workflow
 {
-    public function handle(bool $retry): array
+    public function __construct(TracingProcessWorkflowDependency $dependency)
     {
-        return self::activity(TracingProcessActivity::class, $retry);
+        Log::info('workflow constructor');
+    }
+
+    public function handle(bool $retry, TracingProcessWorkflowDependency $dependency): array
+    {
+        Log::info('workflow before activity');
+        $result = self::activity(TracingProcessActivity::class, $retry);
+        Log::info('workflow after activity');
+
+        return $result;
+    }
+}
+
+final class TracingProcessWorkflowDependency
+{
+    public function __construct()
+    {
+        Log::info('workflow dependency');
     }
 }
 
@@ -206,6 +223,7 @@ try {
         'outside_context' => ExecutionTracing::current(),
         'scope_restored' => Context::getCurrent() === $initial,
         'spans' => array_map(static fn ($span): array => [
+            'name' => $span->getName(),
             'trace_id' => $span->getContext()
                 ->getTraceId(),
             'span_id' => $span->getContext()

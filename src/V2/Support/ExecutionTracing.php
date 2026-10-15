@@ -29,6 +29,35 @@ final class ExecutionTracing
 
     private static ?ContextKeyInterface $correlationKey = null;
 
+    public static function bind(callable $callback): callable
+    {
+        try {
+            if (self::current() === []) {
+                return $callback;
+            }
+            $context = Context::getCurrent();
+        } catch (Throwable) {
+            return $callback;
+        }
+
+        // Attach inside the new Fiber. Its scope must also unwind inside that Fiber.
+        return static function (mixed ...$arguments) use ($callback, $context): mixed {
+            $scope = null;
+            try {
+                $scope = $context->activate();
+            } catch (Throwable) {
+            }
+            try {
+                return $callback(...$arguments);
+            } finally {
+                try {
+                    $scope?->detach();
+                } catch (Throwable) {
+                }
+            }
+        };
+    }
+
     /**
      * @param array<string, mixed> $attributes
      * @param list<string> $baggageAllowlist
@@ -39,6 +68,76 @@ final class ExecutionTracing
         callable $operation,
         array $baggageAllowlist = [],
         bool $enabled = false,
+    ): mixed {
+        return self::segment(
+            'durable.activity.attempt',
+            $attributes,
+            $persistedContext,
+            $operation,
+            $baggageAllowlist,
+            $enabled
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @param list<string> $baggageAllowlist
+     */
+    public static function workflow(
+        array $attributes,
+        mixed $persistedContext,
+        callable $operation,
+        array $baggageAllowlist = [],
+        bool $enabled = false,
+    ): mixed {
+        return self::segment(
+            'durable.workflow.task',
+            $attributes,
+            $persistedContext,
+            $operation,
+            $baggageAllowlist,
+            $enabled
+        );
+    }
+
+    /**
+     * @return array<string, string|int>
+     */
+    public static function current(): array
+    {
+        if (self::$correlationKey === null || ! class_exists(Context::class)) {
+            return [];
+        }
+
+        $fields = Context::getCurrent()->get(self::$correlationKey);
+
+        return is_array($fields) ? $fields : [];
+    }
+
+    public static function recordFailure(Throwable $error): void
+    {
+        try {
+            if (self::current() === []) {
+                return;
+            }
+            Span::getCurrent()->setStatus(StatusCode::STATUS_ERROR)
+                ->setAttribute('error.type', $error::class);
+        } catch (Throwable) {
+            // Telemetry cannot replace the application's original exception.
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @param list<string> $baggageAllowlist
+     */
+    private static function segment(
+        string $name,
+        array $attributes,
+        mixed $persistedContext,
+        callable $operation,
+        array $baggageAllowlist,
+        bool $enabled,
     ): mixed {
         if (! $enabled || ! class_exists(Globals::class)) {
             return $operation();
@@ -67,7 +166,7 @@ final class ExecutionTracing
                 ? InstalledVersions::getPrettyVersion('durable-workflow/workflow')
                 : null;
             $span = Globals::tracerProvider()->getTracer('durable-workflow/workflow', $version)
-                ->spanBuilder('durable.activity.attempt')
+                ->spanBuilder($name)
                 ->setSpanKind(SpanKind::KIND_CONSUMER)
                 ->setParent($parent)
                 ->setAttributes($fields)
@@ -92,33 +191,6 @@ final class ExecutionTracing
             throw $error;
         } finally {
             self::close($scope, $span);
-        }
-    }
-
-    /**
-     * @return array<string, string|int>
-     */
-    public static function current(): array
-    {
-        if (self::$correlationKey === null || ! class_exists(Context::class)) {
-            return [];
-        }
-
-        $fields = Context::getCurrent()->get(self::$correlationKey);
-
-        return is_array($fields) ? $fields : [];
-    }
-
-    public static function recordFailure(Throwable $error): void
-    {
-        try {
-            if (self::current() === []) {
-                return;
-            }
-            Span::getCurrent()->setStatus(StatusCode::STATUS_ERROR)
-                ->setAttribute('error.type', $error::class);
-        } catch (Throwable) {
-            // Telemetry cannot replace the application's original exception.
         }
     }
 

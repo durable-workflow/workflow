@@ -4355,6 +4355,10 @@ final class WorkflowExecutor
             throw $throwable;
         }
 
+        if (config('workflows.tracing.enabled', false) === true) {
+            ExecutionTracing::recordFailure($throwable);
+        }
+
         if ($throwable instanceof UnresolvedWorkflowFailureException) {
             $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
 

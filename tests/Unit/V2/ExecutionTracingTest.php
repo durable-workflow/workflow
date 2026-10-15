@@ -23,6 +23,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Tracing\LogContext;
 
 final class ExecutionTracingTest extends TestCase
@@ -174,6 +175,78 @@ final class ExecutionTracingTest extends TestCase
         }
         foreach ($this->exporter->getSpans() as $span) {
             self::assertFalse($span->getParentContext()->isValid());
+        }
+    }
+
+    public function testWorkflowFibersInheritTheirCreatorWithoutReplacingApplicationStorage(): void
+    {
+        $storage = Context::storage();
+        $executions = [];
+        $observed = [];
+        foreach (['run-a', 'run-b'] as $run) {
+            ExecutionTracing::activity(self::fields($run), self::carrier(), function () use (
+                $run,
+                &$executions,
+                &$observed
+            ): void {
+                $parent = ExecutionTracing::current();
+                $executions[] = WorkflowExecution::startCallback(function () use ($run, $parent, &$observed): int {
+                    self::assertSame($this->provider, Globals::tracerProvider());
+                    self::assertSame($parent, ExecutionTracing::current());
+                    $observed[] = ExecutionTracing::current()['workflow_run_id'];
+                    Fiber::suspend();
+                    self::assertSame($parent, ExecutionTracing::current());
+                    $observed[] = ExecutionTracing::current()['workflow_run_id'];
+
+                    return $run === 'run-a' ? 7 : 9;
+                });
+                self::assertSame($parent, ExecutionTracing::current());
+            }, enabled: true);
+            self::assertSame($this->initial, Context::getCurrent());
+        }
+        foreach ($executions as $execution) {
+            $execution->send(null);
+            self::assertSame($this->initial, Context::getCurrent());
+        }
+        self::assertSame([7, 9], array_map(static fn ($execution) => $execution->getReturn(), $executions));
+        self::assertSame(['run-a', 'run-b', 'run-a', 'run-b'], $observed);
+        self::assertSame($storage, Context::storage());
+    }
+
+    public function testWorkflowFiberFailureAndDiscardUnwindTheBoundScope(): void
+    {
+        $failure = new RuntimeException('application failure');
+        $unwound = [];
+        $first = null;
+        $second = null;
+        ExecutionTracing::activity(self::fields(), self::carrier(), static function () use (
+            &$first,
+            &$second,
+            &$unwound
+        ): void {
+            $callback = static function (string $id) use (&$unwound): void {
+                try {
+                    Fiber::suspend();
+                } finally {
+                    $unwound[$id] = ExecutionTracing::current();
+                }
+            };
+            $first = WorkflowExecution::startCallback($callback, ['failure']);
+            $second = WorkflowExecution::startCallback($callback, ['discard']);
+        }, enabled: true);
+        try {
+            $first->throw($failure);
+            self::fail('The workflow exception must survive context cleanup.');
+        } catch (RuntimeException $observed) {
+            self::assertSame($failure, $observed);
+        }
+        self::assertSame($this->initial, Context::getCurrent());
+        unset($second);
+        self::assertSame($this->initial, Context::getCurrent());
+        self::assertSame(['failure', 'discard'], array_keys($unwound));
+        foreach ($unwound as $fields) {
+            self::assertSame('run-1', $fields['workflow_run_id']);
+            self::assertSame(self::TRACE_ID, $fields['trace_id']);
         }
     }
 
