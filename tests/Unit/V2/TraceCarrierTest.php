@@ -13,6 +13,8 @@ use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\TraceCarrier;
 
 final class TraceCarrierTest extends TestCase
@@ -26,6 +28,34 @@ final class TraceCarrierTest extends TestCase
             'tracestate' => 'vendor=opaque',
         ]);
         $this->assertSame($input, TraceCarrier::normalize($input));
+    }
+
+    public function testAbsentStoredMetadataDoesNotRequireApplicationInstrumentation(): void
+    {
+        $run = new WorkflowRun();
+        $this->assertNull(TraceCarrier::fromRun($run));
+        $run->setRawAttributes([
+            'observability_context' => null,
+        ]);
+        $this->assertNull(TraceCarrier::fromRun($run));
+    }
+
+    public function testMetadataReadFailureIsDiscardedWithoutInterruptingExecution(): void
+    {
+        $run = new class() extends WorkflowRun {
+            public function getAttributes(): array
+            {
+                return [
+                    'observability_context' => 'unreadable',
+                ];
+            }
+
+            public function getAttribute($key): mixed
+            {
+                throw new RuntimeException('optional telemetry cast failed');
+            }
+        };
+        $this->assertNull(TraceCarrier::fromRun($run));
     }
 
     public function testBaggageIsAbsentUnlessExplicitlyAllowlisted(): void

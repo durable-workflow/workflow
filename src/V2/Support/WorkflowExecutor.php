@@ -2756,7 +2756,7 @@ final class WorkflowExecutor
         $childRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
-            'observability_context' => $this->inheritedTraceContext($run),
+            'observability_context' => TraceCarrier::fromRun($run),
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
             'namespace' => $run->namespace,
@@ -3699,7 +3699,7 @@ final class WorkflowExecutor
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
             'run_number' => $run->run_number + 1,
-            'observability_context' => $this->inheritedTraceContext($run),
+            'observability_context' => TraceCarrier::fromRun($run),
             'workflow_class' => $workflowClass,
             'workflow_type' => $run->workflow_type,
             'namespace' => $run->namespace,
@@ -4851,6 +4851,7 @@ final class WorkflowExecutor
         $retryRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $failedChildRun->workflow_instance_id,
             'run_number' => $nextRunNumber,
+            'observability_context' => TraceCarrier::fromRun($failedChildRun),
             'workflow_class' => $failedChildRun->workflow_class,
             'workflow_type' => $failedChildRun->workflow_type,
             'namespace' => $failedChildRun->namespace,
@@ -7327,24 +7328,6 @@ final class WorkflowExecutor
             'workflow_run_id' => $run->id,
             'workflow_type' => $run->workflow_type,
         ], $extraContext));
-    }
-
-    /**
-     * @return array{schema: string, version: int, carrier: array<string, string>}|null
-     */
-    private function inheritedTraceContext(WorkflowRun $run): ?array
-    {
-        if (config('workflows.tracing.enabled', false) !== true) {
-            return null;
-        }
-
-        // Preserve the admission parent; never recapture ambient worker context in this transaction.
-        $stored = array_key_exists('observability_context', $run->getAttributes())
-            ? $run->getAttribute('observability_context')
-            : null;
-        $allowlist = config('workflows.tracing.baggage_allowlist', []);
-
-        return TraceCarrier::normalize($stored, is_array($allowlist) ? $allowlist : []);
     }
 
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void

@@ -11,6 +11,7 @@ use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\Context\Context;
 use Throwable;
+use Workflow\V2\Models\WorkflowRun;
 
 /**
  * Bounded telemetry metadata, kept separate from business payloads and authority.
@@ -26,6 +27,27 @@ final class TraceCarrier
         'tracestate' => 512,
         'baggage' => 2048,
     ];
+
+    /**
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function fromRun(WorkflowRun $run): ?array
+    {
+        try {
+            // Emission can be disabled without erasing a previously captured admission parent.
+            $stored = array_key_exists('observability_context', $run->getAttributes())
+                ? $run->getAttribute('observability_context') : null;
+            if (! is_array($stored)) {
+                return null;
+            }
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+
+            return self::normalize($stored, is_array($allowlist) ? $allowlist : []);
+        } catch (Throwable) {
+            // Optional telemetry metadata must not interrupt child admission or retries.
+            return null;
+        }
+    }
 
     /**
      * @param list<string> $baggageAllowlist

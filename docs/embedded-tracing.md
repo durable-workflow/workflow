@@ -8,7 +8,7 @@ compatible stable release are required before enabling this in production.
 
 The application owns its OpenTelemetry providers, instrumentation, sampling,
 exporters and process shutdown. Durable Workflow uses those providers when
-`workflow.tracing.enabled` is true. It does not replace application providers or
+`workflows.tracing.enabled` is true. It does not replace application providers or
 flush an exporter after each task. Tracing is disabled by default.
 
 ## Keep collector outages outside business work
@@ -100,6 +100,18 @@ Workflow processing and activity attempts receive separate spans. Persisted
 admission context survives the qualified cold-worker, child, continuation and
 signal-with-start paths. Existing runs keep their original admission context.
 An untraced legacy admission does not borrow a worker's ambient parent.
+
+The existing bridge-authored child-retry policy is covered through both queued
+child failure and bridge-recorded failure, followed by separate cold retry,
+activity and parent workers. Child admission and retries preserve the original
+carrier, retry policy and execution deadline. This does not add retry-policy
+options to the PHP `Workflow::child` helper.
+
+Disabling tracing stops new context capture and span emission. These qualified
+embedded transitions and child-retry paths still inherit valid stored admission
+context while the optional propagation API remains installed. The current
+baggage allowlist still applies. Missing or unreadable metadata produces no
+inherited parent.
 
 The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been

@@ -21,6 +21,8 @@ final class TransitionExecutionTracingTest extends TestCase
             'continuation, tracing disabled' => ['continue', false, false],
             'legacy child, enabled later' => ['child', true, false],
             'legacy continuation, enabled later' => ['continue', true, false],
+            'child, disabled workers' => ['child', false, true],
+            'continuation, disabled workers' => ['continue', false, true],
         ];
     }
 

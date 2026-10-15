@@ -29,16 +29,21 @@ use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\Foundation\Application;
 use Workflow\Providers\WorkflowServiceProvider;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Tracing\LogContext;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -54,6 +59,7 @@ $retry = $argv[3] === 'retry';
 $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 $transition = getenv('DW_TEST_TRACING_TRANSITION');
 $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
+$childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
@@ -110,6 +116,26 @@ final class TracingContinuationWorkflow extends Workflow
     {
         if (! $continued) {
             return self::continueAsNew(true);
+        }
+
+        return self::activity(TracingProcessActivity::class, false);
+    }
+}
+
+final class TracingRetryParentWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        return self::child(TracingRetryChildWorkflow::class);
+    }
+}
+
+final class TracingRetryChildWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        if (getenv('DW_TEST_TRACING_FAIL_CHILD') === 'true') {
+            throw new \RuntimeException('deliberate first child failure');
         }
 
         return self::activity(TracingProcessActivity::class, false);
@@ -395,6 +421,38 @@ try {
                 }
                 http_response_code(201);
                 header('Content-Type: application/json');
+            } elseif ($childRetry) {
+                // A real bridge-authored policy, not an invented PHP child option or history edit.
+                config()
+                    ->set('workflows.v2.task_dispatch_mode', 'poll');
+                WorkflowStub::make(TracingRetryParentWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
+                $parentRun = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing')->sole();
+                $parentTask = WorkflowTask::query()->where('workflow_run_id', $parentRun->id)->sole();
+                $bridge = app(DefaultWorkflowTaskBridge::class);
+                if (! $bridge->claimStatus($parentTask->id)['claimed']) {
+                    throw new \RuntimeException('Parent claim refused.');
+                }
+                config()
+                    ->set('workflows.v2.task_dispatch_mode', 'queue');
+                $completion = $bridge->complete($parentTask->id, [[
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => TracingRetryChildWorkflow::class,
+                    'arguments' => Serializer::serializeWithCodec('avro', []),
+                    'retry_policy' => [
+                        'max_attempts' => 2,
+                        'backoff_seconds' => [1],
+                    ],
+                    'execution_timeout_seconds' => 30,
+                    'run_timeout_seconds' => 20,
+                ]]);
+                if (! $completion['completed']) {
+                    throw new \RuntimeException('Parent child admission refused.');
+                }
+                foreach ($completion['created_task_ids'] as $taskId) {
+                    TaskDispatcher::dispatch(WorkflowTask::query()->findOrFail($taskId));
+                }
             } elseif ($signalStart) {
                 $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
                     ->signalWithStart(
@@ -430,6 +488,20 @@ try {
                 ->attemptStart($retry, StartOptions::returnExistingActive());
             if (! $result->returnedExistingActive()) {
                 throw new \RuntimeException('Expected the original active admission.');
+            }
+        } elseif ($mode === 'bridge-fail' && $childRetry) {
+            $child = WorkflowRun::query()->where('workflow_class', TracingRetryChildWorkflow::class)
+                ->where('run_number', 1)
+                ->sole();
+            $childTask = WorkflowTask::query()->where('workflow_run_id', $child->id)->sole();
+            $bridge = app(DefaultWorkflowTaskBridge::class);
+            if (! $bridge->claimStatus($childTask->id)['claimed']
+                || ! $bridge->complete($childTask->id, [[
+                    'type' => 'fail_workflow',
+                    'message' => 'deliberate first child failure',
+                    'exception_class' => \RuntimeException::class,
+                ]])['completed']) {
+                throw new \RuntimeException('Child failure admission refused.');
             }
         } elseif ($mode === 'work') {
             if (Artisan::call('queue:work', [
@@ -490,6 +562,8 @@ try {
         'outside_http' => $outsideHttp,
         'spans' => array_map(static fn ($span): array => [
             'name' => $span->getName(),
+            'status_code' => $span->getStatus()
+                ->getCode(),
             'kind' => $span->getKind(),
             'trace_id' => $span->getContext()
                 ->getTraceId(),
@@ -529,6 +603,39 @@ try {
         ])->all();
         $output['activity_count'] = ActivityExecution::query()->count();
         $output['completion_count'] = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count();
+        $output['history_payloads'] = WorkflowHistoryEvent::query()->orderBy('id')->pluck('payload')->all();
+    }
+    if ($childRetry) {
+        $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($row): array => [
+            'id' => $row->id,
+            'instance_id' => $row->workflow_instance_id,
+            'number' => $row->run_number,
+            'status' => $row->status->value,
+            'carrier' => $row->getRawOriginal('observability_context'),
+            'execution_deadline' => $row->getRawOriginal('execution_deadline_at'),
+            'run_deadline' => $row->getRawOriginal('run_deadline_at'),
+            'started_at' => $row->getRawOriginal('started_at'),
+            'history_hashes' => $row->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->map(static function ($event): string {
+                    return hash('sha256', json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR));
+                })->all(),
+        ])->all();
+        $output['activity_count'] = ActivityExecution::query()->count();
+        $output['completion_count'] = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count();
+        $output['policy'] = WorkflowChildCall::query()->sole()->retry_policy;
+        $output['links'] = WorkflowLink::query()->orderBy('id')->get([
+            'id', 'parent_workflow_run_id', 'child_workflow_instance_id', 'child_workflow_run_id',
+        ])->toArray();
+        $output['task_rows'] = WorkflowTask::query()->orderBy('id')->get()->map(static fn ($row): array => [
+            'id' => $row->id,
+            'run_id' => $row->workflow_run_id,
+            'status' => $row->status->value,
+            'attempt_count' => $row->attempt_count,
+            'available_at' => $row->getRawOriginal('available_at'),
+            'leased_at' => $row->getRawOriginal('leased_at'),
+        ])->all();
         $output['history_payloads'] = WorkflowHistoryEvent::query()->orderBy('id')->pluck('payload')->all();
     }
     if ($recovery) {
