@@ -27,6 +27,7 @@ use Symfony\Component\Process\Process;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\StartResult;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\WorkflowExecution;
@@ -391,6 +392,89 @@ final class ExecutionTracingTest extends TestCase
         self::assertSame([], $spans[0]->getEvents());
         self::assertStringNotContainsString(
             'private-',
+            json_encode($spans[0]->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testSignalWithStartAdmissionReadsOnlyTheRecordedReceipts(): void
+    {
+        $instance = new WorkflowInstance();
+        $signal = new class() extends WorkflowCommand {
+            public function getAttribute($key): mixed
+            {
+                if (in_array($key, ['payload', 'observability_context'], true)) {
+                    throw new RuntimeException('Business data is not admission telemetry.');
+                }
+
+                return parent::getAttribute($key);
+            }
+        };
+        $signal->setRawAttributes([
+            'id' => 'signal-1',
+            'workflow_instance_id' => 'instance-1',
+            'workflow_run_id' => 'run-1',
+            'workflow_type' => 'test.workflow',
+            'command_type' => 'signal',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+            'payload' => 'private-command-body',
+            'observability_context' => 'private-command-carrier',
+        ], true);
+        $start = clone $signal;
+        $start->setRawAttributes(array_replace($signal->getRawOriginal(), [
+            'id' => 'start-1',
+            'command_type' => 'start',
+            'outcome' => 'started_new',
+        ]), true);
+        $original = [$signal->getRawOriginal(), $start->getRawOriginal()];
+        $result = SignalWithStartResult::fromCommands($signal, $start);
+        self::assertSame($result, ExecutionTracing::admission($instance, static fn () => $result, enabled: true));
+        $span = $this->exporter->getSpans()[0];
+        foreach ([
+            'workflow_command_id' => 'signal-1',
+            'durable.command.type' => 'signal',
+            'durable.command.status' => 'accepted',
+            'durable.command.outcome' => 'signal_received',
+            'durable.start.command_id' => 'start-1',
+            'durable.start.status' => 'accepted',
+            'durable.start.outcome' => 'started_new',
+        ] as $key => $value) {
+            self::assertSame($value, $span->getAttributes()->get($key));
+        }
+        self::assertSame($original, [$signal->getRawOriginal(), $start->getRawOriginal()]);
+        self::assertStringNotContainsString(
+            'private-command',
+            json_encode($span->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testOptionalPairedStartReceiptFailureCannotReplaceSignalAdmission(): void
+    {
+        $signal = self::signalCommand(null);
+        $signal->outcome = 'signal_received';
+        $start = new class() extends WorkflowCommand {
+            public function getAttribute($key): mixed
+            {
+                throw new RuntimeException('private-start-receipt-error');
+            }
+        };
+        $result = SignalWithStartResult::fromCommands($signal, $start);
+        $calls = 0;
+        self::assertSame($result, ExecutionTracing::admission(new WorkflowInstance(), static function () use (
+            &$calls,
+            $result
+        ) {
+            ++$calls;
+
+            return $result;
+        }, enabled: true));
+        self::assertSame(1, $calls);
+        $spans = $this->exporter->getSpans();
+        self::assertCount(1, $spans);
+        self::assertSame([], $spans[0]->getEvents());
+        self::assertNotSame(StatusCode::STATUS_ERROR, $spans[0]->getStatus()->getCode());
+        self::assertStringNotContainsString(
+            'private-start-receipt',
             json_encode($spans[0]->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
         );
     }

@@ -71,7 +71,8 @@ $signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 $signalLinks = getenv('DW_TEST_TRACING_SIGNAL_LINKS') === 'true';
 $updateLinks = getenv('DW_TEST_TRACING_UPDATE_LINKS') === 'true';
 $timings = getenv('DW_TEST_TRACING_TIMINGS') === 'true';
-$admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true';
+$admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
+    || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -535,7 +536,7 @@ try {
         $headers['tracestate'] = 'dwtest=one';
         $headers['baggage'] = 'approved=tenant-a,private=must-not-propagate';
     }
-    if ($admissionProbe && in_array($mode, ['admit', 'duplicate', 'reject'], true)) {
+    if ($admissionProbe && in_array($mode, ['admit', 'duplicate', 'reject', 'reject-signal-start'], true)) {
         $headers['traceparent'] = $mode === 'admit'
             ? '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
             : '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
@@ -731,6 +732,12 @@ try {
             if (! $signalStartResult->returnedExistingActive()) {
                 throw new \RuntimeException('Expected the original signal-with-start admission.');
             }
+        } elseif ($mode === 'reject-signal-start' && $signalStart) {
+            $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
+                ->attemptSignalWithStart('notDeclared', ['refused-admission-private']);
+            if (! $signalStartResult->rejected()) {
+                throw new \RuntimeException('Expected an undeclared signal-with-start refusal.');
+            }
         } elseif ($mode === 'reject' && $admissionProbe) {
             $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->attemptStart($retry);
             if (! $result->rejected()) {
@@ -855,6 +862,15 @@ try {
     if ($signalStart) {
         $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
         $output['signal_start_outcome'] = $signalStartResult?->startOutcome();
+        $output['signal_start_result'] = $signalStartResult === null ? null : [
+            'command_id' => $signalStartResult->commandId(),
+            'status' => $signalStartResult->status(),
+            'outcome' => $signalStartResult->outcome(),
+            'rejection_reason' => $signalStartResult->rejectionReason(),
+            'start_command_id' => $signalStartResult->startCommandId(),
+            'start_status' => $signalStartResult->startStatus(),
+            'start_outcome' => $signalStartResult->startOutcome(),
+        ];
         $output['capture_transaction_levels'] = $recordedPropagator?->transactionLevels ?? [];
         $output['run_count'] = WorkflowRun::query()->count();
         $output['signal_count'] = $history->where('event_type.value', 'SignalReceived')->count();

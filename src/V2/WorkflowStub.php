@@ -3087,19 +3087,43 @@ final class WorkflowStub
 
         $this->refresh();
 
+        $intakeGroupId = (string) Str::ulid();
+        // Capture before locking. An existing run retains its original admission carrier.
+        $observabilityContext = null;
+        $tracing = config('workflows.tracing.enabled', false) === true;
+        if ($tracing) {
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
+        }
+        $operation = fn (): SignalWithStartResult => $this->admitSignalWithStart(
+            $name,
+            $signalArguments,
+            $startArguments,
+            $startOptions,
+            $intakeGroupId,
+            $observabilityContext,
+        );
+        if (! $tracing) {
+            return $operation();
+        }
+
+        return ExecutionTracing::admission($this->instance, $operation, enabled: true);
+    }
+
+    private function admitSignalWithStart(
+        string $name,
+        array $signalArguments,
+        array $startArguments,
+        StartOptions $startOptions,
+        string $intakeGroupId,
+        ?array $observabilityContext,
+    ): SignalWithStartResult {
         /** @var WorkflowCommand|null $startCommand */
         $startCommand = null;
         /** @var WorkflowCommand|null $signalCommand */
         $signalCommand = null;
         $task = null;
         $startedRun = null;
-        $intakeGroupId = (string) Str::ulid();
-        // Capture before locking. An existing run retains its original admission carrier.
-        $observabilityContext = null;
-        if (config('workflows.tracing.enabled', false) === true) {
-            $allowlist = config('workflows.tracing.baggage_allowlist', []);
-            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
-        }
 
         DB::transaction(function () use (
             $name,

@@ -19,11 +19,13 @@ use OpenTelemetry\Context\ContextKeyInterface;
 use OpenTelemetry\Context\ScopeInterface;
 use Throwable;
 use WeakMap;
+use Workflow\V2\CommandResult;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\StartResult;
 
 /** @internal */
@@ -332,7 +334,8 @@ final class ExecutionTracing
 
         try {
             $result = $operation();
-            if ($name === 'durable.workflow.admission' && $result instanceof StartResult && $span !== null) {
+            if ($name === 'durable.workflow.admission'
+                && ($result instanceof StartResult || $result instanceof SignalWithStartResult) && $span !== null) {
                 try {
                     self::recordAdmissionResult($span, $result);
                 } catch (Throwable) {
@@ -368,7 +371,7 @@ final class ExecutionTracing
         return $fields;
     }
 
-    private static function recordAdmissionResult(SpanInterface $span, StartResult $result): void
+    private static function recordAdmissionResult(SpanInterface $span, CommandResult $result): void
     {
         $attributes = self::fields([
             'workflow_instance_id' => $result->instanceId(),
@@ -376,12 +379,20 @@ final class ExecutionTracing
             'workflow_type' => $result->workflowType(),
             'workflow_command_id' => $result->commandId(),
         ]);
-        foreach ([
+        $decisions = [
             'durable.command.type' => $result->type(),
             'durable.command.status' => $result->status(),
             'durable.command.outcome' => $result->outcome(),
             'durable.command.rejection_reason' => $result->rejectionReason(),
-        ] as $key => $value) {
+        ];
+        if ($result instanceof SignalWithStartResult) {
+            $decisions += [
+                'durable.start.command_id' => $result->startCommandId(),
+                'durable.start.status' => $result->startStatus(),
+                'durable.start.outcome' => $result->startOutcome(),
+            ];
+        }
+        foreach ($decisions as $key => $value) {
             if (is_string($value) && $value !== '' && strlen($value) <= 256
                 && ! preg_match('/[\x00-\x1f\x7f]/', $value)) {
                 $attributes[$key] = $value;

@@ -109,8 +109,16 @@ attempts have their own admission spans and keep the original run carrier and
 deadlines. Span creation and completion occur outside the admission transaction.
 The application owns processors, so a synchronous processor can still delay its
 caller. The bounded-export guidance above also applies to admission spans.
-Signal-with-start, service admission, schedules and wider runtime coverage have
-no admission-span qualification yet.
+
+Embedded signal-with-start uses the same admission span. The primary command
+attributes describe its signal receipt. If a start command was actually
+recorded, `durable.start.command_id`, `durable.start.status` and
+`durable.start.outcome` identify that paired decision. A rejected signal can
+have no paired start command; tracing does not invent one. Each signal keeps
+its captured caller for later delivery links, while an existing run keeps its
+original parent and deadlines. Legacy and no-parent admissions are included in
+the cold-process controls. Service admission, schedules and wider runtime
+coverage have no admission-span qualification yet.
 
 Workflow processing and activity attempts receive separate spans. Persisted
 admission context survives the qualified cold-worker, child, continuation and
@@ -163,7 +171,8 @@ new signal-application link.
 
 ```mermaid
 flowchart LR
-    A[Captured admission span] -->|parent| W[Workflow processing segment]
+    A[Captured caller] -->|parent| D[Admission operation]
+    A -->|parent| W[Workflow processing segment]
     A -->|parent| X[Activity attempt]
     B[Independent signal caller] -.->|link on application| W
     X -->|parent| H[Instrumented HTTP client]
