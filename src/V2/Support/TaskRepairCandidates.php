@@ -569,7 +569,8 @@ final class TaskRepairCandidates
     ) {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
-            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
+            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds())
+            ->format('Y-m-d H:i:s.u');
 
         $query = WorkflowTask::query()
             ->where(static function ($query) use ($now, $staleDispatchCutoff): void {
