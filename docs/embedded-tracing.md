@@ -1,7 +1,7 @@
 # Embedded tracing preparation
 
 This document describes the optional embedded tracing implementation being
-qualified in [#773](https://github.com/durable-workflow/workflow/issues/773).
+qualified in the [tracing proposal](https://github.com/durable-workflow/workflow/issues/773).
 It is not a published-package support claim. The released OpenTelemetry baggage
 parser still fails the encoded-value regression. Full qualification and a
 compatible stable release are required before enabling this in production.
