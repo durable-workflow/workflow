@@ -123,6 +123,9 @@ final class RunTaskRecoveryViewTest extends TestCase
             $cases[$type->value . ' overdue boundary'] = [
                 $type, 'overdue', 'dispatch_overdue', $label . ' is ready but dispatch is overdue.',
             ];
+            $cases[$type->value . ' newly available after old dispatch'] = [
+                $type, 'newly-available', 'ready', $normal,
+            ];
             $cases[$type->value . ' scheduled without failure'] = [$type, 'scheduled', 'scheduled', $normal];
         }
 
@@ -323,8 +326,11 @@ final class RunTaskRecoveryViewTest extends TestCase
         if (str_contains($scenario, 'scheduled')) {
             $attributes['available_at'] = now()->addMinute();
         }
-        if ($scenario === 'overdue') {
+        if (in_array($scenario, ['overdue', 'newly-available'], true)) {
             $attributes['last_dispatched_at'] = now()->subSeconds(3);
+        }
+        if ($scenario === 'overdue') {
+            $attributes['available_at'] = now()->subSeconds(3);
         }
 
         return WorkflowTask::query()->create($attributes);
