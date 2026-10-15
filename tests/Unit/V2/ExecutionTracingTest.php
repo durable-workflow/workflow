@@ -515,6 +515,42 @@ final class ExecutionTracingTest extends TestCase
         self::assertCount(1, $this->exporter->getSpans());
     }
 
+    public function testCancellationLinksUseOnlyTheOriginalLoadedRequestWithoutDatabaseOrContextFallback(): void
+    {
+        $run = self::signalRun();
+        $run->cancellation_request_command_id = 'request-1';
+        $carrier = self::carrier();
+        $carrier['carrier']['traceparent'] = '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
+        $command = self::signalCommand($carrier, 'request-1');
+        $command->command_type = 'request_cancellation';
+        $original = $command->getAttributes();
+        $result = ExecutionTracing::workflow(self::fields(), self::carrier(), static function () use (
+            $run,
+            $command
+        ): int {
+            // An unloaded relation must not query a database or invent a caller.
+            ExecutionTracing::linkCancellation($run);
+            $run->setRelation('commands', new \Illuminate\Database\Eloquent\Collection([$command]));
+            $run->cancellation_request_command_id = 'other-request';
+            ExecutionTracing::linkCancellation($run);
+            $run->cancellation_request_command_id = $command->id;
+            $command->command_type = 'signal';
+            ExecutionTracing::linkCancellation($run);
+            $command->command_type = 'request_cancellation';
+            ExecutionTracing::linkCancellation($run);
+            ExecutionTracing::linkCancellation($run);
+
+            return 9;
+        }, enabled: true);
+        self::assertSame(9, $result);
+        $span = $this->exporter->getSpans()[0];
+        self::assertCount(1, $span->getLinks());
+        self::assertSame('request_cancellation', $span->getLinks()[0]->getAttributes()->get('command_type'));
+        self::assertSame('request-1', $span->getLinks()[0]->getAttributes()->get('workflow_command_id'));
+        self::assertSame('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', $span->getLinks()[0]->getSpanContext()->getTraceId());
+        self::assertSame($original, $command->getAttributes());
+    }
+
     private static function signalRun(): WorkflowRun
     {
         $run = new WorkflowRun();

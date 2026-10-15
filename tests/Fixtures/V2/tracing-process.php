@@ -154,7 +154,10 @@ final class TracingCancellationWorkflow extends Workflow
         try {
             self::awaitSignal('ready');
         } finally {
-            Log::info('cancellation cleanup');
+            Log::info('cancellation cleanup', [
+                'approved_baggage' => ExecutionTracing::current() === []
+                    ? null : Baggage::fromContext(Context::getCurrent())->getValue('approved'),
+            ]);
             $result = self::activity(TracingProcessActivity::class, false);
             self::upsertMemo([
                 'cleanup' => $result,
@@ -364,7 +367,7 @@ $propagator = new MultiTextMapPropagator([
     BaggagePropagator::getInstance(),
 ]);
 $recordedPropagator = null;
-if ($signalStart || $signalLinks) {
+if ($signalStart || $signalLinks || $cancellation) {
     $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
         public array $transactionLevels = [];
 
@@ -411,7 +414,12 @@ try {
     if ($signalLinks && $mode === 'signal') {
         $headers['traceparent'] = getenv('DW_TEST_TRACING_SIGNAL_CALLER');
         $headers['baggage'] = 'approved=caller';
-    } elseif ($signalLinks && $mode === 'admit') {
+    } elseif ($cancellation && $mode === 'cancel') {
+        $headers['traceparent'] = getenv('DW_TEST_TRACING_CANCEL_DUPLICATE') === 'true'
+            ? '00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01'
+            : '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
+        $headers['baggage'] = 'approved=caller';
+    } elseif (($signalLinks || $cancellation) && $mode === 'admit') {
         $headers['baggage'] = 'approved=origin';
     }
     if ($mode === 'admit' && getenv('DW_TEST_TRACING_HTTP_URL')) {
@@ -744,6 +752,10 @@ try {
             'deadline' => $run->getRawOriginal('cancellation_deadline_at'),
             'memo' => WorkflowStub::make(TracingCancellationWorkflow::class, 'cold-tracing', '0')->memo(),
             'commands' => WorkflowCommand::query()->orderBy('id')->get(['id', 'command_type'])->toArray(),
+            'capture_transaction_levels' => $recordedPropagator->transactionLevels,
+            'request_carrier' => $run->cancellation_request_command_id === null ? null
+                : WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id)
+                    ->getRawOriginal('observability_context'),
             'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
                 ->all(),
             'history_hashes' => $history->map(static function ($event): string {

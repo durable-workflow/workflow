@@ -15,17 +15,26 @@ final class CancellationExecutionTracingTest extends TestCase
     public static function modes(): iterable
     {
         foreach (['request', 'cancel', 'terminate'] as $command) {
-            yield $command . ', traced' => [$command, true];
-            yield $command . ', disabled' => [$command, false];
+            yield $command . ', traced' => [$command, true, true];
+            yield $command . ', disabled' => [$command, false, false];
         }
+        yield 'request, legacy admission' => ['request', true, false];
     }
 
     #[DataProvider('modes')]
-    public function testCancellationKeepsOriginalContextAndUnwindsColdWorkerScopes(string $command, bool $enabled): void
-    {
+    public function testCancellationKeepsOriginalContextAndUnwindsColdWorkerScopes(
+        string $command,
+        bool $enabled,
+        bool $admissionEnabled,
+    ): void {
         $directory = sys_get_temp_dir() . '/dw-tracing-cancellation-' . bin2hex(random_bytes(8));
         mkdir($directory, 0700);
-        $worker = static function (string $mode) use ($directory, $command, $enabled): array {
+        $worker = static function (string $mode, bool $duplicate = false) use (
+            $directory,
+            $command,
+            $enabled,
+            $admissionEnabled,
+        ): array {
             $packageVendor = dirname(__DIR__, 3) . '/vendor';
             $otherVendors = array_filter(
                 array_keys(ClassLoader::getRegisteredLoaders()),
@@ -39,7 +48,8 @@ final class CancellationExecutionTracingTest extends TestCase
                 ),
             ], env: [
                 'DW_TEST_TRACING_CANCELLATION' => $command,
-                'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
+                'DW_TEST_TRACING_ENABLED' => ($mode === 'admit' ? $admissionEnabled : $enabled) ? 'true' : 'false',
+                'DW_TEST_TRACING_CANCEL_DUPLICATE' => $duplicate ? 'true' : 'false',
             ]);
             $process->setTimeout(15);
             $process->mustRun();
@@ -52,7 +62,7 @@ final class CancellationExecutionTracingTest extends TestCase
         };
         try {
             $admitted = $worker('admit');
-            self::assertSame($enabled, $admitted['carrier'] !== null);
+            self::assertSame($admissionEnabled, $admitted['carrier'] !== null);
             $waiting = $worker('work');
             self::assertSame('waiting', $waiting['status']);
             self::assertSame(0, $waiting['jobs']);
@@ -60,9 +70,22 @@ final class CancellationExecutionTracingTest extends TestCase
             $requested = $worker('cancel');
             self::assertTrue($requested['cancellation']['result']['accepted']);
             if ($command === 'request') {
-                $duplicate = $worker('cancel');
+                self::assertSame($enabled ? [0] : [], $requested['cancellation']['capture_transaction_levels']);
+                self::assertSame($enabled, $requested['cancellation']['request_carrier'] !== null);
+                if ($enabled) {
+                    self::assertSame('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01', json_decode(
+                        $requested['cancellation']['request_carrier'],
+                        true,
+                        flags: JSON_THROW_ON_ERROR
+                    )['carrier']['traceparent']);
+                }
+                $duplicate = $worker('cancel', true);
                 self::assertSame($requested['cancellation']['result'], $duplicate['cancellation']['result']);
                 self::assertSame($requested['cancellation']['deadline'], $duplicate['cancellation']['deadline']);
+                self::assertSame(
+                    $requested['cancellation']['request_carrier'],
+                    $duplicate['cancellation']['request_carrier']
+                );
                 self::assertSame(
                     $requested['cancellation']['history_hashes'],
                     $duplicate['cancellation']['history_hashes']
@@ -76,7 +99,11 @@ final class CancellationExecutionTracingTest extends TestCase
                 $workers[] = $worker('work');
             }
             $finished = $worker('inspect');
-            self::assertSame($command === 'terminate' ? 'terminated' : 'cancelled', $finished['status']);
+            self::assertSame($command === 'terminate' ? 'terminated' : 'cancelled', $finished['status'], json_encode([
+                'history_types' => $finished['cancellation']['history_types'],
+                'tasks' => $finished['cancellation']['tasks'],
+                'failed_jobs' => $finished['failed_jobs'],
+            ], JSON_THROW_ON_ERROR));
             self::assertSame(0, $finished['jobs']);
             self::assertSame(0, $finished['failed_jobs']);
             self::assertSame(0, $finished['repairs']);
@@ -100,6 +127,10 @@ final class CancellationExecutionTracingTest extends TestCase
                 $commands[$requested['cancellation']['result']['command_id']]['command_type']
             );
             $cooperative = $command === 'request';
+            self::assertSame(
+                $requested['cancellation']['request_carrier'],
+                $finished['cancellation']['request_carrier']
+            );
             self::assertSame($cooperative ? [
                 'cleanup' => [9007199254740993, null, '雪'],
             ] : [], $finished['cancellation']['memo']);
@@ -124,10 +155,28 @@ final class CancellationExecutionTracingTest extends TestCase
             self::assertCount($enabled ? count($workers) : 0, $spans);
             $taskIds = array_column($finished['cancellation']['tasks'], 'id');
             foreach ($spans as $span) {
-                self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $span['trace_id']);
-                self::assertSame('00f067aa0ba902b7', $span['parent_id']);
+                if ($admissionEnabled) {
+                    self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $span['trace_id']);
+                    self::assertSame('00f067aa0ba902b7', $span['parent_id']);
+                } else {
+                    self::assertSame('0000000000000000', $span['parent_id']);
+                    self::assertNotSame('11111111111111111111111111111111', $span['trace_id']);
+                }
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
                 self::assertContains($span['fields']['task_id'], $taskIds);
+            }
+            $linked = array_values(array_filter($spans, static fn (array $span): bool => $span['links'] !== []));
+            self::assertCount($enabled && $cooperative ? 1 : 0, $linked);
+            if ($linked !== []) {
+                self::assertSame('durable.workflow.task', $linked[0]['name']);
+                self::assertCount(1, $linked[0]['links']);
+                self::assertSame('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', $linked[0]['links'][0]['trace_id']);
+                self::assertSame('bbbbbbbbbbbbbbbb', $linked[0]['links'][0]['span_id']);
+                self::assertSame('request_cancellation', $linked[0]['links'][0]['fields']['command_type']);
+                self::assertSame(
+                    $requested['cancellation']['result']['command_id'],
+                    $linked[0]['links'][0]['fields']['workflow_command_id']
+                );
             }
             self::assertCount($enabled && $cooperative ? 1 : 0, array_filter(
                 $spans,
@@ -147,8 +196,18 @@ final class CancellationExecutionTracingTest extends TestCase
                     self::assertArrayNotHasKey('trace_id', $record['context']);
                 } elseif (in_array($record['message'], ['cancellation cleanup', 'callback'], true)) {
                     self::assertSame($admitted['run_id'], $record['context']['workflow_run_id']);
-                    self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $record['context']['trace_id']);
+                    if ($admissionEnabled) {
+                        self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $record['context']['trace_id']);
+                    } else {
+                        self::assertNotSame('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', $record['context']['trace_id']);
+                    }
                     self::assertContains($record['context']['task_id'], $taskIds);
+                }
+                if ($record['message'] === 'cancellation cleanup') {
+                    self::assertSame(
+                        $admissionEnabled && $enabled ? 'origin' : null,
+                        $record['context']['approved_baggage']
+                    );
                 }
             }
             self::assertStringNotContainsString('observability_context', json_encode(

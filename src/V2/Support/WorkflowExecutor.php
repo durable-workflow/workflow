@@ -5746,6 +5746,9 @@ final class WorkflowExecutor
             $operationSequence,
             $operationSequenceSpan,
         );
+        if (config('workflows.tracing.enabled', false) === true) {
+            ExecutionTracing::linkCancellation($run);
+        }
 
         return CancellationDeliveryState::Delivered;
     }

@@ -111,7 +111,13 @@ Independent-process cancellation controls cover a waiting workflow, a cooperativ
 request followed by its cleanup activity, and immediate cancellation or
 termination. Existing carrier metadata and deadlines remain unchanged. Cleanup
 uses the original run's parent, and task scopes restore the worker's context.
-These controls do not yet add causal links to the cancellation caller.
+An accepted direct cooperative cancellation request also captures its caller
+in the proposed command column. Its first actual delivery links that caller
+to the workflow-processing span. Duplicate requests keep the first carrier.
+Cleanup activities and later replay keep their original parent and add no new
+delivery link. Caller baggage never replaces the run's baggage. Internal
+descendant requests, immediate cancellation and termination have no caller-link
+qualification yet.
 
 Disabling tracing stops new context capture and span emission. These qualified
 embedded transitions and child-retry paths still inherit valid stored admission
@@ -154,8 +160,8 @@ share a link identified by the first applied command. Further additions are
 dropped, with the count in `durable.links.dropped`. Application SDK limits may
 be lower. The link state ends with its processing scope.
 
-This does not add service wire propagation, native catalog support, update or
-cancellation-caller links, schedule links or complete fan-in tracing.
+This does not add service wire propagation, native catalog support, update
+links, schedule links or complete fan-in tracing.
 
 The run carrier is separate observability metadata. It is not command, history,
 payload or lease authority. The proposed nullable run column has not been

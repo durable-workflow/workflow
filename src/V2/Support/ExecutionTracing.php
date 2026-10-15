@@ -156,13 +156,34 @@ final class ExecutionTracing
 
     public static function linkSignal(WorkflowRun $run, WorkflowCommand $command): void
     {
+        self::linkCommand($run, $command, CommandType::Signal);
+    }
+
+    public static function linkCancellation(WorkflowRun $run): void
+    {
+        try {
+            // Execution already owns this loaded snapshot. Telemetry adds no database read.
+            if (! $run->relationLoaded('commands')) {
+                return;
+            }
+            $command = $run->commands->firstWhere('id', $run->cancellation_request_command_id);
+            if ($command instanceof WorkflowCommand) {
+                self::linkCommand($run, $command, CommandType::RequestCancellation);
+            }
+        } catch (Throwable) {
+            // Optional metadata cannot interrupt cancellation delivery.
+        }
+    }
+
+    private static function linkCommand(WorkflowRun $run, WorkflowCommand $command, CommandType $type): void
+    {
         try {
             $fields = self::current();
             if (self::$linkKey === null || ($fields['workflow_run_id'] ?? null) !== $run->id
                 || ($fields['namespace'] ?? null) !== $run->namespace
                 || $command->workflow_run_id !== $run->id
                 || $command->workflow_instance_id !== $run->workflow_instance_id
-                || $command->command_type !== CommandType::Signal || $command->status !== CommandStatus::Accepted) {
+                || $command->command_type !== $type || $command->status !== CommandStatus::Accepted) {
                 return;
             }
             $state = Context::getCurrent()->get(self::$linkKey);
@@ -176,10 +197,10 @@ final class ExecutionTracing
             $context = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: Context::getRoot());
             $state->add(Span::fromContext($context)->getContext(), [
                 'workflow_command_id' => $command->id,
-                'command_type' => 'signal',
+                'command_type' => $type->value,
             ]);
         } catch (Throwable) {
-            // Optional causal links cannot replace a signal's durable decision.
+            // Optional causal links cannot replace the command's durable decision.
         }
     }
 

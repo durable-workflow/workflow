@@ -1941,6 +1941,8 @@ final class WorkflowStub
             throw new LogicException('Cancellation cleanup timeout must be between 1 and 3600 seconds.');
         }
 
+        $incomingContext = $parentWorkflowRunId === null && $scopeTarget === null && $serviceCallId === null
+            ? TraceCarrier::captureConfigured() : null;
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
@@ -1952,7 +1954,8 @@ final class WorkflowStub
             $cleanupTimeoutSeconds,
             $parentWorkflowRunId,
             $scopeTarget,
-            $serviceCallId
+            $serviceCallId,
+            $incomingContext
         ): void {
             $command = null;
             $task = null;
@@ -2224,6 +2227,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::CancellationRequested->value,
+                'observability_context' => $incomingContext,
                 'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'payload' => Serializer::serializeWithCodec(
                     $run->payload_codec ?? CodecRegistry::defaultCodec(),
