@@ -414,15 +414,17 @@ try {
                 'close_deadline_at' => $activity->getRawOriginal('close_deadline_at'),
             ])->all(),
             'attempts' => ActivityAttempt::query()->orderBy('attempt_number')->get()->map(
-                static fn ($attempt): array => [
-                'id' => $attempt->id,
-                'activity_id' => $attempt->activity_execution_id,
-                'task_id' => $attempt->workflow_task_id,
-                'number' => $attempt->attempt_number,
-                'status' => $attempt->status->value,
-                'lease_expires_at' => $attempt->getRawOriginal('lease_expires_at'),
-                'started_at' => $attempt->getRawOriginal('started_at'),
-            ]
+                static function ($attempt): array {
+                    return [
+                        'id' => $attempt->id,
+                        'activity_id' => $attempt->activity_execution_id,
+                        'task_id' => $attempt->workflow_task_id,
+                        'number' => $attempt->attempt_number,
+                        'status' => $attempt->status->value,
+                        'lease_expires_at' => $attempt->getRawOriginal('lease_expires_at'),
+                        'started_at' => $attempt->getRawOriginal('started_at'),
+                    ];
+                }
             )->all(),
             'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
                 ->all(),
