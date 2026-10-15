@@ -26,9 +26,13 @@ use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\Foundation\Application;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Activity;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Tracing\LogContext;
 use Workflow\V2\Workflow;
@@ -42,6 +46,7 @@ if ($incomingHttp) {
     ];
 }
 $retry = $argv[3] === 'retry';
+$recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
@@ -68,6 +73,19 @@ final class TracingProcessWorkflowDependency
     public function __construct()
     {
         Log::info('workflow dependency');
+    }
+}
+
+final class TracingRecoveryWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        return self::activity(TracingProcessActivity::class, new ActivityOptions(
+            maxAttempts: 2,
+            backoff: [0],
+            startToCloseTimeout: 2,
+            scheduleToCloseTimeout: 10,
+        ), false);
     }
 }
 
@@ -98,6 +116,27 @@ final class TracingProcessActivity extends Activity
     public function handle(bool $retry, TracingProcessDependency $dependency): array
     {
         Log::info('callback');
+        if (getenv('DW_TEST_TRACING_CRASH_FIRST_ATTEMPT') === 'true' && $this->attemptCount() === 1) {
+            $marker = app()
+                ->basePath('claimed.json');
+            file_put_contents($marker . '.tmp', json_encode(
+                ExecutionTracing::current() + [
+                    'actor_pid' => getmypid(),
+                    'workflow_run_id' => $this->runId(),
+                    'activity_id' => $this->activityId(),
+                    'activity_attempt_id' => $this->attemptId(),
+                    'activity_attempt_number' => $this->attemptCount(),
+                    'task_id' => $this->taskId,
+                    'tracing_context' => ExecutionTracing::current(),
+                ],
+                JSON_THROW_ON_ERROR,
+            ));
+            rename($marker . '.tmp', $marker);
+            // The parent test kills this actual worker after observing its committed claim.
+            while (true) {
+                usleep(100_000);
+            }
+        }
         if ($retry && $this->attemptCount() === 1) {
             throw new \RuntimeException('deliberate original attempt failure');
         }
@@ -148,14 +187,14 @@ final class TracingProcessApplication extends Application
             'workflows.v1.enabled' => false,
             'workflows.v2.compatibility.namespace' => '0',
             'workflows.v2.task_dispatch_mode' => 'queue',
-            'workflows.tracing.enabled' => true,
+            'workflows.tracing.enabled' => getenv('DW_TEST_TRACING_ENABLED') !== 'false',
             'workflows.tracing.baggage_allowlist' => ['approved'],
             'queue.default' => 'database',
             'queue.connections.database' => [
                 'driver' => 'database',
                 'table' => 'jobs',
                 'queue' => 'default',
-                'retry_after' => 90,
+                'retry_after' => getenv('DW_TEST_TRACING_RECOVERY') === 'true' ? 3 : 90,
             ],
             'queue.failed' => [
                 'driver' => 'database-uuids',
@@ -236,6 +275,7 @@ try {
     $scope = ($requestSpan?->storeInContext($parentContext) ?? $parentContext)
         ->activate();
     $outsideHttp = null;
+    $repairReport = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -270,6 +310,10 @@ try {
                 }
                 http_response_code(201);
                 header('Content-Type: application/json');
+            } elseif ($recovery) {
+                WorkflowStub::make(TracingRecoveryWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } else {
                 WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->start(
                     $retry,
@@ -288,7 +332,7 @@ try {
                 '--queue' => 'default',
                 '--once' => true,
                 '--tries' => 1,
-                '--timeout' => 30,
+                '--timeout' => $recovery ? 1 : 30,
             ]) !== 0) {
                 throw new \RuntimeException(Artisan::output());
             }
@@ -303,6 +347,15 @@ try {
                 ]);
                 $outsideHttp = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
             }
+        } elseif ($mode === 'repair' && $recovery) {
+            $runId = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing')->sole()->id;
+            if (Artisan::call('workflow:v2:repair-pass', [
+                '--run-id' => [$runId],
+                '--json' => true,
+            ]) !== 0) {
+                throw new \RuntimeException(Artisan::output());
+            }
+            $repairReport = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
         } elseif ($mode !== 'inspect') {
             throw new \RuntimeException('Unknown fixture command.');
         }
@@ -341,6 +394,52 @@ try {
                 ->toArray(),
         ], $exporter->getSpans()),
     ];
+    if ($recovery) {
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        $output['recovery'] = [
+            'repair_report' => $repairReport,
+            'failed_deliveries' => DB::table('failed_jobs')->get(['exception', 'payload'])->map(
+                static fn ($job): array => [
+                    'exception' => substr($job->exception, 0, 700),
+                    'payload' => $job->payload,
+                ]
+            )->all(),
+            'activities' => ActivityExecution::query()->orderBy('id')->get()->map(static fn ($activity): array => [
+                'id' => $activity->id,
+                'status' => $activity->status->value,
+                'attempt_count' => $activity->attempt_count,
+                'retry_policy' => $activity->retry_policy,
+                'schedule_deadline_at' => $activity->getRawOriginal('schedule_deadline_at'),
+                'schedule_to_close_deadline_at' => $activity->getRawOriginal('schedule_to_close_deadline_at'),
+                'close_deadline_at' => $activity->getRawOriginal('close_deadline_at'),
+            ])->all(),
+            'attempts' => ActivityAttempt::query()->orderBy('attempt_number')->get()->map(
+                static fn ($attempt): array => [
+                'id' => $attempt->id,
+                'activity_id' => $attempt->activity_execution_id,
+                'task_id' => $attempt->workflow_task_id,
+                'number' => $attempt->attempt_number,
+                'status' => $attempt->status->value,
+                'lease_expires_at' => $attempt->getRawOriginal('lease_expires_at'),
+                'started_at' => $attempt->getRawOriginal('started_at'),
+            ]
+            )->all(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'history_hashes' => $history->map(static fn ($event): string => hash(
+                'sha256',
+                json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
+            ))->all(),
+            'tasks' => WorkflowTask::query()->orderBy('created_at')->get()->map(static fn ($task): array => [
+                'id' => $task->id,
+                'type' => $task->task_type->value,
+                'status' => $task->status->value,
+                'attempt_count' => $task->attempt_count,
+                'repair_count' => $task->repair_count,
+                'payload' => $task->payload,
+            ])->all(),
+        ];
+    }
 } finally {
     $configuration->detach();
     $provider->shutdown();
