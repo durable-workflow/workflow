@@ -4427,7 +4427,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                 'compatibility' => 'build-b',
             ]),
             $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
-                'available_at' => now()->addMinutes(5),
+                'available_at' => now()
+                    ->addMinutes(5),
             ]),
             $this->createTypedReadyWorkflowTask('0', 'tenant-a', [
                 'status' => TaskStatus::Leased->value,
