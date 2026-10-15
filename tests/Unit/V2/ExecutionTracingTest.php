@@ -78,6 +78,15 @@ final class ExecutionTracingTest extends TestCase
                     'request_id' => 'application-request',
                 ]);
                 $client = Globals::tracerProvider()->getTracer('application')->spanBuilder('outbound')->startSpan();
+                $clientScope = $client->activate();
+                try {
+                    $logger->info('outbound executing');
+                    self::assertSame($fields['workflow_run_id'], ExecutionTracing::current()['workflow_run_id']);
+                    self::assertSame($client->getContext()->getSpanId(), ExecutionTracing::current()['span_id']);
+                } finally {
+                    $clientScope->detach();
+                }
+                self::assertSame($fields, ExecutionTracing::current());
                 $client->end();
 
                 return 7;
@@ -96,9 +105,10 @@ final class ExecutionTracingTest extends TestCase
         self::assertArrayNotHasKey('arguments', $records[0]['context']);
         self::assertSame([
             'request_id' => 'outside',
-        ], $records[1]['context']);
+        ], $records[2]['context']);
         $spans = $this->exporter->getSpans();
         self::assertCount(2, $spans);
+        self::assertSame($spans[0]->getContext()->getSpanId(), $records[1]['context']['span_id']);
         self::assertSame($spans[1]->getContext()->getSpanId(), $spans[0]->getParentContext()->getSpanId());
         self::assertSame(self::PARENT_ID, $spans[1]->getParentContext()->getSpanId());
         self::assertSame('origin-request', $spans[1]->getAttributes()->get('request_id'));

@@ -308,6 +308,41 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
+  tracing-http:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      OTEL_PHP_FIBERS_ENABLED: 'false'
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up the optional application instrumentation
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.5'
+        extensions: pdo_sqlite, opentelemetry-1.4.2
+        tools: composer
+        coverage: none
+      env:
+        fail-fast: true
+
+    - name: Install ordinary package and client instrumentation dependencies
+      run: |
+        composer install --prefer-dist --no-progress
+        composer install --working-dir=.github/tracing-http --prefer-dist --no-progress --no-plugins --no-scripts
+        composer audit --working-dir=.github/tracing-http
+
+    - name: Verify real HTTP propagation through independent activity workers
+      run: >-
+        vendor/bin/phpunit --no-configuration
+        --bootstrap .github/tracing-http/bootstrap.php
+        --do-not-record-test-run-history --fail-on-warning --fail-on-skipped
+        tests/Unit/V2/HttpExecutionTracingTest.php
+
   pr-unit-contracts:
     needs: preflight
     if: ${{ github.event_name == 'pull_request' }}
@@ -339,6 +374,11 @@ jobs:
         --weight-profile=mysql
         --output-dir=build/pr-selection
 
+    - name: Run optional embedded activity tracing controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
+        --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
+
     - name: Run database-independent unit contracts
       run: |
         mkdir -p build/test-results
@@ -352,11 +392,6 @@ jobs:
         --fail-on-warning --log-junit build/test-results/pr-workflow-command-normalizer.xml
       env:
         REDIS_HOST: 127.0.0.1
-
-    - name: Run optional embedded activity tracing controls
-      run: >-
-        vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
-        --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
 
     - name: Run cancellation timeline unit cases
       run: >-
@@ -1283,6 +1318,7 @@ jobs:
     - preflight
     - regression-corpus
     - quality
+    - tracing-http
     - pr-unit-contracts
     - pr-feature-mysql
     - feature-mysql
@@ -1302,6 +1338,9 @@ jobs:
 
     - name: Require repository preflight
       run: test "${{ needs.preflight.result }}" = "success"
+
+    - name: Require the actual HTTP tracing consumer
+      run: test "${{ needs.tracing-http.result }}" = "success"
 
     - name: Check pull-request gate
       if: ${{ github.event_name == 'pull_request' }}

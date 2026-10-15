@@ -121,8 +121,18 @@ final class ExecutionTracing
         }
 
         $fields = Context::getCurrent()->get(self::$correlationKey);
+        if (! is_array($fields)) {
+            return [];
+        }
+        // Application instrumentation may activate a child span inside this durable scope.
+        unset($fields['trace_id'], $fields['span_id']);
+        $spanContext = Span::getCurrent()->getContext();
+        if ($spanContext->isValid()) {
+            $fields['trace_id'] = $spanContext->getTraceId();
+            $fields['span_id'] = $spanContext->getSpanId();
+        }
 
-        return is_array($fields) ? $fields : [];
+        return $fields;
     }
 
     public static function recordFailure(Throwable $error): void

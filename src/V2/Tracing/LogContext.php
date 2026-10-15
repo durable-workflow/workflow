@@ -9,7 +9,7 @@ use Monolog\LogRecord;
 use Throwable;
 use Workflow\V2\Support\ExecutionTracing;
 
-/** Laravel logging tap for activity execution correlation. */
+/** Laravel logging tap for scoped workflow and activity correlation. */
 final class LogContext
 {
     public function __invoke(Logger $logger): void

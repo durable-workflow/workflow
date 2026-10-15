@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\TransferStats;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Monolog\Formatter\JsonFormatter;
+use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
+use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
@@ -65,6 +70,8 @@ final class TracingProcessDependency
 
 final class TracingProcessActivity extends Activity
 {
+    public static ?array $httpResponse = null;
+
     public int $tries = 2;
 
     public function __construct(TracingProcessDependency $dependency)
@@ -82,6 +89,30 @@ final class TracingProcessActivity extends Activity
         Log::info('callback');
         if ($retry && $this->attemptCount() === 1) {
             throw new \RuntimeException('deliberate original attempt failure');
+        }
+
+        $url = getenv('DW_TEST_TRACING_HTTP_URL');
+        if (is_string($url) && $url !== '') {
+            $response = app(Client::class)->post($url, [
+                'timeout' => 2,
+                'connect_timeout' => 1,
+                'headers' => [
+                    'X-Request-ID' => 'activity-http-request',
+                    'Authorization' => 'Bearer test-auth-sentinel',
+                ],
+                'json' => [
+                    'private' => 'payload-private-sentinel',
+                ],
+                'on_stats' => static function (TransferStats $stats): void {
+                    $context = Span::getCurrent()->getContext();
+                    Log::info('http transfer', [
+                        'request_id' => 'activity-http-request',
+                        'active_trace_id' => $context->getTraceId(),
+                        'active_span_id' => $context->getSpanId(),
+                    ]);
+                },
+            ]);
+            self::$httpResponse = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
         }
 
         return [9007199254740993, null, '雪'];
@@ -107,6 +138,7 @@ final class TracingProcessApplication extends Application
             'workflows.v2.compatibility.namespace' => '0',
             'workflows.v2.task_dispatch_mode' => 'queue',
             'workflows.tracing.enabled' => true,
+            'workflows.tracing.baggage_allowlist' => ['approved'],
             'queue.default' => 'database',
             'queue.connections.database' => [
                 'driver' => 'database',
@@ -156,16 +188,28 @@ $app = TracingProcessApplication::create(
 );
 $exporter = new InMemoryExporter();
 $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+$propagator = new MultiTextMapPropagator([
+    TraceContextPropagator::getInstance(),
+    BaggagePropagator::getInstance(),
+]);
 $configuration = Configurator::create()->withTracerProvider($provider)
-    ->withPropagator(TraceContextPropagator::getInstance())->activate();
+    ->withPropagator($propagator)
+    ->activate();
 $initial = Context::getCurrent();
 try {
     $parent = $mode === 'admit'
         ? '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
         : '00-11111111111111111111111111111111-2222222222222222-01';
-    $scope = TraceContextPropagator::getInstance()->extract([
+    $headers = [
         'traceparent' => $parent,
-    ])->activate();
+    ];
+    if ($mode === 'admit' && getenv('DW_TEST_TRACING_HTTP_URL')) {
+        $headers['tracestate'] = 'dwtest=one';
+        $headers['baggage'] = 'approved=tenant-a,private=must-not-propagate';
+    }
+    $scope = $propagator->extract($headers)
+        ->activate();
+    $outsideHttp = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -200,6 +244,16 @@ try {
                 throw new \RuntimeException(Artisan::output());
             }
             Log::info('worker outside');
+            if (TracingProcessActivity::$httpResponse !== null) {
+                $response = app(Client::class)->post(getenv('DW_TEST_TRACING_HTTP_URL'), [
+                    'timeout' => 2,
+                    'connect_timeout' => 1,
+                    'headers' => [
+                        'X-Request-ID' => 'outside-http-request',
+                    ],
+                ]);
+                $outsideHttp = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+            }
         } elseif ($mode !== 'inspect') {
             throw new \RuntimeException('Unknown fixture command.');
         }
@@ -222,8 +276,11 @@ try {
         'repairs' => (int) WorkflowTask::query()->sum('repair_count'),
         'outside_context' => ExecutionTracing::current(),
         'scope_restored' => Context::getCurrent() === $initial,
+        'http_response' => TracingProcessActivity::$httpResponse,
+        'outside_http' => $outsideHttp,
         'spans' => array_map(static fn ($span): array => [
             'name' => $span->getName(),
+            'kind' => $span->getKind(),
             'trace_id' => $span->getContext()
                 ->getTraceId(),
             'span_id' => $span->getContext()
