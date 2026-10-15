@@ -51,7 +51,8 @@ final class TaskRepairRecoveryTest extends TestCase
         int $dueOffset,
     ): void {
         $run = $this->createRun();
-        $base = now();
+        $base = now()
+            ->microsecond(123456);
         $task = $this->task($run, [
             'task_type' => TaskType::Timer,
             'available_at' => $availableOffset === null ? null : $base->copy()
@@ -64,11 +65,10 @@ final class TaskRepairRecoveryTest extends TestCase
         $before = $task->fresh()
             ->getAttributes();
 
-        foreach ([
-            -1 => false,
-            0 => true,
-        ] as $offset => $eligible) {
-            Carbon::setTestNow($base->copy()->addSeconds($dueOffset + $offset));
+        foreach ([false, true] as $eligible) {
+            $at = $base->copy()
+                ->addSeconds($dueOffset);
+            Carbon::setTestNow($eligible ? $at : $at->subMicrosecond());
             $this->assertSame($eligible, TaskRepairPolicy::dispatchOverdue($task));
             $this->assertSame($eligible ? [$task->id] : [], TaskRepairCandidates::taskIds(runIds: [$run->id]));
         }
