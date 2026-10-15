@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Connection;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\TestCase;
 use PDO;
+use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\V2\SqliteContentionActivity;
@@ -68,6 +70,112 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         return $cases;
     }
 
+    public static function claims(): array
+    {
+        return [
+            'workflow claim' => ['workflow', false],
+            'workflow claim with separate application database' => ['workflow', true],
+            'activity claim' => ['activity', false],
+            'activity claim with separate application database' => ['activity', true],
+        ];
+    }
+
+    #[DataProvider('claims')]
+    public function testRepeatedWalCommitsCannotStrandTheOriginalTask(string $kind, bool $separate): void
+    {
+        config()->set('logging.default', 'null');
+        if ($separate) {
+            config()->set('database.connections.application_sqlite', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+            DB::setDefaultConnection('application_sqlite');
+            $this->createQueueTables(DB::connection());
+            config()
+                ->set('queue.failed.database', 'application_sqlite');
+        }
+        $stub = WorkflowStub::make(SqliteContentionWorkflow::class, 'repeated-' . $kind, 'contention-test');
+        $stub->start(false, false);
+        $runId = $stub->runId();
+        if ($kind === 'activity') {
+            $this->workOnce();
+        }
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->where('task_type', $kind)->sole();
+        $taskId = $task->id;
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        $writer = new PDO('sqlite:' . $this->path);
+        $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $writer->exec('PRAGMA busy_timeout=1');
+        $competingCommits = 0;
+        $blockedWrites = 0;
+        $armed = true;
+        DB::connection('contention_sqlite')->getEventDispatcher()->listen(
+            QueryExecuted::class,
+            static function (QueryExecuted $query) use (
+                $writer,
+                $taskId,
+                &$armed,
+                &$competingCommits,
+                &$blockedWrites
+            ): void {
+                if (! $armed || $query->connectionName !== 'contention_sqlite'
+                    || ! str_starts_with($query->sql, 'select') || ! str_contains($query->sql, 'from "workflow_tasks"')
+                    || ! in_array($taskId, $query->bindings, true)) {
+                    return;
+                }
+                try {
+                    // Every fresh read is followed by another real WAL commit
+                    // unless the claim already owns SQLite's writer.
+                    $writer->exec('INSERT INTO contention_probe (id) VALUES (' . ($competingCommits + 1) . ')');
+                    $competingCommits++;
+                } catch (PDOException $error) {
+                    if (($error->errorInfo[1] & 255) !== 5) {
+                        throw $error;
+                    }
+                    $blockedWrites++;
+                }
+            },
+        );
+        $this->workOnce();
+        $armed = false;
+        $this->assertSame(0, DB::table('failed_jobs')->count(), 'Repeated fresh snapshots must not strand a claim.');
+        $this->assertSame(0, $competingCommits);
+        $this->assertGreaterThan(0, $blockedWrites);
+        $this->assertSame('completed', $task->fresh()->status->value);
+        $this->assertSame(1, (int) $task->fresh()->attempt_count);
+        if ($kind === 'workflow') {
+            $this->workOnce();
+        }
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame($runId, $stub->runId());
+        $this->assertSame($taskId, $task->fresh()->id);
+        $this->assertSame(1, SqliteContentionActivity::$invocations);
+        $this->assertSame([
+            'integer' => 9007199254740993,
+            'optional' => null,
+            'unicode' => 'λ',
+        ], $stub->output());
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')->get();
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getAttributes()->all());
+        $this->assertSame(
+            1,
+            $events->where('event_type', \Workflow\V2\Enums\HistoryEventType::ActivityCompleted)->count()
+        );
+        $this->assertSame(
+            1,
+            $events->where('event_type', \Workflow\V2\Enums\HistoryEventType::WorkflowCompleted)->count()
+        );
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)->sum('repair_count'));
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+    }
+
     #[DataProvider('phases')]
     public function testOriginalRunCompletesOnceAfterRealWalWrite(string $phase, bool $separate): void
     {
@@ -116,11 +224,22 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
                     && str_contains($sql, 'last_command_sequence'),
                 default => false,
             };
-            $writeAdmission = in_array($phase, ['workflow_execution', 'timer_claim', 'timer_fire'], true)
+            $writeAdmission = in_array(
+                $phase,
+                [
+                    'workflow_claim',
+                    'activity_claim',
+                    'activity_outcome',
+                    'workflow_execution',
+                    'timer_claim',
+                    'timer_fire',
+                ],
+                true
+            )
                 && str_starts_with($sql, 'update "workflow_tasks" set "id" =');
             if ($writeAdmission) {
                 $admissions++;
-                $matches = $admissions === ($phase === 'timer_fire' ? 2 : 1);
+                $matches = $admissions === (in_array($phase, ['timer_fire', 'activity_outcome'], true) ? 2 : 1);
             }
             if (in_array($phase, ['start', 'signal'], true)) {
                 $matches = str_starts_with($sql, 'update "workflow_instances" set "id" =');

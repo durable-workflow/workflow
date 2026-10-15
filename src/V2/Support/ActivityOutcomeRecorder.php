@@ -40,7 +40,7 @@ final class ActivityOutcomeRecorder
         int $backoffSeconds,
         ?string $codec = null,
     ): array {
-        return SqliteTransaction::run(static function () use (
+        return SqliteTransaction::forTask($taskId, static function () use (
             $taskId,
             $attemptId,
             $attemptCount,

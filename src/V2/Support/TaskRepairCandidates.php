@@ -569,7 +569,8 @@ final class TaskRepairCandidates
     ) {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
-            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
+            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds())
+            ->format('Y-m-d H:i:s.u');
 
         $query = WorkflowTask::query()
             ->where(static function ($query) use ($now, $staleDispatchCutoff): void {
@@ -606,6 +607,10 @@ final class TaskRepairCandidates
                                 })
                                 ->orWhere(static function ($dispatchOverdue) use ($staleDispatchCutoff): void {
                                     $dispatchOverdue
+                                        ->where(static function ($available) use ($staleDispatchCutoff): void {
+                                            $available->whereNull('available_at')
+                                                ->orWhere('available_at', '<=', $staleDispatchCutoff);
+                                        })
                                         ->where(static function ($dispatchHealthy): void {
                                             self::applyDispatchHealthy($dispatchHealthy);
                                         })

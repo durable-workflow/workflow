@@ -249,7 +249,11 @@ latency upper bound is set by durable dispatch state alone.
 - The `workflows.v2.task_repair.redispatch_after_seconds` cadence
   (default 3 seconds) bounds how long a task stuck between
   creation and dispatch remains unclaimed. Redispatch is driven
-  by `workflow_tasks` rows alone.
+  by `workflow_tasks` rows alone. A delayed task becomes overdue
+  only after this cadence has elapsed since the later of its
+  original `available_at` and latest dispatch (or creation when
+  it has never been dispatched). A timer is not overdue merely
+  because it was queued long before its fire time.
 - The `workflows.v2.task_repair.loop_throttle_seconds` cadence
   (default 5 seconds) bounds how long repair scanning pauses
   before the next scan. Repair scanning reads only durable rows.
@@ -266,6 +270,16 @@ latency upper bound is set by durable dispatch state alone.
 
 These numbers are contract guarantees: they hold whether or not
 the acceleration layer is propagating signals.
+
+Repair locks the run before inspecting its task, but does not wait
+for a task row held by another transaction. It rolls back and defers
+that candidate to a later pass without changing its lease, error,
+repair count or original deadlines. A locked deadline-control task
+is not treated as a missing task. Once the owner releases it, repair
+rechecks the durable state and can recover the same original task.
+This avoids the worker/task versus repair/run lock cycle without
+retrying workflow or activity user code. Database contention can
+defer a scan; it does not extend task or workflow deadlines.
 
 ## Scheduler fire evaluation
 
