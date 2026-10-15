@@ -2141,6 +2141,36 @@ exit(0);
                 )
                 target.write_text("<?php\nreturn 'base';\n", encoding="utf-8")
 
+    def test_task_discovery_helper_body_does_not_require_replay_growth(self) -> None:
+        source = self.root / "src/V2/Support/DefaultWorkflowTaskBridge.php"
+        original = """<?php
+final class DefaultWorkflowTaskBridge {
+    private static function nonEmptyStrings(array $values): array { return array_filter($values); }
+    public function complete(): string { return 'base'; }
+}
+"""
+        source.write_text(original, encoding="utf-8")
+        self.commit_current_as_base()
+        corrected = original.replace(
+            "array_filter($values)",
+            "array_filter($values, static fn ($value) => $value !== null)",
+        )
+        source.write_text(corrected, encoding="utf-8")
+        result = self.validate()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        for changed in (
+            corrected.replace("return 'base'", "return 'changed'"),
+            corrected.replace("array $values", "array $values, bool $extra = false"),
+            corrected.replace("public function complete", "public function replay"),
+            corrected.replace("return array_filter", "WorkflowHistoryEvent::record($run, $type); return array_filter"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+
     def test_workflow_step_history_guard_cannot_be_weakened(self) -> None:
         policy = self.read_policy()
         policy["categories"]["replay"]["guards"] = [
