@@ -6,6 +6,9 @@ namespace Tests\Fixtures\V2;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\TransferStats;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -14,6 +17,7 @@ use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
@@ -30,6 +34,13 @@ use Workflow\V2\Tracing\LogContext;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
+$incomingHttp = PHP_SAPI === 'cli-server';
+if ($incomingHttp) {
+    $argv = [
+        __FILE__, getenv('DW_TEST_TRACING_DIRECTORY'), 'admit', 'once',
+        ...json_decode(getenv('DW_TEST_TRACING_AUTOLOADS'), true, flags: JSON_THROW_ON_ERROR),
+    ];
+}
 $retry = $argv[3] === 'retry';
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
@@ -42,13 +53,13 @@ final class TracingProcessWorkflow extends Workflow
         Log::info('workflow constructor');
     }
 
-    public function handle(bool $retry, TracingProcessWorkflowDependency $dependency): array
+    public function handle(bool $retry, TracingProcessWorkflowDependency $dependency, bool $twice = false): array
     {
         Log::info('workflow before activity');
         $result = self::activity(TracingProcessActivity::class, $retry);
         Log::info('workflow after activity');
 
-        return $result;
+        return $twice ? [$result, self::activity(TracingProcessActivity::class, $retry)] : $result;
     }
 }
 
@@ -207,7 +218,22 @@ try {
         $headers['tracestate'] = 'dwtest=one';
         $headers['baggage'] = 'approved=tenant-a,private=must-not-propagate';
     }
-    $scope = $propagator->extract($headers)
+    $request = $incomingHttp ? Request::capture() : null;
+    if ($request !== null) {
+        $headers = [];
+        foreach (['traceparent', 'tracestate', 'baggage'] as $header) {
+            $value = $request->headers->get($header);
+            if ($value !== null) {
+                $headers[$header] = $value;
+            }
+        }
+    }
+    $parentContext = $propagator->extract($headers, context: $initial);
+    // The fixture application owns its HTTP instrumentation, as a real Laravel app would.
+    $requestSpan = $incomingHttp ? $provider->getTracer('test.application')
+        ->spanBuilder('POST /start')
+        ->setSpanKind(SpanKind::KIND_SERVER)->setParent($parentContext)->startSpan() : null;
+    $scope = ($requestSpan?->storeInContext($parentContext) ?? $parentContext)
         ->activate();
     $outsideHttp = null;
     try {
@@ -223,10 +249,33 @@ try {
             DB::statement('CREATE TABLE failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
             connection TEXT NOT NULL, queue TEXT NOT NULL, payload TEXT NOT NULL, exception TEXT NOT NULL,
             failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
-            WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->start(
-                $retry,
-                new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
-            );
+            if ($request !== null) {
+                $app['router']->post('/start', static function () use ($retry): JsonResponse {
+                    $stub = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0');
+                    $stub->start(
+                        $retry,
+                        true,
+                        new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                    );
+
+                    return new JsonResponse([
+                        'run_id' => $stub->runId(),
+                    ], 201);
+                });
+                $kernel = $app->make(Kernel::class);
+                $response = $kernel->handle($request);
+                $kernel->terminate($request, $response);
+                if ($response->getStatusCode() !== 201) {
+                    throw new \RuntimeException('HTTP admission failed: ' . $response->getContent());
+                }
+                http_response_code(201);
+                header('Content-Type: application/json');
+            } else {
+                WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')->start(
+                    $retry,
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
+            }
         } elseif ($mode === 'duplicate') {
             $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')
                 ->attemptStart($retry, StartOptions::returnExistingActive());
@@ -259,6 +308,7 @@ try {
         }
     } finally {
         $scope->detach();
+        $requestSpan?->end();
     }
     $run = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing')->sole();
     $output = [
