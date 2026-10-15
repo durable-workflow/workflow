@@ -374,9 +374,10 @@ jobs:
         --weight-profile=mysql
         --output-dir=build/pr-selection
 
-    - name: Run optional embedded activity tracing controls
+    - name: Run optional embedded tracing controls
       run: >-
         vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
+        tests/Unit/V2/IncomingHttpTracingTest.php
         --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
 
     - name: Run database-independent unit contracts
