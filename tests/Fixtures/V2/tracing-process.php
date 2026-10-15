@@ -19,13 +19,18 @@ use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\Context\Context;
+use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
+use OpenTelemetry\Context\Propagation\PropagationGetterInterface;
+use OpenTelemetry\Context\Propagation\PropagationSetterInterface;
+use OpenTelemetry\Context\Propagation\TextMapPropagatorInterface;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\Foundation\Application;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Activity;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -48,6 +53,7 @@ if ($incomingHttp) {
 $retry = $argv[3] === 'retry';
 $recovery = getenv('DW_TEST_TRACING_RECOVERY') === 'true';
 $transition = getenv('DW_TEST_TRACING_TRANSITION');
+$signalStart = getenv('DW_TEST_TRACING_SIGNAL_START') === 'true';
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
@@ -107,6 +113,20 @@ final class TracingContinuationWorkflow extends Workflow
         }
 
         return self::activity(TracingProcessActivity::class, false);
+    }
+}
+
+#[Signal('ready')]
+final class TracingSignalStartWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        $signal = self::awaitSignal('ready');
+
+        return [
+            'signal' => $signal,
+            'activity' => self::activity(TracingProcessActivity::class, false),
+        ];
     }
 }
 
@@ -263,6 +283,40 @@ $propagator = new MultiTextMapPropagator([
     TraceContextPropagator::getInstance(),
     BaggagePropagator::getInstance(),
 ]);
+$recordedPropagator = null;
+if ($signalStart) {
+    $recordedPropagator = new class($propagator) implements TextMapPropagatorInterface {
+        public array $transactionLevels = [];
+
+        public function __construct(
+            private readonly TextMapPropagatorInterface $delegate
+        ) {
+        }
+
+        public function fields(): array
+        {
+            return $this->delegate->fields();
+        }
+
+        public function inject(
+            mixed &$carrier,
+            ?PropagationSetterInterface $setter = null,
+            ?ContextInterface $context = null,
+        ): void {
+            $this->transactionLevels[] = DB::transactionLevel();
+            $this->delegate->inject($carrier, $setter, $context);
+        }
+
+        public function extract(
+            $carrier,
+            ?PropagationGetterInterface $getter = null,
+            ?ContextInterface $context = null,
+        ): ContextInterface {
+            return $this->delegate->extract($carrier, $getter, $context);
+        }
+    };
+    $propagator = $recordedPropagator;
+}
 $configuration = Configurator::create()->withTracerProvider($provider)
     ->withPropagator($propagator)
     ->activate();
@@ -297,6 +351,7 @@ try {
         ->activate();
     $outsideHttp = null;
     $repairReport = null;
+    $signalStartResult = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -331,6 +386,13 @@ try {
                 }
                 http_response_code(201);
                 header('Content-Type: application/json');
+            } elseif ($signalStart) {
+                $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
+                    ->signalWithStart(
+                        'ready',
+                        [[9007199254740993, null, '雪']],
+                        StartOptions::returnExistingActive()->withExecutionTimeout(60)->withRunTimeout(45)
+                    );
             } elseif ($transition === 'child' || $transition === 'continue') {
                 $workflow = $transition === 'child'
                     ? TracingChildParentWorkflow::class
@@ -347,6 +409,12 @@ try {
                     $retry,
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
+            }
+        } elseif ($mode === 'duplicate' && $signalStart) {
+            $signalStartResult = WorkflowStub::make(TracingSignalStartWorkflow::class, 'cold-tracing', '0')
+                ->signalWithStart('ready', [['later']], StartOptions::returnExistingActive());
+            if (! $signalStartResult->returnedExistingActive()) {
+                throw new \RuntimeException('Expected the original signal-with-start admission.');
             }
         } elseif ($mode === 'duplicate') {
             $result = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0')
@@ -424,6 +492,19 @@ try {
                 ->toArray(),
         ], $exporter->getSpans()),
     ];
+    if ($signalStart) {
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        $output['signal_start_outcome'] = $signalStartResult?->startOutcome();
+        $output['capture_transaction_levels'] = $recordedPropagator?->transactionLevels ?? [];
+        $output['run_count'] = WorkflowRun::query()->count();
+        $output['signal_count'] = $history->where('event_type.value', 'SignalReceived')->count();
+        $output['completion_count'] = $history->where('event_type.value', 'ActivityCompleted')->count();
+        $output['history_hashes'] = $history->map(static fn ($event): string => hash(
+            'sha256',
+            json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
+        ))->all();
+        $output['history_payloads'] = $history->pluck('payload')->all();
+    }
     if ($transition === 'child' || $transition === 'continue') {
         $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($run): array => [
             'id' => $run->id,

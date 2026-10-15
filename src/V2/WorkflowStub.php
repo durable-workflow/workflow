@@ -3061,6 +3061,12 @@ final class WorkflowStub
         $task = null;
         $startedRun = null;
         $intakeGroupId = (string) Str::ulid();
+        // Capture before locking. An existing run retains its original admission carrier.
+        $observabilityContext = null;
+        if (config('workflows.tracing.enabled', false) === true) {
+            $allowlist = config('workflows.tracing.baggage_allowlist', []);
+            $observabilityContext = TraceCarrier::capture(is_array($allowlist) ? $allowlist : []);
+        }
 
         DB::transaction(function () use (
             $name,
@@ -3068,6 +3074,7 @@ final class WorkflowStub
             $startArguments,
             $startOptions,
             $intakeGroupId,
+            $observabilityContext,
             &$startCommand,
             &$signalCommand,
             &$task,
@@ -3333,6 +3340,7 @@ final class WorkflowStub
             $run = self::runQuery()->create([
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
+                'observability_context' => $observabilityContext,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
                 'namespace' => $instance->namespace,
