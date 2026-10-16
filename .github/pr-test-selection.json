@@ -20,6 +20,7 @@
     "tests/Unit/V2/TaskTraceTimingsTest.php",
     "tests/Unit/V2/TaskTraceCarrierTest.php",
     "tests/Unit/V2/TraceCarrierTest.php",
+    "tests/Unit/V2/TracingQueueErrorDiagnosticsTest.php",
     "tests/Unit/V2/VersionMarkerWireFormatTest.php",
     "tests/Unit/V2/WorkflowFiberRunnerTest.php",
     "tests/Unit/V2/WorkflowInstanceIdTest.php",

@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Database\QueryException;
 use PDOException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Tests\Support\TracingQueueErrorDiagnostics;
@@ -59,6 +60,79 @@ final class TracingQueueErrorDiagnosticsTest extends TestCase
         self::assertStringNotContainsString('private-argument-sentinel', json_encode($result, JSON_THROW_ON_ERROR));
         self::assertNull($result['statement']);
         self::assertFalse($result['statement_truncated']);
+    }
+
+    public function testOnlyKnownFailedJobLoggerContentionIsClassified(): void
+    {
+        $error = self::failedJobLogRefusal();
+        self::assertTrue(TracingQueueErrorDiagnostics::isFailedJobLogContention($error));
+        $error['native_code'] = 6;
+        self::assertTrue(TracingQueueErrorDiagnostics::isFailedJobLogContention($error));
+    }
+
+    #[DataProvider('unsafeRefusals')]
+    public function testOtherInsertErrorsRemainRefusals(array $changes): void
+    {
+        self::assertFalse(TracingQueueErrorDiagnostics::isFailedJobLogContention(
+            array_replace(self::failedJobLogRefusal(), $changes),
+        ));
+    }
+
+    public static function unsafeRefusals(): array
+    {
+        return [
+            'workflow write' => [[
+                'statement' => 'insert into "workflow_history_events" ("payload") values (?)',
+            ]],
+            'uncertain statement' => [[
+                'statement_truncated' => true,
+            ]],
+            'other database failure' => [[
+                'native_code' => 19,
+            ]],
+            'active root' => [[
+                'transaction_level' => 1,
+            ]],
+            'pdo still active' => [[
+                'pdo_in_transaction' => true,
+            ]],
+            'unknown pdo' => [[
+                'pdo_in_transaction' => null,
+            ]],
+            'unknown caller' => [[
+                'stage_frames' => [],
+            ]],
+            'application insert' => [[
+                'stage_frames' => [[
+                    'file' => 'Application.php',
+                    'function' => 'insert',
+                ]],
+            ]],
+            'malformed frames' => [[
+                'stage_frames' => 'not-frames',
+            ]],
+        ];
+    }
+
+    private static function failedJobLogRefusal(): array
+    {
+        return [
+            'error_class' => QueryException::class,
+            'native_code' => 5,
+            'operation' => 'insert',
+            'transaction_level' => 0,
+            'pdo_in_transaction' => false,
+            'statement_truncated' => false,
+            'statement' => 'insert into "failed_jobs" '
+                . '("uuid", "connection", "queue", "payload", "exception", "failed_at") values (?, ?, ?, ?, ?, ?)',
+            'stage_frames' => [[
+                'file' => 'DatabaseUuidFailedJobProvider.php',
+                'function' => 'insert',
+            ], [
+                'file' => 'WorkCommand.php',
+                'function' => 'logFailedJob',
+            ]],
+        ];
     }
 
     private static function nestedError(int $depth, string $argument): Throwable

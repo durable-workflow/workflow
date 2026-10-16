@@ -12,6 +12,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
+use Tests\Support\TracingQueueErrorDiagnostics;
 use Throwable;
 
 final class LargeFanOutExecutionTracingTest extends TestCase
@@ -146,12 +147,11 @@ final class LargeFanOutExecutionTracingTest extends TestCase
         array $reportedErrors,
         string $diagnostic,
     ): void {
-        foreach (array_merge($queueErrors, $reportedErrors) as $error) {
-            self::assertIsInt($error['native_code'], $diagnostic);
-            self::assertContains($error['native_code'] & 255, [5, 6], $diagnostic);
-            self::assertContains($error['operation'], ['update', 'delete'], $diagnostic);
-            self::assertSame(0, $error['transaction_level'], $diagnostic);
-            self::assertFalse($error['pdo_in_transaction'], $diagnostic);
+        foreach ($queueErrors as $error) {
+            self::assertQueuePressureError($error, false, $diagnostic);
+        }
+        foreach ($reportedErrors as $error) {
+            self::assertQueuePressureError($error, true, $diagnostic);
         }
         self::assertCount($finished['failed_jobs'], $observed['delivery_errors'], $diagnostic);
         self::assertCount($finished['jobs'], $observed['remaining_deliveries'], $diagnostic);
@@ -174,6 +174,16 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             self::assertNotEmpty($refusals, $diagnostic);
             self::assertGreaterThan(time(), $remaining['reserved_at'] + $observed['retry_after_seconds'], $diagnostic);
         }
+    }
+
+    private static function assertQueuePressureError(array $error, bool $reported, string $diagnostic): void
+    {
+        self::assertIsInt($error['native_code'], $diagnostic);
+        self::assertContains($error['native_code'] & 255, [5, 6], $diagnostic);
+        self::assertTrue(in_array($error['operation'], ['update', 'delete'], true)
+            || ($reported && TracingQueueErrorDiagnostics::isFailedJobLogContention($error)), $diagnostic);
+        self::assertSame(0, $error['transaction_level'], $diagnostic);
+        self::assertFalse($error['pdo_in_transaction'], $diagnostic);
     }
 
     private static function assertRecoveredTask(array $delivery, array $tasks, string $runId, string $diagnostic): void
