@@ -46,9 +46,10 @@ jobs:
           php -r 'require ".github/queue-contention/current/vendor/autoload.php"; $manifest=json_decode(file_get_contents(".github/queue-contention/current/composer.json"), true, flags: JSON_THROW_ON_ERROR); if (Composer\InstalledVersions::getPrettyVersion("durable-workflow/workflow") !== $manifest["require"]["durable-workflow/workflow"] || Composer\InstalledVersions::getReference("durable-workflow/workflow") !== $manifest["extra"]["workflow-published-reference"]) { throw new RuntimeException("Installed package provenance differs."); }'
 
       - name: Execute the original continuous four-worker cohort
-        env:
-          DW_PROBE_QUEUE_WAKE: 'true'
-          DW_PROBE_CONTINUOUS: 'true'
         run: |
-          export DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php"
-          XDEBUG_MODE=off /usr/bin/time -v php .github/queue-contention/runner.php cohort
+          sudo systemd-run --scope --quiet \
+            --property=CPUQuota=200% --property=MemoryMax=2G --property=MemorySwapMax=0 \
+            runuser --user "$(id -un)" -- \
+            env XDEBUG_MODE=off DW_PROBE_QUEUE_WAKE=true DW_PROBE_CONTINUOUS=true \
+            DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php" \
+            bash .github/queue-contention/current/limited-cohort.sh

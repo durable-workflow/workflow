@@ -52,9 +52,13 @@ The `explicit-autoloader` output describes the selected path. For this control
 it points to an ordinary Composer installation, not a runtime source override.
 The Published queue consumer workflow verifies every installed `src` byte and
 the Composer reference against the immutable release before executing it. It
-records actual hosted PHP/SQLite/CPU/memory facts; it does not claim a 2 CPU /
-2 GiB allocation or qualify the tracing branch. Earlier failed originals retain
-their outcomes. A timeout reports bounded read-only state before cleanup.
+runs the parent and four workers as the ordinary runner user in one transient
+systemd scope, with a 2 CPU quota, 2 GiB memory limit and no swap. The wrapper
+reads and verifies the effective cgroup limits before admission. It disables
+Xdebug features for this functional check and records the effective modes.
+Coverage jobs keep their instrumentation. This does not qualify the tracing
+branch or measure capacity. Earlier failed originals retain their outcomes. A
+timeout reports bounded read-only state before cleanup.
 
 Results distinguish unfinished execution, delivery exceptions, repairs,
 transport copies, callbacks and preserved history/deadlines. A nonzero exit is
