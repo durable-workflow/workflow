@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
 use PDO;
 use PDOException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 use Workflow\V2\Support\SqliteTransaction;
@@ -202,7 +203,8 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(0, $this->connection->transactionLevel());
     }
 
-    public function testCommittedAcknowledgementFailureDoesNotRepeatCallback(): void
+    #[DataProvider('admissionBounds')]
+    public function testCommittedAcknowledgementFailureDoesNotRepeatCallback(bool $claimed): void
     {
         $error = $this->acknowledgementError();
         $this->events->listen(TransactionCommitted::class, static function () use ($error): void {
@@ -213,7 +215,9 @@ final class SqliteTransactionTest extends TestCase
             SqliteTransaction::run(function () use (&$calls): void {
                 $calls++;
                 $this->connection->update('UPDATE state SET value=1 WHERE id=1');
-            });
+            }, admission: $claimed ? function (): void {
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            } : null, admissionDeadline: $claimed ? hrtime(true) + 30_000_000_000 : null);
             $this->fail('The acknowledgement exception must propagate.');
         } catch (PDOException $actual) {
             $this->assertSame($error, $actual);
@@ -222,7 +226,8 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
     }
 
-    public function testRollbackAcknowledgementFailureDoesNotRepeatCallback(): void
+    #[DataProvider('admissionBounds')]
+    public function testRollbackAcknowledgementFailureDoesNotRepeatCallback(bool $claimed): void
     {
         $writer = $this->writer();
         $error = $this->acknowledgementError();
@@ -236,7 +241,9 @@ final class SqliteTransactionTest extends TestCase
                 $this->connection->selectOne('SELECT value FROM state WHERE id=1');
                 $writer->exec('UPDATE state SET value=1 WHERE id=2');
                 $this->connection->update('UPDATE state SET value=1 WHERE id=1');
-            });
+            }, admission: $claimed ? function (): void {
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            } : null, admissionDeadline: $claimed ? hrtime(true) + 30_000_000_000 : null);
             $this->fail('The rollback acknowledgement exception must propagate.');
         } catch (PDOException $actual) {
             $this->assertSame($error, $actual);
@@ -448,7 +455,16 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=2')->value);
     }
 
-    public function testExhaustedAdmissionNeverEntersBody(): void
+    public static function admissionBounds(): array
+    {
+        return [
+            'default admission' => [false],
+            'claimed outcome admission' => [true],
+        ];
+    }
+
+    #[DataProvider('admissionBounds')]
+    public function testExhaustedAdmissionNeverEntersBody(bool $claimed): void
     {
         $writer = $this->writer();
         $writer->beginTransaction();
@@ -461,7 +477,7 @@ final class SqliteTransactionTest extends TestCase
             }, 3, admission: function () use (&$admissions): void {
                 $admissions++;
                 $this->connection->update('UPDATE state SET id=id WHERE id=1');
-            });
+            }, admissionDeadline: $claimed ? hrtime(true) + 30_000_000_000 : null);
             $this->fail('Persistent contention must keep the native error.');
         } catch (PDOException $exception) {
             $this->assertSame(5, $exception->errorInfo[1] & 255);
@@ -501,7 +517,36 @@ final class SqliteTransactionTest extends TestCase
         $this->assertFalse($this->connection->getPdo()->inTransaction());
     }
 
-    public function testAdmittedBodyDoesNotRetryItsOwnContention(): void
+    public function testClaimedAdmissionStopsAtItsCapturedDeadlineWithoutEnteringTheBody(): void
+    {
+        $writer = $this->writer();
+        $writer->beginTransaction();
+        $writer->exec('UPDATE state SET value=1 WHERE id=2');
+        $started = hrtime(true);
+        $admissions = 0;
+        $calls = 0;
+        try {
+            SqliteTransaction::run(static function () use (&$calls): void {
+                $calls++;
+            }, admission: function () use (&$admissions): void {
+                $admissions++;
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            }, admissionDeadline: $started + 120_000_000);
+            self::fail('The original admission deadline must keep the native contention error.');
+        } catch (PDOException $exception) {
+            self::assertSame(5, $exception->errorInfo[1] & 255);
+        } finally {
+            $writer->rollBack();
+        }
+        self::assertGreaterThan(1, $admissions);
+        self::assertSame(0, $calls);
+        self::assertLessThan(1_000_000_000, hrtime(true) - $started);
+        self::assertSame(0, $this->connection->transactionLevel());
+        self::assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
+    #[DataProvider('admissionBounds')]
+    public function testAdmittedBodyDoesNotRetryItsOwnContention(bool $claimed): void
     {
         $writer = $this->writer();
         $calls = 0;
@@ -511,7 +556,7 @@ final class SqliteTransactionTest extends TestCase
                 $writer->exec('UPDATE state SET value=1 WHERE id=2');
             }, admission: function (): void {
                 $this->connection->update('UPDATE state SET id=id WHERE id=1');
-            });
+            }, admissionDeadline: $claimed ? hrtime(true) + 30_000_000_000 : null);
             $this->fail('The body must keep its original contention failure.');
         } catch (PDOException $exception) {
             $this->assertSame(5, $exception->errorInfo[1] & 255);
