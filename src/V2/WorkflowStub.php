@@ -3037,7 +3037,7 @@ final class WorkflowStub
             } else {
                 self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             }
-        }, admission: function (): void {
+        }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
             $instance = self::instanceQuery();
             $key = $instance->getModel()
                 ->getKeyName();
@@ -3540,7 +3540,7 @@ final class WorkflowStub
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             $startedRun = $run;
-        });
+        }, self::mysqlCommandTransactionAttempts() ?? 1);
 
         if ($startedRun instanceof WorkflowRun) {
             LifecycleEventDispatcher::workflowStarted($startedRun);
@@ -3612,6 +3612,8 @@ final class WorkflowStub
             $closedReason,
             $reason,
         ): void {
+            $command = null;
+            $parentTasks = [];
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -3833,7 +3835,7 @@ final class WorkflowStub
             $parentTasks = $this->createParentResumeTasks($run);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-        });
+        }, self::mysqlCommandTransactionAttempts() ?? 1);
 
         $this->refresh();
 
@@ -4876,6 +4878,22 @@ final class WorkflowStub
     private static function storageTransactionAttempts(): int
     {
         return max(1, (int) config('workflows.storage.transaction_attempts', 5));
+    }
+
+    private static function mysqlCommandTransactionAttempts(): ?int
+    {
+        $connection = DB::connection();
+        if ($connection->getDriverName() !== 'mysql' || $connection->transactionLevel() !== 0) {
+            return null;
+        }
+
+        // Retry the owned command transaction, preserving other storage and caller transactions.
+        $storageName = config('workflows.storage.connection');
+        if (is_string($storageName) && $storageName !== '' && $storageName !== $connection->getName()) {
+            return null;
+        }
+
+        return self::storageTransactionAttempts();
     }
 
     private function signalWithStartCommandContext(string $intakeGroupId): CommandContext
