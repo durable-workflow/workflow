@@ -34,6 +34,7 @@ use Workflow\V2\Activity;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -69,6 +70,7 @@ final class ActivityExecutionTracingTest extends TestCase
         $this->configuration = Configurator::create()->withTracerProvider($this->provider)
             ->withPropagator(TraceContextPropagator::getInstance())->activate();
         TracedActivity::$observations = [];
+        LocalTracedWorkflow::$scopes = [];
     }
 
     protected function tearDown(): void
@@ -1017,6 +1019,192 @@ final class ActivityExecutionTracingTest extends TestCase
         }
     }
 
+    public static function localModes(): array
+    {
+        return [
+            'disabled' => [false, false, false],
+            'enabled' => [true, false, false],
+            'legacy' => [true, false, true],
+            'retry' => [true, true, false],
+        ];
+    }
+
+    #[DataProvider('localModes')]
+    public function testLocalAttemptsKeepTheHostingTaskParentAcrossRetryAndHistoryReplay(
+        bool $enabled,
+        bool $retry,
+        bool $legacy,
+    ): void {
+        config([
+            'workflows.tracing.enabled' => $enabled && ! $legacy,
+        ]);
+        $stub = WorkflowStub::make(LocalTracedWorkflow::class, 'local-tracing-original', '0');
+        $stub->start($retry, new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45));
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        if ($legacy) {
+            self::assertNull($run->observability_context);
+        }
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        for ($remaining = 10; $remaining > 0 && DB::table('jobs')->count() > 0; --$remaining) {
+            $this->workOnce();
+            self::assertSame([], ExecutionTracing::current());
+        }
+        self::assertSame('completed', $run->fresh()->status->value);
+        self::assertSame([9007199254740993, null, '雪'], $stub->refresh()->output());
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(0, WorkflowTask::query()->where('task_type', 'activity')->count());
+        $run->refresh();
+        self::assertSame($deadlines, [
+            $run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at'),
+        ]);
+        $attempts = ActivityAttempt::query()->get()->keyBy('id');
+        self::assertCount($retry ? 2 : 1, $attempts);
+        $execution = ActivityExecution::query()->sole();
+        $spans = array_values(array_filter(
+            $this->exporter->getSpans(),
+            static fn ($span): bool => $span->getName() === 'durable.local_activity.attempt'
+        ));
+        self::assertCount($enabled ? ($retry ? 2 : 1) : 0, $spans);
+        $parents = [];
+        foreach ($this->exporter->getSpans() as $span) {
+            if ($span->getName() === 'durable.workflow.task') {
+                $parents[$span->getContext()->getSpanId()] = $span;
+            }
+        }
+        foreach ($spans as $span) {
+            self::assertSame(SpanKind::KIND_INTERNAL, $span->getKind());
+            $fields = $span->getAttributes();
+            $attempt = $attempts[$fields->get('activity_attempt_id')];
+            self::assertSame($execution->id, $fields->get('activity_id'));
+            self::assertSame($attempt->attempt_number, $fields->get('activity_attempt_number'));
+            self::assertSame($attempt->workflow_task_id, $fields->get('task_id'));
+            self::assertNull($fields->get('durable.task.queue_wait_seconds'));
+            $parent = $parents[$span->getParentContext()->getSpanId()];
+            self::assertSame($span->getContext()->getTraceId(), $parent->getContext()->getTraceId());
+            self::assertSame($fields->get('task_id'), $parent->getAttributes()->get('task_id'));
+        }
+        $callbacks = array_values(array_filter(
+            TracedActivity::$observations,
+            static fn (array $observation): bool => $observation[0] === 'callback'
+        ));
+        self::assertCount($retry ? 2 : 1, $callbacks);
+        foreach ($callbacks as [, $fields]) {
+            if ($enabled) {
+                self::assertSame($execution->id, $fields['activity_id']);
+                self::assertArrayHasKey($fields['activity_attempt_id'], $attempts->all());
+            } else {
+                self::assertSame([], $fields);
+            }
+        }
+        foreach (LocalTracedWorkflow::$scopes as [$before, $after]) {
+            self::assertSame($before, $after);
+            self::assertArrayNotHasKey('activity_attempt_id', $after);
+        }
+        if ($enabled) {
+            foreach ($attempts as $attempt) {
+                $observed = array_column(array_filter(
+                    TracedActivity::$observations,
+                    static fn (array $entry): bool => ($entry[1]['activity_attempt_id'] ?? null) === $attempt->id,
+                ), 0);
+                self::assertContains('constructor', $observed);
+                self::assertContains('dependency', $observed);
+                self::assertContains('callback', $observed);
+            }
+        }
+        if ($enabled && $retry) {
+            self::assertSame(StatusCode::STATUS_ERROR, $spans[0]->getStatus()->getCode());
+            self::assertSame(RuntimeException::class, $spans[0]->getAttributes()->get('error.type'));
+            self::assertNotSame($spans[0]->getContext()->getSpanId(), $spans[1]->getContext()->getSpanId());
+        }
+        self::assertStringNotContainsString('observability_context', json_encode(
+            WorkflowHistoryEvent::query()->pluck('payload')->all(),
+            JSON_THROW_ON_ERROR,
+        ));
+    }
+
+    public static function unrelatedLocalParents(): array
+    {
+        return [
+            'other instance' => ['workflow_instance_id', true],
+            'other run' => ['workflow_run_id', true],
+            'other namespace' => ['namespace', true],
+            'other task' => ['task_id', true],
+            'legacy without stored parent' => ['task_id', false],
+        ];
+    }
+
+    #[DataProvider('unrelatedLocalParents')]
+    public function testLocalAttemptNeverInheritsAnUnrelatedHostingTask(string $mismatch, bool $stored): void
+    {
+        $fields = [
+            'workflow_instance_id' => 'local-instance',
+            'workflow_run_id' => 'local-run',
+            'namespace' => '0',
+            'task_id' => 'local-task',
+        ];
+        $other = array_replace($fields, [
+            $mismatch => 'unrelated',
+        ]);
+        $carrier = $stored ? [
+            'schema' => 'durable-workflow.trace-context',
+            'version' => 1,
+            'carrier' => [
+                'traceparent' => '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+            ],
+        ] : null;
+        ExecutionTracing::workflow($other, null, static function () use ($fields, $carrier): void {
+            $before = ExecutionTracing::current();
+            self::assertSame('original result', ExecutionTracing::localActivity(
+                $fields,
+                $carrier,
+                static function () use ($fields): string {
+                    self::assertSame($fields['task_id'], ExecutionTracing::current()['task_id']);
+
+                    return 'original result';
+                },
+                enabled: true,
+            ));
+            self::assertSame($before, ExecutionTracing::current());
+        }, enabled: true);
+        $spans = $this->exporter->getSpans();
+        self::assertCount(2, $spans);
+        $local = $spans[0];
+        $ambient = $spans[1];
+        self::assertSame('durable.local_activity.attempt', $local->getName());
+        self::assertNotSame($ambient->getContext()->getSpanId(), $local->getParentContext()->getSpanId());
+        if ($stored) {
+            self::assertSame('00f067aa0ba902b7', $local->getParentContext()->getSpanId());
+            self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $local->getContext()->getTraceId());
+        } else {
+            self::assertFalse($local->getParentContext()->isValid());
+        }
+    }
+
+    public function testMockedLocalActivityDoesNotClaimACallbackSpan(): void
+    {
+        config([
+            'workflows.tracing.enabled' => true,
+        ]);
+        $expected = [9007199254740993, null, '雪'];
+        WorkflowStub::mock(TracedActivity::class, $expected);
+        $stub = WorkflowStub::make(LocalTracedWorkflow::class, 'mocked-local-tracing', '0');
+        $stub->start(false, false);
+        self::assertSame($expected, $stub->refresh()->output());
+        self::assertSame([], array_values(array_filter(
+            TracedActivity::$observations,
+            static fn (array $entry): bool => $entry[0] === 'callback',
+        )));
+        self::assertSame([], array_values(array_filter(
+            $this->exporter->getSpans(),
+            static fn ($span): bool => $span->getName() === 'durable.local_activity.attempt',
+        )));
+    }
+
     protected function getPackageProviders($app): array
     {
         return [TestDatabaseServiceProvider::class, WorkflowServiceProvider::class];
@@ -1140,6 +1328,26 @@ final class TimerTracedWorkflow extends Workflow
         self::timer(1);
 
         return self::activity(TracedActivity::class, false);
+    }
+}
+
+final class LocalTracedWorkflow extends Workflow
+{
+    public static array $scopes = [];
+
+    public function handle(bool $retry, bool $wait = true): array
+    {
+        $before = ExecutionTracing::current();
+        try {
+            $result = self::localActivity(TracedActivity::class, $retry);
+        } finally {
+            self::$scopes[] = [$before, ExecutionTracing::current()];
+        }
+        if ($wait) {
+            self::timer(1);
+        }
+
+        return $result;
     }
 }
 

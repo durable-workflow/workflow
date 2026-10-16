@@ -146,6 +146,27 @@ final class ExecutionTracing
      * @param array<string, mixed> $attributes
      * @param list<string> $baggageAllowlist
      */
+    public static function localActivity(
+        array $attributes,
+        mixed $persistedContext,
+        callable $operation,
+        array $baggageAllowlist = [],
+        bool $enabled = false,
+    ): mixed {
+        return self::segment(
+            'durable.local_activity.attempt',
+            $attributes,
+            $persistedContext,
+            $operation,
+            $baggageAllowlist,
+            $enabled,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @param list<string> $baggageAllowlist
+     */
     public static function workflow(
         array $attributes,
         mixed $persistedContext,
@@ -444,8 +465,8 @@ final class ExecutionTracing
         $span = null;
         $scope = null;
         try {
-            $parent = self::parentContext($name, $persistedContext, $baggageAllowlist);
             $fields = self::fields($attributes);
+            $parent = self::parentContext($name, $persistedContext, $baggageAllowlist, $fields);
             $spanAttributes = self::spanAttributes($name, $attributes, $fields);
             $version = InstalledVersions::isInstalled(self::PACKAGE_NAME)
                 ? InstalledVersions::getPrettyVersion(self::PACKAGE_NAME)
@@ -453,7 +474,8 @@ final class ExecutionTracing
             $builder = Globals::tracerProvider()->getTracer(self::PACKAGE_NAME, $version)
                 ->spanBuilder($name)
                 ->setSpanKind(match ($name) {
-                    'durable.workflow.admission', 'durable.schedule.trigger' => SpanKind::KIND_INTERNAL,
+                    'durable.workflow.admission', 'durable.schedule.trigger',
+                    'durable.local_activity.attempt' => SpanKind::KIND_INTERNAL,
                     'durable.task.dispatch' => SpanKind::KIND_PRODUCER,
                     default => SpanKind::KIND_CONSUMER,
                 })
@@ -510,17 +532,20 @@ final class ExecutionTracing
 
     /**
      * @param list<string> $baggageAllowlist
+     * @param array<string, string|int> $fields
      */
     private static function parentContext(
         string $name,
         mixed $persistedContext,
-        array $baggageAllowlist
+        array $baggageAllowlist,
+        array $fields,
     ): ContextInterface {
-        // Local admission keeps the caller's context. Workers recover only stored authority.
+        // Local callbacks may share their hosting task. Other worker segments recover the stored parent.
         $localParent = in_array($name, ['durable.workflow.admission', 'durable.schedule.trigger'], true)
             || ($name === 'durable.task.dispatch' && self::current() !== []);
-        $parent = $localParent ? Context::getCurrent() : Context::getRoot();
-        $carrier = TraceCarrier::normalize($persistedContext, $baggageAllowlist);
+        $hostingTask = $name === 'durable.local_activity.attempt' && self::matchesHostingTask($fields);
+        $parent = $localParent || $hostingTask ? Context::getCurrent() : Context::getRoot();
+        $carrier = $hostingTask ? null : TraceCarrier::normalize($persistedContext, $baggageAllowlist);
         if ($carrier !== null) {
             $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
             $parent = BaggagePropagator::getInstance()->extract($carrier['carrier'], context: $parent);
@@ -534,6 +559,21 @@ final class ExecutionTracing
             ->withPropagator(Globals::propagator())
             ->withResponsePropagator(Globals::responsePropagator())
             ->storeInContext($parent);
+    }
+
+    /**
+     * @param array<string, string|int> $fields
+     */
+    private static function matchesHostingTask(array $fields): bool
+    {
+        $current = self::current();
+        foreach (['workflow_instance_id', 'workflow_run_id', 'namespace', 'task_id'] as $key) {
+            if (! isset($fields[$key]) || ($current[$key] ?? null) !== $fields[$key]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

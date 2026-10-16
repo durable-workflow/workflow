@@ -130,6 +130,15 @@ admission context survives the qualified cold-worker, child, continuation and
 signal-with-start paths. Existing runs keep their original admission context.
 An untraced legacy admission does not borrow a worker's ambient parent.
 
+An embedded local callback uses an internal `durable.local_activity.attempt`
+span for its object construction, injected dependencies and handler. It inherits
+the active hosting workflow task only when instance, run, namespace and task
+all match. Otherwise it uses the stored admission parent, or a root for a legacy
+run. Each retry has its own attempt span. History replay, refused attempts and
+mocked results do not emit callback spans. Local attempts have no activity-queue
+wait measurement. The span ends before outcome recording, and the existing
+execution transaction and retry dispatch rules remain unchanged.
+
 Queue dispatch emits a short `durable.task.dispatch` producer span outside the
 database transaction. It covers the queue dispatcher call. A returned call is
 not proof that a worker claimed or completed the task. Poll mode and fake
