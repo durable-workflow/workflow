@@ -49,7 +49,10 @@ final class TaskRepairCandidates
         foreach ($selected as $candidate) {
             $position = $pages['positions'][$candidate['id']] ?? null;
             if ($position !== null) {
-                $cursors[$position['cache_key']] = $position['cursor'];
+                $key = $position['cache_key'];
+                $remaining = $cursors[$key]['remaining'] ?? $position['cursor']['remaining'];
+                $cursors[$key] = $position['cursor'];
+                $cursors[$key]['remaining'] = max(0, $remaining - 1);
             }
         }
         foreach ($cursors as $key => $cursor) {
@@ -418,7 +421,7 @@ final class TaskRepairCandidates
             $cacheKey = 'workflow:v2:repair-scan:' . hash('sha256', json_encode([
                 $runIds, $instanceId, $connection, $queue, $scope['scope_key'],
             ], JSON_THROW_ON_ERROR));
-            $cursor = $rotate ? Cache::get($cacheKey) : null;
+            $cursor = self::cachedCursor($cacheKey, $rotate);
             $rows = self::readTaskPage($query, $cursor);
             $ids = [];
             foreach ($rows as $row) {
@@ -430,6 +433,7 @@ final class TaskRepairCandidates
                             'id' => $row->id,
                             'available_at' => $row->available_at,
                             'created_at' => $row->created_at,
+                            'remaining' => $cursor['remaining'] ?? max(1, $scope['candidate_count']),
                         ],
                     ];
                 }
@@ -446,22 +450,33 @@ final class TaskRepairCandidates
         ];
     }
 
-    private static function readTaskPage($query, mixed $cursor): Collection
+    private static function readTaskPage($query, ?array $cursor): Collection
     {
+        $query = clone $query;
+        if ($cursor !== null) {
+            $query->limit(min($query->getQuery()->limit, $cursor['remaining']));
+        }
         $page = clone $query;
-        if (self::validCursor($cursor)) {
+        if ($cursor !== null) {
             self::afterCursor($page, $cursor);
         }
         $rows = $page->toBase()
             ->get(['id', 'available_at', 'created_at']);
-        return $rows->isEmpty() && self::validCursor($cursor)
+        return $rows->isEmpty() && $cursor !== null
             ? $query->toBase()
                 ->get(['id', 'available_at', 'created_at']) : $rows;
+    }
+
+    private static function cachedCursor(string $key, bool $rotate): ?array
+    {
+        $cursor = $rotate ? Cache::get($key) : null;
+        return self::validCursor($cursor) ? $cursor : null;
     }
 
     private static function validCursor(mixed $cursor): bool
     {
         return is_array($cursor) && is_string($cursor['id'] ?? null)
+            && is_int($cursor['remaining'] ?? null) && $cursor['remaining'] > 0
             && array_key_exists('created_at', $cursor)
             && ($cursor['created_at'] === null || is_string($cursor['created_at']))
             && array_key_exists('available_at', $cursor)
@@ -533,7 +548,7 @@ final class TaskRepairCandidates
 
     /**
      * @param iterable<object> $rows
-     * @return list<array{scope_key: string, connection: string|null, queue: string|null, compatibility: string|null, oldest_candidate_at: CarbonInterface|null}>
+     * @return list<array{scope_key: string, connection: string|null, queue: string|null, compatibility: string|null, oldest_candidate_at: CarbonInterface|null, candidate_count: int}>
      */
     private static function normalizedScopes(iterable $rows): array
     {
@@ -562,6 +577,7 @@ final class TaskRepairCandidates
                     'queue' => $queue,
                     'compatibility' => $compatibility,
                     'oldest_candidate_at' => $oldestAt,
+                    'candidate_count' => (int) ($row->candidate_count ?? 0),
                 ];
             }
         }
