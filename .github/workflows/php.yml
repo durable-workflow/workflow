@@ -350,13 +350,13 @@ jobs:
       run: >-
         vendor/bin/phpunit tests/Unit/V2/WorkflowCommandNormalizerTest.php
         --fail-on-warning --log-junit build/test-results/pr-workflow-command-normalizer.xml
+      env:
+        REDIS_HOST: 127.0.0.1
 
     - name: Run embedded local retry queue and rollback controls
       run: >-
         vendor/bin/phpunit tests/Unit/V2/LocalActivityRetryDispatchTest.php
         --fail-on-warning --log-junit build/test-results/pr-local-activity-retry.xml
-      env:
-        REDIS_HOST: 127.0.0.1
 
     - name: Run cancellation timeline unit cases
       run: >-
