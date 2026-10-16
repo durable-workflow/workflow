@@ -54,15 +54,71 @@ final class QueueFanOutWorkflow extends Workflow\V2\Workflow
 
 function launch(string $directory, string $mode, ?float $deadline = null): Process
 {
-    $workerSeconds = getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45;
+    $workerSeconds = workerSeconds();
     $timeout = 20;
     if ($mode === 'drain') {
         $timeout = $workerSeconds === 80 ? 85 : 60;
     }
     if ($deadline !== null) {
-        $timeout = max(0.1, min($timeout, $deadline - microtime(true)));
+        $timeout = max(0.001, $deadline - microtime(true));
     }
     return new Process([PHP_BINARY, __FILE__, $directory, $mode], timeout: $timeout);
+}
+
+function workerSeconds(): int
+{
+    if (getenv('DW_PROBE_CONTINUOUS') === 'true') {
+        return 0;
+    }
+
+    return getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45;
+}
+
+function observeCompletion(string $directory, string $runId, float $deadline): void
+{
+    $database = new PDO('sqlite:file:' . $directory . '/database.sqlite?mode=ro');
+    $database->exec('PRAGMA busy_timeout=50');
+    do {
+        try {
+            $query = $database->prepare('SELECT status FROM workflow_runs WHERE id = ?');
+            $query->execute([$runId]);
+            $status = $query->fetchColumn();
+            $query->closeCursor();
+            if ($status === 'completed') {
+                return;
+            }
+        } catch (PDOException $exception) {
+            $native = $exception->errorInfo[1] ?? null;
+            if (! is_int($native) || ! in_array($native & 255, [5, 6], true)) {
+                throw $exception;
+            }
+        } finally {
+            $query = null;
+        }
+        usleep(100_000);
+    } while (microtime(true) < $deadline);
+}
+
+function failureSnapshot(string $directory): string
+{
+    try {
+        $database = new PDO('sqlite:file:' . $directory . '/database.sqlite?mode=ro');
+        $database->exec('PRAGMA busy_timeout=25');
+        $snapshot = [];
+        foreach (['workflow_runs', 'workflow_tasks', 'activity_executions'] as $table) {
+            $snapshot[$table] = $database->query('SELECT status, COUNT(*) AS count FROM ' . $table
+                . ' GROUP BY status')->fetchAll(PDO::FETCH_ASSOC);
+        }
+        foreach (['jobs', 'failed_jobs'] as $table) {
+            $snapshot[$table] = (int) $database->query('SELECT COUNT(*) FROM ' . $table)->fetchColumn();
+        }
+
+        return json_encode($snapshot, JSON_THROW_ON_ERROR);
+    } catch (Throwable $exception) {
+        return json_encode([
+            'unavailable' => $exception->getMessage(),
+        ], JSON_THROW_ON_ERROR);
+    }
 }
 
 function readProcess(Process $process): array
@@ -95,7 +151,7 @@ if (($argv[1] ?? '') === 'cohort') {
     try {
         $admission = readProcess(launch($directory, 'admit'));
         $deadline = microtime(true) + 90;
-        $initial = readProcess(launch($directory, 'once'));
+        $initial = readProcess(launch($directory, 'once', $deadline));
         if ($initial['activities'] !== [
             'pending' => 64,
         ] || $initial['ready_jobs'] !== 64) {
@@ -104,6 +160,10 @@ if (($argv[1] ?? '') === 'cohort') {
         for ($index = 0; $index < 4; ++$index) {
             $workers[] = $worker = launch($directory, 'drain', $deadline);
             $worker->start();
+        }
+        if (getenv('DW_PROBE_CONTINUOUS') === 'true') {
+            observeCompletion($directory, $admission['run_id'], $deadline);
+            file_put_contents($directory . '/stop-workers', 'stop');
         }
         $roles = array_map(readProcess(...), $workers);
         $final = readProcess(launch($directory, 'inspect', $deadline));
@@ -126,6 +186,9 @@ if (($argv[1] ?? '') === 'cohort') {
         unset($final['history_hashes'], $final['output']);
         echo json_encode($final, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) . "\n";
         $exitCode = $final['clean_acceptance_pass'] ? 0 : 1;
+    } catch (Throwable $exception) {
+        throw new QueueConsumerFailure($exception->getMessage() . ' Read-only failure snapshot: '
+            . failureSnapshot($directory), previous: $exception);
     } finally {
         foreach ($workers as $worker) {
             $worker->stop(1, 9);
@@ -272,6 +335,16 @@ if ($mode === 'admit') {
     file_put_contents($directory . '/run-id', $stub->runId());
 } elseif ($mode !== 'inspect') {
     if ($mode === 'drain') {
+        if (getenv('DW_PROBE_CONTINUOUS') === 'true') {
+            $app['events']->listen(Illuminate\Queue\Events\Looping::class, static function () use (
+                $app,
+                $directory
+            ): void {
+                if (is_file($directory . '/stop-workers')) {
+                    $app->make('queue.worker')->shouldQuit = true;
+                }
+            });
+        }
         file_put_contents($directory . '/ready-worker-' . getmypid(), 'ready');
         $readyDeadline = hrtime(true) + 10_000_000_000;
         while (count(glob($directory . '/ready-worker-*') ?: []) < 4 && hrtime(true) < $readyDeadline) {
@@ -291,7 +364,7 @@ if ($mode === 'admit') {
     if ($mode === 'drain') {
         $options += [
             '--max-jobs' => 128,
-            '--max-time' => getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45,
+            '--max-time' => workerSeconds(),
             '--stop-when-empty' => getenv('DW_PROBE_CONTINUOUS') !== 'true',
         ];
     }
@@ -383,7 +456,7 @@ echo json_encode([
     'busy_timeout' => DB::selectOne('PRAGMA busy_timeout')->timeout,
     'journal' => DB::selectOne('PRAGMA journal_mode')->journal_mode,
     'matching_wake' => config('workflows.v2.matching_role.queue_wake_enabled'),
-    'worker_seconds' => getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45,
+    'worker_seconds' => workerSeconds(),
     'continuous_workers' => getenv('DW_PROBE_CONTINUOUS') === 'true',
     'distinct_transport_tasks' => count($multiplicities),
     'max_transport_copies' => $multiplicities === [] ? 0 : max($multiplicities),

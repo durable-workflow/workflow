@@ -1,0 +1,62 @@
+name: Published queue consumer
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/queue-contention/**'
+      - '.github/workflows/published-queue.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  published-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Record the ordinary hosted PHP environment
+        run: |
+          php --version
+          composer --version
+          nproc
+          free -m
+          php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3) { throw new RuntimeException("This cohort requires PHP 8.3."); } echo "SQLite ", (new PDO("sqlite::memory:"))->getAttribute(PDO::ATTR_SERVER_VERSION), PHP_EOL;'
+
+      - name: Install the declared published package and framework
+        run: >-
+          composer install --working-dir=.github/queue-contention/current
+          --no-plugins --no-scripts --prefer-dist --no-progress
+
+      - name: Verify installed runtime bytes against the immutable release
+        run: |
+          manifest=.github/queue-contention/current/composer.json
+          reference=$(jq -r '.extra["workflow-published-reference"]' "$manifest")
+          [[ "$reference" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$reference"
+          mkdir -p build/expected-published
+          git archive "$reference" src | tar -xf - -C build/expected-published
+          diff -qr build/expected-published/src .github/queue-contention/current/vendor/durable-workflow/workflow/src
+          php -r 'require ".github/queue-contention/current/vendor/autoload.php"; $manifest=json_decode(file_get_contents(".github/queue-contention/current/composer.json"), true, flags: JSON_THROW_ON_ERROR); if (Composer\InstalledVersions::getPrettyVersion("durable-workflow/workflow") !== $manifest["require"]["durable-workflow/workflow"] || Composer\InstalledVersions::getReference("durable-workflow/workflow") !== $manifest["extra"]["workflow-published-reference"]) { throw new RuntimeException("Installed package provenance differs."); }'
+
+      - name: Execute the original continuous four-worker cohort
+        env:
+          DW_PROBE_QUEUE_WAKE: 'true'
+          DW_PROBE_CONTINUOUS: 'true'
+        run: |
+          export DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php"
+          php .github/queue-contention/runner.php cohort
+
+      - name: Retain the small reproducible input lock for source review
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: published-queue-input-lock
+          path: .github/queue-contention/current/composer.lock
+          retention-days: 1
+          if-no-files-found: ignore
