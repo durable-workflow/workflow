@@ -23,6 +23,12 @@ final class TransitionExecutionTracingTest extends TestCase
             'legacy continuation, enabled later' => ['continue', true, false],
             'child, disabled workers' => ['child', false, true],
             'continuation, disabled workers' => ['continue', false, true],
+            'child, wrong task carrier' => ['child', true, true, 'wrong task'],
+            'child, wrong namespace carrier' => ['child', true, true, 'wrong namespace'],
+            'child failure, tracing enabled' => ['child-failure', true, true],
+            'child failure, tracing disabled' => ['child-failure', false, false],
+            'legacy child failure, enabled later' => ['child-failure', true, false],
+            'child failure, disabled workers' => ['child-failure', false, true],
         ];
     }
 
@@ -31,10 +37,17 @@ final class TransitionExecutionTracingTest extends TestCase
         string $transition,
         bool $enabled,
         bool $admissionEnabled,
+        string $control = 'valid',
     ): void {
         $directory = sys_get_temp_dir() . '/dw-tracing-transition-' . bin2hex(random_bytes(8));
         mkdir($directory, 0700);
-        $worker = static function (string $mode) use ($directory, $transition, $enabled, $admissionEnabled): array {
+        $worker = static function (string $mode) use (
+            $directory,
+            $transition,
+            $enabled,
+            $admissionEnabled,
+            $control
+        ): array {
             $packageVendor = dirname(__DIR__, 3) . '/vendor';
             $otherVendors = array_filter(
                 array_keys(ClassLoader::getRegisteredLoaders()),
@@ -48,6 +61,7 @@ final class TransitionExecutionTracingTest extends TestCase
                 ),
             ], env: [
                 'DW_TEST_TRACING_TRANSITION' => $transition,
+                'DW_TEST_TRACING_CHILD_OUTCOME_CONTROL' => $control,
                 'DW_TEST_TRACING_ENABLED' => ($mode === 'admit' ? $admissionEnabled : $enabled) ? 'true' : 'false',
             ]);
             $process->setTimeout(15);
@@ -68,26 +82,42 @@ final class TransitionExecutionTracingTest extends TestCase
                 self::assertSame($admitted['carrier'], $run['carrier'], json_encode($run, JSON_THROW_ON_ERROR));
             }
             $workers = [$scheduled];
+            $altered = false;
             for ($remaining = 8; $remaining > 0; --$remaining) {
                 $state = $worker('inspect');
                 if ($state['jobs'] === 0) {
                     break;
                 }
+                $childClosed = array_filter($state['transition_events'], static fn (array $event): bool =>
+                    $event['type'] === 'WorkflowCompleted' && $event['run_id'] !== $admitted['run_id']);
+                if ($control !== 'valid' && ! $altered && $childClosed !== []) {
+                    $changed = $worker('invalidate-child-outcome');
+                    self::assertSame($state['transition_events'], $changed['transition_events']);
+                    self::assertSame($state['runs'], $changed['runs']);
+                    self::assertNotNull($changed['child_outcome_control']);
+                    $altered = true;
+                }
                 $workers[] = $worker('work');
             }
             $finished = $worker('inspect');
+            self::assertSame($control !== 'valid', $altered);
             self::assertSame('completed', $finished['status']);
             self::assertSame([9007199254740993, null, '雪'], $finished['output']);
             self::assertSame(0, $finished['jobs']);
             self::assertSame(0, $finished['failed_jobs']);
             self::assertSame(0, $finished['repairs']);
-            self::assertSame(1, $finished['activity_count']);
-            self::assertSame(1, $finished['completion_count']);
+            self::assertSame($transition === 'child-failure' ? 0 : 1, $finished['activity_count']);
+            self::assertSame($transition === 'child-failure' ? 0 : 1, $finished['completion_count']);
             self::assertCount(2, $finished['runs']);
             foreach ($scheduled['runs'] as $index => $run) {
                 foreach (['id', 'instance_id', 'carrier', 'execution_deadline', 'run_deadline'] as $key) {
                     self::assertSame($run[$key], $finished['runs'][$index][$key]);
                 }
+                self::assertSame($run['history_hashes'], array_slice(
+                    $finished['runs'][$index]['history_hashes'],
+                    0,
+                    count($run['history_hashes']),
+                ));
             }
             if ($transition === 'continue') {
                 self::assertNotSame($admitted['run_id'], $finished['run_id']);
@@ -124,8 +154,56 @@ final class TransitionExecutionTracingTest extends TestCase
                 'observability_context',
                 json_encode($finished['history_payloads'], JSON_THROW_ON_ERROR)
             );
+            if ($transition !== 'continue') {
+                self::assertChildOutcomeLinks(
+                    $workers,
+                    $finished,
+                    $enabled,
+                    $control === 'valid',
+                    $transition === 'child-failure'
+                );
+            }
         } finally {
             (new Filesystem())->deleteDirectory($directory);
         }
+    }
+
+    private static function assertChildOutcomeLinks(
+        array $workers,
+        array $finished,
+        bool $enabled,
+        bool $expected,
+        bool $failed,
+    ): void {
+        $spans = array_merge(...array_column($workers, 'spans'));
+        if (! $enabled) {
+            self::assertSame([], $spans);
+            return;
+        }
+        $events = $finished['transition_events'];
+        $childType = $failed ? 'WorkflowFailed' : 'WorkflowCompleted';
+        $child = array_values(array_filter($events, static fn (array $event): bool =>
+            $event['type'] === $childType && $event['run_id'] !== $finished['run_id']))[0];
+        $parent = array_values(array_filter($events, static fn (array $event): bool =>
+            $event['type'] === 'WorkflowCompleted' && $event['run_id'] === $finished['run_id']))[0];
+        $resolved = array_values(array_filter($events, static fn (array $event): bool =>
+            $event['type'] === ($failed ? 'ChildRunFailed' : 'ChildRunCompleted')))[0];
+        self::assertSame($child['run_id'], $resolved['payload']['child_workflow_run_id']);
+        $childSpan = array_values(array_filter($spans, static fn (array $span): bool =>
+            $span['name'] === 'durable.workflow.task' && $span['fields']['task_id'] === $child['task_id']))[0];
+        $parentSpan = array_values(array_filter($spans, static fn (array $span): bool =>
+            $span['name'] === 'durable.workflow.task' && $span['fields']['task_id'] === $parent['task_id']))[0];
+        $links = array_values(array_filter($parentSpan['links'], static fn (array $link): bool =>
+            ($link['fields']['durable.link.type'] ?? null) === 'child_outcome'));
+        self::assertCount($expected ? 1 : 0, $links);
+        if (! $expected) {
+            return;
+        }
+        self::assertSame($childSpan['trace_id'], $links[0]['trace_id']);
+        self::assertSame($childSpan['span_id'], $links[0]['span_id']);
+        self::assertSame($child['id'], $links[0]['fields']['history_event_id']);
+        self::assertSame($child['run_id'], $links[0]['fields']['child_workflow_run_id']);
+        self::assertSame($child['task_id'], $links[0]['fields']['task_id']);
+        self::assertSame($resolved['id'], $links[0]['fields']['parent_resolution_event_id']);
     }
 }

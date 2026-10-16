@@ -262,6 +262,39 @@ final class ExecutionTracing
         }
     }
 
+    public static function linkChildOutcome(WorkflowHistoryEvent $resolution, ?WorkflowRun $child): void
+    {
+        try {
+            if ($child === null || self::$linkKey === null || ! $child->relationLoaded('historyEvents')) {
+                return;
+            }
+            $state = Context::getCurrent()->get(self::$linkKey);
+            $entry = $state instanceof TraceLinkState && $state->isRecording()
+                ? $state->outcome('child:' . $child->id) : null;
+            $terminal = $child->getRelation('historyEvents')
+                ->filter(
+                    static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type->value, [
+                        'WorkflowCompleted', 'WorkflowFailed', 'WorkflowCancelled', 'WorkflowTerminated',
+                    ], true),
+                )->sortByDesc('sequence')
+                ->first();
+            if ($entry === null || ! $terminal instanceof WorkflowHistoryEvent
+                || ! self::childOutcomeMatches($entry, $resolution, $child, $terminal)) {
+                return;
+            }
+            self::linkCarrier($state, $entry['context'], [
+                'durable.link.type' => 'child_outcome',
+                'history_event_id' => $terminal->id,
+                'event_type' => $terminal->event_type->value,
+                'task_id' => $terminal->workflow_task_id,
+                'child_workflow_run_id' => $child->id,
+                'parent_resolution_event_id' => $resolution->id,
+            ]);
+        } catch (Throwable) {
+            // Child resolution and its original authority remain independent of tracing.
+        }
+    }
+
     /**
      * @param array<string, mixed> $attributes
      * @param list<string> $baggageAllowlist
@@ -456,6 +489,34 @@ final class ExecutionTracing
         } catch (Throwable) {
             // Optional metadata cannot interrupt cancellation delivery.
         }
+    }
+
+    private static function childOutcomeMatches(
+        array $entry,
+        WorkflowHistoryEvent $resolution,
+        WorkflowRun $child,
+        WorkflowHistoryEvent $terminal,
+    ): bool {
+        $expected = match ($resolution->event_type->value) {
+            'ChildRunCompleted' => 'WorkflowCompleted',
+            'ChildRunFailed' => 'WorkflowFailed',
+            default => null,
+        };
+        $fields = self::current();
+
+        return $expected !== null && $terminal->event_type->value === $expected
+            && ($fields['workflow_run_id'] ?? null) === $resolution->workflow_run_id
+            && ($fields['workflow_run_id'] ?? null) === $entry['parent_run_id']
+            && ($fields['namespace'] ?? null) === $entry['parent_namespace']
+            && ($resolution->payload['workflow_link_id'] ?? null) === $entry['link_id']
+            && ($resolution->payload['sequence'] ?? null) === $entry['parent_sequence']
+            && ($resolution->payload['child_workflow_run_id'] ?? null) === $child->id
+            && ($resolution->payload['child_workflow_instance_id'] ?? null) === $child->workflow_instance_id
+            && $child->id === $entry['child_run_id'] && $terminal->workflow_run_id === $child->id
+            && $child->namespace === $entry['child_namespace']
+            && $child->workflow_instance_id === $entry['child_instance_id']
+            && $entry['task_id'] === $terminal->workflow_task_id
+            && TaskOutcomeCarrier::matchesEvent($entry, $terminal);
     }
 
     private static function outcomeState(): ?TaskOutcomeTraceState

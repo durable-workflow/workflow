@@ -4,11 +4,18 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Eloquent\Collection;
 use JsonSerializable;
+use OpenTelemetry\API\Instrumentation\Configurator;
+use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
+use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
+use OpenTelemetry\SDK\Trace\TracerProvider;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\TaskOutcomeCarrier;
 
 final class TaskOutcomeCarrierTest extends TestCase
@@ -151,6 +158,108 @@ final class TaskOutcomeCarrierTest extends TestCase
             'payload' => $object,
         ]));
         self::assertSame(0, $object->calls);
+    }
+
+    public static function childProofs(): iterable
+    {
+        yield 'canonical proof' => ['valid'];
+        yield 'different parent run' => ['parent'];
+        yield 'different original link' => ['link'];
+        yield 'different physical task' => ['task'];
+        yield 'different child namespace' => ['namespace'];
+    }
+
+    #[DataProvider('childProofs')]
+    public function testChildLinkRequiresTheOriginalProofWithoutQueryingOrChangingTheOperation(string $proof): void
+    {
+        $exporter = new InMemoryExporter();
+        $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+        $configuration = Configurator::create()->withTracerProvider($provider)->activate();
+        try {
+            $source = $provider->getTracer('fixture')
+                ->spanBuilder('child completion')
+                ->startSpan();
+            $context = TaskOutcomeCarrier::capture($source);
+            $source->end();
+            $terminal = new WorkflowHistoryEvent();
+            $terminal->setRawAttributes([
+                'id' => 'terminal',
+                'workflow_run_id' => 'child',
+                'workflow_task_id' => 'child-task',
+                'event_type' => 'WorkflowCompleted',
+                'sequence' => 3,
+                'payload' => '{}',
+            ], true);
+            $child = new WorkflowRun();
+            $child->setConnection('unavailable-observation-source');
+            $child->setRawAttributes([
+                'id' => 'child',
+                'workflow_instance_id' => 'child-instance',
+                'namespace' => '0',
+            ], true);
+            $child->setRelation('historyEvents', new Collection([$terminal]));
+            $resolution = new WorkflowHistoryEvent();
+            $resolution->setRawAttributes([
+                'id' => 'resolution',
+                'workflow_run_id' => 'parent',
+                'event_type' => 'ChildRunCompleted',
+                'payload' => json_encode([
+                    'workflow_link_id' => $proof === 'link' ? 'other' : 'link',
+                    'sequence' => 1,
+                    'child_workflow_run_id' => 'child',
+                    'child_workflow_instance_id' => 'child-instance',
+                ], JSON_THROW_ON_ERROR),
+            ], true);
+            $entry = [
+                'event_id' => 'terminal',
+                'sequence' => 3,
+                'event_type' => 'WorkflowCompleted',
+                'context' => $context,
+                'task_id' => 'child-task',
+                'child_run_id' => 'child',
+                'child_instance_id' => 'child-instance',
+                'child_namespace' => '0',
+                'parent_run_id' => 'parent',
+                'parent_namespace' => '0',
+                'parent_sequence' => 1,
+                'link_id' => 'link',
+            ];
+            if ($proof === 'parent') {
+                $resolution->workflow_run_id = 'other';
+            } elseif ($proof === 'task') {
+                $terminal->workflow_task_id = 'other';
+            } elseif ($proof === 'namespace') {
+                $child->namespace = 'other';
+            }
+            $calls = 0;
+            $result = ExecutionTracing::workflow([
+                'workflow_run_id' => 'parent',
+                'workflow_instance_id' => 'parent-instance',
+                'namespace' => '0',
+                'task_id' => 'parent-task',
+            ], null, static function () use ($resolution, $child, &$calls): array {
+                ++$calls;
+                ExecutionTracing::linkChildOutcome($resolution, $child);
+                return [9007199254740993, null, '雪'];
+            }, enabled: true, loadOutcomes: static fn (): array => [
+                'child:child' => $entry,
+            ]);
+            self::assertSame([9007199254740993, null, '雪'], $result);
+            self::assertSame(1, $calls);
+            self::assertSame([], ExecutionTracing::current());
+            $spans = array_values(array_filter($exporter->getSpans(), static fn ($span): bool =>
+                $span->getName() === 'durable.workflow.task'));
+            self::assertCount(1, $spans);
+            $links = $spans[0]->getLinks();
+            self::assertCount($proof === 'valid' ? 1 : 0, $links);
+            if ($proof === 'valid') {
+                self::assertSame($source->getContext()->getTraceId(), $links[0]->getSpanContext()->getTraceId());
+                self::assertSame($source->getContext()->getSpanId(), $links[0]->getSpanContext()->getSpanId());
+            }
+        } finally {
+            $configuration->detach();
+            $provider->shutdown();
+        }
     }
 
     private static function task(mixed $context = null): WorkflowTask

@@ -9,6 +9,7 @@ use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\Context\Context;
 use Throwable;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -182,33 +183,97 @@ final class TaskOutcomeCarrier
             if (! array_key_exists('observability_context', $claim->getRawOriginal())) {
                 return [];
             }
-            $events = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
-                ->where('workflow_run_id', $run->id)
-                ->whereIn('event_type', self::EVENTS)
-                ->whereNotNull('workflow_task_id')
-                ->orderByDesc('sequence')
+            return self::ownRunOutcomes($run) + self::childRunOutcomes($run);
+        } catch (Throwable) {
+            // A missing legacy column or unavailable observation cannot replace workflow execution.
+            return [];
+        }
+    }
+
+    private static function ownRunOutcomes(WorkflowRun $run): array
+    {
+        $events = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('event_type', self::EVENTS)
+            ->whereNotNull('workflow_task_id')
+            ->orderByDesc('sequence')
+            ->limit(32)
+            ->get(['id', 'workflow_run_id', 'workflow_task_id', 'sequence', 'event_type']);
+        if ($events->isEmpty()) {
+            return [];
+        }
+        $tasks = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->whereKey($events->pluck('workflow_task_id')->unique())
+            ->where('workflow_run_id', $run->id)
+            ->where('namespace', $run->namespace)
+            ->get(['id', 'workflow_run_id', 'namespace', 'observability_context'])->keyBy('id');
+        $result = [];
+        foreach ($events as $event) {
+            $task = $tasks->get($event->workflow_task_id);
+            if (! $task instanceof WorkflowTask) {
+                continue;
+            }
+            $envelope = self::fromTask($task);
+            foreach ($envelope['outcomes'] ?? [] as $entry) {
+                if ($entry['event_id'] === $event->id && $entry['sequence'] === (int) $event->sequence
+                    && $entry['event_type'] === $event->event_type->value) {
+                    $result[$event->id] = $entry + [
+                        'task_id' => $task->id,
+                    ];
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    private static function childRunOutcomes(WorkflowRun $run): array
+    {
+        try {
+            $links = ConfiguredV2Models::query('link_model', WorkflowLink::class)
+                ->where('parent_workflow_run_id', $run->id)
+                ->where('parent_workflow_instance_id', $run->workflow_instance_id)
+                ->where('link_type', 'child_workflow')
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
                 ->limit(32)
-                ->get(['id', 'workflow_run_id', 'workflow_task_id', 'sequence', 'event_type']);
-            if ($events->isEmpty()) {
+                ->get(['id', 'sequence', 'child_workflow_run_id', 'child_workflow_instance_id'])
+                ->keyBy('child_workflow_run_id');
+            if ($links->isEmpty()) {
                 return [];
             }
+            $events = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+                ->whereIn('workflow_run_id', $links->keys())
+                ->whereIn('event_type', ['WorkflowCompleted', 'WorkflowFailed'])
+                ->whereNotNull('workflow_task_id')
+                ->orderByDesc('recorded_at')
+                ->orderByDesc('id')
+                ->limit(32)
+                ->get(['id', 'workflow_run_id', 'workflow_task_id', 'sequence', 'event_type']);
             $tasks = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->whereKey($events->pluck('workflow_task_id')->unique())
-                ->where('workflow_run_id', $run->id)
-                ->where('namespace', $run->namespace)
+                ->whereIn('workflow_run_id', $links->keys())
                 ->get(['id', 'workflow_run_id', 'namespace', 'observability_context'])->keyBy('id');
             $result = [];
             foreach ($events as $event) {
                 $task = $tasks->get($event->workflow_task_id);
-                if (! $task instanceof WorkflowTask) {
+                $link = $links->get($event->workflow_run_id);
+                if (! $task instanceof WorkflowTask || ! $link instanceof WorkflowLink
+                    || $task->workflow_run_id !== $event->workflow_run_id) {
                     continue;
                 }
-                $envelope = self::fromTask($task);
-                foreach ($envelope['outcomes'] ?? [] as $entry) {
+                foreach (self::fromTask($task)['outcomes'] ?? [] as $entry) {
                     if ($entry['event_id'] === $event->id && $entry['sequence'] === (int) $event->sequence
                         && $entry['event_type'] === $event->event_type->value) {
-                        $result[$event->id] = $entry + [
+                        $result['child:' . $event->workflow_run_id] ??= $entry + [
                             'task_id' => $task->id,
+                            'child_run_id' => $task->workflow_run_id,
+                            'child_instance_id' => $link->child_workflow_instance_id,
+                            'child_namespace' => $task->namespace,
+                            'parent_run_id' => $run->id,
+                            'parent_namespace' => $run->namespace,
+                            'parent_sequence' => $link->sequence,
+                            'link_id' => $link->id,
                         ];
                     }
                 }
@@ -216,7 +281,7 @@ final class TaskOutcomeCarrier
 
             return $result;
         } catch (Throwable) {
-            // A missing legacy column or unavailable observation cannot replace workflow execution.
+            // Missing child observation rows cannot invalidate the run's own observations.
             return [];
         }
     }

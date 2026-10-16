@@ -177,11 +177,22 @@ original admission parent remains unchanged. Each task carrier is capped at
 applies. Older outcomes outside this window can have no link. Disabled workers
 perform no additional outcome-metadata reads or writes.
 
+Parent processing also prefetches at most 32 original child links and 32
+physical completed/failed child outcomes. Consuming a child resolution can add
+`durable.link.type=child_outcome` only when the original parent link, authored
+sequence, namespace/run/task bindings and physical terminal event all match.
+The child history must already be loaded by execution; adding the link performs
+no observation SQL. A missing or mismatched optional observation does not change
+child resolution. Root and child observations share the existing 32-link
+processing-segment cap; either bounded read window can omit older outcomes.
+
 Cold SQLite controls check the actual contributing local activity, ordinary
-activity and timer span IDs, including a genuine retry, with disabled and
-legacy modes. Transaction rollback, duplicate decisions and legacy migration
-controls are separate. This is not complete failure/timeout/child causality,
-an unlimited fan-in graph, multi-backend acceptance or overhead qualification.
+activity and timer span IDs, including genuine retries and handled terminal
+activity failures. Parent links cover completed and failed children, with
+disabled/legacy modes and wrong-task/namespace metadata controls. Transaction
+rollback, duplicate decisions and legacy migration are exercised separately.
+Timeout/cancellation causality, concurrent/large fan-out, multi-backend
+acceptance and overhead remain separate qualification gates.
 The new column remains unreleased and is not adopted by the service wire or
 native catalogs.
 

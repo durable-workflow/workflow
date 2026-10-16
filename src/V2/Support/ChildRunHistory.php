@@ -582,6 +582,7 @@ final class ChildRunHistory
         ?WorkflowRun $childRun = null,
     ): mixed {
         $childRun ??= self::loadRun(self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null));
+        ExecutionTracing::linkChildOutcome($resolutionEvent, $childRun);
         $payload = $resolutionEvent->payload['output'] ?? null;
 
         if ($payload === null && $childRun !== null) {
@@ -610,6 +611,7 @@ final class ChildRunHistory
         WorkflowHistoryEvent $resolutionEvent,
         ?WorkflowRun $childRun = null,
     ): Throwable {
+        ExecutionTracing::linkChildOutcome($resolutionEvent, $childRun);
         $payload = self::exceptionPayload(
             is_array($resolutionEvent->payload['exception'] ?? null) ? $resolutionEvent->payload['exception'] : null,
             $childRun,

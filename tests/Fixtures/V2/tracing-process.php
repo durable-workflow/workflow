@@ -83,6 +83,7 @@ $admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
     || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $fanOut = getenv('DW_TEST_TRACING_FAN_OUT') === 'true';
+$failureOutcomes = getenv('DW_TEST_TRACING_FAILURE_OUTCOMES');
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
@@ -508,7 +509,7 @@ $configuration = Configurator::create()->withTracerProvider($provider)
     ->withPropagator($propagator)
     ->activate();
 $taskOutcomeQueries = 0;
-if ($fanOut) {
+if ($fanOut || $failureOutcomes) {
     DB::listen(static function ($query) use (&$taskOutcomeQueries): void {
         if (str_contains($query->sql, 'workflow_tasks') && str_contains($query->sql, 'observability_context')) {
             ++$taskOutcomeQueries;
@@ -626,6 +627,7 @@ try {
     $scheduleDrainResults = null;
     $scheduleBackfillResults = null;
     $admissionContextPreserved = null;
+    $childOutcomeControl = null;
     try {
         if ($mode === 'admit') {
             if (Artisan::call('migrate', [
@@ -759,14 +761,21 @@ try {
                         [[9007199254740993, null, '雪']],
                         StartOptions::returnExistingActive()->withExecutionTimeout(60)->withRunTimeout(45)
                     );
+            } elseif ($failureOutcomes) {
+                WorkflowStub::make(TracingFailureOutcomeWorkflow::class, 'cold-tracing', '0')->start(
+                    $failureOutcomes === 'local',
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($fanOut) {
                 WorkflowStub::make(TracingFanOutWorkflow::class, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
-            } elseif ($transition === 'child' || $transition === 'continue') {
-                $workflow = $transition === 'child'
-                    ? TracingChildParentWorkflow::class
-                    : TracingContinuationWorkflow::class;
+            } elseif (in_array($transition, ['child', 'child-failure', 'continue'], true)) {
+                $workflow = match ($transition) {
+                    'child' => TracingChildParentWorkflow::class,
+                    'child-failure' => TracingHandledChildFailureWorkflow::class,
+                    default => TracingContinuationWorkflow::class,
+                };
                 WorkflowStub::make($workflow, 'cold-tracing', '0')->start(
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
                 );
@@ -926,6 +935,26 @@ try {
                 ]])['completed']) {
                 throw new \RuntimeException('Child failure admission refused.');
             }
+        } elseif ($mode === 'invalidate-child-outcome' && $transition === 'child') {
+            $parent = WorkflowRun::query()->where('workflow_instance_id', 'cold-tracing')->sole();
+            $terminal = WorkflowHistoryEvent::query()->where('event_type', 'WorkflowCompleted')
+                ->where('workflow_run_id', '!=', $parent->id)
+                ->sole();
+            $task = WorkflowTask::query()->findOrFail($terminal->workflow_task_id);
+            $carrier = json_decode($task->getRawOriginal('observability_context'), true, flags: JSON_THROW_ON_ERROR);
+            $field = match (getenv('DW_TEST_TRACING_CHILD_OUTCOME_CONTROL')) {
+                'wrong namespace' => 'namespace',
+                'wrong task' => 'task_id',
+                default => throw new \RuntimeException('Unknown optional-carrier control.'),
+            };
+            $carrier[$field] = 'unrelated';
+            DB::table('workflow_tasks')->where('id', $task->id)->update([
+                'observability_context' => json_encode($carrier, JSON_THROW_ON_ERROR),
+            ]);
+            $childOutcomeControl = [
+                'field' => $field,
+                'task_id' => $task->id,
+            ];
         } elseif ($mode === 'work') {
             if ($dispatchProbe) {
                 $dispatchDelivered = $dispatchQueue();
@@ -1100,7 +1129,7 @@ try {
                 'carrier' => $command->getRawOriginal('observability_context'),
             ])->all();
     }
-    if ($transition === 'child' || $transition === 'continue') {
+    if (in_array($transition, ['child', 'child-failure', 'continue'], true)) {
         $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($run): array => [
             'id' => $run->id,
             'instance_id' => $run->workflow_instance_id,
@@ -1109,10 +1138,32 @@ try {
             'carrier' => $run->getRawOriginal('observability_context'),
             'execution_deadline' => $run->getRawOriginal('execution_deadline_at'),
             'run_deadline' => $run->getRawOriginal('run_deadline_at'),
+            'history_hashes' => $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->map(
+                    static fn ($event): string => hash(
+                        'sha256',
+                        json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR)
+                    ),
+                )->all(),
         ])->all();
         $output['activity_count'] = ActivityExecution::query()->count();
         $output['completion_count'] = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count();
         $output['history_payloads'] = WorkflowHistoryEvent::query()->orderBy('id')->pluck('payload')->all();
+        $output['child_outcome_control'] = $childOutcomeControl;
+        $output['transition_events'] = WorkflowHistoryEvent::query()
+            ->whereIn('event_type', ['WorkflowCompleted', 'WorkflowFailed', 'ChildRunCompleted', 'ChildRunFailed'])
+            ->orderBy('id')
+            ->get()
+            ->map(static fn ($event): array => [
+                'id' => $event->id,
+                'run_id' => $event->workflow_run_id,
+                'task_id' => $event->workflow_task_id,
+                'type' => $event->event_type->value,
+                'sequence' => $event->sequence,
+                'payload' => $event->payload,
+            ])->all();
     }
     if ($childRetry) {
         $output['runs'] = WorkflowRun::query()->orderBy('id')->get()->map(static fn ($row): array => [
@@ -1297,11 +1348,11 @@ try {
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
         ];
     }
-    if ($fanOut) {
+    if ($fanOut || $failureOutcomes) {
         $history = $run->historyEvents()
             ->orderBy('sequence')
             ->get();
-        $output['fan_out'] = [
+        $output[$fanOut ? 'fan_out' : 'failure_outcomes'] = [
             'task_outcome_queries' => $taskOutcomeQueries,
             'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
             'history_hashes' => $history->map(static fn ($event): string => hash(
@@ -1329,7 +1380,7 @@ try {
             ])->filter(static fn (array $row): bool => $row['context'] !== null)->values()->all(),
             'outcome_events' => $history->filter(static fn ($event): bool => in_array(
                 $event->event_type->value,
-                ['ActivityCompleted', 'TimerFired', 'WorkflowCompleted'],
+                ['ActivityCompleted', 'ActivityFailed', 'TimerFired', 'WorkflowCompleted'],
                 true,
             ))->map(static fn ($event): array => [
                 'id' => $event->id,

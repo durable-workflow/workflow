@@ -381,6 +381,7 @@ jobs:
         tests/Unit/V2/IncomingHttpTracingTest.php
         tests/Unit/V2/RecoveryExecutionTracingTest.php
         tests/Unit/V2/TransitionExecutionTracingTest.php
+        tests/Unit/V2/FailureOutcomeExecutionTracingTest.php
         tests/Unit/V2/FanOutExecutionTracingTest.php
         tests/Unit/V2/TaskOutcomeCarrierTest.php
         tests/Unit/V2/ChildRetryExecutionTracingTest.php
