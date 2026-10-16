@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Uid\Ulid;
@@ -18,6 +19,7 @@ use Tests\Support\NexusCallerDeliveryScenario;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Activity;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
@@ -44,6 +46,7 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\StartOptions;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -87,6 +90,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'embedded-local-activity-retry-queue-delivery') {
+                $this->assertEmbeddedLocalRetryQueuesItsOriginalTask($fixture);
+                continue;
+            }
 
             if ($fixture['id'] === 'nexus-sdk-caller-attribution') {
                 $this->clearWorkflowState();
@@ -1287,6 +1295,89 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 HistoryEventType::ActivityStarted->value,
                 HistoryEventType::ActivityCompleted->value,
             ], $attemptEventsByActivity[$activityExecutionId] ?? []);
+        }
+    }
+
+    private function assertEmbeddedLocalRetryQueuesItsOriginalTask(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $previousQueue = Queue::getFacadeRoot();
+        $keys = [
+            'queue.default',
+            'queue.connections.database',
+            'workflows.v2.queue',
+            'workflows.v2.task_dispatch_mode',
+        ];
+        $previous = array_combine($keys, array_map(static fn (string $key): mixed => config($key), $keys));
+        config([
+            'queue.default' => 'database',
+            'queue.connections.database' => [
+                'driver' => 'database',
+                'table' => 'jobs',
+                'queue' => 'corpus-local-retry',
+                'retry_after' => 90,
+            ],
+            'workflows.v2.queue' => 'corpus-local-retry',
+            'workflows.v2.task_dispatch_mode' => 'queue',
+        ]);
+        $this->app->forgetInstance('queue');
+        Queue::swap($this->app->make('queue'));
+        $activityClass = \Tests\Fixtures\V2\TestGreetingActivity::class;
+        $this->app->bind($activityClass, static fn () => new class() extends Activity {
+            public int $tries = 2;
+
+            public function backoff(): int
+            {
+                return 0;
+            }
+
+            public function handle(string $name): string
+            {
+                if ($name === 'Retry' && $this->attemptCount() === 1) {
+                    throw new \RuntimeException('A real local callback failure.');
+                }
+
+                return "Hello, {$name}!";
+            }
+        });
+        try {
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'corpus-local-retry');
+            $stub->start(...[...$fixture['workflow']['arguments'], new StartOptions(
+                executionTimeoutSeconds: 30,
+                runTimeoutSeconds: 20,
+            )]);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+            $work = static fn (): int => Artisan::call('queue:work', [
+                'connection' => 'database',
+                '--queue' => 'corpus-local-retry',
+                '--once' => true,
+                '--tries' => 1,
+            ]);
+            $this->assertSame(0, $work());
+            $retry = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)->sole();
+            $this->assertSame(1, DB::table('jobs')->where('queue', 'corpus-local-retry')->count());
+            $this->assertNotNull(
+                WorkflowTask::query()->findOrFail($retry->payload['retry_task_id'])->last_dispatched_at
+            );
+            $this->assertSame(0, $work());
+            $this->assertSame($fixture['expected']['result'], $stub->refresh()->output());
+            $this->assertSame('completed', $run->fresh()->status->value);
+            $this->assertSame($deadlines, [
+                $run->fresh()
+                    ->getRawOriginal('execution_deadline_at'), $run->fresh()
+                    ->getRawOriginal('run_deadline_at'),
+            ]);
+            $this->assertSame(3, ActivityAttempt::query()->count());
+            $this->assertSame(2, ActivityExecution::query()->count());
+            $this->assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
+            $this->assertSame(0, DB::table('jobs')->where('queue', 'corpus-local-retry')->count());
+        } finally {
+            $this->app->offsetUnset($activityClass);
+            Queue::swap($previousQueue);
+            config($previous);
+            DB::table('jobs')->where('queue', 'corpus-local-retry')->delete();
         }
     }
 
