@@ -396,8 +396,8 @@ Rules:
   `queue_delivery_reference` identifies an exact unreserved database-queue row.
   It checks the original job primary key, payload UUID, job class and resolved
   connection/queue/table before acquiring repair locks. This is a transport
-  observation, never a claim, receipt or completion authority. A disappeared
-  row is rechecked on the next pass. Reserved, legacy, mismatched and unavailable
+  observation, never a claim, receipt or completion authority. A subsequent
+  bounded scan rechecks a disappeared row. Reserved, legacy, mismatched and unavailable
   references retain the existing repair path. Application-owned queue managers
   and custom queue subclasses are not inspected. The optional nullable column
   is hidden from task JSON; no business history, payload, policy or deadline is
