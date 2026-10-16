@@ -83,7 +83,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 self::assertSame($admitted[$field], $finished[$field]);
             }
             foreach (['jobs', 'failed_jobs'] as $field) {
-                self::assertSame(0, $finished[$field]);
+                self::assertSame(0, $finished[$field], $field . ': ' . $diagnostic);
             }
             $observed = $finished['large_fan_out'];
             self::assertCount(64, $observed['activities']);
