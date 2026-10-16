@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.26 - 2026-10-16
+
+- Retry proven rolled-back SQLite queue acknowledgment deletes with capped
+  cooperative backoff inside the existing retry cutoff. Preserve the original
+  job, queue, reservation timestamp and attempt fences.
+- Keep newer reservations intact and propagate uncertain commit, rollback,
+  connection and constraint failures. Handler execution is not repeated to
+  acknowledge a transport delivery.
+- Continue propagating native contention when the bounded retry budget is
+  exhausted. Workflow policies, logical attempts and deadlines are unchanged.
+
 ## 2.5.25 - 2026-10-16
 
 - Allow additional proven SQLite root rollbacks during task write admission
