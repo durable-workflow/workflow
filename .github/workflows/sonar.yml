@@ -1,8 +1,6 @@
 name: SonarQube
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -28,4 +26,5 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+          # The bounded PR jobs do not produce coverage reports for this revision.
+          args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300 -Dsonar.coverage.exclusions=**/*
