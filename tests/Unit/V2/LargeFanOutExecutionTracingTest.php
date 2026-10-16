@@ -15,19 +15,21 @@ final class LargeFanOutExecutionTracingTest extends TestCase
     public static function modes(): array
     {
         return [
-            'queue-only traced' => [true],
-            'queue-only disabled' => [false],
+            'embedded traced' => [true],
+            'embedded disabled' => [false],
         ];
     }
 
     #[DataProvider('modes')]
-    public function testConcurrentQueueOnlyWorkersCompleteTheFanOutAndExposeMissingOutcomeContexts(bool $enabled): void
+    public function testConcurrentWorkersCompleteTheFanOutAndExposeMissingOutcomeContexts(bool $enabled): void
     {
         $directory = sys_get_temp_dir() . '/dw-tracing-large-fan-out-' . bin2hex(random_bytes(8));
         mkdir($directory, 0700);
         $batch = [];
         try {
             $admitted = self::read(self::process($directory, 'admit', $enabled));
+            self::assertTrue($admitted['large_fan_out']['matching_role']['queue_wake_enabled']);
+            self::assertSame('in_worker', $admitted['large_fan_out']['matching_role']['shape']);
             $deadline = microtime(true) + 90;
             $initial = self::read(self::process($directory, 'work', $enabled));
             self::assertCount(64, $initial['large_fan_out']['activities']);
@@ -60,6 +62,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 'delayed_jobs' => $finished['large_fan_out']['delayed_jobs'],
                 'queue_attempts' => $finished['large_fan_out']['queue_attempts'],
                 'delivery_errors' => $finished['large_fan_out']['delivery_errors'],
+                'repairs' => $finished['repairs'],
                 'task_states' => array_count_values(array_column($finished['large_fan_out']['tasks'], 'status')),
                 'activity_states' => array_count_values(
                     array_column($finished['large_fan_out']['activities'], 'status')
@@ -79,14 +82,13 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $field) {
                 self::assertSame($admitted[$field], $finished[$field]);
             }
-            foreach (['jobs', 'failed_jobs', 'repairs'] as $field) {
+            foreach (['jobs', 'failed_jobs'] as $field) {
                 self::assertSame(0, $finished[$field]);
             }
             $observed = $finished['large_fan_out'];
             self::assertCount(64, $observed['activities']);
             self::assertCount(64, $observed['attempts']);
             self::assertSame([1], array_values(array_unique(array_column($observed['attempts'], 'attempt_number'))));
-            self::assertSame([0], array_values(array_unique(array_column($observed['tasks'], 'repair_count'))));
             self::assertCount(count($pids), array_unique($pids));
             self::assertCount(4, glob($directory . '/ready-worker-*'));
             foreach ($prefixes as $prefix) {
@@ -124,7 +126,9 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             ),
         ], env: [
             'DW_TEST_TRACING_LARGE_FAN_OUT' => 'true',
-            'DW_TEST_TRACING_LARGE_FAN_OUT_QUEUE_WAKE' => 'false',
+            // Disabling this role requires a separate matching process.
+            'DW_TEST_TRACING_LARGE_FAN_OUT_QUEUE_WAKE' => 'true',
+            'DW_TEST_TRACING_CONTINUOUS_WORKERS' => 'true',
             'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
         ]);
         $process->setTimeout($mode === 'work-drain' ? 60 : 20);

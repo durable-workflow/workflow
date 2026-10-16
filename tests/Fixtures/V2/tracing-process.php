@@ -987,7 +987,7 @@ try {
                 $workerOptions += [
                     '--max-jobs' => 128,
                     '--max-time' => 45,
-                    '--stop-when-empty' => true,
+                    '--stop-when-empty' => getenv('DW_TEST_TRACING_CONTINUOUS_WORKERS') !== 'true',
                 ];
             }
             if (Artisan::call('queue:work', $workerOptions) !== 0) {
@@ -1378,6 +1378,7 @@ try {
             ->orderBy('sequence')
             ->get();
         $output[$largeFanOut ? 'large_fan_out' : ($fanOut ? 'fan_out' : 'failure_outcomes')] = [
+            'matching_role' => \Workflow\V2\Support\MatchingRoleSnapshot::current(),
             'task_outcome_queries' => $taskOutcomeQueries,
             'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
             'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
