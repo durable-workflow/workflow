@@ -39,6 +39,7 @@ final class ActivityOutcomeRecorder
         int $maxAttempts,
         int $backoffSeconds,
         ?string $codec = null,
+        ?int $admissionDeadline = null,
     ): array {
         return SqliteTransaction::forTask($taskId, static function () use (
             $taskId,
@@ -462,7 +463,7 @@ final class ActivityOutcomeRecorder
             );
 
             return self::recorded($resumeTask);
-        });
+        }, admissionDeadline: $admissionDeadline);
     }
 
     /**
