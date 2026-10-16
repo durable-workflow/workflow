@@ -37,6 +37,7 @@ use Workflow\UpdateMethod;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -555,6 +556,11 @@ try {
     if ($signalLinks && $mode === 'signal') {
         $headers['traceparent'] = getenv('DW_TEST_TRACING_SIGNAL_CALLER');
         $headers['baggage'] = 'approved=caller';
+    } elseif ($scheduleProbe === 'buffered' && in_array($mode, ['buffer', 'buffer-full', 'buffer-next'], true)) {
+        $headers['traceparent'] = $mode === 'buffer'
+            ? '00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01'
+            : '00-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-ffffffffffffffff-01';
+        $headers['baggage'] = 'approved=buffer-only';
     } elseif ($updateLinks && $mode === 'update') {
         $headers['traceparent'] = getenv('DW_TEST_TRACING_UPDATE_CALLER');
         $headers['baggage'] = 'approved=update-caller';
@@ -607,6 +613,8 @@ try {
     $cancellationResult = null;
     $updateResult = null;
     $admissionResult = null;
+    $scheduleBufferResult = null;
+    $scheduleDrainResults = null;
     $admissionContextPreserved = null;
     try {
         if ($mode === 'admit') {
@@ -650,8 +658,11 @@ try {
                     $schedule = ScheduleManager::create(
                         scheduleId: 'cold-schedule',
                         workflowClass: TracingProcessWorkflow::class,
-                        cronExpression: '* * * * *',
+                        cronExpression: $scheduleProbe === 'buffered' ? '0 0 1 1 *' : '* * * * *',
                         arguments: [false],
+                        overlapPolicy: $scheduleProbe === 'buffered'
+                            ? ScheduleOverlapPolicy::from(getenv('DW_TEST_TRACING_BUFFER_POLICY') ?: 'buffer_one')
+                            : ScheduleOverlapPolicy::Skip,
                         namespace: '0',
                         executionTimeoutSeconds: 60,
                         runTimeoutSeconds: 45
@@ -750,6 +761,34 @@ try {
                         'outcome' => $result->outcome(),
                     ];
                 }
+            }
+        } elseif ($scheduleProbe === 'buffered' && in_array($mode, ['buffer', 'buffer-full', 'buffer-next'], true)) {
+            $schedule = WorkflowSchedule::query()->where('schedule_id', 'cold-schedule')->sole();
+            $scheduleBufferResult = ScheduleManager::triggerDetailed($schedule)->outcome;
+        } elseif ($scheduleProbe === 'buffered' && $mode === 'buffer-metadata') {
+            $schedule = WorkflowSchedule::query()->where('schedule_id', 'cold-schedule')->sole();
+            $buffer = $schedule->buffered_actions;
+            if (getenv('DW_TEST_TRACING_BUFFER_METADATA') === 'legacy') {
+                unset($buffer[0]['observability_context']);
+            } else {
+                $buffer[0]['observability_context'] = 'malformed optional context';
+            }
+            $schedule->buffered_actions = $buffer;
+            $schedule->save();
+        } elseif ($scheduleProbe === 'buffered' && in_array($mode, ['drain', 'drain-fail'], true)) {
+            if ($mode === 'drain-fail') {
+                $app['events']->listen(WorkflowStarted::class, static function (): never {
+                    throw new \RuntimeException('deliberate buffered admission rollback');
+                });
+            }
+            $triggered = ScheduleManager::tick(1);
+            $scheduleDrainResults = $triggered;
+            $instanceId = $triggered[0]['instance_id'] ?? null;
+            if ($mode === 'drain' && (! is_string($instanceId) || $instanceId === '')) {
+                throw new \RuntimeException('The actual buffer did not admit its workflow.');
+            }
+            if ($mode === 'drain') {
+                file_put_contents($directory . '/schedule-instance', $instanceId);
             }
         } elseif ($mode === 'update' && $updateLinks) {
             $step = getenv('DW_TEST_TRACING_UPDATE_STEP');
@@ -950,7 +989,13 @@ try {
             'id' => $schedule->schedule_id,
             'namespace' => $schedule->namespace,
             'fires_count' => (int) $schedule->fires_count,
+            'failures_count' => (int) $schedule->failures_count,
+            'run_count' => WorkflowRun::query()->count(),
             'latest_instance_id' => $schedule->latest_workflow_instance_id,
+            'buffer_result' => $scheduleBufferResult,
+            'drain_results' => $scheduleDrainResults,
+            'buffered_actions' => $schedule->buffered_actions,
+            'public_buffered_actions' => $schedule->toDetail()['info']['buffered_actions'],
             'instance_id' => $run->workflow_instance_id,
             'boundaries' => $admissionProcessor->boundaries,
             'capture_transaction_levels' => $recordedPropagator->transactionLevels,

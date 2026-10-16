@@ -192,11 +192,26 @@ Returned identities, `durable.schedule.outcome` and `durable.schedule.reason`
 are attached when available. Backfill's instance-only return does not invent a
 run ID. A buffered receipt is not an admitted run or a completed workflow.
 
-Buffered draining and backfill have focused queue/state and transaction-boundary
-controls. The later drain currently captures its actual scheduler context.
-Preserving a buffered request's independent caller as a later link, wider cold
-backfill/drain coverage and full schedule tracing remain unqualified. The
-component adds no schedule metadata column or service wire field.
+An accepted buffered trigger keeps its bounded caller carrier alongside that
+specific buffered action in the internal `observability_context` field. A full
+buffer keeps the first entry and its caller. The public schedule detail omits
+this optional field, and tracing disabled at admission stores no carrier.
+
+The later drain keeps its actual scheduler parent and adds a
+`buffered_schedule` link to the buffered caller after the runtime-owned admission
+transaction commits. A rolled-back admission retains the original entry and
+adds no success link. Legacy entries and malformed metadata produce no link;
+they retain the normal scheduling behavior. The caller's baggage is not imported
+into the drain. Separate cold processes qualify traced, disabled, full-buffer,
+legacy/malformed and rollback-then-success paths with unchanged run deadlines,
+typed results and first-attempt tasks.
+Both `buffer_one` and ordered `buffer_all` draining have cold-process controls;
+successive entries link their own callers rather than reusing the first caller.
+
+Backfill retains its focused queue/state and transaction-boundary controls;
+wider cold backfill coverage and full schedule tracing remain unfinished. This
+component adds no schedule column or service wire field. The internal buffered
+metadata has no stable or native adoption claim.
 
 ## Signal caller links
 
@@ -231,8 +246,8 @@ share a link identified by the first applied command. Further additions are
 dropped, with the count in `durable.links.dropped`. Application SDK limits may
 be lower. The link state ends with its processing scope.
 
-This does not add service wire propagation, native catalog support, buffered
-schedule caller links or complete fan-in tracing.
+This does not add service wire propagation, native catalog support or complete
+fan-in tracing.
 
 ## Update caller links
 

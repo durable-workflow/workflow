@@ -392,40 +392,56 @@ final class ScheduleManager
             try {
                 $drained = ExecutionTracing::scheduleAdmission(
                     $schedule,
-                    static fn (): ?array => DB::transaction(static function () use ($schedule): ?array {
-                        /** @var WorkflowSchedule $schedule */
-                        $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
+                    static function () use ($schedule): ?array {
+                        $drained = DB::transaction(static function () use ($schedule): ?array {
+                            /** @var WorkflowSchedule $schedule */
+                            $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
-                        $bufferedAction = $schedule->drainBuffer();
+                            $bufferedAction = $schedule->drainBuffer();
 
-                        if ($bufferedAction === null) {
-                            return null;
-                        }
+                            if ($bufferedAction === null) {
+                                return null;
+                            }
 
-                        $schedule->save();
+                            $schedule->save();
 
-                        $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
-                        if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
-                            self::skipFiredOccurrence($schedule, $occurrenceTime);
+                            $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
+                            if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                                self::skipFiredOccurrence($schedule, $occurrenceTime);
+
+                                return [
+                                    'instance_id' => null,
+                                    'run_id' => null,
+                                    'outcome' => 'skipped',
+                                    'reason' => 'already_fired_occurrence',
+                                    'occurrence_time' => $occurrenceTime->format('Y-m-d\TH:i:s.uP'),
+                                ];
+                            }
+
+                            $startResult = self::startRun(
+                                $schedule,
+                                occurrenceTime: $occurrenceTime,
+                                outcome: 'drained'
+                            );
 
                             return [
-                                'instance_id' => null,
-                                'run_id' => null,
-                                'outcome' => 'skipped',
-                                'reason' => 'already_fired_occurrence',
-                                'occurrence_time' => $occurrenceTime->format('Y-m-d\TH:i:s.uP'),
+                                'instance_id' => $startResult->instanceId,
+                                'run_id' => $startResult->runId,
+                                'outcome' => 'drained',
+                                'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
+                                'observability_context' => $bufferedAction['observability_context'] ?? null,
                             ];
+                        });
+                        if ($drained !== null) {
+                            ExecutionTracing::linkBufferedSchedule(
+                                $schedule,
+                                $drained['observability_context'] ?? null
+                            );
+                            unset($drained['observability_context']);
                         }
 
-                        $startResult = self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'drained');
-
-                        return [
-                            'instance_id' => $startResult->instanceId,
-                            'run_id' => $startResult->runId,
-                            'outcome' => 'drained',
-                            'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
-                        ];
-                    }),
+                        return $drained;
+                    },
                     'buffered'
                 );
 
@@ -597,11 +613,14 @@ final class ScheduleManager
         ?CommandContext $context,
         ?DateTimeInterface $occurrenceTime,
     ): ScheduleTriggerResult {
+        $observabilityContext = ExecutionTracing::enabled() ? TraceCarrier::admissionParent() : null;
+
         return DB::transaction(static function () use (
             $schedule,
             $overlapPolicyOverride,
             $context,
-            $occurrenceTime
+            $occurrenceTime,
+            $observabilityContext
         ): ScheduleTriggerResult {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()
@@ -652,7 +671,7 @@ final class ScheduleManager
                     return new ScheduleTriggerResult('buffer_full', null, null, 'buffer_full');
                 }
 
-                $schedule->bufferAction($occurrenceTime);
+                $schedule->bufferAction($occurrenceTime, $observabilityContext);
                 $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
                 $schedule->save();
 

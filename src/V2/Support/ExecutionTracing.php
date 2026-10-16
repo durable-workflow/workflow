@@ -319,6 +319,32 @@ final class ExecutionTracing
         self::linkCommand($run, $command, CommandType::Update);
     }
 
+    public static function linkBufferedSchedule(WorkflowSchedule $schedule, mixed $stored): void
+    {
+        if (! self::enabled()) {
+            return;
+        }
+        try {
+            $fields = self::current();
+            if (self::$linkKey === null || ($fields['schedule_id'] ?? null) !== $schedule->getRawOriginal('schedule_id')
+                || ($fields['namespace'] ?? null) !== $schedule->getRawOriginal('namespace')) {
+                return;
+            }
+            $state = Context::getCurrent()->get(self::$linkKey);
+            if (! $state instanceof TraceLinkState || ! $state->isRecording()) {
+                return;
+            }
+            $carrier = TraceCarrier::normalize($stored);
+            if ($carrier !== null) {
+                self::linkCarrier($state, $carrier, [
+                    'durable.link.type' => 'buffered_schedule',
+                ]);
+            }
+        } catch (Throwable) {
+            // Optional causal metadata cannot replace a committed schedule decision.
+        }
+    }
+
     public static function linkCancellation(WorkflowRun $run): void
     {
         try {
@@ -354,14 +380,23 @@ final class ExecutionTracing
             if ($carrier === null) {
                 return;
             }
-            $context = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: Context::getRoot());
-            $state->add(Span::fromContext($context)->getContext(), [
+            self::linkCarrier($state, $carrier, [
                 'workflow_command_id' => $command->id,
                 'command_type' => $type->value,
             ]);
         } catch (Throwable) {
             // Optional causal links cannot replace the command's durable decision.
         }
+    }
+
+    /**
+     * @param array{schema: string, version: int, carrier: array<string, string>} $carrier
+     * @param array<string, string> $attributes
+     */
+    private static function linkCarrier(TraceLinkState $state, array $carrier, array $attributes): void
+    {
+        $context = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: Context::getRoot());
+        $state->add(Span::fromContext($context)->getContext(), $attributes);
     }
 
     /**
@@ -445,7 +480,7 @@ final class ExecutionTracing
             self::$correlationKey ??= Context::createKey('durable-workflow.correlation');
             $active = $span->storeInContext($parent)
                 ->with(self::$correlationKey, $fields);
-            if ($name === 'durable.workflow.task') {
+            if (in_array($name, ['durable.workflow.task', 'durable.schedule.trigger'], true)) {
                 self::$linkKey ??= Context::createKey('durable-workflow.trace-links');
                 $active = $active->with(self::$linkKey, new TraceLinkState($span));
             }
