@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.28 - 2026-10-16
+
+- Retry rolled-back MySQL root transactions for signal, signal-with-start,
+  cancellation and termination using the configured storage transaction limit.
+- Preserve caller-owned transactions and unrelated database failures. Keep
+  original run identities, histories and deadlines, with one accepted command
+  after a successful retry. SQLite and PostgreSQL policies are unchanged.
+
 ## 2.5.27 - 2026-10-16
 
 - Retain an embedded activity's callback outcome while SQLite waits to admit
