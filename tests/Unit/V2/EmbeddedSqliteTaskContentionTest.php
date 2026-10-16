@@ -65,6 +65,10 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         foreach ($phases as $name => [$phase]) {
             $cases[$name] = [$phase, false];
             $cases[$name . ' with separate application database'] = [$phase, true];
+            if (! in_array($phase, ['start', 'signal'], true)) {
+                $cases[$name . ' after three rollbacks'] = [$phase, false, 3];
+                $cases[$name . ' after three rollbacks with separate application database'] = [$phase, true, 3];
+            }
         }
 
         return $cases;
@@ -177,8 +181,11 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
     }
 
     #[DataProvider('phases')]
-    public function testOriginalRunCompletesOnceAfterRealWalWrite(string $phase, bool $separate): void
-    {
+    public function testOriginalRunCompletesOnceAfterRealWalWrite(
+        string $phase,
+        bool $separate,
+        int $releaseAfter = 1
+    ): void {
         if ($separate) {
             config()->set('database.connections.application_sqlite', [
                 'driver' => 'sqlite',
@@ -199,9 +206,10 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $armed = $phase === 'start';
         $injected = false;
         $admissions = 0;
+        $rollbacks = 0;
         $connection->getEventDispatcher()
-            ->listen(TransactionRolledBack::class, static function () use ($writer): void {
-                if ($writer->inTransaction()) {
+            ->listen(TransactionRolledBack::class, static function () use ($writer, $releaseAfter, &$rollbacks): void {
+                if ($writer->inTransaction() && ++$rollbacks >= $releaseAfter) {
                     $writer->commit();
                 }
             });

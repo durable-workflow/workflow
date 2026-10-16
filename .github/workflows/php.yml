@@ -335,6 +335,7 @@ jobs:
       run: |
         mkdir -p build/test-results
         vendor/bin/phpunit tests/Unit/V2/DatabaseQueueRecoveryTest.php \
+          tests/Unit/V2/EmbeddedSqliteTaskContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
 
     - name: Resolve bounded pull-request test selection
