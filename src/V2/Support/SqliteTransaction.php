@@ -47,7 +47,10 @@ final class SqliteTransaction
         }
 
         $deadline = hrtime(true) + 5_000_000_000;
-        $maximumAttempts = max(1, $attempts ?? 3);
+        // Before admission, no execution body has run. Keep retrying proven
+        // rollbacks within the existing window instead of exhausting three
+        // fast lock refusals. Preserve ordinary mutation and explicit limits.
+        $maximumAttempts = max(1, $attempts ?? ($admission === null ? 3 : 64));
         for ($attempt = 1; ; $attempt++) {
             $failedInRoot = false;
             $returned = false;
@@ -89,7 +92,7 @@ final class SqliteTransaction
                     throw $exception;
                 }
 
-                usleep($attempt * 20_000);
+                usleep($admission === null ? $attempt * 20_000 : min($attempt * 20_000, 100_000));
                 if (hrtime(true) >= $deadline) {
                     throw $exception;
                 }

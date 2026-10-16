@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
@@ -90,7 +91,7 @@ final class TaskDispatcher
             } else {
                 app(BusDispatcher::class)->dispatch($job);
             }
-            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
+            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection, $job);
         } catch (Throwable $throwable) {
             self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage(), $boundedWorkflowTaskProjection);
 
@@ -179,7 +180,11 @@ final class TaskDispatcher
         WorkflowTask $task,
         mixed $attemptedAt,
         bool $boundedWorkflowTaskProjection,
+        ?object $job = null,
     ): void {
+        if (array_key_exists('queue_delivery_reference', $task->getAttributes())) {
+            $task->setAttribute('queue_delivery_reference', DatabaseTaskDelivery::capture($task, $job));
+        }
         $task->forceFill([
             'last_dispatch_attempt_at' => $attemptedAt,
             'last_dispatched_at' => $attemptedAt,

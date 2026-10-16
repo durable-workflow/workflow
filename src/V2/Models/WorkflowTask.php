@@ -24,7 +24,7 @@ class WorkflowTask extends Model
 
     protected $guarded = [];
 
-    protected $hidden = ['observability_context'];
+    protected $hidden = ['observability_context', 'queue_delivery_reference'];
 
     protected $keyType = 'string';
 
@@ -35,6 +35,7 @@ class WorkflowTask extends Model
         'task_type' => TaskType::class,
         'status' => TaskStatus::class,
         'payload' => 'array',
+        'queue_delivery_reference' => 'array',
         'repair_count' => 'integer',
         'priority' => 'integer',
         'fairness_weight' => 'integer',
