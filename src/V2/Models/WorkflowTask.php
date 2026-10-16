@@ -24,6 +24,8 @@ class WorkflowTask extends Model
 
     protected $guarded = [];
 
+    protected $hidden = ['queue_delivery_reference'];
+
     protected $keyType = 'string';
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
@@ -32,6 +34,7 @@ class WorkflowTask extends Model
         'task_type' => TaskType::class,
         'status' => TaskStatus::class,
         'payload' => 'array',
+        'queue_delivery_reference' => 'array',
         'repair_count' => 'integer',
         'priority' => 'integer',
         'fairness_weight' => 'integer',

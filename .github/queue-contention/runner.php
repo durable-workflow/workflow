@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/vendor/autoload.php';
+require getenv('DW_QUALIFICATION_AUTOLOAD') ?: __DIR__ . '/vendor/autoload.php';
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
@@ -11,6 +11,7 @@ use Monolog\Formatter\JsonFormatter;
 use Orchestra\Testbench\Foundation\Application;
 use Symfony\Component\Process\Process;
 use Workflow\Providers\WorkflowServiceProvider;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -97,12 +98,16 @@ if (($argv[1] ?? '') === 'cohort') {
             'member' => $member,
             'value' => [9007199254740993, null, '雪'],
         ], range(0, 63));
+        $final['business_invariants_pass'] = $final['status'] === 'completed' && $final['output_exact']
+            && $final['original_timing_preserved'] && $final['original_prefix_preserved']
+            && $final['observer_within_original_90s'] && $final['callbacks'] === 64
+            && count($final['callback_members']) === 64 && $final['attempts'] === 64
+            && $final['attempt_numbers'] === [1] && ($final['history_counts']['WorkflowCompleted'] ?? 0) === 1;
+        $final['clean_acceptance_pass'] = $final['business_invariants_pass'] && $final['failed_jobs'] === 0
+            && $final['repairs'] === 0 && $final['jobs'] === 0;
         unset($final['history_hashes'], $final['output']);
         echo json_encode($final, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) . "\n";
-        $exitCode = $final['status'] === 'completed' && $final['output_exact'] && $final['failed_jobs'] === 0
-            && $final['repairs'] === 0 && $final['original_timing_preserved']
-            && $final['original_prefix_preserved'] && $final['observer_within_original_90s']
-            && $final['callbacks'] === 64 && count($final['callback_members']) === 64 ? 0 : 1;
+        $exitCode = $final['clean_acceptance_pass'] ? 0 : 1;
     } finally {
         foreach ($workers as $worker) {
             $worker->stop(1, 9);
@@ -242,7 +247,7 @@ if ($mode === 'admit') {
         $options += [
             '--max-jobs' => 128,
             '--max-time' => getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45,
-            '--stop-when-empty' => true,
+            '--stop-when-empty' => getenv('DW_PROBE_CONTINUOUS') !== 'true',
         ];
     }
     if (Artisan::call('queue:work', $options) !== 0) {
@@ -278,6 +283,11 @@ $transportTasks = DB::table('jobs')->get(['payload'])->map(static function ($row
 })->all();
 $multiplicities = array_count_values(array_filter($transportTasks, is_string(...)));
 echo json_encode([
+    'runtime_profile' => getenv('DW_QUALIFICATION_AUTOLOAD') ? 'explicit-autoloader' : 'locked-published-package',
+    'dispatcher_sha256' => hash_file(
+        'sha256',
+        (new ReflectionClass(\Workflow\V2\Support\TaskDispatcher::class))->getFileName()
+    ),
     'pid' => getmypid(),
     'run_id' => $run->id,
     'status' => $run->status->value,
@@ -286,6 +296,10 @@ echo json_encode([
     'activities' => ActivityExecution::query()->get()->groupBy('status')->map->count()->all(),
     'tasks' => WorkflowTask::query()->get()->groupBy('status')->map->count()->all(),
     'repairs' => (int) WorkflowTask::query()->sum('repair_count'),
+    'attempts' => ActivityAttempt::query()->count(),
+    'attempt_numbers' => ActivityAttempt::query()->orderBy('attempt_number')->distinct()->pluck(
+        'attempt_number'
+    )->all(),
     'jobs' => DB::table('jobs')->count(),
     'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
     'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
@@ -314,6 +328,7 @@ echo json_encode([
     'journal' => DB::selectOne('PRAGMA journal_mode')->journal_mode,
     'matching_wake' => config('workflows.v2.matching_role.queue_wake_enabled'),
     'worker_seconds' => getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45,
+    'continuous_workers' => getenv('DW_PROBE_CONTINUOUS') === 'true',
     'distinct_transport_tasks' => count($multiplicities),
     'max_transport_copies' => $multiplicities === [] ? 0 : max($multiplicities),
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) . "\n";

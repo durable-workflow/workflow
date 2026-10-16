@@ -2,6 +2,7 @@
   "changed_feature_budget_seconds": 120,
   "unknown_feature_weight_seconds": 30,
   "unit_contracts": [
+    "tests/Unit/V2/DatabaseQueueRecoveryTest.php",
     "tests/Unit/Serializers/ExternalStorageEnvelopeTest.php",
     "tests/Unit/Traits/ResolvesMethodDependenciesTest.php",
     "tests/Unit/V2/ActivityCancellationCompletionTest.php",

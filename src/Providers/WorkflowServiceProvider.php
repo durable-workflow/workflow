@@ -25,6 +25,7 @@ use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\V2UpgradeStatusCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\Queue\DatabaseQueueCompatibility;
+use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
@@ -73,6 +74,8 @@ final class WorkflowServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        DatabaseTaskDelivery::install();
+        $this->app['events']->listen(\Illuminate\Queue\Events\JobQueued::class, DatabaseTaskDelivery::observe(...));
         $this->mergeConfigFrom(__DIR__ . '/../config/workflows.php', 'workflows');
 
         $this->callAfterResolving('queue', static function (mixed $manager): void {

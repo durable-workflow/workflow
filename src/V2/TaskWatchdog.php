@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
+use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\Support\CacheThrottle;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
@@ -259,12 +260,15 @@ final class TaskWatchdog
     {
         $acquiringTask = false;
         try {
-            $task = DB::transaction(static function () use ($candidateId, &$acquiringTask): ?WorkflowTask {
-                $runId = WorkflowTask::query()->whereKey($candidateId)->value('workflow_run_id');
-                if (! is_string($runId)) {
-                    return null;
-                }
-
+            $snapshot = WorkflowTask::query()->find($candidateId);
+            if (! $snapshot instanceof WorkflowTask || DatabaseTaskDelivery::hasUnreservedDelivery($snapshot)) {
+                return [
+                    'task' => null,
+                    'error' => null,
+                ];
+            }
+            $runId = $snapshot->workflow_run_id;
+            $task = DB::transaction(static function () use ($candidateId, $runId, &$acquiringTask): ?WorkflowTask {
                 // Repair and Server mutations acquire the run before its tasks.
                 // Recheck the association after waiting for that run lock.
                 /** @var WorkflowRun $run */
