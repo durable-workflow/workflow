@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -174,6 +175,25 @@ final class DatabaseQueueRecoveryTest extends TestCase
         self::assertSame(1, TaskWatchdog::runPass('database', 'default')['dispatched_tasks']);
         self::assertSame(1, $queuedTask->fresh()->repair_count);
         self::assertSame(2, DB::table('jobs')->count());
+    }
+
+    public function testCandidatePositionsDoNotHydratePartialTaskModels(): void
+    {
+        $stub = WorkflowStub::make(TestGreetingWorkflow::class, 'scan-without-hydration', '0');
+        $stub->start('queue-user', new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+        $taskId = WorkflowTask::query()->sole()->id;
+        $partialTasks = 0;
+        $this->app['events']->listen('eloquent.retrieved: ' . WorkflowTask::class, static function ($task) use (
+            &$partialTasks
+        ): void {
+            if (array_key_exists('id', $task->getAttributes())) {
+                ++$partialTasks;
+            }
+        });
+        Carbon::setTestNow(now()->addSeconds(4));
+
+        self::assertSame([$taskId], TaskRepairCandidates::taskIds(runIds: [$stub->runId()]));
+        self::assertSame(0, $partialTasks);
     }
 
     public static function unusableReferences(): array
