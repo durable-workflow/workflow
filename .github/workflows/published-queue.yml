@@ -23,6 +23,7 @@ jobs:
       - name: Record the ordinary hosted PHP environment
         run: |
           php --version
+          php -r 'echo json_encode(["xdebug_loaded"=>extension_loaded("xdebug"), "xdebug_ini_mode"=>ini_get("xdebug.mode"), "xdebug_environment_mode"=>getenv("XDEBUG_MODE"), "pcntl"=>extension_loaded("pcntl")], JSON_THROW_ON_ERROR), PHP_EOL;'
           composer --version
           nproc
           free -m
@@ -50,4 +51,4 @@ jobs:
           DW_PROBE_CONTINUOUS: 'true'
         run: |
           export DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php"
-          /usr/bin/time -v php .github/queue-contention/runner.php cohort
+          XDEBUG_MODE=off /usr/bin/time -v php .github/queue-contention/runner.php cohort
