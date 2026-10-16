@@ -31,6 +31,7 @@ use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\Foundation\Application;
+use Tests\Support\TracingQueueErrorDiagnostics;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\UpdateMethod;
@@ -485,6 +486,7 @@ if ($largeFanOut) {
                 ? strtolower(explode(' ', trim($error->getSql()), 2)[0]) : null,
             'transaction_level' => $connection->transactionLevel(),
             'pdo_in_transaction' => $pdo instanceof \PDO ? $pdo->inTransaction() : null,
+            ...TracingQueueErrorDiagnostics::context($error),
         ];
     });
     $handler = $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class);
@@ -514,6 +516,7 @@ if ($largeFanOut) {
                 ? $error->getBindings() : null,
             'transaction_level' => $connection->transactionLevel(),
             'pdo_in_transaction' => $pdo instanceof \PDO ? $pdo->inTransaction() : null,
+            ...TracingQueueErrorDiagnostics::context($error),
         ];
     });
 }
