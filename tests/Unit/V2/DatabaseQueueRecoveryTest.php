@@ -162,7 +162,9 @@ final class DatabaseQueueRecoveryTest extends TestCase
             DB::table('jobs')->where('id', $row->id)->update([
                 'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
                 'queue' => match ($case) {
-                    'row queue' => 'other', 'row queue case' => strtoupper($row->queue), default => $row->queue,
+                    'row queue' => 'other',
+                    'row queue case' => strtoupper($row->queue),
+                    default => $row->queue,
                 },
             ]);
         } elseif (in_array($case, ['invalid json', 'oversized', 'missing'], true)) {
