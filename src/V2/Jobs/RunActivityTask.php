@@ -117,6 +117,7 @@ final class RunActivityTask implements ShouldQueue
             $throwable,
             $maxAttempts,
             $backoffSeconds,
+            admissionDeadline: $claim->outcomeAdmissionDeadline(),
         );
 
         $nextTask = $outcome['next_task'];

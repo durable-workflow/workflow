@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.27 - 2026-10-16
+
+- Retain an embedded activity's callback outcome while SQLite waits to admit
+  publication, within the original claim and earliest activity deadline.
+- Capture that retry bound once with a monotonic clock. Recheck stored task and
+  attempt authority before publishing, preserving expiry and replacement fences.
+- Retry only proven root rollbacks before publication starts. Keep native
+  uncertainty and contention failures, and do not repeat callbacks or an entered
+  publication body. Other mutation and admission limits remain unchanged.
+
 ## 2.5.26 - 2026-10-16
 
 - Retry proven rolled-back SQLite queue acknowledgment deletes with capped
