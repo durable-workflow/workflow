@@ -5263,6 +5263,7 @@ final class WorkflowExecutor
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
+        ExecutionTracing::linkOutcome($run, $event);
         $serialized = ExternalPayloads::payloadBlob(
             $event->payload['result'] ?? null,
             $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue(
@@ -5335,6 +5336,8 @@ final class WorkflowExecutor
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        ExecutionTracing::linkOutcome($run, $event);
 
         return $event;
     }
@@ -5835,6 +5838,8 @@ final class WorkflowExecutor
                 && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        ExecutionTracing::linkOutcome($run, $event);
 
         return $event;
     }

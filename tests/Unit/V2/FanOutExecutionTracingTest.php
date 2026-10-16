@@ -6,7 +6,10 @@ namespace Tests\Unit\V2;
 
 use Composer\Autoload\ClassLoader;
 use Illuminate\Filesystem\Filesystem;
+use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
+use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\StatusCode;
+use OpenTelemetry\Context\Context;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
@@ -77,6 +80,7 @@ final class FanOutExecutionTracingTest extends TestCase
                 $admissionEnabled,
                 $workerEnabled
             );
+            self::assertOutcomeLinks($finished, $workers, $workerEnabled);
         } finally {
             (new Filesystem())->deleteDirectory($directory);
         }
@@ -220,5 +224,88 @@ final class FanOutExecutionTracingTest extends TestCase
                 }
             }
         }
+    }
+
+    private static function assertOutcomeLinks(array $finished, array $workers, bool $enabled): void
+    {
+        $rows = $finished['fan_out']['outcome_contexts'];
+        self::assertStringNotContainsString(
+            'observability_context',
+            json_encode($finished['fan_out']['public_tasks'], JSON_THROW_ON_ERROR),
+        );
+        if (! $enabled) {
+            self::assertSame([], $rows);
+            self::assertSame(0, array_sum(array_map(
+                static fn (array $state): int => $state['fan_out']['task_outcome_queries'],
+                $workers,
+            )));
+            return;
+        }
+        self::assertGreaterThan(0, array_sum(array_map(
+            static fn (array $state): int => $state['fan_out']['task_outcome_queries'],
+            $workers,
+        )));
+        $contexts = [];
+        foreach ($rows as $row) {
+            $envelope = json_decode($row['context'], true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame('durable-workflow.task-outcomes', $envelope['schema']);
+            self::assertSame(1, $envelope['version']);
+            foreach (['task_id', 'run_id', 'namespace'] as $field) {
+                self::assertSame($row[$field], $envelope[$field]);
+            }
+            self::assertLessThanOrEqual(4096, strlen($row['context']));
+            foreach ($envelope['outcomes'] as $entry) {
+                $contexts[$entry['event_id']] = $entry + [
+                    'task_id' => $row['task_id'],
+                ];
+            }
+        }
+        self::assertCount(5, $contexts);
+        $spans = array_column(array_merge(...array_column($workers, 'spans')), null, 'span_id');
+        $contributions = [];
+        $final = null;
+        foreach ($finished['fan_out']['outcome_events'] as $event) {
+            self::assertArrayHasKey($event['id'], $contexts);
+            $entry = $contexts[$event['id']];
+            self::assertSame($event['sequence'], $entry['sequence']);
+            self::assertSame($event['type'], $entry['event_type']);
+            self::assertSame($event['task_id'], $entry['task_id']);
+            $context = Span::fromContext(TraceContextPropagator::getInstance()->extract(
+                $entry['context']['carrier'],
+                context: Context::getRoot(),
+            ))->getContext();
+            self::assertArrayHasKey($context->getSpanId(), $spans);
+            $span = $spans[$context->getSpanId()];
+            self::assertSame($span['trace_id'], $context->getTraceId());
+            self::assertSame($event['task_id'], $span['fields']['task_id']);
+            if ($event['type'] === 'WorkflowCompleted') {
+                self::assertSame('durable.workflow.task', $span['name']);
+                $final = $span;
+            } else {
+                $contributions[$event['id']] = [
+                    'trace_id' => $span['trace_id'],
+                    'span_id' => $span['span_id'],
+                ];
+                if ($event['type'] === 'ActivityCompleted') {
+                    self::assertSame($event['payload']['activity_attempt_id'], $span['fields']['activity_attempt_id']);
+                } else {
+                    self::assertSame('durable.timer.task', $span['name']);
+                    self::assertSame($event['payload']['timer_id'], $span['fields']['timer_id']);
+                }
+            }
+        }
+        self::assertNotNull($final);
+        $links = [];
+        foreach ($final['links'] as $link) {
+            if (($link['fields']['durable.link.type'] ?? null) === 'task_outcome') {
+                $links[$link['fields']['history_event_id']] = [
+                    'trace_id' => $link['trace_id'],
+                    'span_id' => $link['span_id'],
+                ];
+            }
+        }
+        ksort($links);
+        ksort($contributions);
+        self::assertSame($contributions, $links);
     }
 }

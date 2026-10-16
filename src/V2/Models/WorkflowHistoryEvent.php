@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\HistoryRecordedAt;
@@ -114,6 +115,7 @@ class WorkflowHistoryEvent extends Model
                     'workflow_command_id' => $commandId,
                     'recorded_at' => $now,
                 ]);
+                ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
 
                 $lockedRun->forceFill([
                     'last_history_sequence' => $sequence,

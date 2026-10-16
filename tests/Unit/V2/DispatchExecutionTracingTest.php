@@ -156,12 +156,22 @@ final class DispatchExecutionTracingTest extends TestCase
                 self::assertCount(1, $delivered);
                 self::assertSame($span['fields']['task_id'], $delivered[0]['task_id']);
                 $tracedDispatch = $index === 0 ? $admissionEnabled : $workerEnabled;
-                self::assertCount($tracedDispatch ? 1 : 0, $span['links']);
+                $queueLinks = array_values(array_filter(
+                    $span['links'],
+                    static fn (array $link): bool => ($link['fields']['durable.link.type'] ?? null) === 'queue_dispatch'
+                ));
+                foreach ($span['links'] as $link) {
+                    self::assertContains(
+                        $link['fields']['durable.link.type'] ?? null,
+                        ['queue_dispatch', 'task_outcome']
+                    );
+                }
+                self::assertCount($tracedDispatch ? 1 : 0, $queueLinks);
                 if ($tracedDispatch) {
                     $producer = $dispatchByTask[$span['fields']['task_id']];
-                    self::assertSame($producer['trace_id'], $span['links'][0]['trace_id']);
-                    self::assertSame($producer['span_id'], $span['links'][0]['span_id']);
-                    self::assertSame($span['fields']['task_id'], $span['links'][0]['fields']['task_id']);
+                    self::assertSame($producer['trace_id'], $queueLinks[0]['trace_id']);
+                    self::assertSame($producer['span_id'], $queueLinks[0]['span_id']);
+                    self::assertSame($span['fields']['task_id'], $queueLinks[0]['fields']['task_id']);
                 }
             }
             $history = json_encode($finished['dispatch']['history_payloads'], JSON_THROW_ON_ERROR);

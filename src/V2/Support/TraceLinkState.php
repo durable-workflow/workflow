@@ -14,6 +14,8 @@ final class TraceLinkState
 
     private int $dropped = 0;
 
+    private array $outcomes = [];
+
     public function __construct(
         private readonly SpanInterface $span
     ) {
@@ -22,6 +24,16 @@ final class TraceLinkState
     public function isRecording(): bool
     {
         return $this->span->isRecording();
+    }
+
+    public function setOutcomes(array $outcomes): void
+    {
+        $this->outcomes = $outcomes;
+    }
+
+    public function outcome(string $id): ?array
+    {
+        return $this->outcomes[$id] ?? null;
     }
 
     /**

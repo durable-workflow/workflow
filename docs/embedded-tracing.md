@@ -149,9 +149,41 @@ traced admission. It preserves the complete retry snapshots, original
 deadlines and history prefixes, with zero repairs.
 
 The local callback precedes the parallel group. The existing `all()` API does
-not admit local-activity descriptors as group members. Completion-specific
-fan-in links, simultaneous-worker load and large-fan-out overhead remain
-separate qualification gates.
+not admit local-activity descriptors as group members. Simultaneous-worker
+load and large-fan-out overhead remain separate qualification gates.
+
+### Outcome links (draft)
+
+The draft adds a nullable, internal `workflow_tasks.observability_context`
+column. A recording task can retain its actual outcome span context alongside
+its existing task update. Entries bind the physical history event ID, sequence
+and type to the original task, run, namespace and activity attempt or timer.
+They carry no baggage or business result, are hidden from task JSON, and grant
+no completion, retry or lease authority. The business history is unchanged.
+
+Local callbacks retain their actual span context until the hosting task records
+the outcome. Ordinary activity and timer scopes capture their context before
+outcome SQL. This uses the official W3C propagator directly, without invoking
+application propagation hooks inside an execution transaction. Rollback removes
+pending entries; duplicate completion cannot replace the first stored context.
+Missing legacy columns and invalid optional metadata supply no outcome links.
+
+Before an enabled workflow task executes, it can read the latest 32 eligible
+physical outcomes and their scoped task metadata outside the execution
+transaction. Consuming a matching activity result or fired timer adds a
+`durable.link.type=task_outcome` link to that actual span. The workflow span's
+original admission parent remains unchanged. Each task carrier is capped at
+4 KiB and 32 complete entries; the existing processing-segment link cap also
+applies. Older outcomes outside this window can have no link. Disabled workers
+perform no additional outcome-metadata reads or writes.
+
+Cold SQLite controls check the actual contributing local activity, ordinary
+activity and timer span IDs, including a genuine retry, with disabled and
+legacy modes. Transaction rollback, duplicate decisions and legacy migration
+controls are separate. This is not complete failure/timeout/child causality,
+an unlimited fan-in graph, multi-backend acceptance or overhead qualification.
+The new column remains unreleased and is not adopted by the service wire or
+native catalogs.
 
 Queue dispatch emits a short `durable.task.dispatch` producer span outside the
 database transaction. It covers the queue dispatcher call. A returned call is

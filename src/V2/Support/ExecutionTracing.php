@@ -27,6 +27,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
@@ -58,6 +59,8 @@ final class ExecutionTracing
     private static ?ContextKeyInterface $correlationKey = null;
 
     private static ?ContextKeyInterface $linkKey = null;
+
+    private static ?ContextKeyInterface $outcomeKey = null;
 
     /**
      * @var WeakMap<Fiber, int>|null
@@ -174,6 +177,7 @@ final class ExecutionTracing
         array $baggageAllowlist = [],
         bool $enabled = false,
         mixed $dispatchContext = null,
+        ?callable $loadOutcomes = null,
     ): mixed {
         return self::segment(
             'durable.workflow.task',
@@ -183,7 +187,79 @@ final class ExecutionTracing
             $baggageAllowlist,
             $enabled,
             $dispatchContext,
+            onActivated: static function () use ($loadOutcomes): void {
+                try {
+                    $state = self::$linkKey === null ? null : Context::getCurrent()->get(self::$linkKey);
+                    if ($loadOutcomes !== null && $state instanceof TraceLinkState && $state->isRecording()) {
+                        $state->setOutcomes($loadOutcomes());
+                    }
+                } catch (Throwable) {
+                    // Optional observation reads do not replace the original task.
+                }
+            },
         );
+    }
+
+    public static function observeOutcome(WorkflowRun $run, ?WorkflowTask $task, WorkflowHistoryEvent $event): void
+    {
+        try {
+            if ($task !== null) {
+                self::outcomeState()?->observe($run, $task, $event);
+            }
+        } catch (Throwable) {
+            // The recorded business event remains authoritative without telemetry.
+        }
+    }
+
+    public static function persistTaskOutcomes(WorkflowTask $task): void
+    {
+        try {
+            self::outcomeState()?->apply($task);
+        } catch (Throwable) {
+            // Optional task metadata cannot replace the existing fenced write.
+        }
+    }
+
+    public static function discardTaskOutcomes(mixed $connection): void
+    {
+        try {
+            if (is_string($connection)) {
+                self::outcomeState()?->discard($connection);
+            }
+        } catch (Throwable) {
+            // Rollback still belongs to the database transaction manager.
+        }
+    }
+
+    public static function linkOutcome(?WorkflowRun $run, ?WorkflowHistoryEvent $event): void
+    {
+        try {
+            if ($run === null || $event === null || self::$linkKey === null) {
+                return;
+            }
+            $fields = self::current();
+            if (($fields['workflow_run_id'] ?? null) !== $run->id || ($fields['namespace'] ?? null) !== $run->namespace
+                || $event->workflow_run_id !== $run->id) {
+                return;
+            }
+            $state = Context::getCurrent()->get(self::$linkKey);
+            if (! $state instanceof TraceLinkState || ! $state->isRecording()) {
+                return;
+            }
+            $entry = $state->outcome($event->id);
+            if ($entry === null || $entry['task_id'] !== $event->workflow_task_id
+                || ! TaskOutcomeCarrier::matchesEvent($entry, $event)) {
+                return;
+            }
+            self::linkCarrier($state, $entry['context'], [
+                'durable.link.type' => 'task_outcome',
+                'history_event_id' => $event->id,
+                'event_type' => $event->event_type->value,
+                'task_id' => $event->workflow_task_id,
+            ]);
+        } catch (Throwable) {
+            // A missing or malformed causal observation does not change replay.
+        }
     }
 
     /**
@@ -382,6 +458,16 @@ final class ExecutionTracing
         }
     }
 
+    private static function outcomeState(): ?TaskOutcomeTraceState
+    {
+        if (self::$outcomeKey === null || self::current() === []) {
+            return null;
+        }
+        $state = Context::getCurrent()->get(self::$outcomeKey);
+
+        return $state instanceof TaskOutcomeTraceState ? $state : null;
+    }
+
     private static function linkCommand(WorkflowRun $run, WorkflowCommand $command, CommandType $type): void
     {
         try {
@@ -502,12 +588,14 @@ final class ExecutionTracing
             self::$correlationKey ??= Context::createKey('durable-workflow.correlation');
             $active = $span->storeInContext($parent)
                 ->with(self::$correlationKey, $fields);
+            $active = self::withOutcomeState($active, $name, $fields, $span);
             if (in_array($name, ['durable.workflow.task', 'durable.schedule.trigger'], true)) {
                 self::$linkKey ??= Context::createKey('durable-workflow.trace-links');
                 $active = $active->with(self::$linkKey, new TraceLinkState($span));
             }
             $scope = $active->activate();
             self::enterFiberScope();
+            self::rememberLocalOutcome($name, $fields, $span);
             if ($onActivated !== null) {
                 $onActivated();
             }
@@ -531,9 +619,37 @@ final class ExecutionTracing
     }
 
     /**
-     * @param list<string> $baggageAllowlist
      * @param array<string, string|int> $fields
      */
+    private static function withOutcomeState(
+        ContextInterface $active,
+        string $name,
+        array $fields,
+        SpanInterface $span
+    ): ContextInterface {
+        if (! in_array($name, ['durable.workflow.task', 'durable.activity.attempt', 'durable.timer.task'], true)) {
+            return $active;
+        }
+        $context = TaskOutcomeCarrier::capture($span);
+        if ($context === null) {
+            return $active;
+        }
+        self::$outcomeKey ??= Context::createKey('durable-workflow.task-outcomes');
+
+        return $active->with(self::$outcomeKey, new TaskOutcomeTraceState($name, $fields, $context));
+    }
+
+    private static function rememberLocalOutcome(string $name, array $fields, SpanInterface $span): void
+    {
+        if ($name !== 'durable.local_activity.attempt') {
+            return;
+        }
+        $context = TaskOutcomeCarrier::capture($span);
+        if ($context !== null) {
+            self::outcomeState()?->rememberLocal($fields, $context);
+        }
+    }
+
     private static function parentContext(
         string $name,
         mixed $persistedContext,

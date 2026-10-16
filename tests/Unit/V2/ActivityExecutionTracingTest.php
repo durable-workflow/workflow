@@ -40,8 +40,11 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityOutcomeRecorder;
+use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\TaskOutcomeCarrier;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -232,6 +235,98 @@ final class ActivityExecutionTracingTest extends TestCase
         ));
         self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
         self::assertSame(0, DB::table('failed_jobs')->count());
+    }
+
+    public function testOutcomeMetadataRollsBackWithItsEventAndDuplicateCannotReplaceIt(): void
+    {
+        config([
+            'workflows.tracing.enabled' => true,
+        ]);
+        $stub = WorkflowStub::make(TracedWorkflow::class, 'outcome-rollback', '0');
+        $stub->start(false);
+        $this->workOnce();
+        $task = WorkflowTask::query()->where('task_type', 'activity')->sole();
+        [$claim] = ActivityTaskClaimer::claim($task->id, $task->id);
+        self::assertNotNull($claim);
+        $prefix = WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
+            static fn ($event): array => $event->getRawOriginal(),
+        )->all();
+        $failure = new RuntimeException('deliberate outer outcome rollback');
+        $record = static fn (): array => ActivityOutcomeRecorder::record(
+            $claim->task->id,
+            $claim->attemptId(),
+            $claim->attemptNumber(),
+            [9007199254740993, null, '雪'],
+            null,
+            2,
+            0,
+        );
+        ExecutionTracing::activity([
+            'workflow_instance_id' => $claim->run->workflow_instance_id,
+            'workflow_run_id' => $claim->run->id,
+            'workflow_type' => $claim->run->workflow_type,
+            'namespace' => $claim->run->namespace,
+            'task_id' => $claim->task->id,
+            'activity_id' => $claim->execution->id,
+            'activity_attempt_id' => $claim->attemptId(),
+            'activity_attempt_number' => $claim->attemptNumber(),
+        ], null, static function () use ($claim, $record, $failure, $prefix): void {
+            try {
+                $claim->task->getConnection()
+                    ->transaction(static function () use ($record, $failure): void {
+                        self::assertTrue($record()['recorded']);
+                        throw $failure;
+                    });
+                self::fail('Expected the constructed outer rollback.');
+            } catch (RuntimeException $caught) {
+                self::assertSame($failure, $caught);
+            }
+            self::assertSame($prefix, WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
+                static fn ($event): array => $event->getRawOriginal(),
+            )->all());
+            $fresh = $claim->task->fresh();
+            self::assertNull($fresh->getRawOriginal('observability_context'));
+            // A later ordinary update must not publish a candidate from the rolled-back event.
+            $fresh->touch();
+            self::assertNull($fresh->fresh()->getRawOriginal('observability_context'));
+            self::assertTrue($record()['recorded']);
+        }, enabled: true);
+        $storedTask = $claim->task->fresh();
+        $contexts = TaskOutcomeCarrier::fromTask($storedTask);
+        self::assertCount(1, $contexts['outcomes']);
+        $event = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->sole();
+        self::assertSame($event->id, $contexts['outcomes'][0]['event_id']);
+        $stored = $storedTask->getRawOriginal('observability_context');
+        $history = WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
+            static fn ($row): array => $row->getRawOriginal(),
+        )->all();
+        self::assertSame([
+            'recorded' => false,
+            'reason' => 'stale_attempt',
+            'next_task' => null,
+        ], $record());
+        self::assertSame($stored, $storedTask->fresh()->getRawOriginal('observability_context'));
+        self::assertSame($history, WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
+            static fn ($row): array => $row->getRawOriginal(),
+        )->all());
+    }
+
+    public function testTaskCarrierMigrationKeepsLegacyRowsAndHasNoImplicitAuthority(): void
+    {
+        $stub = WorkflowStub::make(TracedWorkflow::class, 'legacy-outcome-task', '0');
+        $stub->start(false);
+        $task = WorkflowTask::query()->sole();
+        $migration = require __DIR__ . '/../../../src/migrations/2026_10_16_000100_add_observability_context_to_workflow_tasks.php';
+        $migration->down();
+        $before = (array) DB::table('workflow_tasks')->where('id', $task->id)->sole();
+        $migration->up();
+        $migration->up();
+        $after = (array) DB::table('workflow_tasks')->where('id', $task->id)->sole();
+        self::assertArrayHasKey('observability_context', $after);
+        self::assertNull($after['observability_context']);
+        unset($after['observability_context']);
+        self::assertSame($before, $after);
+        self::assertArrayNotHasKey('observability_context', $task->fresh()->toArray());
     }
 
     public function testExistingRunMigrationLeavesItsDataUntouchedAndAllowsExecutionWithoutAParent(): void

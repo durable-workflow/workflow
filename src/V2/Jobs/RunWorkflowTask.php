@@ -23,6 +23,7 @@ use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskOutcomeCarrier;
 use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -84,6 +85,7 @@ final class RunWorkflowTask implements ShouldQueue
             $allowlist,
             true,
             $this->dispatchObservabilityContext,
+            static fn (): array => TaskOutcomeCarrier::forRun($run, $task),
         );
     }
 

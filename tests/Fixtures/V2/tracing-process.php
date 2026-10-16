@@ -507,6 +507,14 @@ if ($signalStart || $signalLinks || $cancellation || $updateLinks || $admissionP
 $configuration = Configurator::create()->withTracerProvider($provider)
     ->withPropagator($propagator)
     ->activate();
+$taskOutcomeQueries = 0;
+if ($fanOut) {
+    DB::listen(static function ($query) use (&$taskOutcomeQueries): void {
+        if (str_contains($query->sql, 'workflow_tasks') && str_contains($query->sql, 'observability_context')) {
+            ++$taskOutcomeQueries;
+        }
+    });
+}
 $initial = Context::getCurrent();
 $admissionForeignKey = Context::createKey('test.application.admission');
 $dispatchDelivered = [];
@@ -1020,7 +1028,11 @@ try {
     foreach ($output['execution_spans'] as &$executionSpan) {
         $executionSpan['links'] = array_values(array_filter(
             $executionSpan['links'],
-            static fn (array $link): bool => ($link['fields']['durable.link.type'] ?? null) !== 'queue_dispatch'
+            static fn (array $link): bool => ! in_array(
+                $link['fields']['durable.link.type'] ?? null,
+                ['queue_dispatch', 'task_outcome'],
+                true,
+            )
         ));
     }
     unset($executionSpan);
@@ -1290,6 +1302,7 @@ try {
             ->orderBy('sequence')
             ->get();
         $output['fan_out'] = [
+            'task_outcome_queries' => $taskOutcomeQueries,
             'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
             'history_hashes' => $history->map(static fn ($event): string => hash(
                 'sha256',
@@ -1308,6 +1321,25 @@ try {
             'tasks' => WorkflowTask::query()->orderBy('id')->get([
                 'id', 'status', 'task_type', 'attempt_count', 'repair_count',
             ])->toArray(),
+            'outcome_contexts' => WorkflowTask::query()->orderBy('id')->get()->map(static fn ($row): array => [
+                'task_id' => $row->id,
+                'run_id' => $row->workflow_run_id,
+                'namespace' => $row->namespace,
+                'context' => $row->getRawOriginal('observability_context'),
+            ])->filter(static fn (array $row): bool => $row['context'] !== null)->values()->all(),
+            'outcome_events' => $history->filter(static fn ($event): bool => in_array(
+                $event->event_type->value,
+                ['ActivityCompleted', 'TimerFired', 'WorkflowCompleted'],
+                true,
+            ))->map(static fn ($event): array => [
+                'id' => $event->id,
+                'sequence' => $event->sequence,
+                'type' => $event->event_type->value,
+                'task_id' => $event->workflow_task_id,
+                'payload' => $event->payload,
+            ])->values()
+                ->all(),
+            'public_tasks' => WorkflowTask::query()->get()->toArray(),
         ];
     }
     if ($recovery) {
