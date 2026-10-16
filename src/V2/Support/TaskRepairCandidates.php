@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -418,16 +419,7 @@ final class TaskRepairCandidates
                 $runIds, $instanceId, $connection, $queue, $scope['scope_key'],
             ], JSON_THROW_ON_ERROR));
             $cursor = $rotate ? Cache::get($cacheKey) : null;
-            $page = clone $query;
-            if (self::validCursor($cursor)) {
-                self::afterCursor($page, $cursor);
-            }
-            $rows = $page->toBase()
-                ->get(['id', 'available_at', 'created_at']);
-            if ($rows->isEmpty() && self::validCursor($cursor)) {
-                $rows = $query->toBase()
-                    ->get(['id', 'available_at', 'created_at']);
-            }
+            $rows = self::readTaskPage($query, $cursor);
             $ids = [];
             foreach ($rows as $row) {
                 $ids[] = $row->id;
@@ -452,6 +444,19 @@ final class TaskRepairCandidates
             'buckets' => $buckets,
             'positions' => $positions,
         ];
+    }
+
+    private static function readTaskPage($query, mixed $cursor): Collection
+    {
+        $page = clone $query;
+        if (self::validCursor($cursor)) {
+            self::afterCursor($page, $cursor);
+        }
+        $rows = $page->toBase()
+            ->get(['id', 'available_at', 'created_at']);
+        return $rows->isEmpty() && self::validCursor($cursor)
+            ? $query->toBase()
+                ->get(['id', 'available_at', 'created_at']) : $rows;
     }
 
     private static function validCursor(mixed $cursor): bool
