@@ -201,9 +201,13 @@ final class V2TaskWatchdogRepairConcurrencyTest extends TestCase
             'attempt_count' => 1,
             'lease_owner' => 'original-worker',
             'lease_expires_at' => $deadline ? now()
-                ->addMinute() : now()
-                ->subMinute(),
+                ->addMinute()
+                ->setMicrosecond(640600) : now()
+                ->subMinute()
+                ->setMicrosecond(640600),
         ])->save();
+        // Compare stored snapshots; PostgreSQL omits trailing fractional zeros on reads.
+        $task->refresh();
         $before = $task->getAttributes();
         $history = WorkflowRun::query()->findOrFail($runId)->historyEvents()->get()->toArray();
         $originalDeadline = WorkflowRun::query()->findOrFail($runId)->getRawOriginal('cancellation_deadline_at');

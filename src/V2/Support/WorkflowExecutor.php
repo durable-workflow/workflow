@@ -252,7 +252,9 @@ final class WorkflowExecutor
                 if ($localOutcome['status'] === 'waiting') {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
-                    return $this->waitForNextResumeSource($run, $task);
+                    $this->waitForNextResumeSource($run, $task);
+
+                    return $localOutcome['next_task'];
                 }
 
                 $activityCompletion = $localOutcome['event'];
