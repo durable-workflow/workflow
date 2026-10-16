@@ -21,6 +21,7 @@ use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
 final class EmbeddedSqliteTaskContentionTest extends TestCase
@@ -82,6 +83,95 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             'activity claim' => ['activity', false],
             'activity claim with separate application database' => ['activity', true],
         ];
+    }
+
+    public function testActivityOutcomeWaitsForTheWriterWithinItsOriginalClaim(): void
+    {
+        config()->set('logging.default', 'null');
+        $stub = WorkflowStub::make(SqliteContentionWorkflow::class, 'outcome-admission', 'contention-test');
+        $stub->start(false, false, new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+        $this->workOnce();
+        $runId = $stub->runId();
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->where('task_type', 'activity')->sole();
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderBy('sequence')
+            ->get()->map->getAttributes()->all();
+        $run = $task->run;
+        $deadlines = [$run->execution_deadline_at->toJSON(), $run->run_deadline_at->toJSON()];
+        $connection = DB::connection('contention_sqlite');
+        $connection->getPdo()->exec('PRAGMA busy_timeout=5100');
+        $writer = new PDO('sqlite:' . $this->path);
+        $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $admissions = 0;
+        $rollbacks = 0;
+        $claim = null;
+        $connection->beforeExecuting(static function (string $sql) use (
+            $writer,
+            $task,
+            &$admissions,
+            &$claim,
+        ): void {
+            if (! str_starts_with($sql, 'update "workflow_tasks" set "id" =') || ++$admissions !== 2) {
+                return;
+            }
+            self::assertSame(1, SqliteContentionActivity::$invocations);
+            $statement = $writer->prepare('SELECT * FROM workflow_tasks WHERE id = ?');
+            $statement->execute([$task->id]);
+            $claim = $statement->fetch(PDO::FETCH_ASSOC);
+            $statement->closeCursor();
+            $writer->beginTransaction();
+            $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
+        });
+        $connection->getEventDispatcher()->listen(TransactionRolledBack::class, static function ($event) use (
+            $writer,
+            $connection,
+            &$rollbacks,
+        ): void {
+            if ($event->connection === $connection && $writer->inTransaction()) {
+                self::assertSame(0, $connection->transactionLevel());
+                self::assertFalse($connection->getPdo()->inTransaction());
+                $rollbacks++;
+                $writer->commit();
+            }
+        });
+        $started = hrtime(true);
+        try {
+            $this->workOnce();
+        } finally {
+            if ($writer->inTransaction()) {
+                $writer->rollBack();
+            }
+        }
+        $elapsed = (hrtime(true) - $started) / 1_000_000_000;
+        self::assertGreaterThanOrEqual(5, $elapsed);
+        self::assertSame(1, $rollbacks);
+        self::assertSame(1, SqliteContentionActivity::$invocations);
+        self::assertIsArray($claim);
+        self::assertSame('leased', $claim['status']);
+        self::assertSame(1, (int) $claim['attempt_count']);
+        self::assertSame('completed', $task->fresh()->status->value, json_encode([
+            'elapsed_seconds' => $elapsed,
+            'failed_jobs' => DB::table('failed_jobs')->count(),
+            'callback_count' => SqliteContentionActivity::$invocations,
+            'original_claim' => $claim,
+        ], JSON_THROW_ON_ERROR));
+        self::assertSame($claim['leased_at'], $task->fresh()->getRawOriginal('leased_at'));
+        self::assertSame(1, (int) $task->fresh()->attempt_count);
+        $this->workOnce();
+        self::assertSame('completed', $stub->refresh()->status());
+        self::assertSame([
+            'integer' => 9007199254740993,
+            'optional' => null,
+            'unicode' => 'λ',
+        ], $stub->output());
+        self::assertSame($deadlines, [
+            $run->fresh()->execution_deadline_at->toJSON(),
+            $run->fresh()->run_deadline_at->toJSON(),
+        ]);
+        self::assertSame($prefix, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->orderBy('sequence')->limit(count($prefix))->get()->map->getAttributes()->all());
+        self::assertSame(1, SqliteContentionActivity::$invocations);
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        self::assertSame(0, DB::table('jobs')->count());
     }
 
     #[DataProvider('claims')]
