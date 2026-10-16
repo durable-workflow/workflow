@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
@@ -347,7 +348,17 @@ final class DatabaseQueueRecoveryTest extends TestCase
         self::assertSame(0, (int) $task->fresh()->attempt_count);
     }
 
-    public function testLookupUsesTheActualSeparateTransportDatabaseAndTable(): void
+    public static function transportReads(): array
+    {
+        return [
+            'direct writer' => ['direct'],
+            'lagging empty reader' => ['empty'],
+            'stale reader row' => ['stale'],
+        ];
+    }
+
+    #[DataProvider('transportReads')]
+    public function testLookupUsesTheActualSeparateTransportDatabaseAndTable(string $reader): void
     {
         config()->set('database.connections.transport', [
             'driver' => 'sqlite',
@@ -366,23 +377,70 @@ final class DatabaseQueueRecoveryTest extends TestCase
             ->set('workflows.v2.connection', 'transport-queue');
         config()
             ->set('workflows.v2.queue', 'selected');
-        DB::connection('transport')->statement('CREATE TABLE transport_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        $tableSql = 'CREATE TABLE transport_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,
             queue TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL, reserved_at INTEGER,
-            available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
+            available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)';
+        DB::connection('transport')->statement($tableSql);
         $stub = WorkflowStub::make(TestGreetingWorkflow::class, 'separate-transport', '0');
         $stub->start('queue-user');
         $task = WorkflowTask::query()->sole();
         self::assertSame('transport', $task->queue_delivery_reference['database']);
         self::assertSame('transport_jobs', $task->queue_delivery_reference['table']);
         self::assertSame('selected', $task->queue_delivery_reference['queue']);
+        if ($reader !== 'direct') {
+            $replica = new \PDO('sqlite::memory:');
+            $replica->exec($tableSql);
+            if ($reader === 'stale') {
+                $row = DB::connection('transport')->table('transport_jobs')->sole();
+                $replica->prepare('INSERT INTO transport_jobs VALUES (?, ?, ?, ?, ?, ?, ?)')
+                    ->execute([
+                        $row->id, $row->queue, $row->payload, $row->attempts,
+                        $row->reserved_at, $row->available_at, $row->created_at,
+                    ]);
+                DB::connection('transport')->table('transport_jobs')->delete();
+            }
+            DB::connection('transport')->setReadPdo($replica);
+        }
         Carbon::setTestNow(now()->addSeconds(4));
 
         $report = TaskWatchdog::runPass('transport-queue', 'selected', runIds: [$stub->runId()]);
 
-        self::assertSame(0, $report['dispatched_tasks']);
-        self::assertSame(1, DB::connection('transport')->table('transport_jobs')->count());
+        self::assertSame($reader === 'stale' ? 1 : 0, $report['dispatched_tasks']);
+        self::assertSame(1, DB::connection('transport')->table('transport_jobs')->useWritePdo()->count());
         self::assertSame(0, DB::table('jobs')->count());
-        self::assertSame(0, $task->fresh()->repair_count);
+        self::assertSame($reader === 'stale' ? 1 : 0, $task->fresh()->repair_count);
+    }
+
+    public function testProbeUsesTheWriterSnapshotOfTheCurrentDeliveryReference(): void
+    {
+        $stub = WorkflowStub::make(TestGreetingWorkflow::class, 'writer-task-snapshot', '0');
+        $stub->start('queue-user');
+        $task = WorkflowTask::query()->sole();
+        $connection = DB::connection();
+        $path = tempnam(sys_get_temp_dir(), 'queue-read-snapshot-');
+        self::assertIsString($path);
+        try {
+            $connection->statement('VACUUM INTO ?', [$path]);
+            DB::table('jobs')->delete();
+            TaskDispatcher::dispatch($task);
+            $task->refresh();
+            $reference = $task->queue_delivery_reference;
+            $replica = new \PDO('sqlite:' . $path);
+            $connection->setReadPdo($replica);
+            Carbon::setTestNow(now()->addSeconds(4));
+
+            $report = TaskWatchdog::runPass('database', 'default', runIds: [$stub->runId()]);
+
+            self::assertSame(0, $report['dispatched_tasks']);
+            self::assertSame(1, DB::table('jobs')->useWritePdo()->count());
+            $actual = WorkflowTask::query()->useWritePdo()->findOrFail($task->id);
+            self::assertSame(0, $actual->repair_count);
+            self::assertSame($reference, $actual->queue_delivery_reference);
+        } finally {
+            $connection->setReadPdo(null);
+            unset($replica);
+            unlink($path);
+        }
     }
 
     public function testApplicationQueueManagerRetainsItsExistingRecoveryBehavior(): void

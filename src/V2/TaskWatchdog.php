@@ -260,7 +260,7 @@ final class TaskWatchdog
     {
         $acquiringTask = false;
         try {
-            $snapshot = WorkflowTask::query()->find($candidateId);
+            $snapshot = WorkflowTask::query()->useWritePdo()->find($candidateId);
             if (! $snapshot instanceof WorkflowTask || DatabaseTaskDelivery::hasUnreservedDelivery($snapshot)) {
                 return [
                     'task' => null,

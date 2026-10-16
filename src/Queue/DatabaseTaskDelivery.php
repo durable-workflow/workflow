@@ -126,7 +126,9 @@ final class DatabaseTaskDelivery extends DatabaseQueue
 
     private static function rowMatches(WorkflowTask $task, DatabaseQueue $queue, array $reference): bool
     {
+        // A lagging reader cannot establish whether the native delivery exists.
         $row = $queue->database->table($queue->table)
+            ->useWritePdo()
             ->where('id', $reference['job_id'])
             ->where('queue', $reference['queue'])->whereNull('reserved_at')->first(['payload', 'queue']);
         if ($row === null || $row->queue !== $reference['queue']
