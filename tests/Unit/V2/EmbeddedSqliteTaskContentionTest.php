@@ -127,7 +127,11 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
         });
         $connection->getEventDispatcher()
-            ->listen(TransactionRolledBack::class, static function ($event) use ($writer, $connection, &$rollbacks,): void {
+            ->listen(TransactionRolledBack::class, static function ($event) use (
+                $writer,
+                $connection,
+                &$rollbacks
+            ): void {
                 if ($event->connection === $connection && $writer->inTransaction()) {
                     self::assertSame(0, $connection->transactionLevel());
                     self::assertFalse($connection->getPdo()->inTransaction());
@@ -235,7 +239,8 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
                 } else {
                     $task->fresh()
                         ->forceFill([
-                            'lease_expires_at' => now()->subSecond(),
+                            'lease_expires_at' => now()
+                                ->subSecond(),
                         ])->save();
                 }
             });
