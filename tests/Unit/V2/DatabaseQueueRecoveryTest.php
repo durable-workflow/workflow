@@ -131,6 +131,32 @@ final class DatabaseQueueRecoveryTest extends TestCase
         );
     }
 
+    public function testHealthyBacklogDoesNotStarveMissingDeliveryPastTheScanLimit(): void
+    {
+        config()->set('workflows.v2.task_repair.scan_limit', 1);
+        $queued = WorkflowStub::make(TestGreetingWorkflow::class, 'queued-before-missing', '0');
+        $queued->start('queue-user', new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+        $queuedTask = WorkflowTask::query()->sole();
+        $before = $queuedTask->getRawOriginal();
+        Carbon::setTestNow(now()->addSecond());
+        $missing = WorkflowStub::make(TestGreetingWorkflow::class, 'missing-after-queued', '0');
+        $missing->start('queue-user', new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+        $missingTask = WorkflowTask::query()->where('workflow_run_id', $missing->runId())->sole();
+        DB::table('jobs')->where('id', $missingTask->queue_delivery_reference['job_id'])->delete();
+        Carbon::setTestNow(now()->addSeconds(4));
+
+        $first = TaskWatchdog::runPass('database', 'default');
+        $second = TaskWatchdog::runPass('database', 'default');
+
+        self::assertSame(1, $first['selected_existing_task_candidates']);
+        self::assertSame(0, $first['dispatched_tasks']);
+        self::assertSame(1, $second['selected_existing_task_candidates']);
+        self::assertSame(1, $second['dispatched_tasks']);
+        self::assertSame($before, $queuedTask->fresh()->getRawOriginal());
+        self::assertSame(1, $missingTask->fresh()->repair_count);
+        self::assertSame(2, DB::table('jobs')->count());
+    }
+
     public static function unusableReferences(): array
     {
         $names = ['legacy schema', 'missing', 'version', 'task', 'run', 'namespace',
