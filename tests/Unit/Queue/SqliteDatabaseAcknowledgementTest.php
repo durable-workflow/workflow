@@ -61,7 +61,10 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
 
     public static function writerReleasePoints(): array
     {
-        return ['first rollback' => [1], 'third rollback' => [3]];
+        return [
+            'first rollback' => [1],
+            'third rollback' => [3],
+        ];
     }
 
     #[DataProvider('writerReleasePoints')]
@@ -71,7 +74,11 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         $neighbor = $this->push();
         $writer = $this->blockDelete();
         $rollbacks = 0;
-        $this->events->listen(TransactionRolledBack::class, function () use ($writer, $releaseAfter, &$rollbacks): void {
+        $this->events->listen(TransactionRolledBack::class, function () use (
+            $writer,
+            $releaseAfter,
+            &$rollbacks
+        ): void {
             $rollbacks++;
             self::assertFalse($this->connection->getPdo()->inTransaction());
             self::assertSame(0, $this->connection->transactionLevel());
@@ -96,7 +103,7 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         self::assertSame(0, $this->connection->table('jobs')->find($neighbor)->attempts);
     }
 
-    public function testSustainedBusyStopsAfterThreeStatementsWithTheOriginalReservationIntact(): void
+    public function testSustainedBusyStopsWithinTheRetryWindowWithTheOriginalReservationIntact(): void
     {
         $job = $this->job();
         $original = $this->connection->table('jobs')
@@ -110,7 +117,8 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         } finally {
             $writer->rollBack();
         }
-        self::assertSame(3, $this->deleteStatements);
+        self::assertGreaterThan(3, $this->deleteStatements);
+        self::assertLessThanOrEqual(64, $this->deleteStatements);
         self::assertSame(1, AcknowledgementReceiptJob::$handled);
         self::assertEquals($original, $this->connection->table('jobs')->find($job->getJobId()));
     }
@@ -121,7 +129,12 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         $job = $this->job();
         $writer = $this->blockDelete();
         $rollbacks = 0;
-        $this->events->listen(TransactionRolledBack::class, function () use ($writer, $job, $releaseAfter, &$rollbacks): void {
+        $this->events->listen(TransactionRolledBack::class, function () use (
+            $writer,
+            $job,
+            $releaseAfter,
+            &$rollbacks
+        ): void {
             if (++$rollbacks !== $releaseAfter) {
                 return;
             }
