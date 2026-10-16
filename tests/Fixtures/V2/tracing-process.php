@@ -82,6 +82,7 @@ $scheduleProbe = getenv('DW_TEST_TRACING_SCHEDULE');
 $admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
     || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
+$fanOut = getenv('DW_TEST_TRACING_FAN_OUT') === 'true';
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
@@ -750,6 +751,10 @@ try {
                         [[9007199254740993, null, '雪']],
                         StartOptions::returnExistingActive()->withExecutionTimeout(60)->withRunTimeout(45)
                     );
+            } elseif ($fanOut) {
+                WorkflowStub::make(TracingFanOutWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
             } elseif ($transition === 'child' || $transition === 'continue') {
                 $workflow = $transition === 'child'
                     ? TracingChildParentWorkflow::class
@@ -1278,6 +1283,31 @@ try {
             'history_payloads' => $history->pluck('payload')
                 ->all(),
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
+        ];
+    }
+    if ($fanOut) {
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $output['fan_out'] = [
+            'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
+            'history_hashes' => $history->map(static fn ($event): string => hash(
+                'sha256',
+                json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
+            ))->all(),
+            'history_types' => $history->map(static fn ($event): string => $event->event_type->value)
+                ->all(),
+            'history_payloads' => $history->pluck('payload')
+                ->all(),
+            'activities' => ActivityExecution::query()->orderBy('id')->get([
+                'id', 'status', 'attempt_count', 'current_attempt_id', 'retry_policy',
+            ])->toArray(),
+            'attempts' => ActivityAttempt::query()->orderBy('id')->get([
+                'id', 'activity_execution_id', 'workflow_task_id', 'attempt_number', 'status',
+            ])->toArray(),
+            'tasks' => WorkflowTask::query()->orderBy('id')->get([
+                'id', 'status', 'task_type', 'attempt_count', 'repair_count',
+            ])->toArray(),
         ];
     }
     if ($recovery) {

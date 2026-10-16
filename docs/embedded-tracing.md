@@ -139,6 +139,20 @@ mocked results do not emit callback spans. Local attempts have no activity-queue
 wait measurement. The span ends before outcome recording, and the existing
 execution transaction and retry dispatch rules remain unchanged.
 
+Cold parallel-workflow controls use a local callback followed by a group of
+two ordinary activities and a timer, including a genuine activity retry.
+Independent queue processes retain the original admission parent and restore
+their previous context. Each callback attempt has its own identity and span;
+replaying the completed local callback adds no attempt span. The same recipe
+covers tracing disabled, a legacy admission, and workers disabled after a
+traced admission. It preserves the complete retry snapshots, original
+deadlines and history prefixes, with zero repairs.
+
+The local callback precedes the parallel group. The existing `all()` API does
+not admit local-activity descriptors as group members. Completion-specific
+fan-in links, simultaneous-worker load and large-fan-out overhead remain
+separate qualification gates.
+
 Queue dispatch emits a short `durable.task.dispatch` producer span outside the
 database transaction. It covers the queue dispatcher call. A returned call is
 not proof that a worker claimed or completed the task. Poll mode and fake
