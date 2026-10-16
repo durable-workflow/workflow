@@ -13,13 +13,15 @@ use Throwable;
 /** Keep Laravel's pop lifecycle while acknowledging only the original reservation. */
 class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
 {
+    private const MAX_DELETE_ATTEMPTS = 64;
+
     public function deleteClaimedJob(string $queue, int|string $id, int $reservedAt, int $attempts): void
     {
         $rootTransaction = $this->database->transactionLevel() === 0;
         $pdo = $this->database->getPdo();
         $deadline = hrtime(true) + 5_000_000_000;
 
-        for ($attempt = 0; $attempt < 3; $attempt++) {
+        for ($attempt = 0; $attempt < self::MAX_DELETE_ATTEMPTS; $attempt++) {
             $deleteFailure = null;
             $query = $this->database->table($this->table)
                 ->where('id', $id)
@@ -56,12 +58,17 @@ class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
                     && $this->database->getRawPdo() === $pdo
                     && $this->database->transactionLevel() === 0
                     && ! $pdo->inTransaction()
-                    && $attempt < 2
+                    && $attempt + 1 < self::MAX_DELETE_ATTEMPTS
                     && hrtime(true) < $deadline
                 )) {
                     throw $exception;
                 }
-                usleep(1_000);
+                // Only this fenced DELETE has rolled back. Yield to other writers
+                // without repeating a handler or retrying uncertain acknowledgment.
+                usleep(min(($attempt + 1) * 20_000, 100_000));
+                if (hrtime(true) >= $deadline) {
+                    throw $exception;
+                }
             }
         }
     }
