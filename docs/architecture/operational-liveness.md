@@ -392,6 +392,27 @@ Rules:
   task transitioning to `Ready` and the repair path treating it as
   a redispatch candidate. Below this gap the repair path leaves the
   task alone so the normal queue worker has a chance to pick it up.
+- The automatic pass can omit a redundant redispatch when the task's hidden
+  `queue_delivery_reference` identifies an exact unreserved database-queue row.
+  It checks the original job primary key, payload UUID, job class and resolved
+  connection/queue/table on the transport writer before acquiring repair locks.
+  The task hint comes from its storage writer too, avoiding decisions based on
+  read-replica lag. This transport observation grants no claim, receipt or
+  completion authority. A subsequent bounded scan rechecks a disappeared row.
+  Reserved, legacy, mismatched and unavailable references retain the existing
+  repair path. Application-owned queue managers
+  and custom queue subclasses are not inspected. The optional nullable column
+  is hidden from task JSON; no business history, payload, policy or deadline is
+  changed. Timing-based candidate counts can therefore include tasks that
+  already have queued deliveries.
+- Queue-mode scans retain an advisory position in the application's cache, so
+  queued deliveries at the front of a bounded batch cannot indefinitely hide
+  missing deliveries behind them. Each selected task is still revalidated, the
+  original per-pass limit remains, and the scan wraps at the end. Losing or
+  expiring this position restarts inspection; it cannot grant a lease or change
+  a task, history or deadline. Each round is capped by its initial candidate
+  count, so continuous arrivals cannot indefinitely postpone revisiting earlier
+  deliveries. Poll-mode selection is unchanged.
 - `loop_throttle_seconds` is the minimum gap between two repair
   passes. A caller that invokes repair more aggressively MUST wait;
   the repair path enforces the throttle itself.
