@@ -10,7 +10,6 @@
     "tests/Unit/V2/ActivityTaskClaimTest.php",
     "tests/Unit/V2/CancellationContextTest.php",
     "tests/Unit/V2/CompiledWorkflowDefinitionTest.php",
-    "tests/Unit/V2/EmbeddedSqliteTaskContentionTest.php",
     "tests/Unit/V2/ExternalPayloadStorageTest.php",
     "tests/Unit/V2/PlatformProtocolSpecsTest.php",
     "tests/Unit/V2/ReadmeBranchDestinationsTest.php",
