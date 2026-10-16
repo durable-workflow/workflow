@@ -97,7 +97,7 @@ final class LocalActivityRetryDispatchTest extends TestCase
         config(['workflows.v2.task_dispatch_mode' => 'poll']);
         $this->start();
         $task = WorkflowTask::query()->sole();
-        (new RunWorkflowTask($task->id))->handle();
+        app()->call([new RunWorkflowTask($task->id), 'handle']);
         self::assertSame(1, ActivityAttempt::query()->count());
         self::assertSame(1, WorkflowTask::query()->where('status', 'ready')->count());
         self::assertSame(0, DB::table('jobs')->count());
@@ -111,13 +111,13 @@ final class LocalActivityRetryDispatchTest extends TestCase
         $originalJobs = DB::table('jobs')->get()->toArray();
         DB::beginTransaction();
         try {
-            (new RunWorkflowTask($task->id))->handle();
+            app()->call([new RunWorkflowTask($task->id), 'handle']);
             self::assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ActivityRetryScheduled')->count());
-            self::assertSame($originalJobs, DB::table('jobs')->get()->toArray());
+            self::assertEquals($originalJobs, DB::table('jobs')->get()->toArray());
         } finally {
             DB::rollBack();
         }
-        self::assertSame($originalJobs, DB::table('jobs')->get()->toArray());
+        self::assertEquals($originalJobs, DB::table('jobs')->get()->toArray());
         self::assertSame(0, ActivityAttempt::query()->count());
         self::assertSame(1, WorkflowTask::query()->count());
         self::assertSame(2, WorkflowHistoryEvent::query()->count());
