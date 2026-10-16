@@ -22,10 +22,15 @@ final class SqliteTransaction
      * @param Closure(Connection): T $operation
      * @param int|null $attempts Explicit existing attempt limits also pass through to other drivers.
      * @param Closure(Connection): void|null $admission Acquire the write lock before a body that must not repeat.
+     * @param int|null $admissionDeadline Captured monotonic nanoseconds for an already claimed outcome.
      * @return T
      */
-    public static function run(Closure $operation, ?int $attempts = null, ?Closure $admission = null): mixed
-    {
+    public static function run(
+        Closure $operation,
+        ?int $attempts = null,
+        ?Closure $admission = null,
+        ?int $admissionDeadline = null,
+    ): mixed {
         $connection = DB::connection();
         $storageName = Config::get('workflows.storage.connection');
         if (is_string($storageName) && $storageName !== '') {
@@ -47,10 +52,17 @@ final class SqliteTransaction
         }
 
         $deadline = hrtime(true) + 5_000_000_000;
+        $defaultAttempts = $admission === null ? 3 : 64;
+        if ($admission !== null && $admissionDeadline !== null) {
+            // Keep the callback's result in memory while its original claim is
+            // valid. Only a proven rollback before entering publication retries.
+            $deadline = $admissionDeadline;
+            $defaultAttempts = PHP_INT_MAX;
+        }
         // Before admission, no execution body has run. Keep retrying proven
         // rollbacks within the existing window instead of exhausting three
         // fast lock refusals. Preserve ordinary mutation and explicit limits.
-        $maximumAttempts = max(1, $attempts ?? ($admission === null ? 3 : 64));
+        $maximumAttempts = max(1, $attempts ?? $defaultAttempts);
         for ($attempt = 1; ; $attempt++) {
             $failedInRoot = false;
             $returned = false;
@@ -108,7 +120,7 @@ final class SqliteTransaction
      * @param Closure(Connection): T $operation
      * @return T
      */
-    public static function forTask(string $taskId, Closure $operation): mixed
+    public static function forTask(string $taskId, Closure $operation, ?int $admissionDeadline = null): mixed
     {
         return self::run($operation, admission: static function () use ($taskId): void {
             $task = ConfiguredV2Models::query('task_model', \Workflow\V2\Models\WorkflowTask::class);
@@ -119,7 +131,7 @@ final class SqliteTransaction
                 ->update([
                     $key => $taskId,
                 ]);
-        });
+        }, admissionDeadline: $admissionDeadline);
     }
 
     private static function isContention(Throwable $exception): bool
