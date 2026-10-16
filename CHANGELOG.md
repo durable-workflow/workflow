@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.25 - 2026-10-16
+
+- Allow additional proven SQLite root rollbacks during task write admission
+  within the existing retry window, before the claim or execution body starts.
+- Preserve explicit attempt limits, ordinary mutation retries, other database
+  drivers and uncertain commit/rollback handling. Activity callbacks are not
+  repeated to publish their results.
+- Keep original tasks, histories, retry policies and deadlines. Native contention
+  still propagates when the bounded admission budget is exhausted.
+
 ## 2.5.24 - 2026-10-16
 
 - Avoid redundant embedded recovery dispatches while an exact unreserved
