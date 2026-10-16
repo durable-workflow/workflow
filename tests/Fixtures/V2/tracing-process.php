@@ -615,6 +615,7 @@ try {
     $admissionResult = null;
     $scheduleBufferResult = null;
     $scheduleDrainResults = null;
+    $scheduleBackfillResults = null;
     $admissionContextPreserved = null;
     try {
         if ($mode === 'admit') {
@@ -677,6 +678,13 @@ try {
                     ])->save();
                     $triggered = ScheduleManager::tick(1);
                     $instanceId = $triggered[0]['instance_id'] ?? null;
+                } elseif ($scheduleProbe === 'backfill') {
+                    $from = now()
+                        ->startOfMinute()
+                        ->subMinutes(2);
+                    file_put_contents($directory . '/backfill-from', $from->toIso8601String());
+                    $scheduleBackfillResults = ScheduleManager::backfill($schedule, $from, $from->copy()->addMinute());
+                    $instanceId = $scheduleBackfillResults[0]['instance_id'] ?? null;
                 } else {
                     $instanceId = ScheduleManager::trigger($schedule);
                 }
@@ -684,6 +692,9 @@ try {
                     throw new \RuntimeException('The actual schedule did not admit a workflow.');
                 }
                 file_put_contents($directory . '/schedule-instance', $instanceId);
+                if ($scheduleProbe === 'backfill') {
+                    file_put_contents($directory . '/backfill-first-instance', $instanceId);
+                }
             } elseif ($childRetry) {
                 // A real bridge-authored policy, not an invented PHP child option or history edit.
                 config()
@@ -761,6 +772,29 @@ try {
                         'outcome' => $result->outcome(),
                     ];
                 }
+            }
+        } elseif ($scheduleProbe === 'backfill' && in_array(
+            $mode,
+            ['backfill-duplicate', 'backfill-fail', 'backfill-next'],
+            true
+        )) {
+            $schedule = WorkflowSchedule::query()->where('schedule_id', 'cold-schedule')->sole();
+            $from = \Carbon\CarbonImmutable::parse(trim(file_get_contents($directory . '/backfill-from')));
+            if ($mode !== 'backfill-duplicate') {
+                $from = $from->addMinute();
+            }
+            if ($mode === 'backfill-fail') {
+                $app['events']->listen(WorkflowStarted::class, static function (): never {
+                    throw new \RuntimeException('deliberate backfill admission rollback');
+                });
+            }
+            $scheduleBackfillResults = ScheduleManager::backfill($schedule, $from, $from->addMinute());
+            if ($mode === 'backfill-next') {
+                $instanceId = $scheduleBackfillResults[0]['instance_id'] ?? null;
+                if (! is_string($instanceId) || $instanceId === '') {
+                    throw new \RuntimeException('The next backfill occurrence did not admit a workflow.');
+                }
+                file_put_contents($directory . '/schedule-instance', $instanceId);
             }
         } elseif ($scheduleProbe === 'buffered' && in_array($mode, ['buffer', 'buffer-full', 'buffer-next'], true)) {
             $schedule = WorkflowSchedule::query()->where('schedule_id', 'cold-schedule')->sole();
@@ -912,7 +946,7 @@ try {
                 throw new \RuntimeException(Artisan::output());
             }
             $repairReport = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
-        } elseif ($mode !== 'inspect') {
+        } elseif (! in_array($mode, ['inspect', 'inspect-first'], true)) {
             throw new \RuntimeException('Unknown fixture command.');
         }
         if ($admissionProbe) {
@@ -923,7 +957,12 @@ try {
         $requestSpan?->end();
     }
     $selectedInstance = $scheduleProbe
-        ? trim(file_get_contents($directory . '/schedule-instance')) : 'cold-tracing';
+        ? trim(
+            file_get_contents(
+                $directory . ($mode === 'inspect-first' ? '/backfill-first-instance' : '/schedule-instance')
+            )
+        )
+        : 'cold-tracing';
     $runs = WorkflowRun::query()->where('workflow_instance_id', $selectedInstance);
     $run = $transition === 'continue' ? $runs->orderByDesc('run_number')
         ->firstOrFail() : $runs->sole();
@@ -994,6 +1033,7 @@ try {
             'latest_instance_id' => $schedule->latest_workflow_instance_id,
             'buffer_result' => $scheduleBufferResult,
             'drain_results' => $scheduleDrainResults,
+            'backfill_results' => $scheduleBackfillResults,
             'buffered_actions' => $schedule->buffered_actions,
             'public_buffered_actions' => $schedule->toDetail()['info']['buffered_actions'],
             'instance_id' => $run->workflow_instance_id,

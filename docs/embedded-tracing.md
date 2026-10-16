@@ -208,10 +208,18 @@ typed results and first-attempt tasks.
 Both `buffer_one` and ordered `buffer_all` draining have cold-process controls;
 successive entries link their own callers rather than reusing the first caller.
 
-Backfill retains its focused queue/state and transaction-boundary controls;
-wider cold backfill coverage and full schedule tracing remain unfinished. This
-component adds no schedule column or service wire field. The internal buffered
-metadata has no stable or native adoption claim.
+Cold backfill controls cover traced and disabled admission, an already-fired
+occurrence, rollback and a later successful admission of that same occurrence.
+Independent queue workers retain the actual backfill caller as their parent.
+The failed admission reports an error without a successful instance or run
+identity. Duplicate and failed admissions preserve the original run, carrier,
+history and deadlines. A later occurrence gets its own caller without changing
+the earlier completed run. Disabled controls keep the same business outcomes
+without capturing a carrier or emitting spans.
+
+These schedule controls add no schedule column or service wire field. The
+internal buffered metadata has no stable or native adoption claim. Full tracing
+acceptance, broader gates and overhead measurements remain unfinished.
 
 ## Signal caller links
 

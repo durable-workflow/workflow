@@ -227,6 +227,8 @@ final class ScheduleExecutionTracingTest extends TestCase
             'manual disabled' => ['manual', false],
             'periodic traced' => ['scheduled', true],
             'periodic disabled' => ['scheduled', false],
+            'backfill traced' => ['backfill', true],
+            'backfill disabled' => ['backfill', false],
         ];
     }
 
@@ -235,32 +237,7 @@ final class ScheduleExecutionTracingTest extends TestCase
     {
         $directory = sys_get_temp_dir() . '/dw-tracing-schedule-' . bin2hex(random_bytes(8));
         mkdir($directory, 0700);
-        $worker = static function (string $mode) use ($directory, $kind, $enabled): array {
-            $packageVendor = dirname(__DIR__, 3) . '/vendor';
-            $otherVendors = array_filter(
-                array_keys(ClassLoader::getRegisteredLoaders()),
-                static fn (string $vendor): bool => $vendor !== $packageVendor
-            );
-            $process = new Process([
-                PHP_BINARY, __DIR__ . '/../../Fixtures/V2/tracing-process.php', $directory, $mode, 'once',
-                ...array_map(
-                    static fn (string $vendor): string => $vendor . '/autoload.php',
-                    [...$otherVendors, $packageVendor]
-                ),
-            ], env: [
-                'DW_TEST_TRACING_SCHEDULE' => $kind,
-                'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
-            ]);
-            $process->setTimeout(15);
-            $process->mustRun();
-            self::assertSame('', $process->getErrorOutput());
-            self::assertJson($process->getOutput(), substr($process->getOutput(), -1500));
-            $result = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
-            self::assertSame([], $result['outside_context']);
-            self::assertTrue($result['scope_restored']);
-
-            return $result;
-        };
+        $worker = static fn (string $mode): array => self::scheduleWorker($directory, $mode, $kind, $enabled);
         try {
             $admitted = $worker('admit');
             $workers = [$worker('work'), $worker('work'), $worker('work')];
@@ -306,7 +283,20 @@ final class ScheduleExecutionTracingTest extends TestCase
                 self::assertSame('00f067aa0ba902b7', $triggers[0]['parent_id']);
                 self::assertSame($kind, $triggers[0]['fields']['durable.schedule.trigger_kind']);
                 self::assertSame('triggered', $triggers[0]['fields']['durable.schedule.outcome']);
-                self::assertSame($admitted['run_id'], $triggers[0]['fields']['workflow_run_id']);
+                if ($kind === 'backfill') {
+                    self::assertSame(
+                        $admitted['schedule']['instance_id'],
+                        $triggers[0]['fields']['workflow_instance_id']
+                    );
+                    self::assertArrayNotHasKey('workflow_run_id', $triggers[0]['fields']);
+                    self::assertCount(1, $admitted['schedule']['backfill_results']);
+                    self::assertSame(
+                        $admitted['schedule']['instance_id'],
+                        $admitted['schedule']['backfill_results'][0]['instance_id']
+                    );
+                } else {
+                    self::assertSame($admitted['run_id'], $triggers[0]['fields']['workflow_run_id']);
+                }
             }
             $processing = array_values(array_filter(
                 array_merge(...array_column($workers, 'spans')),
@@ -319,6 +309,128 @@ final class ScheduleExecutionTracingTest extends TestCase
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
             }
             self::assertCount(3, array_unique(array_column($workers, 'pid')));
+        } finally {
+            (new Filesystem())->deleteDirectory($directory);
+        }
+    }
+
+    #[DataProvider('bufferModes')]
+    public function testBackfillDuplicateAndRollbackKeepTheOriginalOccurrenceAndCaller(bool $enabled): void
+    {
+        $directory = sys_get_temp_dir() . '/dw-tracing-backfill-' . bin2hex(random_bytes(8));
+        mkdir($directory, 0700);
+        $worker = static fn (string $mode): array => self::scheduleWorker($directory, $mode, 'backfill', $enabled);
+        try {
+            $admitted = $worker('admit');
+            if (! $enabled) {
+                self::assertNull($admitted['carrier']);
+            }
+            $duplicate = $worker('backfill-duplicate');
+            self::assertNull($duplicate['schedule']['backfill_results'][0]['instance_id']);
+            self::assertSame(
+                $admitted['schedule']['backfill_results'][0]['cron_time'],
+                $duplicate['schedule']['backfill_results'][0]['cron_time']
+            );
+            self::assertSame(1, $duplicate['schedule']['run_count']);
+            self::assertSame(1, $duplicate['schedule']['fires_count']);
+            foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $field) {
+                self::assertSame($admitted[$field], $duplicate[$field]);
+            }
+            self::assertSame($admitted['schedule']['history_hashes'], $duplicate['schedule']['history_hashes']);
+            self::assertSame($admitted['schedule']['tasks'], $duplicate['schedule']['tasks']);
+            $duplicateSpans = array_values(array_filter(
+                $duplicate['spans'],
+                static fn (array $span): bool => $span['name'] === 'durable.schedule.trigger'
+            ));
+            self::assertCount($enabled ? 1 : 0, $duplicateSpans);
+            if ($enabled) {
+                self::assertSame('no_run', $duplicateSpans[0]['fields']['durable.schedule.outcome']);
+                self::assertArrayNotHasKey('workflow_instance_id', $duplicateSpans[0]['fields']);
+                self::assertArrayNotHasKey('workflow_run_id', $duplicateSpans[0]['fields']);
+            }
+            for ($index = 0; $index < 3; ++$index) {
+                $worker('work');
+            }
+            $original = $worker('inspect');
+            self::assertSame('completed', $original['status']);
+            $failed = $worker('backfill-fail');
+            self::assertSame(
+                'deliberate backfill admission rollback',
+                $failed['schedule']['backfill_results'][0]['error']
+            );
+            self::assertNull($failed['schedule']['backfill_results'][0]['instance_id']);
+            self::assertSame(1, $failed['schedule']['run_count']);
+            self::assertSame(1, $failed['schedule']['fires_count']);
+            self::assertSame(1, $failed['schedule']['failures_count']);
+            self::assertSame(0, $failed['jobs']);
+            self::assertSame($original['schedule']['tasks'], $failed['schedule']['tasks']);
+            self::assertSame($original['schedule']['history_hashes'], $failed['schedule']['history_hashes']);
+            $failedSpans = array_values(array_filter(
+                $failed['spans'],
+                static fn (array $span): bool => $span['name'] === 'durable.schedule.trigger'
+            ));
+            self::assertCount($enabled ? 1 : 0, $failedSpans);
+            if ($enabled) {
+                self::assertSame(StatusCode::STATUS_ERROR, $failedSpans[0]['status_code']);
+                self::assertSame(\RuntimeException::class, $failedSpans[0]['fields']['error.type']);
+                self::assertArrayNotHasKey('workflow_instance_id', $failedSpans[0]['fields']);
+                self::assertArrayNotHasKey('workflow_run_id', $failedSpans[0]['fields']);
+            }
+            $next = $worker('backfill-next');
+            self::assertNotSame($original['run_id'], $next['run_id']);
+            self::assertSame(
+                $failed['schedule']['backfill_results'][0]['cron_time'],
+                $next['schedule']['backfill_results'][0]['cron_time']
+            );
+            self::assertSame(2, $next['schedule']['fires_count']);
+            self::assertSame(2, $next['schedule']['run_count']);
+            $workers = [$worker('work'), $worker('work'), $worker('work')];
+            $finished = $worker('inspect');
+            self::assertSame('completed', $finished['status']);
+            self::assertSame([9007199254740993, null, '雪'], $finished['output']);
+            self::assertSame(0, $finished['jobs']);
+            self::assertSame(0, $finished['failed_jobs']);
+            self::assertSame(0, $finished['repairs']);
+            foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $field) {
+                self::assertSame($next[$field], $finished[$field]);
+            }
+            self::assertSame($next['schedule']['history_hashes'], array_slice(
+                $finished['schedule']['history_hashes'],
+                0,
+                count($next['schedule']['history_hashes'])
+            ));
+            foreach (['ScheduleTriggered', 'ActivityCompleted', 'WorkflowCompleted'] as $eventType) {
+                self::assertSame(1, array_count_values($finished['schedule']['history_types'])[$eventType]);
+            }
+            foreach ($finished['schedule']['tasks'] as $task) {
+                self::assertSame('completed', $task['status']);
+                self::assertSame(1, $task['attempt_count']);
+                self::assertSame(0, $task['repair_count']);
+            }
+            self::assertCount(6, $finished['schedule']['tasks']);
+            $processing = array_values(array_filter(
+                array_merge(...array_column($workers, 'spans')),
+                static fn (array $span): bool => $span['kind'] === SpanKind::KIND_CONSUMER
+            ));
+            self::assertCount($enabled ? 3 : 0, $processing);
+            foreach ($processing as $span) {
+                self::assertSame('11111111111111111111111111111111', $span['trace_id']);
+                self::assertSame('2222222222222222', $span['parent_id']);
+                self::assertSame($next['run_id'], $span['fields']['workflow_run_id']);
+            }
+            $retained = $worker('inspect-first');
+            foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline', 'status', 'output'] as $field) {
+                self::assertSame($original[$field], $retained[$field]);
+            }
+            self::assertSame($original['schedule']['history_hashes'], $retained['schedule']['history_hashes']);
+            foreach ([$duplicate, $failed, $next, ...$workers] as $checkpoint) {
+                foreach ($checkpoint['schedule']['capture_transaction_levels'] as $level) {
+                    self::assertSame(0, $level);
+                }
+                foreach ($checkpoint['schedule']['boundaries'] as $boundary) {
+                    self::assertSame(0, $boundary['transaction_level']);
+                }
+            }
         } finally {
             (new Filesystem())->deleteDirectory($directory);
         }
@@ -355,7 +467,8 @@ final class ScheduleExecutionTracingTest extends TestCase
                 self::assertSame($caller, $triggers[0]['links'][0]['trace_id']);
                 self::assertSame('2222222222222222', $triggers[0]['parent_id']);
                 if ($caller === 'cccccccccccccccccccccccccccccccc') {
-                    self::assertSame([$second['schedule']['buffered_actions'][1]],
+                    self::assertSame(
+                        [$second['schedule']['buffered_actions'][1]],
                         $drained['schedule']['buffered_actions']
                     );
                 } else {
@@ -396,6 +509,19 @@ final class ScheduleExecutionTracingTest extends TestCase
         string $metadata = 'valid',
         string $policy = 'buffer_one'
     ): array {
+        return self::scheduleWorker($directory, $mode, 'buffered', $enabled, [
+            'DW_TEST_TRACING_BUFFER_METADATA' => $metadata,
+            'DW_TEST_TRACING_BUFFER_POLICY' => $policy,
+        ]);
+    }
+
+    private static function scheduleWorker(
+        string $directory,
+        string $mode,
+        string $kind,
+        bool $enabled,
+        array $environment = []
+    ): array {
         $packageVendor = dirname(__DIR__, 3) . '/vendor';
         $otherVendors = array_filter(
             array_keys(ClassLoader::getRegisteredLoaders()),
@@ -408,10 +534,9 @@ final class ScheduleExecutionTracingTest extends TestCase
                 [...$otherVendors, $packageVendor]
             ),
         ], env: [
-            'DW_TEST_TRACING_SCHEDULE' => 'buffered',
+            'DW_TEST_TRACING_SCHEDULE' => $kind,
             'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
-            'DW_TEST_TRACING_BUFFER_METADATA' => $metadata,
-            'DW_TEST_TRACING_BUFFER_POLICY' => $policy,
+            ...$environment,
         ]);
         $process->setTimeout(15);
         $process->mustRun();
