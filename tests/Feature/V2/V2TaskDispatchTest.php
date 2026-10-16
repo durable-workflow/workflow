@@ -44,9 +44,116 @@ use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\TaskWatchdog;
 
 final class V2TaskDispatchTest extends TestCase
 {
+    public static function databaseQueueDeliveries(): array
+    {
+        $cases = [];
+        foreach (['workflow', 'activity', 'timer'] as $type) {
+            foreach (['queued', 'missing', 'reserved', 'queue case'] as $delivery) {
+                $cases[$type . ' ' . $delivery] = [$type, $delivery];
+            }
+        }
+        return $cases;
+    }
+
+    #[DataProvider('databaseQueueDeliveries')]
+    public function testDatabaseQueueRecoveryUsesExactTransportAcrossDatabaseDrivers(
+        string $type,
+        string $delivery
+    ): void {
+        $this->configureDatabaseQueueRecovery();
+        $run = $this->createWaitingRun('database-queue-recovery');
+        $task = $this->createDatabaseQueueRecoveryTask($run, $type);
+        self::assertIsArray($task->queue_delivery_reference);
+        self::assertArrayNotHasKey('queue_delivery_reference', $task->toArray());
+        $jobId = $task->queue_delivery_reference['job_id'];
+        self::assertSame(1, DB::table('jobs')->count());
+        if ($delivery === 'missing') {
+            DB::table('jobs')->where('id', $jobId)->delete();
+        } elseif ($delivery === 'reserved') {
+            DB::table('jobs')->where('id', $jobId)->update([
+                'reserved_at' => now()
+->timestamp,
+            ]);
+        } elseif ($delivery === 'queue case') {
+            DB::table('jobs')->where('id', $jobId)->update([
+                'queue' => 'DEFAULT',
+            ]);
+        }
+        $original = $task->getRawOriginal();
+        $timing = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        Carbon::setTestNow(now()->addSeconds(4));
+
+        $report = TaskWatchdog::runPass('database', 'default', runIds: [$run->id]);
+
+        $task->refresh();
+        self::assertSame([], $report['existing_task_failures']);
+        self::assertSame($delivery === 'queued' ? 0 : 1, $report['dispatched_tasks']);
+        self::assertSame($delivery === 'queued' ? 0 : 1, $task->repair_count);
+        self::assertSame(in_array($delivery, ['reserved', 'queue case'], true) ? 2 : 1, DB::table('jobs')->count());
+        self::assertSame(0, (int) $task->attempt_count);
+        self::assertNull($task->lease_owner);
+        self::assertNull($task->lease_expires_at);
+        if ($delivery === 'queued') {
+            self::assertSame($original, $task->getRawOriginal());
+        }
+        $run->refresh();
+        self::assertSame(
+            $timing,
+            [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')]
+        );
+        self::assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testDatabaseQueueRecoveryRotatesPastQueuedLegacyPositionsAndWraps(): void
+    {
+        $this->configureDatabaseQueueRecovery();
+        config()
+            ->set('workflows.v2.task_repair.scan_limit', 1);
+        $tasks = [];
+        foreach ([0, 1] as $index) {
+            $run = $this->createWaitingRun('queue-scan-' . $index);
+            $task = $this->createDatabaseQueueRecoveryTask($run, 'workflow');
+            $task->forceFill([
+                'available_at' => null,
+                'created_at' => $index === 0 ? null : $task->created_at,
+            ])->save();
+            $tasks[] = $task;
+            Carbon::setTestNow(now()->addSecond());
+        }
+        [$queued, $missing] = $tasks;
+        $before = $queued->getRawOriginal();
+        DB::table('jobs')->where('id', $missing->queue_delivery_reference['job_id'])->delete();
+        Carbon::setTestNow(now()->addSeconds(4));
+
+        $first = TaskWatchdog::runPass('database', 'default');
+        $second = TaskWatchdog::runPass('database', 'default');
+
+        self::assertSame(1, $first['selected_existing_task_candidates']);
+        self::assertSame(0, $first['dispatched_tasks']);
+        self::assertSame(1, $second['selected_existing_task_candidates']);
+        self::assertSame(1, $second['dispatched_tasks']);
+        self::assertSame([], $second['existing_task_failures']);
+        self::assertSame($before, $queued->fresh()->getRawOriginal());
+        self::assertSame(1, $missing->fresh()->repair_count);
+        DB::table('jobs')->where('id', $queued->queue_delivery_reference['job_id'])->delete();
+        $wrapped = TaskWatchdog::runPass('database', 'default');
+        self::assertSame(1, $wrapped['dispatched_tasks']);
+        self::assertSame([], $wrapped['existing_task_failures']);
+        self::assertSame(1, $queued->fresh()->repair_count);
+        self::assertSame(2, DB::table('jobs')->count());
+        self::assertSame(0, WorkflowHistoryEvent::query()->count());
+        foreach ($tasks as $task) {
+            $task->refresh();
+            self::assertSame(0, (int) $task->attempt_count);
+            self::assertNull($task->lease_owner);
+            self::assertNull($task->lease_expires_at);
+        }
+    }
+
     public function testQueuedTimerAndLocalWritersUseConfiguredWorkflowTaskLease(): void
     {
         $now = Carbon::parse('2026-07-14 22:00:00 UTC');
@@ -1338,6 +1445,54 @@ final class V2TaskDispatchTest extends TestCase
     {
         yield 'fresh ready' => [TaskStatus::Ready];
         yield 'unexpired lease' => [TaskStatus::Leased];
+    }
+
+    private function configureDatabaseQueueRecovery(): void
+    {
+        self::stopWorkers();
+        Carbon::setTestNow(Carbon::parse('2026-10-16T07:00:00.123456Z'));
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+        config()
+            ->set([
+                'queue.default' => 'database',
+                'queue.connections.database' => [
+                    'driver' => 'database',
+                    'connection' => config('database.default'),
+                    'table' => 'jobs',
+                    'queue' => 'default',
+                    'retry_after' => 90,
+                ],
+                'cache.default' => 'array',
+                'workflows.v2.task_dispatch_mode' => 'queue',
+                'workflows.v2.compatibility.current' => 'build-a',
+                'workflows.v2.compatibility.supported' => ['build-a'],
+            ]);
+    }
+
+    private function createDatabaseQueueRecoveryTask(WorkflowRun $run, string $type): WorkflowTask
+    {
+        $run->forceFill([
+            'connection' => 'database',
+            'execution_deadline_at' => now()
+                ->addSeconds(120),
+            'run_deadline_at' => now()
+                ->addSeconds(100),
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => $type,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+        TaskDispatcher::dispatch($task);
+        return $task->refresh();
     }
 
     private function createWaitingRun(string $instanceId): WorkflowRun

@@ -131,12 +131,27 @@ final class DatabaseQueueRecoveryTest extends TestCase
         );
     }
 
-    public function testHealthyBacklogDoesNotStarveMissingDeliveryPastTheScanLimit(): void
+    public static function scanPositions(): array
+    {
+        return [
+            'ordinary timestamps' => [false],
+            'nullable legacy timestamps' => [true],
+        ];
+    }
+
+    #[DataProvider('scanPositions')]
+    public function testHealthyBacklogDoesNotStarveMissingDeliveryPastTheScanLimit(bool $legacy): void
     {
         config()->set('workflows.v2.task_repair.scan_limit', 1);
         $queued = WorkflowStub::make(TestGreetingWorkflow::class, 'queued-before-missing', '0');
         $queued->start('queue-user', new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
         $queuedTask = WorkflowTask::query()->sole();
+        if ($legacy) {
+            $queuedTask->forceFill([
+                'available_at' => null,
+                'created_at' => null,
+            ])->save();
+        }
         $before = $queuedTask->getRawOriginal();
         Carbon::setTestNow(now()->addSecond());
         $missing = WorkflowStub::make(TestGreetingWorkflow::class, 'missing-after-queued', '0');
@@ -154,6 +169,10 @@ final class DatabaseQueueRecoveryTest extends TestCase
         self::assertSame(1, $second['dispatched_tasks']);
         self::assertSame($before, $queuedTask->fresh()->getRawOriginal());
         self::assertSame(1, $missingTask->fresh()->repair_count);
+        self::assertSame(2, DB::table('jobs')->count());
+        DB::table('jobs')->where('id', $queuedTask->queue_delivery_reference['job_id'])->delete();
+        self::assertSame(1, TaskWatchdog::runPass('database', 'default')['dispatched_tasks']);
+        self::assertSame(1, $queuedTask->fresh()->repair_count);
         self::assertSame(2, DB::table('jobs')->count());
     }
 
