@@ -415,6 +415,39 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
     }
 
+    public function testWriteAdmissionCanRecoverAfterThreeProvenRootRollbacks(): void
+    {
+        $writer = $this->writer();
+        $writer->beginTransaction();
+        $writer->exec('UPDATE state SET value=1 WHERE id=2');
+        $rollbacks = 0;
+        $this->events->listen(TransactionRolledBack::class, function () use ($writer, &$rollbacks): void {
+            $rollbacks++;
+            $this->assertSame(0, $this->connection->transactionLevel());
+            $this->assertFalse($this->connection->getPdo()->inTransaction());
+            if ($rollbacks === 3) {
+                $writer->commit();
+            }
+        });
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use (&$calls): void {
+                $calls++;
+                $this->connection->update('UPDATE state SET value=value+1 WHERE id=1');
+            }, admission: function (): void {
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            });
+        } finally {
+            if ($writer->inTransaction()) {
+                $writer->rollBack();
+            }
+        }
+        $this->assertSame(3, $rollbacks);
+        $this->assertSame(1, $calls);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+        $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=2')->value);
+    }
+
     public function testExhaustedAdmissionNeverEntersBody(): void
     {
         $writer = $this->writer();
