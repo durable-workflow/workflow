@@ -36,6 +36,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             self::assertSame(64, $initial['large_fan_out']['ready_jobs']);
             $spans = $initial['spans'];
             $queueErrors = $initial['large_fan_out']['queue_errors'];
+            $reportedQueueErrors = $initial['large_fan_out']['reported_queue_errors'];
             $prefixes = [$admitted['large_fan_out']['history_hashes'], $initial['large_fan_out']['history_hashes']];
             $pids = [];
             $queries = $initial['large_fan_out']['task_outcome_queries'];
@@ -48,6 +49,10 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 $result = self::read($process);
                 $spans = array_merge($spans, $result['spans']);
                 $queueErrors = array_merge($queueErrors, $result['large_fan_out']['queue_errors']);
+                $reportedQueueErrors = array_merge(
+                    $reportedQueueErrors,
+                    $result['large_fan_out']['reported_queue_errors']
+                );
                 $prefixes[] = $result['large_fan_out']['history_hashes'];
                 $pids[] = $result['pid'];
                 $queries += $result['large_fan_out']['task_outcome_queries'];
@@ -64,6 +69,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 'delayed_jobs' => $finished['large_fan_out']['delayed_jobs'],
                 'queue_attempts' => $finished['large_fan_out']['queue_attempts'],
                 'queue_errors' => $queueErrors,
+                'reported_queue_errors' => $reportedQueueErrors,
                 'remaining_deliveries' => $finished['large_fan_out']['remaining_deliveries'],
                 'delivery_errors' => $finished['large_fan_out']['delivery_errors'],
                 'repairs' => $finished['repairs'],

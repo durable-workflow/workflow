@@ -425,11 +425,12 @@ $app = TracingProcessApplication::create(
     ],
 );
 $queueErrors = [];
+$reportedQueueErrors = [];
 if ($largeFanOut) {
-    $app['events']->listen(\Illuminate\Queue\Events\JobExceptionOccurred::class, static function ($event) use (
+    $app['events']->listen(\Illuminate\Queue\Events\JobAttempted::class, static function ($event) use (
         &$queueErrors
     ): void {
-        if (count($queueErrors) >= 4) {
+        if ($event->exception === null || count($queueErrors) >= 4) {
             return;
         }
         $error = $event->exception;
@@ -450,6 +451,31 @@ if ($largeFanOut) {
             'native_code' => $native instanceof \PDOException ? ($native->errorInfo[1] ?? null) : null,
             'operation' => $error instanceof \Illuminate\Database\QueryException
                 ? strtolower(explode(' ', trim($error->getSql()), 2)[0]) : null,
+            'transaction_level' => $connection->transactionLevel(),
+            'pdo_in_transaction' => $pdo instanceof \PDO ? $pdo->inTransaction() : null,
+        ];
+    });
+    $handler = $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class);
+    if (! method_exists($handler, 'reportable')) {
+        throw new \RuntimeException('The tracing fixture needs Laravel exception reporting callbacks.');
+    }
+    $handler->reportable(static function (\Throwable $error) use (&$reportedQueueErrors): void {
+        if (count($reportedQueueErrors) >= 4) {
+            return;
+        }
+        $native = $error;
+        while ($native->getPrevious() !== null) {
+            $native = $native->getPrevious();
+        }
+        $connection = DB::connection('tracing');
+        $pdo = $connection->getRawPdo();
+        $sql = $error instanceof \Illuminate\Database\QueryException ? $error->getSql() : '';
+        $reportedQueueErrors[] = [
+            'error_class' => $error::class,
+            'native_code' => $native instanceof \PDOException ? ($native->errorInfo[1] ?? null) : null,
+            'operation' => $sql === '' ? null : strtolower(explode(' ', trim($sql), 2)[0]),
+            'ack_fence' => $sql === 'delete from "jobs" where "id" = ? and "queue" = ? and "reserved_at" = ? and "attempts" = ?'
+                ? $error->getBindings() : null,
             'transaction_level' => $connection->transactionLevel(),
             'pdo_in_transaction' => $pdo instanceof \PDO ? $pdo->inTransaction() : null,
         ];
@@ -1408,6 +1434,7 @@ try {
         $history = $run->historyEvents()
             ->orderBy('sequence')
             ->get();
+        $remainingTaskIds = $largeFanOut ? array_column($dispatchQueue(), 'task_id', 'id') : [];
         $output[$largeFanOut ? 'large_fan_out' : ($fanOut ? 'fan_out' : 'failure_outcomes')] = [
             'matching_role' => \Workflow\V2\Support\MatchingRoleSnapshot::current(),
             'task_outcome_queries' => $taskOutcomeQueries,
@@ -1416,9 +1443,10 @@ try {
             'delayed_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '>', time())->count(),
             'queue_attempts' => (int) DB::table('jobs')->sum('attempts'),
             'queue_errors' => $queueErrors,
+            'reported_queue_errors' => $reportedQueueErrors,
             'remaining_deliveries' => DB::table('jobs')->orderBy('id')->limit(8)->get([
                 'id', 'queue', 'attempts', 'reserved_at', 'available_at', 'payload',
-            ])->map(static function ($row): array {
+            ])->map(static function ($row) use ($remainingTaskIds): array {
                 $payload = json_decode($row->payload, true);
                 return [
                     'id' => (string) $row->id,
@@ -1428,6 +1456,7 @@ try {
                     'available_at' => $row->available_at,
                     'job_type' => $payload['displayName'] ?? null,
                     'delivery_id' => $payload['uuid'] ?? null,
+                    'task_id' => $remainingTaskIds[$row->id] ?? null,
                 ];
             })->all(),
             'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception', 'payload'])
