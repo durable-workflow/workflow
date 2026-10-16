@@ -10,7 +10,9 @@ use PDO;
 use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use Symfony\Component\Process\Process;
+use Throwable;
 
 final class LargeFanOutExecutionTracingTest extends TestCase
 {
@@ -124,6 +126,11 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             self::assertTraceWindow($spans, $observed, $enabled, $queries);
             self::assertFalse($queueDiagnosticsTruncated, $diagnostic);
             self::assertSupportedQueueRecovery($finished, $observed, $queueErrors, $reportedQueueErrors, $diagnostic);
+        } catch (Throwable $exception) {
+            throw new RuntimeException(
+                $exception->getMessage() . ' Read-only failure snapshot: ' . self::failureSnapshot($directory),
+                previous: $exception,
+            );
         } finally {
             foreach ($batch as $process) {
                 $process->stop(1, 9);
@@ -204,9 +211,11 @@ final class LargeFanOutExecutionTracingTest extends TestCase
     {
         $database = new PDO('sqlite:' . $directory . '/database.sqlite');
         $database->exec('PRAGMA busy_timeout=50');
-        $query = $database->prepare('SELECT status FROM workflow_runs WHERE id = ?');
         do {
+            $query = null;
             try {
+                // A statement whose execution returned SQLITE_BUSY cannot be reused safely by PDO SQLite.
+                $query = $database->prepare('SELECT status FROM workflow_runs WHERE id = ?');
                 $query->execute([$runId]);
                 $status = $query->fetchColumn();
                 $query->closeCursor();
@@ -218,9 +227,33 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 if (! is_int($code) || ! in_array($code & 255, [5, 6], true)) {
                     throw $exception;
                 }
+            } finally {
+                $query = null;
             }
             usleep(100_000);
         } while (microtime(true) < $deadline);
+    }
+
+    private static function failureSnapshot(string $directory): string
+    {
+        try {
+            $database = new PDO('sqlite:file:' . $directory . '/database.sqlite?mode=ro');
+            $database->exec('PRAGMA busy_timeout=25');
+            $database->exec('PRAGMA query_only=ON');
+            $snapshot = [];
+            foreach (['workflow_runs', 'workflow_tasks', 'activity_executions'] as $table) {
+                $snapshot[$table] = $database->query('SELECT status, COUNT(*) AS count FROM ' . $table
+                    . ' GROUP BY status')->fetchAll(PDO::FETCH_ASSOC);
+            }
+            $snapshot['jobs'] = (int) $database->query('SELECT COUNT(*) FROM jobs')->fetchColumn();
+            $snapshot['failed_jobs'] = (int) $database->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn();
+
+            return json_encode($snapshot, JSON_THROW_ON_ERROR);
+        } catch (Throwable $exception) {
+            return json_encode([
+                'unavailable' => $exception->getMessage(),
+            ], JSON_THROW_ON_ERROR);
+        }
     }
 
     private static function read(Process $process): array
