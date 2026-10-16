@@ -167,6 +167,7 @@ final class TaskOutcomeCarrierTest extends TestCase
         yield 'different original link' => ['link'];
         yield 'different physical task' => ['task'];
         yield 'different child namespace' => ['namespace'];
+        yield 'missing child context' => ['missing'];
     }
 
     #[DataProvider('childProofs')]
@@ -241,7 +242,7 @@ final class TaskOutcomeCarrierTest extends TestCase
                 ++$calls;
                 ExecutionTracing::linkChildOutcome($resolution, $child);
                 return [9007199254740993, null, '雪'];
-            }, enabled: true, loadOutcomes: static fn (): array => [
+            }, enabled: true, loadOutcomes: static fn (): array => $proof === 'missing' ? [] : [
                 'child:child' => $entry,
             ]);
             self::assertSame([9007199254740993, null, '雪'], $result);
@@ -252,10 +253,54 @@ final class TaskOutcomeCarrierTest extends TestCase
             self::assertCount(1, $spans);
             $links = $spans[0]->getLinks();
             self::assertCount($proof === 'valid' ? 1 : 0, $links);
+            self::assertSame(! in_array($proof, ['valid', 'parent'], true),
+                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false);
             if ($proof === 'valid') {
                 self::assertSame($source->getContext()->getTraceId(), $links[0]->getSpanContext()->getTraceId());
                 self::assertSame($source->getContext()->getSpanId(), $links[0]->getSpanContext()->getSpanId());
             }
+        } finally {
+            $configuration->detach();
+            $provider->shutdown();
+        }
+    }
+
+    public static function outcomeAvailability(): array
+    {
+        return ['prior outcome' => ['prior'], 'current task' => ['current'], 'other run' => ['foreign']];
+    }
+
+    #[DataProvider('outcomeAvailability')]
+    public function testMissingPriorContextMarksOnlyItsOwnRecordingRun(string $kind): void
+    {
+        $exporter = new InMemoryExporter();
+        $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+        $configuration = Configurator::create()->withTracerProvider($provider)->activate();
+        try {
+            $run = new WorkflowRun();
+            $run->setRawAttributes(['id' => 'parent', 'namespace' => '0'], true);
+            $event = new WorkflowHistoryEvent();
+            $event->setRawAttributes([
+                'id' => 'outcome', 'workflow_run_id' => $kind === 'foreign' ? 'other' : 'parent',
+                'workflow_task_id' => $kind === 'current' ? 'processing' : 'prior',
+                'event_type' => 'ActivityCompleted', 'sequence' => 3, 'payload' => '{}',
+            ], true);
+            $calls = 0;
+            $result = ExecutionTracing::workflow([
+                'workflow_run_id' => 'parent', 'namespace' => '0', 'task_id' => 'processing',
+            ], null, static function () use ($run, $event, &$calls): array {
+                ++$calls;
+                ExecutionTracing::linkOutcome($run, $event);
+                return [9007199254740993, null, '雪'];
+            }, enabled: true);
+            self::assertSame([9007199254740993, null, '雪'], $result);
+            self::assertSame(1, $calls);
+            self::assertSame([], ExecutionTracing::current());
+            $spans = $exporter->getSpans();
+            self::assertCount(1, $spans);
+            self::assertSame($kind === 'prior',
+                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false);
+            self::assertSame([], $spans[0]->getLinks());
         } finally {
             $configuration->detach();
             $provider->shutdown();

@@ -83,6 +83,7 @@ $admissionProbe = getenv('DW_TEST_TRACING_ADMISSION') === 'true'
     || getenv('DW_TEST_TRACING_SIGNAL_START_ADMISSION') === 'true';
 $childRetry = getenv('DW_TEST_TRACING_CHILD_RETRY') === 'true';
 $fanOut = getenv('DW_TEST_TRACING_FAN_OUT') === 'true';
+$largeFanOut = getenv('DW_TEST_TRACING_LARGE_FAN_OUT') === 'true';
 $failureOutcomes = getenv('DW_TEST_TRACING_FAILURE_OUTCOMES');
 $cancellation = getenv('DW_TEST_TRACING_CANCELLATION');
 foreach (array_slice($argv, 4) as $autoload) {
@@ -509,7 +510,7 @@ $configuration = Configurator::create()->withTracerProvider($provider)
     ->withPropagator($propagator)
     ->activate();
 $taskOutcomeQueries = 0;
-if ($fanOut || $failureOutcomes) {
+if ($fanOut || $failureOutcomes || $largeFanOut) {
     DB::listen(static function ($query) use (&$taskOutcomeQueries): void {
         if (str_contains($query->sql, 'workflow_tasks') && str_contains($query->sql, 'observability_context')) {
             ++$taskOutcomeQueries;
@@ -765,6 +766,10 @@ try {
                 WorkflowStub::make(TracingFailureOutcomeWorkflow::class, 'cold-tracing', '0')->start(
                     $failureOutcomes === 'local',
                     new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 45),
+                );
+            } elseif ($largeFanOut) {
+                WorkflowStub::make(TracingLargeFanOutWorkflow::class, 'cold-tracing', '0')->start(
+                    new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100),
                 );
             } elseif ($fanOut) {
                 WorkflowStub::make(TracingFanOutWorkflow::class, 'cold-tracing', '0')->start(
@@ -1348,13 +1353,18 @@ try {
             'tasks' => WorkflowTask::query()->get(['id', 'status', 'attempt_count'])->toArray(),
         ];
     }
-    if ($fanOut || $failureOutcomes) {
+    if ($fanOut || $failureOutcomes || $largeFanOut) {
         $history = $run->historyEvents()
             ->orderBy('sequence')
             ->get();
-        $output[$fanOut ? 'fan_out' : 'failure_outcomes'] = [
+        $output[$largeFanOut ? 'large_fan_out' : ($fanOut ? 'fan_out' : 'failure_outcomes')] = [
             'task_outcome_queries' => $taskOutcomeQueries,
             'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
+            'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
+            'delayed_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '>', time())->count(),
+            'queue_attempts' => (int) DB::table('jobs')->sum('attempts'),
+            'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception'])
+                ->map(static fn ($row): string => substr(strtok($row->exception, "\n"), 0, 512))->all(),
             'history_hashes' => $history->map(static fn ($event): string => hash(
                 'sha256',
                 json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
