@@ -30,8 +30,16 @@ final class IncomingHttpTracingTest extends TestCase
             'DW_TEST_TRACING_AUTOLOADS' => json_encode($autoloads, JSON_THROW_ON_ERROR),
         ]);
         $server->setTimeout(10);
-        $server->start();
         try {
+            $prepared = $this->worker($directory, 'prepare-http', $autoloads);
+            self::assertSame([
+                'workflow_runs' => 0,
+                'commands' => 0,
+                'history_events' => 0,
+                'tasks' => 0,
+                'jobs' => 0,
+            ], $prepared);
+            $server->start();
             self::assertTrue($server->waitUntil(static fn (string $type, string $output): bool => str_contains(
                 $output,
                 'Development Server'

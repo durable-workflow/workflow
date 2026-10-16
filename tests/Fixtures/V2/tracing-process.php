@@ -405,6 +405,21 @@ final class TracingProcessApplication extends Application
     }
 }
 
+function prepareTracingSchema(): void
+{
+    if (Artisan::call('migrate', [
+        '--force' => true,
+    ]) !== 0) {
+        throw new \RuntimeException(Artisan::output());
+    }
+    DB::statement('CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL,
+    payload TEXT NOT NULL, attempts INTEGER NOT NULL, reserved_at INTEGER,
+    available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
+    DB::statement('CREATE TABLE failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
+    connection TEXT NOT NULL, queue TEXT NOT NULL, payload TEXT NOT NULL, exception TEXT NOT NULL,
+    failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+}
+
 $directory = $argv[1];
 $mode = $argv[2];
 foreach (['bootstrap/cache', 'storage/logs', 'storage/framework/views', 'config'] as $path) {
@@ -424,6 +439,17 @@ $app = TracingProcessApplication::create(
         ],
     ],
 );
+if ($mode === 'prepare-http') {
+    prepareTracingSchema();
+    echo json_encode([
+        'workflow_runs' => WorkflowRun::query()->count(),
+        'commands' => WorkflowCommand::query()->count(),
+        'history_events' => WorkflowHistoryEvent::query()->count(),
+        'tasks' => WorkflowTask::query()->count(),
+        'jobs' => DB::table('jobs')->count(),
+    ], JSON_THROW_ON_ERROR), PHP_EOL;
+    exit(0);
+}
 $queueErrors = [];
 $reportedQueueErrors = [];
 $queueDiagnosticsTruncated = false;
@@ -700,17 +726,9 @@ try {
     $childOutcomeControl = null;
     try {
         if ($mode === 'admit') {
-            if (Artisan::call('migrate', [
-                '--force' => true,
-            ]) !== 0) {
-                throw new \RuntimeException(Artisan::output());
+            if (! $incomingHttp) {
+                prepareTracingSchema();
             }
-            DB::statement('CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL,
-            payload TEXT NOT NULL, attempts INTEGER NOT NULL, reserved_at INTEGER,
-            available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
-            DB::statement('CREATE TABLE failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
-            connection TEXT NOT NULL, queue TEXT NOT NULL, payload TEXT NOT NULL, exception TEXT NOT NULL,
-            failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
             if ($request !== null) {
                 $app['router']->post('/start', static function () use ($retry): JsonResponse {
                     $stub = WorkflowStub::make(TracingProcessWorkflow::class, 'cold-tracing', '0');
