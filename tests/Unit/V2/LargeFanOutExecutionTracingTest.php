@@ -33,7 +33,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             self::assertTrue($admitted['large_fan_out']['matching_role']['queue_wake_enabled']);
             self::assertSame('in_worker', $admitted['large_fan_out']['matching_role']['shape']);
             $deadline = microtime(true) + 90;
-            $initial = self::read(self::process($directory, 'work', $enabled));
+            $initial = self::read(self::process($directory, 'work', $enabled, $deadline));
             self::assertCount(64, $initial['large_fan_out']['activities']);
             self::assertSame(64, $initial['large_fan_out']['ready_jobs']);
             $spans = $initial['spans'];
@@ -44,7 +44,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             $pids = [];
             $queries = $initial['large_fan_out']['task_outcome_queries'];
             for ($index = 0; $index < 4; ++$index) {
-                $batch[] = $process = self::process($directory, 'work-drain', $enabled);
+                $batch[] = $process = self::process($directory, 'work-drain', $enabled, $deadline);
                 $process->start();
             }
             self::assertCount(4, array_filter($batch, static fn (Process $process): bool => $process->isRunning()));
@@ -64,7 +64,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 $pids[] = $result['pid'];
                 $queries += $result['large_fan_out']['task_outcome_queries'];
             }
-            $finished = self::read(self::process($directory, 'inspect', $enabled));
+            $finished = self::read(self::process($directory, 'inspect', $enabled, $deadline));
             $lastEvent = end($finished['large_fan_out']['history_payloads']);
             $diagnostic = json_encode([
                 'run_id' => $finished['run_id'],
@@ -181,7 +181,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
         self::assertSame(1, $task['attempt_count'], $diagnostic);
     }
 
-    private static function process(string $directory, string $mode, bool $enabled): Process
+    private static function process(string $directory, string $mode, bool $enabled, ?float $deadline = null): Process
     {
         $process = new Process([
             PHP_BINARY, __DIR__ . '/../../Fixtures/V2/tracing-process.php', $directory, $mode, 'once',
@@ -196,7 +196,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             'DW_TEST_TRACING_CONTINUOUS_WORKERS' => 'true',
             'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
         ]);
-        $process->setTimeout($mode === 'work-drain' ? 90 : 20);
+        $process->setTimeout($deadline === null ? 20 : max(0.001, $deadline - microtime(true)));
         return $process;
     }
 
