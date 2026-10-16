@@ -1034,6 +1034,15 @@ try {
                 $dispatchDelivered = $dispatchQueue();
             }
             if ($mode === 'work-drain') {
+                $app['events']->listen(\Illuminate\Queue\Events\Looping::class, static function () use (
+                    $app,
+                    $directory
+                ): void {
+                    if (is_file($directory . '/stop-large-workers')) {
+                        $worker = $app->make('queue.worker');
+                        $worker->shouldQuit = true;
+                    }
+                });
                 file_put_contents($directory . '/ready-worker-' . getmypid(), 'ready');
                 $readyDeadline = hrtime(true) + 10_000_000_000;
                 while (count(glob($directory . '/ready-worker-*') ?: []) < 4 && hrtime(true) < $readyDeadline) {
@@ -1053,7 +1062,7 @@ try {
             if ($mode === 'work-drain') {
                 $workerOptions += [
                     '--max-jobs' => 128,
-                    '--max-time' => 45,
+                    '--max-time' => getenv('DW_TEST_TRACING_CONTINUOUS_WORKERS') === 'true' ? 0 : 45,
                     '--stop-when-empty' => getenv('DW_TEST_TRACING_CONTINUOUS_WORKERS') !== 'true',
                 ];
             }

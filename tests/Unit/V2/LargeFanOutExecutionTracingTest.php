@@ -6,6 +6,8 @@ namespace Tests\Unit\V2;
 
 use Composer\Autoload\ClassLoader;
 use Illuminate\Filesystem\Filesystem;
+use PDO;
+use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
@@ -46,6 +48,8 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 $process->start();
             }
             self::assertCount(4, array_filter($batch, static fn (Process $process): bool => $process->isRunning()));
+            self::observeCompletion($directory, $admitted['run_id'], $deadline);
+            file_put_contents($directory . '/stop-large-workers', 'stop');
             foreach ($batch as $process) {
                 $result = self::read($process);
                 $spans = array_merge($spans, $result['spans']);
@@ -192,8 +196,31 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             'DW_TEST_TRACING_CONTINUOUS_WORKERS' => 'true',
             'DW_TEST_TRACING_ENABLED' => $enabled ? 'true' : 'false',
         ]);
-        $process->setTimeout($mode === 'work-drain' ? 60 : 20);
+        $process->setTimeout($mode === 'work-drain' ? 90 : 20);
         return $process;
+    }
+
+    private static function observeCompletion(string $directory, string $runId, float $deadline): void
+    {
+        $database = new PDO('sqlite:' . $directory . '/database.sqlite');
+        $database->exec('PRAGMA busy_timeout=50');
+        $query = $database->prepare('SELECT status FROM workflow_runs WHERE id = ?');
+        do {
+            try {
+                $query->execute([$runId]);
+                $status = $query->fetchColumn();
+                $query->closeCursor();
+                if ($status === 'completed') {
+                    return;
+                }
+            } catch (PDOException $exception) {
+                $code = $exception->errorInfo[1] ?? null;
+                if (! is_int($code) || ! in_array($code & 255, [5, 6], true)) {
+                    throw $exception;
+                }
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
     }
 
     private static function read(Process $process): array
