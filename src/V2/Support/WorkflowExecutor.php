@@ -4375,20 +4375,7 @@ final class WorkflowExecutor
         }
 
         if ($throwable instanceof ActivityRetryPolicyMismatchException) {
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $payload['replay_blocked'] = true;
-            $payload['replay_blocked_reason'] = 'activity_retry_policy_mismatch';
-            $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
-            $payload['replay_blocked_policy_field'] = $throwable->policyField;
-            $task->forceFill([
-                'status' => TaskStatus::Failed,
-                'payload' => $payload,
-                'last_error' => $throwable->getMessage(),
-                'lease_expires_at' => null,
-            ])->save();
-            $this->projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-            );
+            $this->blockReplayUntilCompatibleActivityRetryPolicy($run, $task, $throwable);
 
             return;
         }
@@ -4546,6 +4533,27 @@ final class WorkflowExecutor
 
             return false;
         }
+    }
+
+    private function blockReplayUntilCompatibleActivityRetryPolicy(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityRetryPolicyMismatchException $throwable,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'activity_retry_policy_mismatch';
+        $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+        $payload['replay_blocked_policy_field'] = $throwable->policyField;
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
     }
 
     private function blockReplayUntilCompatibleVersionRange(
