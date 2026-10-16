@@ -11,6 +11,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Database\SQLiteConnection;
 use Illuminate\Events\Dispatcher;
 use PDO;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Workflow\Queue\SqliteAcknowledgingDatabaseQueue;
@@ -58,30 +59,51 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         unlink($this->path);
     }
 
-    public function testRealRolledBackDeleteRecoversWithoutExecutingTheHandlerAgain(): void
+    public static function writerReleasePoints(): array
+    {
+        return [
+            'first rollback' => [1],
+            'third rollback' => [3],
+        ];
+    }
+
+    #[DataProvider('writerReleasePoints')]
+    public function testRealRolledBackDeleteRecoversWithoutExecutingTheHandlerAgain(int $releaseAfter): void
     {
         $job = $this->job();
         $neighbor = $this->push();
         $writer = $this->blockDelete();
         $rollbacks = 0;
-        $this->events->listen(TransactionRolledBack::class, function () use ($writer, &$rollbacks): void {
+        $this->events->listen(TransactionRolledBack::class, function () use (
+            $writer,
+            $releaseAfter,
+            &$rollbacks
+        ): void {
             $rollbacks++;
             self::assertFalse($this->connection->getPdo()->inTransaction());
             self::assertSame(0, $this->connection->transactionLevel());
-            $writer->rollBack();
+            if ($rollbacks === $releaseAfter) {
+                $writer->rollBack();
+            }
         });
 
-        $job->fire();
+        try {
+            $job->fire();
+        } finally {
+            if ($writer->inTransaction()) {
+                $writer->rollBack();
+            }
+        }
 
         self::assertSame(1, AcknowledgementReceiptJob::$handled);
-        self::assertSame(1, $rollbacks);
-        self::assertSame(2, $this->deleteStatements);
+        self::assertSame($releaseAfter, $rollbacks);
+        self::assertSame($releaseAfter + 1, $this->deleteStatements);
         self::assertTrue($job->isDeleted());
         self::assertNull($this->connection->table('jobs')->find($job->getJobId()));
         self::assertSame(0, $this->connection->table('jobs')->find($neighbor)->attempts);
     }
 
-    public function testSustainedBusyStopsAfterThreeStatementsWithTheOriginalReservationIntact(): void
+    public function testSustainedBusyStopsWithinTheRetryWindowWithTheOriginalReservationIntact(): void
     {
         $job = $this->job();
         $original = $this->connection->table('jobs')
@@ -95,16 +117,27 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
         } finally {
             $writer->rollBack();
         }
-        self::assertSame(3, $this->deleteStatements);
+        self::assertGreaterThan(3, $this->deleteStatements);
+        self::assertLessThanOrEqual(64, $this->deleteStatements);
         self::assertSame(1, AcknowledgementReceiptJob::$handled);
         self::assertEquals($original, $this->connection->table('jobs')->find($job->getJobId()));
     }
 
-    public function testAReclaimedReservationSurvivesTheOriginalAcknowledgementRetry(): void
+    #[DataProvider('writerReleasePoints')]
+    public function testAReclaimedReservationSurvivesTheOriginalAcknowledgementRetry(int $releaseAfter): void
     {
         $job = $this->job();
         $writer = $this->blockDelete();
-        $this->events->listen(TransactionRolledBack::class, function () use ($writer, $job): void {
+        $rollbacks = 0;
+        $this->events->listen(TransactionRolledBack::class, function () use (
+            $writer,
+            $job,
+            $releaseAfter,
+            &$rollbacks
+        ): void {
+            if (++$rollbacks !== $releaseAfter) {
+                return;
+            }
             $writer->rollBack();
             $this->connection->table('jobs')
                 ->where('id', $job->getJobId())
@@ -114,7 +147,7 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
                 ]);
         });
         $job->fire();
-        self::assertSame(2, $this->deleteStatements);
+        self::assertSame($releaseAfter + 1, $this->deleteStatements);
         self::assertSame(2, $this->connection->table('jobs')->find($job->getJobId())->attempts);
         self::assertSame(1, AcknowledgementReceiptJob::$handled);
     }
