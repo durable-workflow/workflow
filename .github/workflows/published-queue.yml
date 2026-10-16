@@ -50,13 +50,4 @@ jobs:
           DW_PROBE_CONTINUOUS: 'true'
         run: |
           export DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php"
-          php .github/queue-contention/runner.php cohort
-
-      - name: Retain the small reproducible input lock for source review
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: published-queue-input-lock
-          path: .github/queue-contention/current/composer.lock
-          retention-days: 1
-          if-no-files-found: ignore
+          /usr/bin/time -v php .github/queue-contention/runner.php cohort
