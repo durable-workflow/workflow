@@ -373,6 +373,8 @@ final class TracingProcessApplication extends Application
             'workflows.v1.enabled' => false,
             'workflows.v2.compatibility.namespace' => '0',
             'workflows.v2.task_dispatch_mode' => 'queue',
+            'workflows.v2.matching_role.queue_wake_enabled' => getenv('DW_TEST_TRACING_LARGE_FAN_OUT') !== 'true'
+                || getenv('DW_TEST_TRACING_LARGE_FAN_OUT_QUEUE_WAKE') !== 'false',
             'workflows.tracing.enabled' => getenv('DW_TEST_TRACING_ENABLED') !== 'false',
             'workflows.tracing.baggage_allowlist' => ['approved'],
             'queue.default' => 'database',
@@ -960,17 +962,35 @@ try {
                 'field' => $field,
                 'task_id' => $task->id,
             ];
-        } elseif ($mode === 'work') {
+        } elseif ($mode === 'work' || ($mode === 'work-drain' && $largeFanOut)) {
             if ($dispatchProbe) {
                 $dispatchDelivered = $dispatchQueue();
             }
-            if (Artisan::call('queue:work', [
+            if ($mode === 'work-drain') {
+                file_put_contents($directory . '/ready-worker-' . getmypid(), 'ready');
+                $readyDeadline = hrtime(true) + 10_000_000_000;
+                while (count(glob($directory . '/ready-worker-*') ?: []) < 4 && hrtime(true) < $readyDeadline) {
+                    usleep(10_000);
+                }
+                if (count(glob($directory . '/ready-worker-*') ?: []) !== 4) {
+                    throw new \RuntimeException('Original four-worker ready barrier elapsed.');
+                }
+            }
+            $workerOptions = [
                 'connection' => 'database',
                 '--queue' => 'default',
-                '--once' => true,
+                '--once' => $mode !== 'work-drain',
                 '--tries' => 1,
                 '--timeout' => $recovery ? 1 : 30,
-            ]) !== 0) {
+            ];
+            if ($mode === 'work-drain') {
+                $workerOptions += [
+                    '--max-jobs' => 128,
+                    '--max-time' => 45,
+                    '--stop-when-empty' => true,
+                ];
+            }
+            if (Artisan::call('queue:work', $workerOptions) !== 0) {
                 throw new \RuntimeException(Artisan::output());
             }
             Log::info('worker outside');
@@ -1363,8 +1383,25 @@ try {
             'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
             'delayed_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '>', time())->count(),
             'queue_attempts' => (int) DB::table('jobs')->sum('attempts'),
-            'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception'])
-                ->map(static fn ($row): string => substr(strtok($row->exception, "\n"), 0, 512))->all(),
+            'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception', 'payload'])
+                ->map(static function ($row): array {
+                    $lines = explode("\n", $row->exception);
+                    $payload = json_decode($row->payload, true);
+                    $frames = array_filter($lines, static fn (string $line): bool =>
+                        str_contains($line, '/src/Queue/') || str_contains($line, '/src/V2/')
+                        || str_contains($line, '/Queue/DatabaseQueue.php')
+                        || str_contains($line, '/Queue/Jobs/')
+                        || str_contains($line, 'Next Illuminate\\Database\\QueryException:'));
+                    return [
+                        'summary' => substr($lines[0], 0, 256),
+                        'job_type' => $payload['displayName'] ?? null,
+                        'delivery_id' => $payload['uuid'] ?? null,
+                        'stage_frames' => array_map(
+                            static fn (string $line): string => substr($line, 0, 320),
+                            array_slice(array_values($frames), 0, 8)
+                        ),
+                    ];
+                })->all(),
             'history_hashes' => $history->map(static fn ($event): string => hash(
                 'sha256',
                 json_encode($event->getRawOriginal(), JSON_THROW_ON_ERROR),
