@@ -408,7 +408,9 @@ Rules:
   missing deliveries behind them. Each selected task is still revalidated, the
   original per-pass limit remains, and the scan wraps at the end. Losing or
   expiring this position restarts inspection; it cannot grant a lease or change
-  a task, history or deadline. Poll-mode selection is unchanged.
+  a task, history or deadline. Each round is capped by its initial candidate
+  count, so continuous arrivals cannot indefinitely postpone revisiting earlier
+  deliveries. Poll-mode selection is unchanged.
 - `loop_throttle_seconds` is the minimum gap between two repair
   passes. A caller that invokes repair more aggressively MUST wait;
   the repair path enforces the throttle itself.

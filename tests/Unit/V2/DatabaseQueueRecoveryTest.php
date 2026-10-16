@@ -177,6 +177,47 @@ final class DatabaseQueueRecoveryTest extends TestCase
         self::assertSame(2, DB::table('jobs')->count());
     }
 
+    public static function scanRestarts(): array
+    {
+        return ['continuous arrivals' => [false], 'lost advisory cursor' => [true]];
+    }
+
+    #[DataProvider('scanRestarts')]
+    public function testScanRevisitsMissingDeliveryWhileNewTasksContinueArriving(bool $loseCursor): void
+    {
+        config()->set('workflows.v2.task_repair.scan_limit', 1);
+        $admit = static function (int $number): WorkflowTask {
+            $stub = WorkflowStub::make(TestGreetingWorkflow::class, 'stream-task-' . $number, '0');
+            $stub->start('queue-user', new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+            $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->sole();
+            Carbon::setTestNow(now()->addSecond());
+            return $task;
+        };
+        $first = $admit(0);
+        $admit(1);
+        Carbon::setTestNow(now()->addSeconds(4));
+        self::assertSame(0, TaskWatchdog::runPass('database', 'default')['dispatched_tasks']);
+        DB::table('jobs')->where('id', $first->queue_delivery_reference['job_id'])->delete();
+        if ($loseCursor) {
+            $this->app['cache']->flush();
+        }
+
+        $admit(2);
+        Carbon::setTestNow(now()->addSeconds(4));
+        $second = TaskWatchdog::runPass('database', 'default');
+        $admit(3);
+        Carbon::setTestNow(now()->addSeconds(4));
+        $third = TaskWatchdog::runPass('database', 'default');
+
+        self::assertSame($loseCursor ? 1 : 0, $second['dispatched_tasks']);
+        self::assertSame($loseCursor ? 0 : 1, $third['dispatched_tasks']);
+        self::assertSame(1, $first->fresh()->repair_count);
+        self::assertSame(1, (int) WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(4, DB::table('jobs')->count());
+        self::assertSame(0, (int) $first->fresh()->attempt_count);
+        self::assertNull($first->fresh()->lease_owner);
+    }
+
     public function testCandidatePositionsDoNotHydratePartialTaskModels(): void
     {
         $stub = WorkflowStub::make(TestGreetingWorkflow::class, 'scan-without-hydration', '0');
