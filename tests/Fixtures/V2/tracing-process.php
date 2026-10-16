@@ -426,11 +426,17 @@ $app = TracingProcessApplication::create(
 );
 $queueErrors = [];
 $reportedQueueErrors = [];
+$queueDiagnosticsTruncated = false;
 if ($largeFanOut) {
     $app['events']->listen(\Illuminate\Queue\Events\JobAttempted::class, static function ($event) use (
-        &$queueErrors
+        &$queueErrors,
+        &$queueDiagnosticsTruncated
     ): void {
-        if ($event->exception === null || count($queueErrors) >= 4) {
+        if ($event->exception === null) {
+            return;
+        }
+        if (count($queueErrors) >= 64) {
+            $queueDiagnosticsTruncated = true;
             return;
         }
         $error = $event->exception;
@@ -459,8 +465,12 @@ if ($largeFanOut) {
     if (! method_exists($handler, 'reportable')) {
         throw new \RuntimeException('The tracing fixture needs Laravel exception reporting callbacks.');
     }
-    $handler->reportable(static function (\Throwable $error) use (&$reportedQueueErrors): void {
-        if (count($reportedQueueErrors) >= 4) {
+    $handler->reportable(static function (\Throwable $error) use (
+        &$reportedQueueErrors,
+        &$queueDiagnosticsTruncated
+    ): void {
+        if (count($reportedQueueErrors) >= 64) {
+            $queueDiagnosticsTruncated = true;
             return;
         }
         $native = $error;
@@ -1444,7 +1454,9 @@ try {
             'queue_attempts' => (int) DB::table('jobs')->sum('attempts'),
             'queue_errors' => $queueErrors,
             'reported_queue_errors' => $reportedQueueErrors,
-            'remaining_deliveries' => DB::table('jobs')->orderBy('id')->limit(8)->get([
+            'queue_diagnostics_truncated' => $queueDiagnosticsTruncated,
+            'retry_after_seconds' => config('queue.connections.database.retry_after'),
+            'remaining_deliveries' => DB::table('jobs')->orderBy('id')->limit(64)->get([
                 'id', 'queue', 'attempts', 'reserved_at', 'available_at', 'payload',
             ])->map(static function ($row) use ($remainingTaskIds): array {
                 $payload = json_decode($row->payload, true);
@@ -1459,10 +1471,13 @@ try {
                     'task_id' => $remainingTaskIds[$row->id] ?? null,
                 ];
             })->all(),
-            'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception', 'payload'])
+            'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(64)->get(['exception', 'payload'])
                 ->map(static function ($row): array {
                     $lines = explode("\n", $row->exception);
                     $payload = json_decode($row->payload, true);
+                    $job = unserialize($payload['data']['command'], [
+                        'allowed_classes' => [RunWorkflowTask::class, RunActivityTask::class, RunTimerTask::class],
+                    ]);
                     $frames = array_filter($lines, static fn (string $line): bool =>
                         str_contains($line, '/src/Queue/') || str_contains($line, '/src/V2/')
                         || str_contains($line, '/Queue/DatabaseQueue.php')
@@ -1472,6 +1487,8 @@ try {
                         'summary' => substr($lines[0], 0, 256),
                         'job_type' => $payload['displayName'] ?? null,
                         'delivery_id' => $payload['uuid'] ?? null,
+                        'task_id' => $job instanceof RunWorkflowTask || $job instanceof RunActivityTask
+                            ? $job->taskId : null,
                         'stage_frames' => array_map(
                             static fn (string $line): string => substr($line, 0, 320),
                             array_slice(array_values($frames), 0, 8)
@@ -1493,7 +1510,7 @@ try {
                 'id', 'activity_execution_id', 'workflow_task_id', 'attempt_number', 'status',
             ])->toArray(),
             'tasks' => WorkflowTask::query()->orderBy('id')->get([
-                'id', 'status', 'task_type', 'attempt_count', 'repair_count',
+                'id', 'workflow_run_id', 'namespace', 'queue', 'status', 'task_type', 'attempt_count', 'repair_count',
             ])->toArray(),
             'outcome_contexts' => WorkflowTask::query()->orderBy('id')->get()->map(static fn ($row): array => [
                 'task_id' => $row->id,

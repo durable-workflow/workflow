@@ -37,6 +37,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             $spans = $initial['spans'];
             $queueErrors = $initial['large_fan_out']['queue_errors'];
             $reportedQueueErrors = $initial['large_fan_out']['reported_queue_errors'];
+            $queueDiagnosticsTruncated = $initial['large_fan_out']['queue_diagnostics_truncated'];
             $prefixes = [$admitted['large_fan_out']['history_hashes'], $initial['large_fan_out']['history_hashes']];
             $pids = [];
             $queries = $initial['large_fan_out']['task_outcome_queries'];
@@ -53,6 +54,8 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                     $reportedQueueErrors,
                     $result['large_fan_out']['reported_queue_errors']
                 );
+                $queueDiagnosticsTruncated = $queueDiagnosticsTruncated
+                    || $result['large_fan_out']['queue_diagnostics_truncated'];
                 $prefixes[] = $result['large_fan_out']['history_hashes'];
                 $pids[] = $result['pid'];
                 $queries += $result['large_fan_out']['task_outcome_queries'];
@@ -115,15 +118,63 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             sort($members);
             self::assertSame(range(0, 63), $members);
             self::assertTraceWindow($spans, $observed, $enabled, $queries);
-            foreach (['jobs', 'failed_jobs'] as $field) {
-                self::assertSame(0, $finished[$field], $field . ': ' . $diagnostic);
-            }
+            self::assertFalse($queueDiagnosticsTruncated, $diagnostic);
+            self::assertSupportedQueueRecovery($finished, $observed, $queueErrors, $reportedQueueErrors, $diagnostic);
         } finally {
             foreach ($batch as $process) {
                 $process->stop(1, 9);
             }
             (new Filesystem())->deleteDirectory($directory);
         }
+    }
+
+    private static function assertSupportedQueueRecovery(
+        array $finished,
+        array $observed,
+        array $queueErrors,
+        array $reportedErrors,
+        string $diagnostic,
+    ): void {
+        foreach (array_merge($queueErrors, $reportedErrors) as $error) {
+            self::assertIsInt($error['native_code'], $diagnostic);
+            self::assertContains($error['native_code'] & 255, [5, 6], $diagnostic);
+            self::assertContains($error['operation'], ['update', 'delete'], $diagnostic);
+            self::assertSame(0, $error['transaction_level'], $diagnostic);
+            self::assertFalse($error['pdo_in_transaction'], $diagnostic);
+        }
+        self::assertCount($finished['failed_jobs'], $observed['delivery_errors'], $diagnostic);
+        self::assertCount($finished['jobs'], $observed['remaining_deliveries'], $diagnostic);
+        $tasks = array_column($observed['tasks'], null, 'id');
+        $errors = array_column($queueErrors, null, 'delivery_id');
+        foreach ($observed['delivery_errors'] as $failed) {
+            self::assertRecoveredTask($failed, $tasks, $finished['run_id'], $diagnostic);
+            self::assertArrayHasKey($failed['delivery_id'], $errors, $diagnostic);
+            self::assertSame('update', $errors[$failed['delivery_id']]['operation'], $diagnostic);
+            self::assertStringContainsString('SqliteTransaction::forTask', implode("\n", $failed['stage_frames']));
+        }
+        foreach ($observed['remaining_deliveries'] as $remaining) {
+            self::assertRecoveredTask($remaining, $tasks, $finished['run_id'], $diagnostic);
+            $fence = [
+                (int) $remaining['id'], $remaining['queue'],
+                (int) $remaining['reserved_at'], $remaining['attempts'],
+            ];
+            $refusals = array_filter($reportedErrors, static fn (array $error): bool =>
+                $error['operation'] === 'delete' && $error['ack_fence'] === $fence);
+            self::assertNotEmpty($refusals, $diagnostic);
+            self::assertGreaterThan(time(), $remaining['reserved_at'] + $observed['retry_after_seconds'], $diagnostic);
+        }
+    }
+
+    private static function assertRecoveredTask(array $delivery, array $tasks, string $runId, string $diagnostic): void
+    {
+        self::assertIsString($delivery['task_id'], $diagnostic);
+        self::assertArrayHasKey($delivery['task_id'], $tasks, $diagnostic);
+        $task = $tasks[$delivery['task_id']];
+        self::assertSame($runId, $task['workflow_run_id'], $diagnostic);
+        self::assertSame('0', $task['namespace'], $diagnostic);
+        self::assertSame('default', $task['queue'], $diagnostic);
+        self::assertSame('completed', $task['status'], $diagnostic);
+        self::assertSame(1, $task['attempt_count'], $diagnostic);
     }
 
     private static function process(string $directory, string $mode, bool $enabled): Process
