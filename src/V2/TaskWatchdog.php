@@ -324,32 +324,7 @@ final class TaskWatchdog
                 );
             }
         } catch (Throwable $throwable) {
-            if ($acquiringTask && self::taskLockUnavailable($throwable)) {
-                // DB::transaction has rolled back, including PostgreSQL's
-                // aborted transaction. A later pass rechecks durable state.
-                return [
-                    'task' => null,
-                    'error' => null,
-                ];
-            }
-            report($throwable);
-
-            try {
-                WorkflowTask::query()
-                    ->whereKey($candidateId)
-                    ->update([
-                        'last_error' => $throwable->getMessage(),
-                    ]);
-            } catch (Throwable $diagnosticFailure) {
-                // Diagnostic persistence must not abort the remaining scan or
-                // replace the original repair failure.
-                report($diagnosticFailure);
-            }
-
-            return [
-                'task' => null,
-                'error' => $throwable->getMessage(),
-            ];
+            return self::failedExistingTask($candidateId, $throwable, $acquiringTask);
         }
 
         return [
@@ -361,6 +336,30 @@ final class TaskWatchdog
     /**
      * @return array{task: WorkflowTask|null, error: string|null}
      */
+    private static function failedExistingTask(string $candidateId, Throwable $throwable, bool $acquiringTask): array
+    {
+        if ($acquiringTask && self::taskLockUnavailable($throwable)) {
+            // The transaction rolled back; a later pass rechecks durable state.
+            return [
+                'task' => null,
+                'error' => null,
+            ];
+        }
+        report($throwable);
+        try {
+            WorkflowTask::query()->whereKey($candidateId)->update([
+                'last_error' => $throwable->getMessage(),
+            ]);
+        } catch (Throwable $diagnosticFailure) {
+            // Diagnostics must not abort the scan or replace its original failure.
+            report($diagnosticFailure);
+        }
+        return [
+            'task' => null,
+            'error' => $throwable->getMessage(),
+        ];
+    }
+
     private static function recoverMissingTask(string $runId): array
     {
         try {

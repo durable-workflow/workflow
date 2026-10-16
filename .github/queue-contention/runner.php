@@ -19,6 +19,10 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
+final class QueueConsumerFailure extends RuntimeException
+{
+}
+
 final class QueueFanOutActivity extends Workflow\V2\Activity
 {
     public int $tries = 1;
@@ -51,7 +55,10 @@ final class QueueFanOutWorkflow extends Workflow\V2\Workflow
 function launch(string $directory, string $mode, ?float $deadline = null): Process
 {
     $workerSeconds = getenv('DW_PROBE_DRAIN_SECONDS') === '80' ? 80 : 45;
-    $timeout = $mode === 'drain' ? ($workerSeconds === 80 ? 85 : 60) : 20;
+    $timeout = 20;
+    if ($mode === 'drain') {
+        $timeout = $workerSeconds === 80 ? 85 : 60;
+    }
     if ($deadline !== null) {
         $timeout = max(0.1, min($timeout, $deadline - microtime(true)));
     }
@@ -65,7 +72,7 @@ function readProcess(Process $process): array
     }
     $process->wait();
     if (! $process->isSuccessful() || $process->getErrorOutput() !== '') {
-        throw new RuntimeException('Baseline role failed: ' . substr($process->getErrorOutput(), -2048));
+        throw new QueueConsumerFailure('Baseline role failed: ' . substr($process->getErrorOutput(), -2048));
     }
     return json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
 }
@@ -81,7 +88,7 @@ if (($argv[1] ?? '') === 'cohort') {
         if ($initial['activities'] !== [
             'pending' => 64,
         ] || $initial['ready_jobs'] !== 64) {
-            throw new RuntimeException('The baseline did not create all 64 real pending activities.');
+            throw new QueueConsumerFailure('The baseline did not create all 64 real pending activities.');
         }
         for ($index = 0; $index < 4; ++$index) {
             $workers[] = $worker = launch($directory, 'drain', $deadline);
@@ -178,43 +185,45 @@ $app = PublishedClaimApplication::create(basePath: $directory, options: [
         'dont-discover' => ['*'],
     ],
 ]);
-$lastRollback = null;
-$capturedErrors = 0;
-$app['events']->listen(Illuminate\Queue\Events\JobProcessing::class, static function () use (&$lastRollback): void {
-    $lastRollback = null;
+$diagnostics = (object) [
+    'rollback' => null,
+    'errors' => 0,
+];
+$deliveryErrorPath = $directory . '/delivery-errors.jsonl';
+$app['events']->listen(Illuminate\Queue\Events\JobProcessing::class, static function () use ($diagnostics): void {
+    $diagnostics->rollback = null;
 });
 $app['events']->listen(Illuminate\Database\Events\TransactionRolledBack::class, static function ($event) use (
-    &$lastRollback
+    $diagnostics
 ): void {
     $pdo = $event->connection->getRawPdo();
-    $lastRollback = [
+    $diagnostics->rollback = [
         'level' => $event->connection->transactionLevel(),
         'pdo_in_transaction' => $pdo instanceof PDO ? $pdo->inTransaction() : null,
     ];
 });
 $app['events']->listen(Illuminate\Queue\Events\JobExceptionOccurred::class, static function ($event) use (
-    $directory,
-    &$lastRollback,
-    &$capturedErrors
+    $deliveryErrorPath,
+    $diagnostics
 ): void {
-    if (++$capturedErrors > 8) {
+    if (++$diagnostics->errors > 8) {
         return;
     }
     $frames = array_filter(explode("\n", (string) $event->exception), static fn (string $line): bool =>
         str_contains($line, '/src/V2/') || str_contains($line, '/src/Queue/'));
-    file_put_contents($directory . '/delivery-errors.jsonl', json_encode([
+    file_put_contents($deliveryErrorPath, json_encode([
         'pid' => getmypid(),
         'queue_job' => $event->job->getJobId(),
         'summary' => substr($event->exception->getMessage(), 0, 384),
         'frames' => array_slice(array_values($frames), 0, 8),
-        'last_rollback' => $lastRollback,
+        'last_rollback' => $diagnostics->rollback,
     ], JSON_THROW_ON_ERROR) . "\n", FILE_APPEND | LOCK_EX);
 });
 if ($mode === 'admit') {
     if (Artisan::call('migrate', [
         '--force' => true,
     ]) !== 0) {
-        throw new RuntimeException(Artisan::output());
+        throw new QueueConsumerFailure(Artisan::output());
     }
     DB::statement('CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL,
         payload TEXT NOT NULL, attempts INTEGER NOT NULL, reserved_at INTEGER,
@@ -233,7 +242,7 @@ if ($mode === 'admit') {
             usleep(10_000);
         }
         if (count(glob($directory . '/ready-worker-*') ?: []) !== 4) {
-            throw new RuntimeException('Original four-worker barrier elapsed.');
+            throw new QueueConsumerFailure('Original four-worker barrier elapsed.');
         }
     }
     $options = [
@@ -251,7 +260,7 @@ if ($mode === 'admit') {
         ];
     }
     if (Artisan::call('queue:work', $options) !== 0) {
-        throw new RuntimeException(Artisan::output());
+        throw new QueueConsumerFailure(Artisan::output());
     }
 }
 $run = WorkflowRun::query()->findOrFail(trim(file_get_contents($directory . '/run-id')));
@@ -312,9 +321,9 @@ echo json_encode([
     'callback_actors' => array_values(
         array_unique(array_map(static fn (array $record): int => $record['context']['actor_pid'], $callbacks))
     ),
-    'delivery_exceptions' => is_file($directory . '/delivery-errors.jsonl') ? array_map(
+    'delivery_exceptions' => is_file($deliveryErrorPath) ? array_map(
         static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
-        file($directory . '/delivery-errors.jsonl', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
+        file($deliveryErrorPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
     ) : [],
     'history_counts' => $history->groupBy('event_type')
         ->map->count()

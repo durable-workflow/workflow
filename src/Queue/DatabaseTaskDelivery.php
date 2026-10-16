@@ -70,7 +70,7 @@ final class DatabaseTaskDelivery extends DatabaseQueue
                     'min_range' => 1,
                 ],
             ]) === false
-            || preg_match('/^[1-9][0-9]{0,19}$/D', (string) $jobId) !== 1) {
+            || preg_match('/^[1-9]\d{0,19}$/D', (string) $jobId) !== 1) {
             return null;
         }
         try {
@@ -128,8 +128,9 @@ final class DatabaseTaskDelivery extends DatabaseQueue
     {
         $row = $queue->database->table($queue->table)
             ->where('id', $reference['job_id'])
-            ->where('queue', $reference['queue'])->whereNull('reserved_at')->first(['payload']);
-        if ($row === null || ! is_string($row->payload) || strlen($row->payload) > 65536) {
+            ->where('queue', $reference['queue'])->whereNull('reserved_at')->first(['payload', 'queue']);
+        if ($row === null || $row->queue !== $reference['queue']
+            || ! is_string($row->payload) || strlen($row->payload) > 65536) {
             return false;
         }
         $payload = json_decode($row->payload, true);
@@ -190,6 +191,6 @@ final class DatabaseTaskDelivery extends DatabaseQueue
                     'min_range' => 1,
                 ],
             ]) !== false
-            && preg_match('/^[1-9][0-9]{0,19}$/D', $reference['job_id']) === 1;
+            && preg_match('/^[1-9]\d{0,19}$/D', $reference['job_id']) === 1;
     }
 }

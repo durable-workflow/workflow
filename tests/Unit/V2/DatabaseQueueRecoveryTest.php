@@ -135,7 +135,7 @@ final class DatabaseQueueRecoveryTest extends TestCase
     {
         $names = ['legacy schema', 'missing', 'version', 'task', 'run', 'namespace',
             'connection', 'queue', 'database', 'table', 'job', 'uuid', 'row uuid', 'row class',
-            'row queue', 'invalid json', 'oversized', 'job overflow'];
+            'row queue', 'row queue case', 'invalid json', 'oversized', 'job overflow'];
         return array_combine($names, array_map(static fn (string $name): array => [$name], $names));
     }
 
@@ -161,7 +161,9 @@ final class DatabaseQueueRecoveryTest extends TestCase
             }
             DB::table('jobs')->where('id', $row->id)->update([
                 'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-                'queue' => $case === 'row queue' ? 'other' : $row->queue,
+                'queue' => match ($case) {
+                    'row queue' => 'other', 'row queue case' => strtoupper($row->queue), default => $row->queue,
+                },
             ]);
         } elseif (in_array($case, ['invalid json', 'oversized', 'missing'], true)) {
             DB::table('workflow_tasks')->where('id', $task->id)->update([
