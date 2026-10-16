@@ -253,8 +253,10 @@ final class TaskOutcomeCarrierTest extends TestCase
             self::assertCount(1, $spans);
             $links = $spans[0]->getLinks();
             self::assertCount($proof === 'valid' ? 1 : 0, $links);
-            self::assertSame(! in_array($proof, ['valid', 'parent'], true),
-                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false);
+            self::assertSame(
+                ! in_array($proof, ['valid', 'parent'], true),
+                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false
+            );
             if ($proof === 'valid') {
                 self::assertSame($source->getContext()->getTraceId(), $links[0]->getSpanContext()->getTraceId());
                 self::assertSame($source->getContext()->getSpanId(), $links[0]->getSpanContext()->getSpanId());
@@ -267,7 +269,11 @@ final class TaskOutcomeCarrierTest extends TestCase
 
     public static function outcomeAvailability(): array
     {
-        return ['prior outcome' => ['prior'], 'current task' => ['current'], 'other run' => ['foreign']];
+        return [
+            'prior outcome' => ['prior'],
+            'current task' => ['current'],
+            'other run' => ['foreign'],
+        ];
     }
 
     #[DataProvider('outcomeAvailability')]
@@ -278,16 +284,24 @@ final class TaskOutcomeCarrierTest extends TestCase
         $configuration = Configurator::create()->withTracerProvider($provider)->activate();
         try {
             $run = new WorkflowRun();
-            $run->setRawAttributes(['id' => 'parent', 'namespace' => '0'], true);
+            $run->setRawAttributes([
+                'id' => 'parent',
+                'namespace' => '0',
+            ], true);
             $event = new WorkflowHistoryEvent();
             $event->setRawAttributes([
-                'id' => 'outcome', 'workflow_run_id' => $kind === 'foreign' ? 'other' : 'parent',
+                'id' => 'outcome',
+                'workflow_run_id' => $kind === 'foreign' ? 'other' : 'parent',
                 'workflow_task_id' => $kind === 'current' ? 'processing' : 'prior',
-                'event_type' => 'ActivityCompleted', 'sequence' => 3, 'payload' => '{}',
+                'event_type' => 'ActivityCompleted',
+                'sequence' => 3,
+                'payload' => '{}',
             ], true);
             $calls = 0;
             $result = ExecutionTracing::workflow([
-                'workflow_run_id' => 'parent', 'namespace' => '0', 'task_id' => 'processing',
+                'workflow_run_id' => 'parent',
+                'namespace' => '0',
+                'task_id' => 'processing',
             ], null, static function () use ($run, $event, &$calls): array {
                 ++$calls;
                 ExecutionTracing::linkOutcome($run, $event);
@@ -298,8 +312,10 @@ final class TaskOutcomeCarrierTest extends TestCase
             self::assertSame([], ExecutionTracing::current());
             $spans = $exporter->getSpans();
             self::assertCount(1, $spans);
-            self::assertSame($kind === 'prior',
-                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false);
+            self::assertSame(
+                $kind === 'prior',
+                $spans[0]->getAttributes()->toArray()['durable.links.outcome_context_unavailable'] ?? false
+            );
             self::assertSame([], $spans[0]->getLinks());
         } finally {
             $configuration->detach();

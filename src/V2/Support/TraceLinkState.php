@@ -36,6 +36,11 @@ final class TraceLinkState
         return $this->outcomes[$id] ?? null;
     }
 
+    public function markOutcomeUnavailable(): void
+    {
+        $this->span->setAttribute('durable.links.outcome_context_unavailable', true);
+    }
+
     /**
      * @param array<string, string> $attributes
      */

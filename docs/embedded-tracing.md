@@ -186,6 +186,14 @@ no observation SQL. A missing or mismatched optional observation does not change
 child resolution. Root and child observations share the existing 32-link
 processing-segment cap; either bounded read window can omit older outcomes.
 
+When a recording processing segment consumes a prior physical outcome without
+usable matching context, it sets
+`durable.links.outcome_context_unavailable=true`. This boolean does not count
+missing spans or identify why context is unavailable. It does not apply to a
+foreign run or to outcomes represented by the current task's active scope.
+Its absence does not prove that a trace graph is complete. The separate
+`durable.links.dropped` attribute still reports the processing-segment link cap.
+
 Cold SQLite controls check the actual contributing local activity, ordinary
 activity and timer span IDs, including genuine retries and handled terminal
 activity failures. Parent links cover completed and failed children, with

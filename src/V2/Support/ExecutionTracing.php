@@ -249,6 +249,9 @@ final class ExecutionTracing
             $entry = $state->outcome($event->id);
             if ($entry === null || $entry['task_id'] !== $event->workflow_task_id
                 || ! TaskOutcomeCarrier::matchesEvent($entry, $event)) {
+                if ($event->workflow_task_id !== ($fields['task_id'] ?? null)) {
+                    $state->markOutcomeUnavailable();
+                }
                 return;
             }
             self::linkCarrier($state, $entry['context'], [
@@ -265,12 +268,15 @@ final class ExecutionTracing
     public static function linkChildOutcome(WorkflowHistoryEvent $resolution, ?WorkflowRun $child): void
     {
         try {
-            if ($child === null || self::$linkKey === null || ! $child->relationLoaded('historyEvents')) {
+            $state = self::recordingLinksForRun($resolution->workflow_run_id);
+            if ($state === null) {
                 return;
             }
-            $state = Context::getCurrent()->get(self::$linkKey);
-            $entry = $state instanceof TraceLinkState && $state->isRecording()
-                ? $state->outcome('child:' . $child->id) : null;
+            if ($child === null || ! $child->relationLoaded('historyEvents')) {
+                $state->markOutcomeUnavailable();
+                return;
+            }
+            $entry = $state->outcome('child:' . $child->id);
             $terminal = $child->getRelation('historyEvents')
                 ->filter(
                     static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type->value, [
@@ -280,6 +286,7 @@ final class ExecutionTracing
                 ->first();
             if ($entry === null || ! $terminal instanceof WorkflowHistoryEvent
                 || ! self::childOutcomeMatches($entry, $resolution, $child, $terminal)) {
+                $state->markOutcomeUnavailable();
                 return;
             }
             self::linkCarrier($state, $entry['context'], [
@@ -489,6 +496,16 @@ final class ExecutionTracing
         } catch (Throwable) {
             // Optional metadata cannot interrupt cancellation delivery.
         }
+    }
+
+    private static function recordingLinksForRun(string $runId): ?TraceLinkState
+    {
+        if (self::$linkKey === null || (self::current()['workflow_run_id'] ?? null) !== $runId) {
+            return null;
+        }
+        $state = Context::getCurrent()->get(self::$linkKey);
+
+        return $state instanceof TraceLinkState && $state->isRecording() ? $state : null;
     }
 
     private static function childOutcomeMatches(
