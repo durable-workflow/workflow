@@ -422,9 +422,11 @@ final class TaskRepairCandidates
             if (self::validCursor($cursor)) {
                 self::afterCursor($page, $cursor);
             }
-            $rows = $page->get(['id', 'available_at', 'created_at']);
+            $rows = $page->toBase()
+                ->get(['id', 'available_at', 'created_at']);
             if ($rows->isEmpty() && self::validCursor($cursor)) {
-                $rows = $query->get(['id', 'available_at', 'created_at']);
+                $rows = $query->toBase()
+                    ->get(['id', 'available_at', 'created_at']);
             }
             $ids = [];
             foreach ($rows as $row) {
@@ -434,8 +436,8 @@ final class TaskRepairCandidates
                         'cache_key' => $cacheKey,
                         'cursor' => [
                             'id' => $row->id,
-                            'available_at' => $row->getRawOriginal('available_at'),
-                            'created_at' => $row->getRawOriginal('created_at'),
+                            'available_at' => $row->available_at,
+                            'created_at' => $row->created_at,
                         ],
                     ];
                 }
