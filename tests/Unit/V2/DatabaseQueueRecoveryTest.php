@@ -179,7 +179,10 @@ final class DatabaseQueueRecoveryTest extends TestCase
 
     public static function scanRestarts(): array
     {
-        return ['continuous arrivals' => [false], 'lost advisory cursor' => [true]];
+        return [
+            'continuous arrivals' => [false],
+            'lost advisory cursor' => [true],
+        ];
     }
 
     #[DataProvider('scanRestarts')]
