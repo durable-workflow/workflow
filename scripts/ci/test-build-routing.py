@@ -336,7 +336,16 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn("\npermissions:\n  contents: read\n", self.build)
-        self.assertNotIn("${{ secrets.", self.build)
+        analysis = self.job_source("sonar-coverage")
+        self.assertNotIn("${{ secrets.", self.build.replace(analysis, "", 1))
+        self.assertEqual(
+            ["SONAR_TOKEN"],
+            re.findall(r"\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}", analysis),
+        )
+        self.assertIn(
+            "if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+            analysis,
+        )
         all_workflows = "\n".join(self.workflow_sources)
         checkout_count = all_workflows.count("uses: actions/checkout@")
         self.assertGreater(checkout_count, 0)
