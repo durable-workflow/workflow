@@ -77,6 +77,17 @@ function readProcess(Process $process): array
     return json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
 }
 
+function transportTaskId(array $payload): ?string
+{
+    $job = unserialize($payload['data']['command'], [
+        'allowed_classes' => [
+            Workflow\V2\Jobs\RunWorkflowTask::class, Workflow\V2\Jobs\RunActivityTask::class,
+            Workflow\V2\Jobs\RunTimerTask::class,
+        ],
+    ]);
+    return $job->taskId ?? null;
+}
+
 if (($argv[1] ?? '') === 'cohort') {
     $directory = sys_get_temp_dir() . '/dw-published-claim-' . bin2hex(random_bytes(8));
     mkdir($directory, 0700);
@@ -214,6 +225,7 @@ $app['events']->listen(Illuminate\Queue\Events\JobExceptionOccurred::class, stat
     file_put_contents($deliveryErrorPath, json_encode([
         'pid' => getmypid(),
         'queue_job' => $event->job->getJobId(),
+        'task_id' => transportTaskId($event->job->payload()),
         'summary' => substr($event->exception->getMessage(), 0, 384),
         'frames' => array_slice(array_values($frames), 0, 8),
         'last_rollback' => $diagnostics->rollback,
@@ -282,13 +294,7 @@ $callbacks = array_values(
 );
 $transportTasks = DB::table('jobs')->get(['payload'])->map(static function ($row): ?string {
     $payload = json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
-    $job = unserialize($payload['data']['command'], [
-        'allowed_classes' => [
-            Workflow\V2\Jobs\RunWorkflowTask::class, Workflow\V2\Jobs\RunActivityTask::class,
-            Workflow\V2\Jobs\RunTimerTask::class,
-        ],
-    ]);
-    return $job->taskId ?? null;
+    return transportTaskId($payload);
 })->all();
 $multiplicities = array_count_values(array_filter($transportTasks, is_string(...)));
 echo json_encode([
@@ -297,6 +303,14 @@ echo json_encode([
         'sha256',
         (new ReflectionClass(\Workflow\V2\Support\TaskDispatcher::class))->getFileName()
     ),
+    'candidate_scanner_sha256' => hash_file(
+        'sha256',
+        (new ReflectionClass(\Workflow\V2\Support\TaskRepairCandidates::class))->getFileName()
+    ),
+    'database_delivery_sha256' => class_exists(\Workflow\Queue\DatabaseTaskDelivery::class) ? hash_file(
+        'sha256',
+        (new ReflectionClass(\Workflow\Queue\DatabaseTaskDelivery::class))->getFileName()
+    ) : null,
     'pid' => getmypid(),
     'run_id' => $run->id,
     'status' => $run->status->value,
@@ -305,6 +319,9 @@ echo json_encode([
     'activities' => ActivityExecution::query()->get()->groupBy('status')->map->count()->all(),
     'tasks' => WorkflowTask::query()->get()->groupBy('status')->map->count()->all(),
     'repairs' => (int) WorkflowTask::query()->sum('repair_count'),
+    'repaired_tasks' => WorkflowTask::query()->where('repair_count', '>', 0)->get([
+        'id', 'task_type', 'repair_count', 'attempt_count',
+    ])->toArray(),
     'attempts' => ActivityAttempt::query()->count(),
     'attempt_numbers' => ActivityAttempt::query()->orderBy('attempt_number')->distinct()->pluck(
         'attempt_number'
