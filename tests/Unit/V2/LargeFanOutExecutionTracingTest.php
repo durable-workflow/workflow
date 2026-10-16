@@ -35,6 +35,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             self::assertCount(64, $initial['large_fan_out']['activities']);
             self::assertSame(64, $initial['large_fan_out']['ready_jobs']);
             $spans = $initial['spans'];
+            $queueErrors = $initial['large_fan_out']['queue_errors'];
             $prefixes = [$admitted['large_fan_out']['history_hashes'], $initial['large_fan_out']['history_hashes']];
             $pids = [];
             $queries = $initial['large_fan_out']['task_outcome_queries'];
@@ -46,6 +47,7 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             foreach ($batch as $process) {
                 $result = self::read($process);
                 $spans = array_merge($spans, $result['spans']);
+                $queueErrors = array_merge($queueErrors, $result['large_fan_out']['queue_errors']);
                 $prefixes[] = $result['large_fan_out']['history_hashes'];
                 $pids[] = $result['pid'];
                 $queries += $result['large_fan_out']['task_outcome_queries'];
@@ -61,6 +63,8 @@ final class LargeFanOutExecutionTracingTest extends TestCase
                 'reserved_jobs' => $finished['large_fan_out']['reserved_jobs'],
                 'delayed_jobs' => $finished['large_fan_out']['delayed_jobs'],
                 'queue_attempts' => $finished['large_fan_out']['queue_attempts'],
+                'queue_errors' => $queueErrors,
+                'remaining_deliveries' => $finished['large_fan_out']['remaining_deliveries'],
                 'delivery_errors' => $finished['large_fan_out']['delivery_errors'],
                 'repairs' => $finished['repairs'],
                 'task_states' => array_count_values(array_column($finished['large_fan_out']['tasks'], 'status')),
@@ -81,9 +85,6 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             ], range(0, 63)), $finished['output']);
             foreach (['run_id', 'carrier', 'execution_deadline', 'run_deadline'] as $field) {
                 self::assertSame($admitted[$field], $finished[$field]);
-            }
-            foreach (['jobs', 'failed_jobs'] as $field) {
-                self::assertSame(0, $finished[$field], $field . ': ' . $diagnostic);
             }
             $observed = $finished['large_fan_out'];
             self::assertCount(64, $observed['activities']);
@@ -108,6 +109,9 @@ final class LargeFanOutExecutionTracingTest extends TestCase
             sort($members);
             self::assertSame(range(0, 63), $members);
             self::assertTraceWindow($spans, $observed, $enabled, $queries);
+            foreach (['jobs', 'failed_jobs'] as $field) {
+                self::assertSame(0, $finished[$field], $field . ': ' . $diagnostic);
+            }
         } finally {
             foreach ($batch as $process) {
                 $process->stop(1, 9);

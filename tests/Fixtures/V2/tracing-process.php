@@ -424,6 +424,37 @@ $app = TracingProcessApplication::create(
         ],
     ],
 );
+$queueErrors = [];
+if ($largeFanOut) {
+    $app['events']->listen(\Illuminate\Queue\Events\JobExceptionOccurred::class, static function ($event) use (
+        &$queueErrors
+    ): void {
+        if (count($queueErrors) >= 4) {
+            return;
+        }
+        $error = $event->exception;
+        $native = $error;
+        while ($native->getPrevious() !== null) {
+            $native = $native->getPrevious();
+        }
+        $connection = DB::connection('tracing');
+        $pdo = $connection->getRawPdo();
+        $payload = json_decode($event->job->getRawBody(), true);
+        $queueErrors[] = [
+            'job_id' => (string) $event->job->getJobId(),
+            'job_type' => $payload['displayName'] ?? null,
+            'delivery_id' => $payload['uuid'] ?? null,
+            'deleted' => $event->job->isDeleted(),
+            'failed' => $event->job->hasFailed(),
+            'error_class' => $error::class,
+            'native_code' => $native instanceof \PDOException ? ($native->errorInfo[1] ?? null) : null,
+            'operation' => $error instanceof \Illuminate\Database\QueryException
+                ? strtolower(explode(' ', trim($error->getSql()), 2)[0]) : null,
+            'transaction_level' => $connection->transactionLevel(),
+            'pdo_in_transaction' => $pdo instanceof \PDO ? $pdo->inTransaction() : null,
+        ];
+    });
+}
 $exporter = new InMemoryExporter();
 $admissionProcessor = ($admissionProbe || $dispatchProbe || $scheduleProbe) ? new class(
     $exporter,
@@ -1384,6 +1415,21 @@ try {
             'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
             'delayed_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '>', time())->count(),
             'queue_attempts' => (int) DB::table('jobs')->sum('attempts'),
+            'queue_errors' => $queueErrors,
+            'remaining_deliveries' => DB::table('jobs')->orderBy('id')->limit(8)->get([
+                'id', 'queue', 'attempts', 'reserved_at', 'available_at', 'payload',
+            ])->map(static function ($row): array {
+                $payload = json_decode($row->payload, true);
+                return [
+                    'id' => (string) $row->id,
+                    'queue' => $row->queue,
+                    'attempts' => (int) $row->attempts,
+                    'reserved_at' => $row->reserved_at,
+                    'available_at' => $row->available_at,
+                    'job_type' => $payload['displayName'] ?? null,
+                    'delivery_id' => $payload['uuid'] ?? null,
+                ];
+            })->all(),
             'delivery_errors' => DB::table('failed_jobs')->orderBy('id')->limit(4)->get(['exception', 'payload'])
                 ->map(static function ($row): array {
                     $lines = explode("\n", $row->exception);
