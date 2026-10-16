@@ -28,10 +28,37 @@ selects a separate lifecycle diagnostic; its process waits are capped by the
 remaining original observer time. This corrected observer has not qualified
 the earlier control that overran its deadline.
 
-`DW_PROBE_CONTINUOUS=true` keeps workers polling until their original time/job
-limit. The default drainer uses `--stop-when-empty`; a transient null poll can
-end that role before the queue drains. The drainer alone does not qualify
-sustained worker operation.
+`DW_PROBE_CONTINUOUS=true` keeps all four workers available until the parent
+observes canonical completion within the original 90-second budget. They then
+stop through the real worker's public Looping event. Initial work, drain and
+inspection share that same absolute deadline. This does not qualify SIGTERM.
+The default legacy drainer retains its 45-second limit and
+`--stop-when-empty`; a transient null poll can end it before the queue drains.
+
+## Current published PHP 8.3 control
+
+The separate `current` manifest selects the published patch and exact framework
+versions for the hosted tracing failure. It leaves the original locked input
+unchanged. Run:
+
+```sh
+composer install --working-dir=.github/queue-contention/current --no-plugins --no-scripts
+DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php" \
+DW_PROBE_QUEUE_WAKE=true DW_PROBE_CONTINUOUS=true \
+php .github/queue-contention/runner.php cohort
+```
+
+The `explicit-autoloader` output describes the selected path. For this control
+it points to an ordinary Composer installation, not a runtime source override.
+The Published queue consumer workflow verifies every installed `src` byte and
+the Composer reference against the immutable release before executing it. It
+runs the parent and four workers as the ordinary runner user in one transient
+systemd scope, with a 2 CPU quota, 2 GiB memory limit and no swap. The wrapper
+reads and verifies the effective cgroup limits before admission. It disables
+Xdebug features for this functional check and records the effective modes.
+Coverage jobs keep their instrumentation. This does not qualify the tracing
+branch or measure capacity. Earlier failed originals retain their outcomes. A
+timeout reports bounded read-only state before cleanup.
 
 Results distinguish unfinished execution, delivery exceptions, repairs,
 transport copies, callbacks and preserved history/deadlines. A nonzero exit is
