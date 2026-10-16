@@ -1,0 +1,92 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-local-activity-retry-queue-delivery",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestPortableLocalActivityIdentityWorkflow",
+    "arguments": ["Retry", "Success"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-16T01:55:00.000001Z"},
+    {
+      "sequence": 2, "event_type": "ActivityScheduled", "recorded_at": "2026-10-16T01:55:00.000002Z",
+      "payload": {
+        "sequence": 1, "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local", "local_activity": true,
+        "activity": {"retry_policy": {
+          "snapshot_version": 1, "max_attempts": 2, "backoff_seconds": [0],
+          "start_to_close_timeout": null, "schedule_to_start_timeout": null,
+          "schedule_to_close_timeout": null, "heartbeat_timeout": null, "non_retryable_error_types": []
+        }}
+      }
+    },
+    {
+      "sequence": 3, "event_type": "ActivityStarted", "recorded_at": "2026-10-16T01:55:00.000003Z",
+      "payload": {
+        "sequence": 1, "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000a", "attempt_number": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true
+      }
+    },
+    {
+      "sequence": 4, "event_type": "ActivityRetryScheduled", "recorded_at": "2026-10-16T01:55:00.000004Z",
+      "payload": {
+        "sequence": 1, "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000a", "retry_reason": "failure",
+        "retry_task_id": "01j0000000000000000000000d", "retry_backoff_seconds": 0,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true
+      }
+    },
+    {
+      "sequence": 5, "event_type": "ActivityStarted", "recorded_at": "2026-10-16T01:55:00.000005Z",
+      "payload": {
+        "sequence": 1, "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000b", "attempt_number": 2,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true
+      }
+    },
+    {
+      "sequence": 6, "event_type": "ActivityCompleted", "recorded_at": "2026-10-16T01:55:00.000006Z",
+      "payload": {
+        "sequence": 1, "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000b", "attempt_number": 2,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true,
+        "result": "wwHioz3/VYAiNwoaSGVsbG8sIFJldHJ5IQ==", "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 7, "event_type": "ActivityScheduled", "recorded_at": "2026-10-16T01:55:00.000007Z",
+      "payload": {
+        "sequence": 2, "activity_execution_id": "01j00000000000000000000002",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true
+      }
+    },
+    {
+      "sequence": 8, "event_type": "ActivityStarted", "recorded_at": "2026-10-16T01:55:00.000008Z",
+      "payload": {
+        "sequence": 2, "activity_execution_id": "01j00000000000000000000002",
+        "activity_attempt_id": "01j0000000000000000000000c", "attempt_number": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true
+      }
+    },
+    {
+      "sequence": 9, "event_type": "ActivityCompleted", "recorded_at": "2026-10-16T01:55:00.000009Z",
+      "payload": {
+        "sequence": 2, "activity_execution_id": "01j00000000000000000000002",
+        "activity_attempt_id": "01j0000000000000000000000c", "attempt_number": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "execution_mode": "local", "local_activity": true,
+        "result": "wwHioz3/VYAiNwoeSGVsbG8sIFN1Y2Nlc3Mh", "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {"first": "Hello, Retry!", "second": "Hello, Success!"},
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
