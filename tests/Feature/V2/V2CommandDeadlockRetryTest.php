@@ -49,7 +49,8 @@ final class V2CommandDeadlockRetryTest extends TestCase
             $this->markTestSkipped('Process control and local sockets are required.');
         }
         Schema::create('command_deadlock_weights', static function (Blueprint $table): void {
-            $table->unsignedInteger('id')->primary();
+            $table->unsignedInteger('id')
+                ->primary();
         });
     }
 
@@ -75,14 +76,30 @@ final class V2CommandDeadlockRetryTest extends TestCase
         $this->assertSame(2, $race['signal']['attempts']);
     }
 
+    public function testTerminationUsesTheSameRootDeadlockPolicy(): void
+    {
+        $race = $this->raceCommands('cancel', terminal: 'terminate');
+        $this->assertSuccessfulRace($race);
+        $this->assertSame(2, $race['cancel']['attempts']);
+    }
+
+    public function testSignalWithStartRetriesWithoutStartingAnotherRun(): void
+    {
+        $race = $this->raceCommands('signal', withStart: true);
+        $this->assertSuccessfulRace($race);
+        $this->assertSame(2, $race['signal']['attempts']);
+        $this->assertFalse($race['signal']['started_new']);
+        $this->assertTrue($race['signal']['returned_existing']);
+    }
+
     public function testCallerOwnedCancellationTransactionIsNotRetried(): void
     {
         $race = $this->raceCommands('cancel', 'cancel');
         $this->assertSame(1, $race['cancel']['attempts']);
         $this->assertSame(1213, $race['cancel']['error_code']);
         $this->assertTrue($race['signal']['accepted']);
-        $this->assertSame(0, DB::transactionLevel());
-        $this->assertFalse(DB::connection()->getPdo()->inTransaction());
+        $this->assertSame(0, $race['cancel']['transaction_level']);
+        $this->assertFalse($race['cancel']['pdo_in_transaction']);
         $this->assertSame(RunStatus::Waiting, WorkflowRun::query()->findOrFail($race['cancel_run'])->status);
         $this->assertSame(0, WorkflowFailure::query()->where('workflow_run_id', $race['cancel_run'])->count());
         $this->assertSame(0, DB::table('command_deadlock_weights')->where('id', 1000)->count());
@@ -95,13 +112,17 @@ final class V2CommandDeadlockRetryTest extends TestCase
         $this->assertTrue($race['cancel']['accepted']);
         $this->assertSame(1, $race['signal']['attempts']);
         $this->assertSame(1213, $race['signal']['error_code']);
+        $this->assertSame(0, $race['signal']['transaction_level']);
+        $this->assertFalse($race['signal']['pdo_in_transaction']);
         $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $race['signal_run'])->count());
         $this->assertSame(0, DB::table('command_deadlock_weights')->where('id', 1000)->count());
     }
 
     public function testConfiguredSingleAttemptPreservesTheOriginalDeadlock(): void
     {
-        config(['workflows.storage.transaction_attempts' => 1]);
+        config([
+            'workflows.storage.transaction_attempts' => 1,
+        ]);
         $race = $this->raceCommands('cancel');
         $this->assertSame(1, $race['cancel']['attempts']);
         $this->assertSame(1213, $race['cancel']['error_code']);
@@ -109,9 +130,49 @@ final class V2CommandDeadlockRetryTest extends TestCase
         $this->assertOriginalState($race, false);
     }
 
-    /** @return array<string, mixed> */
-    private function raceCommands(string $victim, ?string $outer = null): array
+    public function testUnrelatedDatabaseFailureIsNotRetried(): void
     {
+        $cancel = WorkflowStub::make(TestPendingTimerSignalWorkflow::class);
+        $cancel->start(300);
+        $this->executeInitialTask($cancel->runId());
+        $run = WorkflowRun::query()->findOrFail($cancel->runId());
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        DB::table('command_deadlock_weights')->insert([
+            'id' => 1,
+        ]);
+        $attempts = 0;
+        DB::listen(function (QueryExecuted $query) use ($run, &$attempts): void {
+            if ($this->locksRun($query, 'workflow_instances', $run->workflow_instance_id)) {
+                $attempts++;
+                DB::table('command_deadlock_weights')->insert([
+                    'id' => 1,
+                ]);
+            }
+        });
+        try {
+            $cancel->cancel('constraint control');
+            $this->fail('The real unique constraint violation was hidden.');
+        } catch (\Illuminate\Database\QueryException $error) {
+            $this->assertSame(1062, $this->errorResult($error)['error_code']);
+        }
+        $this->assertSame(1, $attempts);
+        $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
+        $this->assertSame($prefix, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame(0, WorkflowFailure::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function raceCommands(
+        string $victim,
+        ?string $outer = null,
+        string $terminal = 'cancel',
+        bool $withStart = false,
+    ): array {
         $options = new StartOptions(executionTimeoutSeconds: 900, runTimeoutSeconds: 600);
         // The signal run precedes the cancellation run in the captured secondary-index gap.
         $signal = WorkflowStub::make(TestSignalWorkflow::class);
@@ -125,10 +186,22 @@ final class V2CommandDeadlockRetryTest extends TestCase
         $race = [
             'signal_run' => $signalRun->id,
             'cancel_run' => $cancelRun->id,
-            'prefix' => $cancelRun->historyEvents()->orderBy('sequence')->get()->toArray(),
+            'terminal' => $terminal,
+            'prefix' => $cancelRun->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->toArray(),
+            'signal_prefix' => $signalRun->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->toArray(),
             'deadlines' => [
                 $cancelRun->getRawOriginal('run_deadline_at'),
                 $cancelRun->getRawOriginal('execution_deadline_at'),
+            ],
+            'signal_deadlines' => [
+                $signalRun->getRawOriginal('run_deadline_at'),
+                $signalRun->getRawOriginal('execution_deadline_at'),
             ],
         ];
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
@@ -138,29 +211,30 @@ final class V2CommandDeadlockRetryTest extends TestCase
         $this->assertNotSame(-1, $pid);
         if ($pid === 0) {
             fclose($sockets[0]);
-            $this->runSignalActor($sockets[1], $signalRun, $victim, $outer);
+            $this->runSignalActor($sockets[1], $signalRun, $victim, $outer, $withStart);
         }
         fclose($sockets[1]);
         stream_set_timeout($sockets[0], 15);
         $reaped = false;
         try {
             $ready = $this->readMessage($sockets[0]);
-            $this->assertTrue($ready['failures_locked'] ?? false, json_encode($ready));
+            $this->assertTrue($ready['failures_locked'] ?? false, json_encode($ready, JSON_THROW_ON_ERROR));
             DB::reconnect();
             DB::statement('SET SESSION innodb_lock_wait_timeout = 5');
             $attempts = 0;
             $released = false;
             DB::listen(function (QueryExecuted $query) use (
-                &$attempts, &$released, $cancelRun, $victim, $sockets, $ready
+                &$attempts,
+                &$released,
+                $cancelRun,
+                $victim,
+                $sockets,
+                $ready
             ): void {
-                if (str_contains($query->sql, 'workflow_instances')
-                    && str_contains(strtolower($query->sql), 'for update')
-                    && in_array($cancelRun->workflow_instance_id, $query->bindings, true)) {
+                if ($this->locksRun($query, 'workflow_instances', $cancelRun->workflow_instance_id)) {
                     $attempts++;
                 }
-                if ($released || ! str_contains($query->sql, 'workflow_tasks')
-                    || ! str_contains(strtolower($query->sql), 'for update')
-                    || ! in_array($cancelRun->id, $query->bindings, true)) {
+                if ($released || ! $this->locksRun($query, 'workflow_tasks', $cancelRun->id)) {
                     return;
                 }
                 $released = true;
@@ -170,20 +244,29 @@ final class V2CommandDeadlockRetryTest extends TestCase
                 fwrite($sockets[0], "proceed\n");
                 $this->awaitTaskInsertWait($ready['connection_id']);
             });
-            $operation = static fn () => WorkflowStub::loadRun($cancelRun->id)->cancel('deadlock control');
+            $operation = static fn () => WorkflowStub::loadRun($cancelRun->id)->{$terminal}('deadlock control');
             try {
                 if ($outer === 'cancel') {
                     $result = DB::transaction(static function () use ($operation) {
-                        DB::table('command_deadlock_weights')->insert(['id' => 1000]);
+                        DB::table('command_deadlock_weights')->insert([
+                            'id' => 1000,
+                        ]);
                         return $operation();
                     });
                 } else {
                     $result = $operation();
                 }
-                $race['cancel'] = ['accepted' => $result->accepted(), 'attempts' => $attempts];
+                $race['cancel'] = [
+                    'accepted' => $result->accepted(),
+                    'attempts' => $attempts,
+                ];
             } catch (Throwable $error) {
-                $race['cancel'] = $this->errorResult($error) + ['attempts' => $attempts];
+                $race['cancel'] = $this->errorResult($error) + [
+                    'attempts' => $attempts,
+                ];
             }
+            $race['cancel']['transaction_level'] = DB::transactionLevel();
+            $race['cancel']['pdo_in_transaction'] = DB::connection()->getPdo()->inTransaction();
             $race['signal'] = $this->readMessage($sockets[0]);
             pcntl_waitpid($pid, $status);
             $reaped = true;
@@ -201,9 +284,16 @@ final class V2CommandDeadlockRetryTest extends TestCase
         return $race;
     }
 
-    /** @param resource $socket */
-    private function runSignalActor($socket, WorkflowRun $run, string $victim, ?string $outer): never
-    {
+    /**
+     * @param resource $socket
+     */
+    private function runSignalActor(
+        $socket,
+        WorkflowRun $run,
+        string $victim,
+        ?string $outer,
+        bool $withStart,
+    ): never {
         stream_set_timeout($socket, 15);
         $attempts = 0;
         try {
@@ -212,16 +302,17 @@ final class V2CommandDeadlockRetryTest extends TestCase
             $connectionId = (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id;
             $paused = false;
             DB::listen(function (QueryExecuted $query) use (
-                &$paused, &$attempts, $run, $victim, $socket, $connectionId
+                &$paused,
+                &$attempts,
+                $run,
+                $victim,
+                $socket,
+                $connectionId
             ): void {
-                if (str_contains($query->sql, 'workflow_instances')
-                    && str_contains(strtolower($query->sql), 'for update')
-                    && in_array($run->workflow_instance_id, $query->bindings, true)) {
+                if ($this->locksRun($query, 'workflow_instances', $run->workflow_instance_id)) {
                     $attempts++;
                 }
-                if ($paused || ! str_contains($query->sql, 'workflow_failures')
-                    || ! str_contains(strtolower($query->sql), 'for update')
-                    || ! in_array($run->id, $query->bindings, true)) {
+                if ($paused || ! $this->locksRun($query, 'workflow_failures', $run->id)) {
                     return;
                 }
                 $paused = true;
@@ -229,25 +320,41 @@ final class V2CommandDeadlockRetryTest extends TestCase
                     $this->addTransactionWeight();
                 }
                 fwrite($socket, json_encode([
-                    'connection_id' => $connectionId, 'failures_locked' => true,
+                    'connection_id' => $connectionId,
+                    'failures_locked' => true,
                 ], JSON_THROW_ON_ERROR) . PHP_EOL);
                 if (fgets($socket) !== "proceed\n") {
                     throw new RuntimeException('Cancellation did not acquire its task locks.');
                 }
             });
-            $operation = static fn () => WorkflowStub::loadRun($run->id)->signal('name-provided', 'Ada');
+            $operation = static fn () => $withStart
+                ? WorkflowStub::load($run->workflow_instance_id)->signalWithStart('name-provided', ['Ada'])
+                : WorkflowStub::loadRun($run->id)->signal('name-provided', 'Ada');
             if ($outer === 'signal') {
                 $result = DB::transaction(static function () use ($operation) {
-                    DB::table('command_deadlock_weights')->insert(['id' => 1000]);
+                    DB::table('command_deadlock_weights')->insert([
+                        'id' => 1000,
+                    ]);
                     return $operation();
                 });
             } else {
                 $result = $operation();
             }
-            $message = ['accepted' => $result->accepted(), 'attempts' => $attempts];
+            $message = [
+                'accepted' => $result->accepted(),
+                'attempts' => $attempts,
+            ];
+            if ($result instanceof \Workflow\V2\SignalWithStartResult) {
+                $message['started_new'] = $result->startedNew();
+                $message['returned_existing'] = $result->returnedExistingActive();
+            }
         } catch (Throwable $error) {
-            $message = $this->errorResult($error) + ['attempts' => $attempts];
+            $message = $this->errorResult($error) + [
+                'attempts' => $attempts,
+            ];
         }
+        $message['transaction_level'] = DB::transactionLevel();
+        $message['pdo_in_transaction'] = DB::connection()->getPdo()->inTransaction();
         fwrite($socket, json_encode($message, JSON_THROW_ON_ERROR) . PHP_EOL);
         DB::disconnect();
         fclose($socket);
@@ -258,15 +365,26 @@ final class V2CommandDeadlockRetryTest extends TestCase
     {
         // Control InnoDB's victim choice without changing either workflow's business rows.
         DB::table('command_deadlock_weights')->insert(array_map(
-            static fn (int $id): array => ['id' => $id], range(1, 100),
+            static fn (int $id): array => [
+                'id' => $id,
+            ],
+            range(1, 100),
         ));
+    }
+
+    private function locksRun(QueryExecuted $query, string $table, string $id): bool
+    {
+        return str_contains($query->sql, $table)
+            && str_contains(strtolower($query->sql), 'for update')
+            && in_array($id, $query->bindings, true);
     }
 
     private function executeInitialTask(string $runId): void
     {
         $task = WorkflowTask::query()->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->sole();
-        app()->call([new RunWorkflowTask($task->id), 'handle']);
+        app()
+            ->call([new RunWorkflowTask($task->id), 'handle']);
     }
 
     private function awaitTaskInsertWait(int $connectionId): void
@@ -276,7 +394,8 @@ final class V2CommandDeadlockRetryTest extends TestCase
             $row = DB::selectOne(
                 'SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits w '
                 . 'JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID '
-                . 'WHERE t.PROCESSLIST_ID = ?', [$connectionId],
+                . 'WHERE t.PROCESSLIST_ID = ?',
+                [$connectionId],
             );
             if ((int) $row->waiting > 0) {
                 return;
@@ -298,7 +417,9 @@ final class V2CommandDeadlockRetryTest extends TestCase
         return $message;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     */
     private function errorResult(Throwable $error): array
     {
         $code = null;
@@ -315,32 +436,66 @@ final class V2CommandDeadlockRetryTest extends TestCase
         ];
     }
 
-    /** @param array<string, mixed> $race */
+    /**
+     * @param array<string, mixed> $race
+     */
     private function assertSuccessfulRace(array $race): void
     {
-        $this->assertTrue($race['cancel']['accepted'], json_encode($race['cancel']));
-        $this->assertTrue($race['signal']['accepted'], json_encode($race['signal']));
-        $this->assertSame(RunStatus::Cancelled, WorkflowRun::query()->findOrFail($race['cancel_run'])->status);
+        $this->assertTrue($race['cancel']['accepted'], json_encode($race['cancel'], JSON_THROW_ON_ERROR));
+        $this->assertTrue($race['signal']['accepted'], json_encode($race['signal'], JSON_THROW_ON_ERROR));
+        $this->assertSame(
+            $race['terminal'] === 'cancel' ? RunStatus::Cancelled : RunStatus::Terminated,
+            WorkflowRun::query()->findOrFail($race['cancel_run'])->status
+        );
+        foreach (['cancel', 'signal'] as $actor) {
+            $this->assertSame(0, $race[$actor]['transaction_level']);
+            $this->assertFalse($race[$actor]['pdo_in_transaction']);
+        }
         $this->assertSame(1, WorkflowFailure::query()->where('workflow_run_id', $race['cancel_run'])->count());
         $this->assertSame(1, WorkflowCommand::query()->where('workflow_run_id', $race['cancel_run'])
-            ->where('command_type', CommandType::Cancel->value)->count());
+            ->where('command_type', $race['terminal'])->count());
         $this->assertSame(1, WorkflowSignal::query()->where('workflow_run_id', $race['signal_run'])->count());
         $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $race['signal_run'])
             ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->count());
         $this->assertSame(2, WorkflowRun::query()->count());
+        $signal = WorkflowRun::query()->findOrFail($race['signal_run']);
+        $signalHistory = $signal->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $this->assertSame($race['signal_prefix'], array_slice($signalHistory, 0, count($race['signal_prefix'])));
+        $this->assertSame($race['signal_deadlines'], [
+            $signal->getRawOriginal('run_deadline_at'), $signal->getRawOriginal('execution_deadline_at'),
+        ]);
+        $this->assertSame(1, WorkflowCommand::query()->where('workflow_run_id', $signal->id)
+            ->where('command_type', CommandType::Signal->value)->count());
+        $this->assertSame(
+            1,
+            $signal->historyEvents()
+                ->where('event_type', HistoryEventType::SignalReceived->value)->count()
+        );
         $this->assertOriginalState($race, true);
     }
 
-    /** @param array<string, mixed> $race */
+    /**
+     * @param array<string, mixed> $race
+     */
     private function assertOriginalState(array $race, bool $cancelled): void
     {
         $run = WorkflowRun::query()->findOrFail($race['cancel_run']);
         $this->assertSame($race['deadlines'], [
             $run->getRawOriginal('run_deadline_at'), $run->getRawOriginal('execution_deadline_at'),
         ]);
-        $history = $run->historyEvents()->orderBy('sequence')->get()->toArray();
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
         $this->assertSame($race['prefix'], array_slice($history, 0, count($race['prefix'])));
+        $this->assertSame(range(1, count($history)), array_column($history, 'sequence'));
+        $terminalEvent = $race['terminal'] === 'cancel'
+            ? HistoryEventType::WorkflowCancelled : HistoryEventType::WorkflowTerminated;
         $this->assertSame($cancelled ? 1 : 0, $run->historyEvents()
-            ->where('event_type', HistoryEventType::WorkflowCancelled->value)->count());
+            ->where('event_type', $terminalEvent->value)
+            ->count());
     }
 }
