@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.24 - 2026-10-16
+
+- Avoid redundant embedded recovery dispatches while an exact unreserved
+  database-queue delivery still exists. Preserve recovery of missing and reserved
+  deliveries, legacy schemas and application-owned queue connectors.
+- Advance bounded queue-mode scans past healthy queued work so missing deliveries
+  behind the first batch remain recoverable. Preserve task identities, leases,
+  history, retry policies and original deadlines.
+- Add a hidden nullable task-delivery reference. Apply the package migrations and
+  restart queue workers after upgrading to enable this recovery check.
+
 ## 2.5.16 - 2026-10-13
 
 - Refuse changed explicitly authored activity retry policies during embedded

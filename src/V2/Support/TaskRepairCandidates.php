@@ -6,6 +6,8 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -32,17 +34,29 @@ final class TaskRepairCandidates
         ?string $connection = null,
         ?string $queue = null,
     ): array {
-        return self::roundRobinCandidateIds(
-            self::existingTaskIdsByScope(
-                $limit ?? TaskRepairPolicy::scanLimit(),
-                $now,
-                $runIds,
-                $instanceId,
-                $connection,
-                $queue,
-            ),
-            $limit ?? TaskRepairPolicy::scanLimit(),
+        $limit ??= TaskRepairPolicy::scanLimit();
+        $pages = self::existingTaskPages(
+            $limit,
+            $now,
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue,
+            rotate: config('workflows.v2.task_dispatch_mode') !== 'poll',
         );
+        $selected = self::roundRobinCandidates($pages['buckets'], $limit);
+        $cursors = [];
+        foreach ($selected as $candidate) {
+            $position = $pages['positions'][$candidate['id']] ?? null;
+            if ($position !== null) {
+                $cursors[$position['cache_key']] = $position['cursor'];
+            }
+        }
+        foreach ($cursors as $key => $cursor) {
+            // A lost cursor only restarts inspection. It never grants task authority.
+            Cache::put($key, $cursor, 300);
+        }
+        return array_column($selected, 'id');
     }
 
     /**
@@ -364,8 +378,21 @@ final class TaskRepairCandidates
         ?string $connection = null,
         ?string $queue = null,
     ): array {
+        return self::existingTaskPages($limit, $now, $runIds, $instanceId, $connection, $queue)['buckets'];
+    }
+
+    private static function existingTaskPages(
+        int $limit,
+        ?CarbonInterface $now,
+        array $runIds,
+        ?string $instanceId,
+        ?string $connection,
+        ?string $queue,
+        bool $rotate = false,
+    ): array {
         $now ??= now();
         $buckets = [];
+        $positions = [];
 
         foreach (self::normalizedScopes(self::existingTaskScopeRows(
             $now,
@@ -374,24 +401,96 @@ final class TaskRepairCandidates
             $connection,
             $queue,
         )) as $scope) {
-            /** @var list<string> $ids */
-            $ids = self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
+            $query = self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
-                })
-                ->orderBy('available_at')
-                ->orderBy('created_at')
+                });
+            if ($rotate) {
+                $query->orderByRaw('CASE WHEN available_at IS NULL THEN 0 ELSE 1 END');
+            }
+            $query->orderBy('available_at');
+            if ($rotate) {
+                $query->orderByRaw('CASE WHEN created_at IS NULL THEN 0 ELSE 1 END');
+            }
+            $query->orderBy('created_at')
                 ->orderBy('id')
-                ->limit($limit)
-                ->pluck('id')
-                ->all();
+                ->limit($limit);
+            $cacheKey = 'workflow:v2:repair-scan:' . hash('sha256', json_encode([
+                $runIds, $instanceId, $connection, $queue, $scope['scope_key'],
+            ], JSON_THROW_ON_ERROR));
+            $cursor = $rotate ? Cache::get($cacheKey) : null;
+            $rows = self::readTaskPage($query, $cursor);
+            $ids = [];
+            foreach ($rows as $row) {
+                $ids[] = $row->id;
+                if ($rotate) {
+                    $positions[$row->id] = [
+                        'cache_key' => $cacheKey,
+                        'cursor' => [
+                            'id' => $row->id,
+                            'available_at' => $row->available_at,
+                            'created_at' => $row->created_at,
+                        ],
+                    ];
+                }
+            }
 
             if ($ids !== []) {
                 $buckets[$scope['scope_key']] = $ids;
             }
         }
 
-        return $buckets;
+        return [
+            'buckets' => $buckets,
+            'positions' => $positions,
+        ];
+    }
+
+    private static function readTaskPage($query, mixed $cursor): Collection
+    {
+        $page = clone $query;
+        if (self::validCursor($cursor)) {
+            self::afterCursor($page, $cursor);
+        }
+        $rows = $page->toBase()
+            ->get(['id', 'available_at', 'created_at']);
+        return $rows->isEmpty() && self::validCursor($cursor)
+            ? $query->toBase()
+                ->get(['id', 'available_at', 'created_at']) : $rows;
+    }
+
+    private static function validCursor(mixed $cursor): bool
+    {
+        return is_array($cursor) && is_string($cursor['id'] ?? null)
+            && array_key_exists('created_at', $cursor)
+            && ($cursor['created_at'] === null || is_string($cursor['created_at']))
+            && array_key_exists('available_at', $cursor)
+            && ($cursor['available_at'] === null || is_string($cursor['available_at']));
+    }
+
+    private static function afterCursor($query, array $cursor): void
+    {
+        $query->where(static function ($after) use ($cursor): void {
+            if ($cursor['available_at'] === null) {
+                $after->whereNotNull('available_at');
+            } else {
+                $after->where('available_at', '>', $cursor['available_at']);
+            }
+            $after->orWhere(static function ($sameAvailability) use ($cursor): void {
+                $sameAvailability->where('available_at', $cursor['available_at'])
+                    ->where(static function ($created) use ($cursor): void {
+                        if ($cursor['created_at'] === null) {
+                            $created->whereNotNull('created_at');
+                        } else {
+                            $created->where('created_at', '>', $cursor['created_at']);
+                        }
+                        $created->orWhere(static function ($sameCreated) use ($cursor): void {
+                            $sameCreated->where('created_at', $cursor['created_at'])
+                                ->where('id', '>', $cursor['id']);
+                        });
+                    });
+            });
+        });
     }
 
     /**
