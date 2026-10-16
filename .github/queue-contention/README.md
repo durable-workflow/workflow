@@ -39,6 +39,11 @@ expected for an unsuccessful control. Completion with repairs or failed
 deliveries also fails the clean acceptance check. Do not reinterpret that as a
 failed workflow if the result says it completed.
 
+Set `DW_PROBE_REPAIR_OBSERVATIONS=true` for bounded task and native-row metadata
+before repair updates, at most eight observations per process. Records can
+precede a rolled-back transaction. The final repair count reports committed
+effects. These diagnostic reads do not grant claim or execution authority.
+
 `business_invariants_pass` reports exact typed completion, callback/attempt
 counts and preserved original timing/history. `clean_acceptance_pass` also
 requires zero repairs, failed deliveries and leftover jobs. Both remain visible.

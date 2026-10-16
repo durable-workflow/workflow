@@ -199,8 +199,32 @@ $app = PublishedClaimApplication::create(basePath: $directory, options: [
 $diagnostics = (object) [
     'rollback' => null,
     'errors' => 0,
+    'repairs' => 0,
 ];
 $deliveryErrorPath = $directory . '/delivery-errors.jsonl';
+$repairObservationPath = $directory . '/repair-observations.jsonl';
+if (getenv('DW_PROBE_REPAIR_OBSERVATIONS') === 'true') {
+    WorkflowTask::updating(static function (WorkflowTask $task) use ($diagnostics, $repairObservationPath): void {
+        if (! $task->isDirty('repair_count') || ++$diagnostics->repairs > 8) {
+            return;
+        }
+        $reference = $task->queue_delivery_reference;
+        $row = is_array($reference) && isset($reference['job_id'])
+            ? DB::table('jobs')->useWritePdo()->where('id', $reference['job_id'])
+                ->first(['id', 'reserved_at', 'attempts', 'available_at'])
+            : null;
+        file_put_contents($repairObservationPath, json_encode([
+            'stage' => 'before_update',
+            'pid' => getmypid(),
+            'task_id' => $task->id,
+            'status' => $task->status->value,
+            'repair_before' => $task->getOriginal('repair_count'),
+            'repair_after' => $task->repair_count,
+            'native_row' => $row,
+            'observed_unix' => time(),
+        ], JSON_THROW_ON_ERROR) . "\n", FILE_APPEND | LOCK_EX);
+    });
+}
 $app['events']->listen(Illuminate\Queue\Events\JobProcessing::class, static function () use ($diagnostics): void {
     $diagnostics->rollback = null;
 });
@@ -330,6 +354,12 @@ echo json_encode([
     'ready_jobs' => DB::table('jobs')->whereNull('reserved_at')->where('available_at', '<=', time())->count(),
     'reserved_jobs' => DB::table('jobs')->whereNotNull('reserved_at')->count(),
     'failed_jobs' => DB::table('failed_jobs')->count(),
+    'repair_observations' => is_file($repairObservationPath)
+        ? array_map(
+            static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+            file($repairObservationPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
+        )
+        : [],
     'failures' => $failures,
     'callbacks' => count($callbacks),
     'callback_members' => array_count_values(
