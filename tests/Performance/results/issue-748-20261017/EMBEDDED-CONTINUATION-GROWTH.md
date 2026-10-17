@@ -1,10 +1,12 @@
 # Initial embedded continuation growth measurements
 
 These are source measurements for [#748](https://github.com/durable-workflow/workflow/issues/748).
-They cover 10 and 100 events with one worker and one concurrent run. The larger
-histories, concurrent and multiworker measurements, listener-overhead controls
-and published-package consumers remain incomplete. No production saving or
-stable warm-execution release is established.
+They cover 10 and 100 events with one worker and one concurrent run. A later
+1,000-event replay pilot fails its original observation budget. Four subsequent
+100-event observer controls pass. Larger-history acceptance, concurrent and
+multiworker measurements, repeated overhead controls and published consumers
+remain incomplete. No production saving or stable warm-execution release is
+established.
 
 ## Source and conditions
 
@@ -32,7 +34,7 @@ stable warm-execution release is established.
   RSS threshold. Handoff and cache reuse are not forced.
 
 The separate guest functional setup passes eight cohorts / 6,150 assertions.
-Its timing is excluded from the comparison. All twelve measured cells pass:
+Its timing is excluded from the comparison. All twelve initial b2 cells pass:
 six originals at each size, 660 complete events, 120 activity effects, 516
 completed first-attempt tasks and 132 timers in total. Every original preserves
 its admission prefix, full typed result, recorded clocks and original deadlines.
@@ -140,7 +142,47 @@ passing. This does not explain or fix the earlier SQLite error. Future failed
 audits also record bounded queue identity/availability metadata, payload sizes/
 hashes and up to two truncated queue exceptions without serializing whole databases.
 
-The next acceptance still includes 1,000-event and concurrent/multiworker cells,
-actual hit/miss/capacity behavior under the aggregate limit, minimally observed
-paired measurements, remaining lifetime/failure cases and published consumers.
+## Failed 1,000-event pilot
+
+One fresh replay original on exact `af19fc58` fails its original 3,600-second
+observation budget. The image, dependency lock, source checks and one-CPU/1-GiB/
+zero-swap limits are unchanged. Its container runs from 18:16:46.537 to
+19:16:48.962 UTC on October 17, 2026.
+
+The failure audit records one unfinished run, 642 history events, 128 activity
+effects, 512 of 513 tasks complete, zero repairs and zero failed jobs. Whole-
+container CPU is 3,521.991369 seconds and peak memory is 187,785,216 bytes.
+The container exits 1 without OOM. Final history/result/deadline audits are not
+reached, and fixture teardown stops the unfinished worker. This original remains
+failed; larger-history acceptance and a retained comparison remain open.
+
+## Single-pair observer controls
+
+Four fresh 100-event originals on the same `af19fc58` source pass the complete
+history, typed-result, original-deadline and queue/task audits. Each uses the same
+3,600-second budget, 30-second startup, 15-second drain, pinned image/lock and
+aggregate resource limits. Source checks pass before every admission. Order is
+replay off/on, followed by retained off/on; each row is one observation.
+
+| Mode | Optional observers | Worker CPU seconds | Queue wall seconds | Container peak bytes | Workflow entries | Round visits |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Replay | Off | 50.640 | 87.182 | 162,512,896 | 40 | 418 |
+| Replay | On | 51.217 | 89.843 | 162,238,464 | 40 | 418 |
+| Retained | Off | 44.179 | 75.722 | 162,316,288 | 3 | 47 |
+| Retained | On | 44.198 | 78.703 | 162,299,904 | 3 | 46 |
+
+All four workers and containers exit zero without OOM, and worker cache entries
+return to zero. Observer-off SQL, scheduling and peak-entry fields are null.
+The observer-enabled replay/retained cells record 472/551 history SELECTs out of
+11,247/11,299 total SQL statements. Both preserve 79 task claims and 20 timer
+firings. Retained cells each have 37 cache hits; ordinary nonrenewing age eviction
+still occurs, and round visits differ across the original expiry boundaries.
+
+These single pairs do not estimate overhead at 1,000 events or establish a
+general gain. The separate SQLite summary-write correction in #835 is outside
+these pinned measurements. The disposable guest is retired after readback.
+
+The next acceptance includes completed 1,000-event and concurrent/multiworker
+cells, repeated overhead measurements, hit/miss/capacity behavior under the
+aggregate limit, remaining lifetime/failure cases and published consumers.
 All original #748 acceptance boxes remain open and #834 remains draft.
