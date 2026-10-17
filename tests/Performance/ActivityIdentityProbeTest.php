@@ -42,7 +42,8 @@ final class ActivityIdentityProbeTest extends TestCase
         $workflow->start(9);
         for ($round = 0; $round <= 9; ++$round) {
             WorkflowStub::runReadyTasks();
-            $this->travel(2)->seconds();
+            $this->travel(2)
+                ->seconds();
         }
         $workflow = WorkflowStub::load('activity-identity-cost');
         $this->assertTrue($workflow->completed());
@@ -50,16 +51,20 @@ final class ActivityIdentityProbeTest extends TestCase
         $this->assertSame(27, $effects);
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
         $originalDigest = self::historyDigest($run);
-        $events = $run->historyEvents()->get();
+        $events = $run->historyEvents()
+            ->get();
         $this->assertCount(102, $events);
         $sequences = [];
         $types = [];
+        $policySnapshots = 0;
         foreach ($events as $event) {
             $types[(string) $event->id] = $event->event_type->value;
             if ($event->event_type === HistoryEventType::ActivityScheduled) {
                 $sequence = $event->payload['sequence'] ?? null;
                 $this->assertIsInt($sequence);
                 $sequences[] = $sequence;
+                $snapshot = $event->payload['activity']['retry_policy'] ?? $event->payload['retry_policy'] ?? null;
+                $policySnapshots += is_array($snapshot) ? 1 : 0;
             }
         }
         $this->assertCount(27, $sequences);
@@ -73,10 +78,16 @@ final class ActivityIdentityProbeTest extends TestCase
         $originalTiming = ProfiledHistoryEvent::$timePayloadCasts;
         $phases = [];
         try {
-            foreach (['ordinary' => null, 'counts' => false, 'cast_timed' => true] as $mode => $timing) {
+            foreach ([
+                'ordinary' => null,
+                'counts' => false,
+                'cast_timed' => true,
+            ] as $mode => $timing) {
                 $instrumented = $timing !== null;
                 $modelClass = $instrumented ? ProfiledHistoryEvent::class : WorkflowHistoryEvent::class;
-                config(['workflows.v2.history_event_model' => $modelClass]);
+                config([
+                    'workflows.v2.history_event_model' => $modelClass,
+                ]);
                 $run->unsetRelation('historyEvents');
                 $run->load('historyEvents');
                 if ($instrumented) {
@@ -121,7 +132,9 @@ final class ActivityIdentityProbeTest extends TestCase
                 }
             }
         } finally {
-            config(['workflows.v2.history_event_model' => $originalModel]);
+            config([
+                'workflows.v2.history_event_model' => $originalModel,
+            ]);
             ProfiledHistoryEvent::$timePayloadCasts = $originalTiming;
         }
 
@@ -138,6 +151,8 @@ final class ActivityIdentityProbeTest extends TestCase
             'profile' => 'activity-identity-cost',
             'history_events' => 102,
             'activity_effects' => $effects,
+            'recorded_policy_snapshots' => $policySnapshots,
+            'authored_retry_overrides' => false,
             'tasks' => $tasks->count(),
             'phases' => $phases,
         ], JSON_THROW_ON_ERROR) . PHP_EOL;
@@ -145,9 +160,11 @@ final class ActivityIdentityProbeTest extends TestCase
 
     private static function historyDigest(WorkflowRun $run): string
     {
-        return hash('sha256', json_encode(
-            $run->historyEvents()->toBase()->get()->all(),
-            JSON_THROW_ON_ERROR
-        ));
+        $rows = $run->historyEvents()
+            ->toBase()
+            ->get()
+            ->all();
+
+        return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
     }
 }
