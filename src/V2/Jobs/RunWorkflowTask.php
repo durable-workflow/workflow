@@ -23,6 +23,7 @@ use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowTaskLease;
 
@@ -53,9 +54,14 @@ final class RunWorkflowTask implements ShouldQueue
         }
 
         $nextTask = null;
+        $continuation = config('workflows.v2.live_execution.workflows', []) === []
+            ? null : app(WorkflowContinuationCache::class)->session($this->job);
 
         try {
-            $nextTask = SqliteTransaction::forTask($this->taskId, function () use ($executor): ?WorkflowTask {
+            $nextTask = SqliteTransaction::forTask($this->taskId, function () use (
+                $executor,
+                $continuation
+            ): ?WorkflowTask {
                 /** @var WorkflowTask $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -81,9 +87,18 @@ final class RunWorkflowTask implements ShouldQueue
                     return null;
                 }
 
-                return $executor->run($run, $task);
+                if ($continuation !== null && ! $continuation->hasAuthority($run, $task)) {
+                    $continuation->disable('lost_task_authority');
+                    return null;
+                }
+
+                $nextTask = $executor->run($run, $task, $continuation);
+                $continuation?->offer($task);
+
+                return $nextTask;
             });
         } catch (Throwable $throwable) {
+            $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -107,6 +122,8 @@ final class RunWorkflowTask implements ShouldQueue
 
             throw $throwable;
         }
+
+        $continuation?->committed();
 
         if ($nextTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($nextTask);
