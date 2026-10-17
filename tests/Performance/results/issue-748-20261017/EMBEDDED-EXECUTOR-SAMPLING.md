@@ -46,7 +46,7 @@ and projection; neither column is a pure serializer or pure replay measurement.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | 20.488316 s | 12.425097 s | 2.274531 s | 7,178 | 3.178870 s | 80,480 KiB |
 | 2 | 20.320855 s | 12.359675 s | 2.280332 s | 7,178 | 3.059350 s | 80,472 KiB |
-| 3 | 20.575303 s | 12.490568 s | 2.326184 s | 7,178 | 3.153270 s | 80,528 KiB |
+| 3 | 20.575303 s | 12.490568 s | 2.326184 s | 7,178 | 3.153270 s | 80,716 KiB |
 
 The two role paths account for **71.9%** of aggregate measured process CPU.
 They overlap the executor's call tree and must not be added to its samples.
@@ -105,6 +105,21 @@ survived. Its three functional originals passed, but aggregate observation was
 rejected. The final three originals above are fresh; a single shared output
 file preserves all targets. Original budgets, runtime, fixtures and assertions
 were not relaxed. Raw traces are disposable after review.
+
+Use `PROFILE_EMBEDDED_SAMPLE_WINDOWS=1` with the existing role-probe command.
+As in the bridge qualification, the observer must be an ancestor of the test
+children. The final observer options are:
+
+```sh
+phpspy -V85 -H99 -S -b65536 -T1 -i600000 \
+  -P '-f "^/usr/local/bin/php( |$)"' \
+  -f 'ProjectionRoleProbeTest::testProjectionRoleCost|ReplayGrowthWorkflow::handle|WorkflowExecution::' \
+  -dpt -o /tmp/embedded.traces
+```
+
+The shared output name deliberately has no `%d`. Require pre-window coverage
+for each of the three original PIDs and select complete timestamped records
+inside that PID's emitted measurement window.
 
 ## Design consequence
 
