@@ -39,6 +39,21 @@ final class WorkflowContinuationCacheTest extends TestCase
         $this->assertSame(1, $cache->snapshot()['counts']['discard_publication']);
     }
 
+    public function testAChangedBuildDoesNotAuthorizePublicationFromAnOlderRunGeneration(): void
+    {
+        $cache = new WorkflowContinuationCache();
+        $older = $cache->observe('same-run');
+        $newer = $cache->observe('same-run');
+        $old = $this->entry();
+        $old->scope = 'same-run';
+        $current = $this->entry();
+        $current->scope = 'same-run';
+        $cache->publish('new-build', $newer, $current);
+        $cache->publish('old-build', $older, $old);
+        $this->assertNull($cache->take('old-build'));
+        $this->assertSame($current, $cache->take('new-build'));
+    }
+
     public function testCapacityEvictsTheOldestEntryWithoutChangingOtherRuns(): void
     {
         $cache = new WorkflowContinuationCache();

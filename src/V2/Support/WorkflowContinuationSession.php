@@ -20,6 +20,8 @@ final class WorkflowContinuationSession
 {
     private ?string $key = null;
 
+    private ?string $scope = null;
+
     private int $generation = 0;
 
     private bool $enabled = true;
@@ -41,25 +43,23 @@ final class WorkflowContinuationSession
      */
     public function begin(WorkflowRun $run, WorkflowTask $task, string $class): ?WorkflowContinuation
     {
+        $this->observe($run);
         $build = config('workflows.v2.live_execution.build');
-        if (! is_string($build) || $build === '' || ! $this->eligibleClass($class)
-            || $this->database !== $run->getConnection() || $this->database->transactionLevel() !== 1
-            || $task->status !== TaskStatus::Leased || $task->lease_owner !== $task->id
-            || $task->lease_expires_at === null || ! $task->lease_expires_at->isFuture()
-            || ! $this->safeHistory($run)) {
+        $eligible = is_string($build) && $build !== '' && $this->eligibleClass($class)
+            && $this->database === $run->getConnection() && $this->database->transactionLevel() === 1
+            && $this->hasAuthority($run, $task) && $this->safeHistory($run);
+        $prefix = $eligible ? $this->prefix($run) : null;
+        if ($prefix === null) {
             $this->disable();
             return null;
         }
         $this->key = hash('sha256', serialize([
-            spl_object_id(app()), $this->database->getName(), $this->database->getDriverName(),
-            $this->database->getDatabaseName(), $run->getTable(), $run->namespace,
-            $run->workflow_instance_id, $run->id, $class, WorkflowDefinition::fingerprint($class),
+            $this->scope, $class, WorkflowDefinition::fingerprint($class),
             $build, config('workflows.v2.compatibility.current'), PHP_VERSION,
         ]));
-        $this->generation = $this->cache->observe($this->key);
-        $entry = $this->cache->take($this->key);
+        $entry = $this->cache->take($this->key, $this->scope);
         if ($entry !== null && ($entry->guard !== $this->guard($run)
-            || $entry->prefix !== array_slice($this->prefix($run), 0, count($entry->prefix)))) {
+            || $entry->prefix !== array_slice($prefix, 0, count($entry->prefix)))) {
             $this->cache->count('invalidate_history_or_run');
             return null;
         }
@@ -77,6 +77,7 @@ final class WorkflowContinuationSession
 
     public function hasAuthority(WorkflowRun $run, WorkflowTask $task): bool
     {
+        $this->observe($run);
         return $task->workflow_run_id === $run->id && $task->namespace === $run->namespace
             && $task->status === TaskStatus::Leased && $task->lease_owner === $task->id
             && $task->attempt_count > 0 && $task->lease_expires_at !== null
@@ -95,6 +96,9 @@ final class WorkflowContinuationSession
 
     public function disable(): void
     {
+        if ($this->scope !== null) {
+            $this->cache->invalidate($this->scope);
+        }
         $this->enabled = false;
         $this->pending = null;
         $this->active = null;
@@ -119,8 +123,12 @@ final class WorkflowContinuationSession
             return;
         }
         $entry->guard = $this->guard($run);
-        $entry->prefix = $this->prefix($run);
-        $this->pending = $entry;
+        $prefix = $this->prefix($run);
+        if ($prefix !== null) {
+            $entry->scope = $this->scope ?? '';
+            $entry->prefix = $prefix;
+            $this->pending = $entry;
+        }
     }
 
     public function committed(): void
@@ -179,14 +187,35 @@ final class WorkflowContinuationSession
     }
 
     /**
-     * @return list<string>
+     * @return list<string>|null
      */
-    private function prefix(WorkflowRun $run): array
+    private function prefix(WorkflowRun $run): ?array
     {
-        return $run->historyEvents()
-            ->get()
-            ->map(static fn ($event): string => hash('sha256', serialize($event->getRawOriginal())))
+        $events = $run->historyEvents()
+            ->get();
+        if ((int) $run->last_history_sequence !== $events->count()) {
+            return null;
+        }
+        foreach ($events->values() as $index => $event) {
+            if ((int) $event->sequence !== $index + 1) {
+                return null;
+            }
+        }
+
+        return $events->map(static fn ($event): string => hash('sha256', serialize($event->getRawOriginal())))
             ->all();
+    }
+
+    private function observe(WorkflowRun $run): void
+    {
+        if ($this->scope === null) {
+            $this->scope = hash('sha256', serialize([
+                spl_object_id(app()), $this->database->getName(), $this->database->getDriverName(),
+                $this->database->getDatabaseName(), $run->getTable(), $run->namespace,
+                $run->workflow_instance_id, $run->id,
+            ]));
+            $this->generation = $this->cache->observe($this->scope);
+        }
     }
 
     private function guard(WorkflowRun $run): string

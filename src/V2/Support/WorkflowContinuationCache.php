@@ -55,9 +55,15 @@ final class WorkflowContinuationCache
         return $this->generation;
     }
 
-    public function take(string $key): ?WorkflowContinuation
+    public function take(string $key, ?string $scope = null): ?WorkflowContinuation
     {
         $this->trim();
+        foreach ($this->entries as $previousKey => $previous) {
+            if ($scope !== null && $previous->scope === $scope && $previousKey !== $key) {
+                unset($this->entries[$previousKey]);
+                $this->count('invalidate_identity');
+            }
+        }
         $entry = $this->entries[$key] ?? null;
         unset($this->entries[$key]);
         $this->count($entry === null ? 'miss' : 'candidate');
@@ -73,7 +79,8 @@ final class WorkflowContinuationCache
             $this->count('discard_age');
             return;
         }
-        if (($this->generations[$key] ?? null) !== $generation || ! $this->memoryAvailable()) {
+        $scope = $entry->scope === '' ? $key : $entry->scope;
+        if (($this->generations[$scope] ?? null) !== $generation || ! $this->memoryAvailable()) {
             $this->count('discard_publication');
             return;
         }
@@ -93,6 +100,16 @@ final class WorkflowContinuationCache
     public function count(string $reason): void
     {
         $this->counts[$reason] = ($this->counts[$reason] ?? 0) + 1;
+    }
+
+    public function invalidate(string $scope): void
+    {
+        foreach ($this->entries as $key => $entry) {
+            if ($entry->scope === $scope) {
+                unset($this->entries[$key]);
+                $this->count('invalidate_run');
+            }
+        }
     }
 
     /**

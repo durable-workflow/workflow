@@ -222,7 +222,7 @@ final class EmbeddedContinuationTest extends TestCase
         ScopedContinuationWorkflow::$entries = [];
         $stubs = [];
         foreach (['17', '017'] as $namespace) {
-            $stub = WorkflowStub::make(ScopedContinuationWorkflow::class, 'same-business-key', $namespace);
+            $stub = WorkflowStub::make(ScopedContinuationWorkflow::class, 'scope-' . $namespace, $namespace);
             $stub->start($namespace);
             $stubs[] = $stub;
         }

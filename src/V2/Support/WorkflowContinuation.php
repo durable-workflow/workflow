@@ -16,6 +16,8 @@ final class WorkflowContinuation
 
     public string $guard = '';
 
+    public string $scope = '';
+
     public int $retainedAt = 0;
 
     public function __construct(
