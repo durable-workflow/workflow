@@ -31,7 +31,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
      */
     public static function workloads(): iterable
     {
-        foreach ([1, 8, 83] as $rounds) {
+        foreach ([1, 9, 91] as $rounds) {
             foreach ([1, 2, 3] as $repetition) {
                 yield sprintf('%d-rounds-repeat-%d', $rounds, $repetition) => [$rounds, $repetition];
             }
@@ -56,6 +56,18 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             return $value;
         });
 
+        $progress = new ReplayProfileProgress($rounds, $repetition);
+        $this->beforeApplicationDestroyed(static fn () => $progress->close());
+        $report = static function (string $phase, int $iteration = 0) use ($progress, &$effects): void {
+            $progress->report(
+                $phase,
+                $iteration,
+                $effects,
+                ReplayGrowthWorkflow::$entries,
+                ReplayGrowthWorkflow::$roundVisits
+            );
+        };
+
         $queries = 0;
         $sqlMilliseconds = 0.0;
         DB::listen(static function (QueryExecuted $query) use (&$queries, &$sqlMilliseconds): void {
@@ -64,18 +76,22 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         });
 
         $workflow = WorkflowStub::make(ReplayGrowthWorkflow::class, 'replay-growth');
+        $report('before_start');
         $start = $this->measure(static function () use ($workflow, $rounds): int {
             $workflow->start($rounds);
 
             return 1;
         }, $queries, $sqlMilliseconds);
+        $report('after_start');
         $batches = [];
         for ($round = 0; $round <= $rounds; ++$round) {
+            $report('before_batch', $round);
             $batches[] = $this->measure(
                 static fn (): int => WorkflowStub::runReadyTasks(),
                 $queries,
                 $sqlMilliseconds,
             );
+            $report('after_batch', $round);
             $this->travel(2)
                 ->seconds();
         }
@@ -89,6 +105,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
 
         $history = [];
+        $report('history_materialization');
         $historyLoad = $this->measure(static function () use ($run, &$history): int {
             $history = self::historyFrames($run);
 
@@ -99,6 +116,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         $replays = [];
         $projections = [];
         for ($sample = 0; $sample < 3; ++$sample) {
+            $report('cold_bridge_replay', $sample + 1);
             $replays[] = $this->measure(function () use ($run, $history, $rounds): int {
                 $step = WorkflowFiberRunner::forClass(
                     ReplayGrowthWorkflow::class,
@@ -113,12 +131,15 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
 
                 return count($step->commands);
             }, $queries, $sqlMilliseconds);
+            $report('summary_projection', $sample + 1);
             $projections[] = $this->measure(static function () use ($run): int {
                 RunSummaryProjector::project($run->fresh());
 
                 return 1;
             }, $queries, $sqlMilliseconds);
         }
+
+        $report('audit');
 
         $this->assertSame($rounds * 3, $effects, 'Cold replay must not repeat an activity effect.');
         $this->assertSame(count($history), $run->historyEvents()->count());
@@ -131,6 +152,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             $this->assertSame(0, $task->repair_count);
         }
 
+        $report('complete');
         echo json_encode([
             'profile' => 'embedded-replay-growth',
             'rounds' => $rounds,

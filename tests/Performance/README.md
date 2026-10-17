@@ -6,7 +6,7 @@ does not add a cache or establish a speedup.
 
 `EmbeddedReplayGrowthProfileTest.php` uses the existing projection-replay
 workload: three parallel mocked no-op activities followed by a durable timer, repeated
-1, 8 or 83 times, targeting histories near 10, 100 and 1000 events. Report the
+1, 9 or 91 times, targeting histories near 10, 100 and 1000 events. Report the
 actual history size, rather than treating a round count as an event count.
 Each size has three independent runs. PHPUnit runs every cell in its own process,
 with a fresh in-memory database and an independent peak RSS.
@@ -83,11 +83,44 @@ task handling and other persistence, so it must not be called replay CPU.
 These are instrumented diagnostic results, with mocked activities and virtual
 timer time. They establish neither a speedup nor production capacity.
 
-The initial growth component also passed three repetitions each at 14 and 91
-events. Its larger-history cells and the complete #748 comparison were not
-accepted at the time of this report. A short external stack sample had read
-errors and partial traces; its percentages are not used here.
+The initial growth component used 1/8/83 rounds and passed three repetitions each
+at 14 and 91 events. The first large cell was interrupted after about 40 CPU
+minutes without a result or phase-level progress. Its two remaining large cells
+were unstarted. This is an incomplete pilot. A short external stack sample had
+read errors and partial traces; its percentages are not used here.
+
+The calibrated defaults now use 1/9/91 rounds and report live phase/counter
+progress. Each growth cell atomically replaces a small `progress.json` in its
+private `dw-replay-*` directory under PHP's temporary directory. Read it from
+the same host or container as the test. It contains the process ID, phase,
+iteration, activity effects and workflow visits. Progress writes are outside
+the measured operations. Normal teardown removes that cell's directory.
+Choose an observation budget before a large run and record an interrupted
+cell as incomplete. The full #748 comparison remains open.
 
 The measured projection cost merits investigation before choosing a live-Fiber
 cache. Keep that decision open until larger histories and the remaining actual
 queue/concurrency profiles distinguish which costs retention can remove.
+
+## Reproduce the published-package cohort
+
+The ordinary repository commands above exercise source. For the reported
+published package, use the separate consumer project and its committed lockfile
+with PHP 8.5.6. Its product classes load from the installed package, while only
+the test harness loads from this checkout. No path or VCS repository overrides
+are configured.
+
+```sh
+cd benchmarks/embedded-replay
+composer install
+composer show --locked durable-workflow/workflow
+DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
+  QUEUE_CONNECTION=sync PROFILE_REPLAY_GROWTH=1 \
+  vendor/bin/phpunit --configuration ../../phpunit.xml \
+  --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
+  ../../tests/Performance/ProjectionRoleProbeTest.php
+```
+
+Select `EmbeddedReplayGrowthProfileTest.php` instead for the growth profile.
+The reported PHPUnit 13 runs passed with one deprecated `--do-not-cache-result`
+option notice; the locked consumer command uses its replacement above.
