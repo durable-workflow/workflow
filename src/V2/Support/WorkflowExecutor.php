@@ -59,8 +59,11 @@ use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
 {
-    public function run(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
-    {
+    public function run(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?WorkflowContinuationSession $continuation = null,
+    ): ?WorkflowTask {
         if ($this->timeoutIfDeadlineExpired($run, $task)) {
             return null;
         }
@@ -70,22 +73,34 @@ final class WorkflowExecutor
         }
 
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
-        $workflow = RuntimeObjectFactory::workflow($workflowClass, $run);
-        $entryMethod = EntryMethod::forWorkflow($workflow);
-        $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
+        $frame = $continuation?->begin($run, $task, $workflowClass);
+        $workflow = $frame?->workflow ?? RuntimeObjectFactory::workflow($workflowClass, $run);
+        $run = $workflow->run;
+        $arguments = [];
+        if ($frame === null) {
+            $entryMethod = EntryMethod::forWorkflow($workflow);
+            $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
+        }
 
         try {
             $versionDecisions = new VersionDecisions($run);
-            $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
+            if ($frame === null) {
+                $workflowExecution = WorkflowExecution::start(
+                    $workflow,
+                    $arguments,
+                    RedriveReplayClock::startedAt($run)
+                );
+                $frame = new WorkflowContinuation($workflow, $workflowExecution, $workflowExecution->current());
+            }
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
             return null;
         }
 
-        if (! $workflowExecution->valid()) {
+        if (! $frame->execution->valid()) {
             try {
-                $this->completeRun($run, $task, $workflowExecution->getReturn());
+                $this->completeRun($run, $task, $frame->execution->getReturn());
             } catch (Throwable $throwable) {
                 $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             }
@@ -93,13 +108,223 @@ final class WorkflowExecutor
             return null;
         }
 
-        $current = $workflowExecution->current();
+        $nextTask = $this->advanceFrame($run, $task, $frame, $versionDecisions, $continuation);
+        $continuation?->offer($frame, $task);
 
-        $sequence = 1;
+        return $nextTask;
+    }
+
+    /**
+     * Close a run whose server-enforced execution or run deadline elapsed.
+     *
+     * External worker bridges call this while holding the task and run locks,
+     * immediately before accepting commands. This makes the deadline the
+     * authority at the workflow-task commit boundary, even when the watchdog
+     * cannot repair a run because its task remains leased.
+     */
+    public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'updates',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+
+        if (! $this->deadlineExpired($run)) {
+            return false;
+        }
+
+        $this->timeoutRun($run, $task);
+
+        return true;
+    }
+
+    /**
+     * Finish portable cleanup with the original cancellation outcome.
+     * The caller holds the task and run locks before accepting a terminal command.
+     */
+    public function finishPortableCooperativeCancellation(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        if (! is_string($run->cancellation_request_command_id)) {
+            return false;
+        }
+        $run->load([
+            'instance', 'activityExecutions', 'timers', 'failures', 'tasks', 'commands',
+            'updates', 'historyEvents', 'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures', 'childLinks.childRun.historyEvents',
+        ]);
+        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
+
+        return true;
+    }
+
+    public function cancelIfCleanupDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        if (
+            $run->status->isTerminal()
+            || ! is_string($run->cancellation_request_command_id)
+            || $run->cancellation_deadline_at === null
+            || now()
+                ->lt($run->cancellation_deadline_at)
+        ) {
+            return false;
+        }
+
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'updates',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
+
+        return true;
+    }
+
+    /**
+     * The caller holds the parent run lock; child terminal history, not row status, authorizes recovery.
+     */
+    public function recoverClosedChildResolutions(WorkflowRun $parentRun): void
+    {
+        if ($parentRun->status->isTerminal() || $parentRun->tasks()
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->lockForUpdate()
+            ->exists()) {
+            return;
+        }
+
+        $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
+        foreach (ChildRunHistory::knownSequences($parentRun) as $sequence) {
+            if (ChildRunHistory::resolutionEventForSequence($parentRun, $sequence) !== null) {
+                continue;
+            }
+            try {
+                WorkflowStepHistory::assertCompatible($parentRun, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+                WorkflowStepHistory::assertTypedHistoryRecorded(
+                    $parentRun,
+                    $sequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW
+                );
+            } catch (HistoryEventShapeMismatchException) {
+                continue;
+            }
+
+            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
+            if (! $childRun instanceof WorkflowRun || ! $childRun->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )) {
+                continue;
+            }
+            if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) === null) {
+                $this->recordChildResolution($parentRun, null, $sequence, $childRun);
+            }
+            $parentRun->unsetRelation('childLinks');
+            $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
+        }
+    }
+
+    public function deliverPortableCancellation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $callKind,
+        int $sequenceSpan = 1,
+        ?int $operationSequence = null,
+        int $operationSequenceSpan = 1,
+    ): ?WorkflowHistoryEvent {
+        $existing = CooperativeCancellationDelivery::recorded($run);
+        if ($existing instanceof WorkflowHistoryEvent) {
+            return $existing;
+        }
+        $run->loadMissing(['tasks', 'timers', 'activityExecutions']);
+        $targetSequence = $operationSequence ?? $sequence;
+        $targetSpan = $operationSequence === null ? $sequenceSpan : $operationSequenceSpan;
+        $waiting = false;
+        for ($offset = 0; $offset < $targetSpan; ++$offset) {
+            $targetKind = in_array($callKind, ['parallel', 'selection_handle'], true)
+                ? CooperativeCancellationDelivery::callKindAt($run, $targetSequence + $offset)
+                : $callKind;
+            if ($targetKind !== null) {
+                $waiting = $this->cancelOpenWaitAtSequence(
+                    $run,
+                    $task,
+                    $targetSequence + $offset,
+                    $targetKind
+                ) || $waiting;
+            }
+        }
+        if ($waiting) {
+            ActivityCancellationWait::bindBoundary(
+                $task,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan
+            );
+            $this->waitForNextResumeSource($run, $task);
+
+            return null;
+        }
+
+        return CooperativeCancellationDelivery::record(
+            $run,
+            $task,
+            $sequence,
+            $callKind,
+            $sequenceSpan,
+            $operationSequence,
+            $operationSequenceSpan,
+        );
+    }
+
+    private function advanceFrame(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        VersionDecisions $versionDecisions,
+        ?WorkflowContinuationSession $continuation,
+    ): ?WorkflowTask {
+        $workflow = $frame->workflow;
+        $workflowClass = $workflow::class;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+
         $this->syncWorkflowCursor($workflow, $sequence);
         $historySequenceAtTaskStart = $run->last_history_sequence ?? 0;
 
         while (true) {
+            if ($continuation !== null && $workflowExecution->valid() && ! $continuation->accepts($current)) {
+                $resumed = $continuation->resumed();
+                $continuation->disable();
+                $continuation = null;
+                if ($resumed) {
+                    // The unsupported call has not entered its durable handler.
+                    return $this->run($run, $task);
+                }
+            }
             try {
                 while (($duplicate = $versionDecisions->duplicateAt(
                     $sequence,
@@ -2288,191 +2513,6 @@ final class WorkflowExecutor
 
             return null;
         }
-    }
-
-    /**
-     * Close a run whose server-enforced execution or run deadline elapsed.
-     *
-     * External worker bridges call this while holding the task and run locks,
-     * immediately before accepting commands. This makes the deadline the
-     * authority at the workflow-task commit boundary, even when the watchdog
-     * cannot repair a run because its task remains leased.
-     */
-    public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
-    {
-        $run->load([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'tasks',
-            'commands',
-            'updates',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
-
-        if (! $this->deadlineExpired($run)) {
-            return false;
-        }
-
-        $this->timeoutRun($run, $task);
-
-        return true;
-    }
-
-    /**
-     * Finish portable cleanup with the original cancellation outcome.
-     * The caller holds the task and run locks before accepting a terminal command.
-     */
-    public function finishPortableCooperativeCancellation(WorkflowRun $run, WorkflowTask $task): bool
-    {
-        if (! is_string($run->cancellation_request_command_id)) {
-            return false;
-        }
-        $run->load([
-            'instance', 'activityExecutions', 'timers', 'failures', 'tasks', 'commands',
-            'updates', 'historyEvents', 'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures', 'childLinks.childRun.historyEvents',
-        ]);
-        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
-
-        return true;
-    }
-
-    public function cancelIfCleanupDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
-    {
-        if (
-            $run->status->isTerminal()
-            || ! is_string($run->cancellation_request_command_id)
-            || $run->cancellation_deadline_at === null
-            || now()
-                ->lt($run->cancellation_deadline_at)
-        ) {
-            return false;
-        }
-
-        $run->load([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'tasks',
-            'commands',
-            'updates',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
-        $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
-
-        return true;
-    }
-
-    /**
-     * The caller holds the parent run lock; child terminal history, not row status, authorizes recovery.
-     */
-    public function recoverClosedChildResolutions(WorkflowRun $parentRun): void
-    {
-        if ($parentRun->status->isTerminal() || $parentRun->tasks()
-            ->where('task_type', TaskType::Workflow->value)
-            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-            ->lockForUpdate()
-            ->exists()) {
-            return;
-        }
-
-        $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
-        foreach (ChildRunHistory::knownSequences($parentRun) as $sequence) {
-            if (ChildRunHistory::resolutionEventForSequence($parentRun, $sequence) !== null) {
-                continue;
-            }
-            try {
-                WorkflowStepHistory::assertCompatible($parentRun, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
-                WorkflowStepHistory::assertTypedHistoryRecorded(
-                    $parentRun,
-                    $sequence,
-                    WorkflowStepHistory::CHILD_WORKFLOW
-                );
-            } catch (HistoryEventShapeMismatchException) {
-                continue;
-            }
-
-            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
-            if (! $childRun instanceof WorkflowRun || ! $childRun->historyEvents->contains(
-                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
-                    HistoryEventType::WorkflowCompleted,
-                    HistoryEventType::WorkflowFailed,
-                    HistoryEventType::WorkflowCancelled,
-                    HistoryEventType::WorkflowTerminated,
-                ], true)
-            )) {
-                continue;
-            }
-            if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) === null) {
-                $this->recordChildResolution($parentRun, null, $sequence, $childRun);
-            }
-            $parentRun->unsetRelation('childLinks');
-            $parentRun->setRelation('historyEvents', $parentRun->historyEvents()->lockForUpdate()->get());
-        }
-    }
-
-    public function deliverPortableCancellation(
-        WorkflowRun $run,
-        WorkflowTask $task,
-        int $sequence,
-        string $callKind,
-        int $sequenceSpan = 1,
-        ?int $operationSequence = null,
-        int $operationSequenceSpan = 1,
-    ): ?WorkflowHistoryEvent {
-        $existing = CooperativeCancellationDelivery::recorded($run);
-        if ($existing instanceof WorkflowHistoryEvent) {
-            return $existing;
-        }
-        $run->loadMissing(['tasks', 'timers', 'activityExecutions']);
-        $targetSequence = $operationSequence ?? $sequence;
-        $targetSpan = $operationSequence === null ? $sequenceSpan : $operationSequenceSpan;
-        $waiting = false;
-        for ($offset = 0; $offset < $targetSpan; ++$offset) {
-            $targetKind = in_array($callKind, ['parallel', 'selection_handle'], true)
-                ? CooperativeCancellationDelivery::callKindAt($run, $targetSequence + $offset)
-                : $callKind;
-            if ($targetKind !== null) {
-                $waiting = $this->cancelOpenWaitAtSequence(
-                    $run,
-                    $task,
-                    $targetSequence + $offset,
-                    $targetKind
-                ) || $waiting;
-            }
-        }
-        if ($waiting) {
-            ActivityCancellationWait::bindBoundary(
-                $task,
-                $sequence,
-                $callKind,
-                $sequenceSpan,
-                $operationSequence,
-                $operationSequenceSpan
-            );
-            $this->waitForNextResumeSource($run, $task);
-
-            return null;
-        }
-
-        return CooperativeCancellationDelivery::record(
-            $run,
-            $task,
-            $sequence,
-            $callKind,
-            $sequenceSpan,
-            $operationSequence,
-            $operationSequenceSpan,
-        );
     }
 
     private function scheduleActivity(
