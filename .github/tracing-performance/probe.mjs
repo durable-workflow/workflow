@@ -11,19 +11,23 @@ const rate = Number(process.env.OFFERED_RATE ?? (members === 1 ? 5 : 0.25));
 const duration = Number(process.env.DURATION_SECONDS ?? 120);
 const observation = 90_000;
 const diagnostic = process.env.DIAGNOSTIC_ONLY === 'true';
+const queueDriver = process.env.BENCH_QUEUE_DRIVER ?? 'database';
 const allowedLagMs = 100;
 assert.match(profile ?? '', /^[a-z0-9-]{1,55}$/);
 assert.match(workload, /^[a-z0-9-]{1,55}$/);
 assert.ok([1, 64].includes(members) && rate > 0 && duration > 0);
+assert.ok(['database', 'redis'].includes(queueDriver));
 const health = await fetch(base + '/health', {signal: AbortSignal.timeout(10_000)});
 assert.equal(health.status, 200);
 const deployment = await health.json();
 assert.equal(deployment.ready, true);
-assert.equal(deployment.queue_driver, process.env.BENCH_QUEUE_DRIVER ?? 'database', 'Expected queue driver.');
+assert.equal(deployment.queue_driver, queueDriver, 'Expected queue driver.');
+const queueWakeEnabled = deployment.queue_wake_enabled === true;
 if (diagnostic) {
+    assert.equal(typeof deployment.queue_wake_enabled, 'boolean', 'Expected boolean queue-wake evidence.');
     assert.ok(profile.startsWith('diagnostic-'));
 } else {
-    assert.equal(deployment.queue_wake_enabled, true, 'Standard profile requires automatic queue wake.');
+    assert.equal(queueWakeEnabled, true, 'Standard profile requires automatic queue wake.');
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const began = performance.now();
@@ -112,8 +116,8 @@ const sorted = completed.map(item => item.latency_ms).sort((a, b) => a - b);
 const percentile = p => sorted[Math.max(0, Math.ceil(sorted.length * p) - 1)] ?? null;
 const result = {
     profile, workload, members, rate, offered_target: offeredTarget, offered: pending.length, missed_offers: missedOffers,
-    diagnostic_only: diagnostic, queue_wake_enabled: deployment.queue_wake_enabled,
-    queue_driver: deployment.queue_driver,
+    diagnostic_only: diagnostic, queue_wake_enabled: queueWakeEnabled,
+    queue_driver: queueDriver,
     accepted: outcomes.filter(item => item.run_id).length,
     completed: completed.length, completed_at_offer_end: completedAtOfferEnd,
     started_at_ms: beganAt, finished_at_ms: Date.now(),

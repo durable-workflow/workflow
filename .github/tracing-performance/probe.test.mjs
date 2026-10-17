@@ -47,6 +47,11 @@ test('diagnostic opt-in requires a diagnostic profile label', async t => {
     await refusesBeforeAdmission(t, {ready: true, queue_wake_enabled: false}, true, /diagnostic-/);
 });
 
+test('diagnostic profile refuses nonboolean queue-wake evidence before admission', async t => {
+    await refusesBeforeAdmission(t, {ready: true, queue_wake_enabled: 'false'},
+        true, /Expected boolean queue-wake evidence/);
+});
+
 test('standard profile refuses another queue driver before admission', async t => {
     await refusesBeforeAdmission(t, {ready: true, queue_wake_enabled: true, queue_driver: 'redis'},
         false, /Expected queue driver/);

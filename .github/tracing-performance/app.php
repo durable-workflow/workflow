@@ -32,7 +32,7 @@ use Workflow\V2\WorkflowStub;
 require __DIR__ . '/vendor/autoload.php';
 $state = getenv('BENCH_STATE');
 if (! is_string($state) || ! is_dir($state)) {
-    throw new RuntimeException('BENCH_STATE must select an existing disposable directory.');
+    throw new InvalidArgumentException('BENCH_STATE must select an existing disposable directory.');
 }
 foreach (['bootstrap/cache', 'storage/logs', 'storage/framework/views', 'config'] as $path) {
     if (! is_dir($state . '/' . $path)) {
@@ -45,10 +45,10 @@ $app = BenchmarkApplication::create(basePath: $state, options: [
 $mode = PHP_SAPI === 'cli-server' ? 'http' : ($argv[1] ?? '');
 if ($mode === 'prepare') {
     if (Schema::hasTable('migrations')) {
-        throw new RuntimeException('Prepare requires a fresh disposable database.');
+        throw new LogicException('Prepare requires a fresh disposable database.');
     }
     if (Artisan::call('migrate', ['--force' => true]) !== 0) {
-        throw new RuntimeException(Artisan::output());
+        throw new UnexpectedValueException(Artisan::output());
     }
     if (config('queue.default') === 'database') {
         Schema::create('jobs', static function (Blueprint $table): void {
@@ -113,7 +113,7 @@ if ($mode === 'audit') {
     ]))) === 0 && $result['callbacks'] === $result['activities']) ? 0 : 1);
 }
 if (! in_array($mode, ['work', 'http'], true)) {
-    throw new RuntimeException('Expected prepare, work, audit or the HTTP router.');
+    throw new InvalidArgumentException('Expected prepare, work, audit or the HTTP router.');
 }
 $http = new HttpFactory();
 $exportScope = Configurator::createNoop()->storeInContext(Context::getRoot())->activate();
@@ -174,7 +174,7 @@ function respond(): void
         $input = json_decode(file_get_contents('php://input'), true, flags: JSON_THROW_ON_ERROR);
         if (! is_string($input['id'] ?? null) || ! preg_match('/^[a-z0-9-]{1,80}$/D', $input['id'])
             || ! in_array($input['members'] ?? null, [1, 64], true)) {
-            throw new RuntimeException('Expected a synthetic id and 1 or 64 members.');
+            throw new InvalidArgumentException('Expected a synthetic id and 1 or 64 members.');
         }
         $scope = TraceContextPropagator::getInstance()->extract(array_change_key_case(getallheaders()))->activate();
         try {

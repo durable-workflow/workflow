@@ -1,6 +1,6 @@
 FROM php:8.3.35-cli-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git unzip libonig-dev libxml2-dev \
+        git libonig-dev libxml2-dev unzip \
     && docker-php-ext-install pdo_mysql mbstring dom pcntl \
     && pecl install redis-6.1.0 && docker-php-ext-enable redis \
     && rm -rf /var/lib/apt/lists/*

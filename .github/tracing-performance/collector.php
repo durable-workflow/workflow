@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/vendor/autoload.php';
 $request = new Opentelemetry\Proto\Collector\Trace\V1\ExportTraceServiceRequest();
 $request->mergeFromString(file_get_contents('php://input'));
 $count = 0;

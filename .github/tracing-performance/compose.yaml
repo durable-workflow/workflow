@@ -115,3 +115,7 @@ services:
 
 volumes:
   database:
+
+networks:
+  default:
+    internal: true
