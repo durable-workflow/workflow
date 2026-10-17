@@ -157,3 +157,38 @@ HTTP snapshots. Separate containers can use the same PID.
 Record ordinary worker returns, signal termination, forced stops and OOM
 separately. Preserve failures in the readable result, then remove disposable
 databases, provider bytes, images, dependencies and raw samples after review.
+
+## Exact CPU boundaries
+
+For measurements, combine `compose.yaml` with `compose.measure.yaml`. Its small
+process retainer records each worker/probe exit code and leaves the container
+idle so its final cgroup counters remain readable. It does not restart the
+process. Start the probe detached with `docker compose run -d`; a returned
+container ID is not completion. Wait for its `probe-*.exit` file and require
+zero, then check the result JSON and original workflow outcomes.
+
+The measured probe initially waits for `results/release`. Take the initial CPU
+snapshot after all nine roles exist, then create that file to release offers.
+An absent release does not admit business work. Keep warmup in a separate probe
+and remove its retainer before starting this measured probe.
+
+After the probe and business drain finish, create `runtime/stop-workers` in that
+cell's state directory. The public Laravel queue loop requests ordinary worker
+exit between jobs, followed by provider shutdown. Require four `worker-*.exit`
+files containing zero. A missing/nonzero exit or unfinished original fails the
+cell. The HTTP server and collector remain available while exports drain.
+Record the child exit separately from later retainer-container SIGTERM.
+
+Run `bash cpu-snapshot.sh PROJECT` on the isolated Linux Docker host before the
+offer window, at a declared interval, and after all four worker exits and final
+exports. It reads exact cgroup-v2 CPU usage/throttling, memory events and limits
+for only that Compose project's measured roles. Require exactly four workers
+and one of each other role at every snapshot, with the same container identities
+throughout the window. Missing counters or unexpected roles refuse. Keep the
+detached probe and worker retainers alive until the last
+snapshot. Take the final snapshot before audit queries or teardown, which are
+outside the measured business interval. The reported lifetime memory peak
+includes startup and warmup; also report the peak sampled within the window.
+
+The retainer and snapshot reader are measurement tools. They do not establish
+that a workload meets its observer, overhead target or throughput requirement.

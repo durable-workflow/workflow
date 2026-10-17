@@ -1,0 +1,11 @@
+services:
+  worker:
+    environment:
+      BENCH_ROLE: worker
+    command: ["sh", "retain-process.sh", "php", "app.php", "work"]
+  probe:
+    environment:
+      BENCH_ROLE: probe
+      BENCH_STATE: /results
+      BENCH_RELEASE_FILE: /results/release
+    command: ["sh", "retain-process.sh", "node", "probe.mjs"]

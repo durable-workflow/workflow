@@ -136,9 +136,13 @@ try {
     if ($mode === 'work') {
         $nextFlush = hrtime(true) + 1_000_000_000;
         $app['events']->listen(\Illuminate\Queue\Events\Looping::class, static function () use (
+            $app,
             $provider,
             &$nextFlush
         ): void {
+            if (is_file(getenv('BENCH_STATE') . '/stop-workers')) {
+                $app['queue.worker']->shouldQuit = true;
+            }
             if (hrtime(true) >= $nextFlush) {
                 $provider->forceFlush();
                 $nextFlush = hrtime(true) + 1_000_000_000;
