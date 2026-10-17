@@ -132,6 +132,14 @@ removed. The passing four-worker/single-run replay control records per-worker
 history SELECT counts `[0, 5, 17, 18]`, confirming why the cohort-level metric
 check is needed.
 
+The later drain correction lets workers consume outstanding transport deliveries
+before the stop marker, sharing the original 15-second drain deadline with worker
+exit. It retains empty-queue, zero-repair and failed-job checks. The fresh local
+eight-cohort component passes 8 tests / 9,235 assertions, with style/static checks
+passing. This does not explain or fix the earlier SQLite error. Future failed
+audits also record bounded queue identity/availability metadata, payload sizes/
+hashes and up to two truncated queue exceptions without serializing whole databases.
+
 The next acceptance still includes 1,000-event and concurrent/multiworker cells,
 actual hit/miss/capacity behavior under the aggregate limit, minimally observed
 paired measurements, remaining lifetime/failure cases and published consumers.

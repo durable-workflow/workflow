@@ -39,6 +39,9 @@ Every run completes through ordinary `queue:work`, and workers drain successfull
 after committed completion markers. Startup is not added to or hidden inside the
 reported steady queue CPU. The cgroup workload CPU also includes controller and
 worker-drain overhead; it is not pure replay CPU.
+After committed workflow completion, workers consume remaining queued transport
+deliveries before receiving the stop marker. Queue consumption and worker exit
+share the original 15-second drain bound; an empty-queue check is still required.
 
 SQL counts and elapsed time, task-claim delay, timer lateness, authored entries,
 round visits, cache counters and observed entry counts come from in-process

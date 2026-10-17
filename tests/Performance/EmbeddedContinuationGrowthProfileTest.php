@@ -167,8 +167,17 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                 $this->assertLessThan($deadline, hrtime(true), 'Original cohort observation budget elapsed.');
                 usleep(50_000);
             }
-            touch($this->directory . '/stop');
             $shutdownDeadline = hrtime(true) + 15_000_000_000;
+            while (DB::table('jobs')->exists()) {
+                $this->assertWorkersRunning();
+                $this->assertLessThan(
+                    $shutdownDeadline,
+                    hrtime(true),
+                    'Original 15-second drain bound elapsed with queued transport work.'
+                );
+                usleep(50_000);
+            }
+            touch($this->directory . '/stop');
             while (array_filter($this->workers, static fn (Process $worker): bool => $worker->isRunning()) !== []) {
                 foreach ($this->workers as $worker) {
                     $worker->checkTimeout();
@@ -382,6 +391,27 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                     return $row;
                 })->all(),
                 'failed_jobs' => DB::table('failed_jobs')->count(),
+                'queue_rows' => DB::table('jobs')->orderBy('id')->limit(8)->get()->map(static function ($job): array {
+                    $payload = (string) $job->payload;
+                    $metadata = json_decode($payload, true);
+
+                    return [
+                        'id' => $job->id,
+                        'queue' => $job->queue,
+                        'attempts' => $job->attempts,
+                        'reserved_at' => $job->reserved_at,
+                        'available_at' => $job->available_at,
+                        'display_name' => is_array($metadata) ? ($metadata['displayName'] ?? null) : null,
+                        'payload_bytes' => strlen($payload),
+                        'payload_sha256' => hash('sha256', $payload),
+                    ];
+                })->all(),
+                'failed_job_errors' => DB::table('failed_jobs')->orderBy('id')->limit(2)->get()
+                    ->map(static fn ($job): array => [
+                        'id' => $job->id,
+                        'queue' => $job->queue,
+                        'exception' => substr((string) $job->exception, 0, 2048),
+                    ])->all(),
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . PHP_EOL;
         } catch (Throwable $failure) {
             echo 'CONTINUATION_GROWTH_AUDIT_UNAVAILABLE=' . substr($failure->getMessage(), 0, 1024) . PHP_EOL;
