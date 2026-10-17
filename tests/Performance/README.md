@@ -119,6 +119,43 @@ DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
   ../../tests/Performance/BridgePayloadProbeTest.php
 ```
 
+## Active-stack sampling of cold replay
+
+Set `PROFILE_REPLAY_ORDINARY_ONLY=1` with `PROFILE_REPLAY_GROWTH=1` to run only
+the three ordinary-model bridge samples. This leaves payload counters and cast
+clocks disabled. The default still runs all three modes above. An external
+sampler must observe PHPUnit's PHP child process, not just its waiting parent.
+Also set `PROFILE_REPLAY_SAMPLE_WINDOWS=1` to emit that child's PID and physical
+start/end timestamps around each measured step. Those optional timestamps do
+not change the workflow clock. Select complete stack records by PID and that
+window, retaining the leaf functions when distinguishing authored instructions
+from framework calls. Include stacks inside the authored Fiber even if its
+parent call chain is unavailable. Initialization and application startup are
+outside each selected span.
+
+Before trusting a profiler across Fiber suspension, run
+`benchmarks/embedded-replay/fiber-profiler-control.php plain` and `heavy`, with
+at least three repetitions each. Both execute identical short arithmetic work
+inside a Fiber. The heavy case performs a separate inline caller loop while
+the Fiber is suspended. Its CPU must not become the authored function's self
+CPU. The fixture checks both checksums and records process CPU. For an external
+sampler, its one-second setup sleep precedes measured work; exclude that sleep
+from attribution. `FIBER_PROFILER=xhprof` or `spx` enables those extensions
+explicitly and refuses a missing extension. XHProf emits its original raw
+metrics for analysis with the tool's own flat-profile helper; SPX writes its
+own report. No profiler is installed or enabled for normal tests.
+
+Sampling reports observed active-stack counts, not exact function CPU. Record
+the profiler revision, requested rate, actual sample counts, missed/read-error
+samples, process CPU with and without observation, and the exact published
+package cohort. Keep the committed 2.5.28 consumer unchanged when measuring a
+later release. Do not use samples from counter-instrumented runs to claim an
+ordinary-model CPU share.
+
+The [October 17 Fiber qualification and installed 2.5.30 sample](results/issue-748-20261017/FIBER-SAMPLING.md)
+records the rejected observers, actual replay windows, process CPU, sample
+counts and remaining uncertainty.
+
 ## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection

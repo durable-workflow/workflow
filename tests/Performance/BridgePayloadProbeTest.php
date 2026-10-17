@@ -74,12 +74,15 @@ final class BridgePayloadProbeTest extends TestCase
         $originalTiming = ProfiledHistoryEvent::$timePayloadCasts;
         $phases = [];
         $expectedCommands = null;
+        $modes = getenv('PROFILE_REPLAY_ORDINARY_ONLY') === '1' ? [
+            'ordinary' => null,
+        ] : [
+            'ordinary' => null,
+            'counts' => false,
+            'cast_timed' => true,
+        ];
         try {
-            foreach ([
-                'ordinary' => null,
-                'counts' => false,
-                'cast_timed' => true,
-            ] as $mode => $timing) {
+            foreach ($modes as $mode => $timing) {
                 for ($sample = 0; $sample < 3; ++$sample) {
                     $measurement = $this->replay($run, $history, $timing, $queries);
                     $expectedCommands ??= $measurement['commands'];
@@ -163,9 +166,12 @@ final class BridgePayloadProbeTest extends TestCase
         ReplayGrowthWorkflow::$entries = 0;
         ReplayGrowthWorkflow::$roundVisits = 0;
         $beforeQueries = $queries;
+        $observe = getenv('PROFILE_REPLAY_SAMPLE_WINDOWS') === '1';
+        $observationStarted = $observe ? microtime(true) : null;
         $started = ProfiledHistoryRole::cpuMicroseconds();
         $step = $runner->step();
         $stepCpu = ProfiledHistoryRole::cpuMicroseconds() - $started;
+        $observationEnded = $observe ? microtime(true) : null;
         $stepQueries = $queries - $beforeQueries;
         $this->assertSame(0, $stepQueries);
         $this->assertTrue($step->completed);
@@ -184,7 +190,7 @@ final class BridgePayloadProbeTest extends TestCase
             ksort($readsByType);
         }
 
-        return [
+        $measurement = [
             'initialization_cpu_us' => $initializationCpu,
             'initialization_queries' => $initializationQueries,
             'step_cpu_us' => $stepCpu,
@@ -199,6 +205,15 @@ final class BridgePayloadProbeTest extends TestCase
             'payload_reads_by_type' => $timing !== null ? $readsByType : null,
             'commands' => $step->commands,
         ];
+        if ($observe) {
+            $measurement['observation_window'] = [
+                'pid' => getmypid(),
+                'unix_start' => $observationStarted,
+                'unix_end' => $observationEnded,
+            ];
+        }
+
+        return $measurement;
     }
 
     private static function storedDigest(WorkflowRun $run): string
