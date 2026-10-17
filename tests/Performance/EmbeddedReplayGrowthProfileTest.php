@@ -8,6 +8,8 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use Tests\TestCase;
 use Workflow\V2\Activity;
 use function Workflow\V2\activity;
@@ -20,6 +22,8 @@ use function Workflow\V2\timer;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
+#[RunTestsInSeparateProcesses]
+#[PreserveGlobalState(false)]
 final class EmbeddedReplayGrowthProfileTest extends TestCase
 {
     /**

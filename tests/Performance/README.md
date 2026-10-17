@@ -8,7 +8,8 @@ does not add a cache or establish a speedup.
 workload: three parallel mocked no-op activities followed by a durable timer, repeated
 1, 8 or 83 times, targeting histories near 10, 100 and 1000 events. Report the
 actual history size, rather than treating a round count as an event count.
-Each size has three independent runs.
+Each size has three independent runs. PHPUnit runs every cell in its own process,
+with a fresh in-memory database and an independent peak RSS.
 
 Run explicitly with the repository's ordinary test dependencies and an isolated
 SQLite database:
