@@ -756,14 +756,13 @@ final class WorkflowExecutor
     private function executeConditionWait(
         WorkflowRun $run,
         WorkflowTask $task,
-        WorkflowContinuation $frame,
+        WorkflowContinuation $frame
     ): WorkflowTask|WorkflowTaskStep|null {
         $workflow = $frame->workflow;
         $workflowExecution = $frame->execution;
         /** @var AwaitCall|AwaitWithTimeoutCall $current */
         $current = &$frame->current;
         $sequence = &$frame->sequence;
-
         $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
@@ -790,124 +789,171 @@ final class WorkflowExecutor
             return $this->resumeCancellation($run, $task, $frame);
         }
         if ($resolutionEvent !== null) {
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(
-                    $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied,
-                    $resolutionEvent->recorded_at
-                );
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeConditionResolution($run, $task, $frame, $resolutionEvent);
         }
-        $waitId = $this->conditionWaitId($run, $sequence) ?? (string) Str::ulid();
+        return $this->waitForCondition($run, $task, $frame);
+    }
+
+    private function resumeConditionResolution(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent $resolutionEvent
+    ): ?WorkflowTaskStep {
+        try {
+            $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
+            $frame->current = $frame->execution->send(
+                $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied,
+                $resolutionEvent->recorded_at
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$frame->sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeTimedOutCondition(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        string $waitId,
+        ?WorkflowTimer $timeoutTimer,
+        ?WorkflowHistoryEvent $timeoutFiredEvent
+    ): ?WorkflowTaskStep {
+        $this->recordConditionWaitTimedOut(
+            $run,
+            $task,
+            $frame->sequence,
+            $waitId,
+            $timeoutTimer,
+            self::intValue($timeoutFiredEvent?->payload['delay_seconds'] ?? null) ?? $frame->current->seconds,
+            $frame->current->conditionKey,
+            $frame->current->conditionDefinitionFingerprint,
+            $this->stringValue($timeoutFiredEvent?->payload['timer_id'] ?? null)
+        );
+        try {
+            $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
+            $frame->current = $frame->execution->send(
+                false,
+                $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$frame->sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeSatisfiedCondition(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        string $waitId,
+        ?WorkflowTimer $timeoutTimer
+    ): ?WorkflowTaskStep {
+        if ($timeoutTimer !== null) {
+            $this->cancelConditionTimeout($run, $task, $timeoutTimer);
+        }
+        $satisfiedEvent = $this->recordConditionWaitSatisfied(
+            $run,
+            $task,
+            $frame->sequence,
+            $waitId,
+            $timeoutTimer,
+            $frame->current
+        );
+        try {
+            $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
+            $frame->current = $frame->execution->send(true, $satisfiedEvent->recorded_at);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$frame->sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeImmediateConditionTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        string $waitId
+    ): ?WorkflowTaskStep {
+        $timeoutTimer = $this->fireImmediateConditionTimeout($run, $task, $frame->sequence, $waitId, $frame->current);
+        $timedOutEvent = $this->recordConditionWaitTimedOut(
+            $run,
+            $task,
+            $frame->sequence,
+            $waitId,
+            $timeoutTimer,
+            $frame->current->seconds,
+            $frame->current->conditionKey,
+            $frame->current->conditionDefinitionFingerprint
+        );
+        try {
+            $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
+            $frame->current = $frame->execution->send(false, $timedOutEvent->recorded_at);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$frame->sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function waitForCondition(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame
+    ): WorkflowTask|WorkflowTaskStep|null {
+        $waitId = $this->conditionWaitId($run, $frame->sequence) ?? (string) Str::ulid();
         $this->recordConditionWaitOpened(
             $run,
             $task,
-            $sequence,
+            $frame->sequence,
             $waitId,
-            $current instanceof AwaitWithTimeoutCall ? $current->seconds : null,
-            $current->conditionKey,
-            $current->conditionDefinitionFingerprint
+            $frame->current instanceof AwaitWithTimeoutCall ? $frame->current->seconds : null,
+            $frame->current->conditionKey,
+            $frame->current->conditionDefinitionFingerprint
         );
         /** @var WorkflowTimer|null $timeoutTimer */
-        $timeoutTimer = $current instanceof AwaitWithTimeoutCall ? $run->timers->firstWhere(
+        $timeoutTimer = $frame->current instanceof AwaitWithTimeoutCall ? $run->timers->firstWhere(
             'sequence',
-            $sequence
+            $frame->sequence
         ) : null;
-        $timeoutScheduledEvent = $current instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutScheduledEvent(
+        $timeoutScheduledEvent = $frame->current instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutScheduledEvent(
             $run,
-            $sequence
+            $frame->sequence
         ) : null;
-        $timeoutFiredEvent = $current instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutFiredEvent(
+        $timeoutFiredEvent = $frame->current instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutFiredEvent(
             $run,
-            $sequence
+            $frame->sequence
         ) : null;
-        if ($current instanceof AwaitWithTimeoutCall && ($timeoutFiredEvent !== null || $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)) {
-            $this->recordConditionWaitTimedOut(
-                $run,
-                $task,
-                $sequence,
-                $waitId,
-                $timeoutTimer,
-                self::intValue($timeoutFiredEvent?->payload['delay_seconds'] ?? null) ?? $current->seconds,
-                $current->conditionKey,
-                $current->conditionDefinitionFingerprint,
-                $this->stringValue($timeoutFiredEvent?->payload['timer_id'] ?? null)
-            );
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(
-                    false,
-                    $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at
-                );
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+        if ($frame->current instanceof AwaitWithTimeoutCall && ($timeoutFiredEvent !== null || $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)) {
+            return $this->resumeTimedOutCondition($run, $task, $frame, $waitId, $timeoutTimer, $timeoutFiredEvent);
         }
         try {
-            $conditionSatisfied = ($current->condition)() === true;
+            $conditionSatisfied = ($frame->current->condition)() === true;
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
         }
         if ($conditionSatisfied) {
-            if ($timeoutTimer !== null) {
-                $this->cancelConditionTimeout($run, $task, $timeoutTimer);
-            }
-            $satisfiedEvent = $this->recordConditionWaitSatisfied(
-                $run,
-                $task,
-                $sequence,
-                $waitId,
-                $timeoutTimer,
-                $current
-            );
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(true, $satisfiedEvent->recorded_at);
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeSatisfiedCondition($run, $task, $frame, $waitId, $timeoutTimer);
         }
-        if ($current instanceof AwaitWithTimeoutCall) {
-            if ($current->seconds === 0) {
-                $timeoutTimer = $this->fireImmediateConditionTimeout($run, $task, $sequence, $waitId, $current);
-                $timedOutEvent = $this->recordConditionWaitTimedOut(
-                    $run,
-                    $task,
-                    $sequence,
-                    $waitId,
-                    $timeoutTimer,
-                    $current->seconds,
-                    $current->conditionKey,
-                    $current->conditionDefinitionFingerprint
-                );
-                try {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(false, $timedOutEvent->recorded_at);
-                } catch (Throwable $throwable) {
-                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                    return null;
-                }
-                ++$sequence;
-                return WorkflowTaskStep::ContinueExecution;
+        if ($frame->current instanceof AwaitWithTimeoutCall) {
+            if ($frame->current->seconds === 0) {
+                return $this->resumeImmediateConditionTimeout($run, $task, $frame, $waitId);
             }
             if ($timeoutTimer === null) {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                return $this->scheduleConditionTimeout($run, $task, $sequence, $waitId, $current);
+                $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
+                return $this->scheduleConditionTimeout($run, $task, $frame->sequence, $waitId, $frame->current);
             }
         }
-        $this->syncWorkflowCursor($workflow, $sequence + 1);
+        $this->syncWorkflowCursor($frame->workflow, $frame->sequence + 1);
         return $this->waitForNextResumeSource($run, $task, true);
     }
 
@@ -1536,11 +1582,7 @@ final class WorkflowExecutor
                 $call instanceof SignalCall => WorkflowStepHistory::SIGNAL_WAIT,
                 $call instanceof AwaitCall, $call instanceof AwaitWithTimeoutCall => WorkflowStepHistory::CONDITION_WAIT,
                 default => WorkflowStepHistory::CHILD_WORKFLOW,
-            }, $call instanceof ActivityCall ? [
-                'activity_type' => $call->activity,
-            ] : ($call instanceof ChildWorkflowCall ? [
-                'child_workflow_type' => $call->workflow,
-            ] : []))) {
+            }, $this->parallelMemberIdentity($call))) {
                 return null;
             }
         }
@@ -1572,12 +1614,25 @@ final class WorkflowExecutor
         return $this->finishParallelDispatch($run, $task, $frame, $leafDescriptors, $group);
     }
 
+    private function parallelMemberIdentity(mixed $call): array
+    {
+        return match (true) {
+            $call instanceof ActivityCall => [
+                'activity_type' => $call->activity,
+            ],
+            $call instanceof ChildWorkflowCall => [
+                'child_workflow_type' => $call->workflow,
+            ],
+            default => [],
+        };
+    }
+
     private function finishParallelDispatch(
         WorkflowRun $run,
         WorkflowTask $task,
         WorkflowContinuation $frame,
         array $leafDescriptors,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): ?WorkflowTaskStep {
         $workflow = $frame->workflow;
         $workflowExecution = $frame->execution;
@@ -1585,14 +1640,7 @@ final class WorkflowExecutor
         $current = &$frame->current;
         $sequence = &$frame->sequence;
         $groupSize = count($leafDescriptors);
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $failure = &$group->failure;
-        $failures = &$group->failures;
-        $successTime = &$group->successTime;
-
-        if ($scheduledTasks !== []) {
+        if ($group->scheduledTasks !== []) {
             $this->logApproachingLimit(StructuralLimits::warnApproachingCommandBatch($groupSize), $run);
         }
         if ($current instanceof SelectCall) {
@@ -1608,8 +1656,8 @@ final class WorkflowExecutor
                         $current->resolved(
                             $sequence,
                             $winner,
-                            $results,
-                            $failures,
+                            $group->results,
+                            $group->failures,
                             ParallelChildGroup::durableOperationIdentities($run)
                         ),
                         $selection->recorded_at
@@ -1621,21 +1669,21 @@ final class WorkflowExecutor
                 $sequence += $groupSize;
                 return WorkflowTaskStep::ContinueExecution;
             }
-        } elseif ($failure !== null) {
+        } elseif ($group->failure !== null) {
             try {
                 $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                $failureTime = isset($failure['recorded_at']) && is_int(
-                    $failure['recorded_at']
-                ) && $failure['recorded_at'] !== PHP_INT_MAX ? \Carbon\Carbon::createFromTimestampMs(
-                    $failure['recorded_at']
+                $failureTime = isset($group->failure['recorded_at']) && is_int(
+                    $group->failure['recorded_at']
+                ) && $group->failure['recorded_at'] !== PHP_INT_MAX ? \Carbon\Carbon::createFromTimestampMs(
+                    $group->failure['recorded_at']
                 ) : null;
-                $current = $workflowExecution->throw($failure['exception'], $failureTime);
+                $current = $workflowExecution->throw($group->failure['exception'], $failureTime);
                 $this->recordFailureHandled(
                     $run,
                     $task,
-                    is_string($failure['failure_id'] ?? null) ? $failure['failure_id'] : null,
-                    $sequence + (int) $failure['index'],
-                    is_array($failure['failure_payload'] ?? null) ? $failure['failure_payload'] : []
+                    is_string($group->failure['failure_id'] ?? null) ? $group->failure['failure_id'] : null,
+                    $sequence + (int) $group->failure['index'],
+                    is_array($group->failure['failure_payload'] ?? null) ? $group->failure['failure_payload'] : []
                 );
             } catch (Throwable $throwable) {
                 $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -1644,11 +1692,14 @@ final class WorkflowExecutor
             $sequence += $groupSize;
             return WorkflowTaskStep::ContinueExecution;
         }
-        if (! $pending) {
-            ksort($results);
+        if (! $group->pending) {
+            ksort($group->results);
             try {
                 $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                $current = $workflowExecution->send($current->nestedResults(array_values($results)), $successTime);
+                $current = $workflowExecution->send(
+                    $current->nestedResults(array_values($group->results)),
+                    $group->successTime
+                );
             } catch (Throwable $throwable) {
                 $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
                 return null;
@@ -1657,7 +1708,7 @@ final class WorkflowExecutor
             return WorkflowTaskStep::ContinueExecution;
         }
         $this->markRunWaiting($run, $task);
-        foreach ($scheduledTasks as $scheduledTask) {
+        foreach ($group->scheduledTasks as $scheduledTask) {
             TaskDispatcher::dispatch($scheduledTask);
         }
         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
@@ -1698,15 +1749,8 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         array $descriptor,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): bool {
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $failure = &$group->failure;
-        $failures = &$group->failures;
-        $successTime = &$group->successTime;
-
         $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
@@ -1714,15 +1758,15 @@ final class WorkflowExecutor
         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
         if ($activityCompletion !== null) {
             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                $results[$offset] = $this->activityResult($activityCompletion, $run);
-                $successTime = $this->latestReplayTime(
-                    $successTime,
+                $group->results[$offset] = $this->activityResult($activityCompletion, $run);
+                $group->successTime = $this->latestReplayTime(
+                    $group->successTime,
                     $activityCompletion->recorded_at ?? $activityCompletion->created_at
                 );
                 return true;
             }
-            $failure = ParallelFailureSelector::select(
-                $failure,
+            $group->failure = ParallelFailureSelector::select(
+                $group->failure,
                 $offset,
                 $this->activityException($activityCompletion, null, $run),
                 $activityCompletion->recorded_at?->getTimestampMs() ?? $activityCompletion->created_at?->getTimestampMs() ?? PHP_INT_MAX,
@@ -1731,11 +1775,11 @@ final class WorkflowExecutor
                 ) ? $activityCompletion->payload['failure_id'] : null,
                 $activityCompletion->payload
             );
-            $failures[$offset] = $this->activityException($activityCompletion, null, $run);
+            $group->failures[$offset] = $this->activityException($activityCompletion, null, $run);
             return true;
         }
         if ($this->activityOpenEvent($run, $itemSequence) !== null) {
-            $pending = true;
+            $group->pending = true;
             return true;
         }
         /** @var ActivityExecution|null $execution */
@@ -1752,32 +1796,32 @@ final class WorkflowExecutor
             if (! $activityTask instanceof WorkflowTask) {
                 return false;
             }
-            $scheduledTasks[] = $activityTask;
-            $pending = true;
+            $group->scheduledTasks[] = $activityTask;
+            $group->pending = true;
             return true;
         }
         if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
             if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::ACTIVITY)) {
                 return false;
             }
-            $pending = true;
+            $group->pending = true;
             return true;
         }
         if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::ACTIVITY)) {
             return false;
         }
         if ($execution->status === ActivityStatus::Completed) {
-            $results[$offset] = $execution->activityResult();
-            $successTime = $this->latestReplayTime(
-                $successTime,
+            $group->results[$offset] = $execution->activityResult();
+            $group->successTime = $this->latestReplayTime(
+                $group->successTime,
                 $execution->closed_at ?? $execution->updated_at ?? $execution->created_at
             );
             return true;
         }
         /** @var WorkflowFailure|null $activityFailure */
         $activityFailure = $run->failures->firstWhere('source_id', $execution->id);
-        $failure = ParallelFailureSelector::select(
-            $failure,
+        $group->failure = ParallelFailureSelector::select(
+            $group->failure,
             $offset,
             $this->activityException(null, $execution, $run),
             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
@@ -1790,7 +1834,7 @@ final class WorkflowExecutor
 
             ]
         );
-        $failures[$offset] = $this->activityException(null, $execution, $run);
+        $group->failures[$offset] = $this->activityException(null, $execution, $run);
         return true;
     }
 
@@ -1798,51 +1842,49 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         array $descriptor,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): bool {
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $successTime = &$group->successTime;
-
         $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
         $parallelMetadata = ParallelChildGroup::payloadForPath($descriptor['group_path']);
         $timerFired = $this->timerFiredEvent($run, $itemSequence);
         if ($timerFired !== null) {
-            $results[$offset] = true;
-            $successTime = $this->latestReplayTime($successTime, $timerFired->recorded_at ?? $timerFired->created_at);
+            $group->results[$offset] = true;
+            $group->successTime = $this->latestReplayTime(
+                $group->successTime,
+                $timerFired->recorded_at ?? $timerFired->created_at
+            );
             return true;
         }
         if ($this->timerScheduledEvent($run, $itemSequence) !== null) {
-            $pending = true;
+            $group->pending = true;
             return true;
         }
         /** @var WorkflowTimer|null $timer */
         $timer = $run->timers->firstWhere('sequence', $itemSequence);
         if ($timer instanceof WorkflowTimer) {
             if ($timer->status === TimerStatus::Fired) {
-                $results[$offset] = true;
-                $successTime = $this->latestReplayTime(
-                    $successTime,
+                $group->results[$offset] = true;
+                $group->successTime = $this->latestReplayTime(
+                    $group->successTime,
                     $timer->fired_at ?? $timer->updated_at ?? $timer->created_at
                 );
             } else {
-                $pending = true;
+                $group->pending = true;
             }
             return true;
         }
         if ($call->seconds === 0) {
             $fired = $this->fireImmediateTimer($run, $task, $itemSequence, $call, $parallelMetadata);
-            $results[$offset] = true;
-            $successTime = $this->latestReplayTime($successTime, $fired->recorded_at);
+            $group->results[$offset] = true;
+            $group->successTime = $this->latestReplayTime($group->successTime, $fired->recorded_at);
             ParallelChildGroup::shouldWakeParentOnTimerClosure($run, $descriptor['group_path'], TimerStatus::Fired);
             return true;
         }
         $timerTask = $this->scheduleTimer($run, $task, $itemSequence, $call, $parallelMetadata, false);
-        $scheduledTasks[] = $timerTask;
-        $pending = true;
+        $group->scheduledTasks[] = $timerTask;
+        $group->pending = true;
         return true;
     }
 
@@ -1850,13 +1892,8 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         array $descriptor,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): bool {
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $successTime = &$group->successTime;
-
         $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
@@ -1869,8 +1906,8 @@ final class WorkflowExecutor
         }
         $resolutionEvent = $this->conditionWaitResolutionEvent($run, $itemSequence);
         if ($resolutionEvent !== null) {
-            $results[$offset] = $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied;
-            $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+            $group->results[$offset] = $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied;
+            $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'condition', $resolutionEvent);
             return true;
         }
@@ -1903,8 +1940,8 @@ final class WorkflowExecutor
                 $call,
                 $parallelMetadata
             );
-            $results[$offset] = true;
-            $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+            $group->results[$offset] = true;
+            $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'condition', $resolutionEvent);
             return true;
         }
@@ -1925,8 +1962,8 @@ final class WorkflowExecutor
                 $this->stringValue($timeoutFired?->payload['timer_id'] ?? null),
                 $parallelMetadata
             );
-            $results[$offset] = false;
-            $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+            $group->results[$offset] = false;
+            $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'condition', $resolutionEvent);
             return true;
         }
@@ -1952,8 +1989,8 @@ final class WorkflowExecutor
                     $timeoutTimer->id,
                     $parallelMetadata
                 );
-                $results[$offset] = false;
-                $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+                $group->results[$offset] = false;
+                $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
                 ParallelChildGroup::claimSelectionWinner(
                     $run,
                     $descriptor['group_path'],
@@ -1962,9 +1999,16 @@ final class WorkflowExecutor
                 );
                 return true;
             }
-            $scheduledTasks[] = $this->scheduleConditionTimeout($run, $task, $itemSequence, $waitId, $call, false);
+            $group->scheduledTasks[] = $this->scheduleConditionTimeout(
+                $run,
+                $task,
+                $itemSequence,
+                $waitId,
+                $call,
+                false
+            );
         }
-        $pending = true;
+        $group->pending = true;
         return true;
     }
 
@@ -1972,21 +2016,16 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         array $descriptor,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): bool {
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $successTime = &$group->successTime;
-
         $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
         $parallelMetadata = ParallelChildGroup::payloadForPath($descriptor['group_path']);
         $signalEvent = $this->appliedSignalEvent($run, $itemSequence, $call);
         if ($signalEvent !== null) {
-            $results[$offset] = $this->signalValue($signalEvent, $run);
-            $successTime = $this->latestReplayTime($successTime, $signalEvent->recorded_at);
+            $group->results[$offset] = $this->signalValue($signalEvent, $run);
+            $group->successTime = $this->latestReplayTime($group->successTime, $signalEvent->recorded_at);
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'signal', $signalEvent);
             return true;
         }
@@ -2015,8 +2054,8 @@ final class WorkflowExecutor
             $this->recordSignalWait($run, $task, $itemSequence, $call, $signalWaitId, $parallelMetadata);
             $resolutionEvent = $timeoutFired ?? $this->signalTimeoutFiredEvent($run, $itemSequence, $call->name);
             if ($resolutionEvent instanceof WorkflowHistoryEvent) {
-                $results[$offset] = null;
-                $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+                $group->results[$offset] = null;
+                $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
                 ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'signal', $resolutionEvent);
                 return true;
             }
@@ -2036,28 +2075,21 @@ final class WorkflowExecutor
                 $signalWaitId,
                 $parallelMetadata
             );
-            $results[$offset] = $this->signalValue($signalEvent, $run);
-            $successTime = $this->latestReplayTime($successTime, $signalEvent->recorded_at);
+            $group->results[$offset] = $this->signalValue($signalEvent, $run);
+            $group->successTime = $this->latestReplayTime($group->successTime, $signalEvent->recorded_at);
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'signal', $signalEvent);
             return true;
         }
         $this->recordSignalWait($run, $task, $itemSequence, $call, $signalWaitId, $parallelMetadata);
         if ($call->timeoutSeconds !== null && $timeoutTimer === null) {
             if ($call->timeoutSeconds === 0) {
-                $timeoutTimer = $this->fireImmediateSignalTimeout(
-                    $run,
-                    $task,
-                    $itemSequence,
-                    $signalWaitId,
-                    $call,
-                    $parallelMetadata
-                );
+                $this->fireImmediateSignalTimeout($run, $task, $itemSequence, $signalWaitId, $call, $parallelMetadata);
                 $run->unsetRelation('historyEvents');
                 $run->load('historyEvents');
                 $resolutionEvent = $this->signalTimeoutFiredEvent($run, $itemSequence, $call->name);
                 if ($resolutionEvent instanceof WorkflowHistoryEvent) {
-                    $results[$offset] = null;
-                    $successTime = $this->latestReplayTime($successTime, $resolutionEvent->recorded_at);
+                    $group->results[$offset] = null;
+                    $group->successTime = $this->latestReplayTime($group->successTime, $resolutionEvent->recorded_at);
                     ParallelChildGroup::claimSelectionWinner(
                         $run,
                         $descriptor['group_path'],
@@ -2067,7 +2099,7 @@ final class WorkflowExecutor
                     return true;
                 }
             } else {
-                $scheduledTasks[] = $this->scheduleSignalTimeout(
+                $group->scheduledTasks[] = $this->scheduleSignalTimeout(
                     $run,
                     $task,
                     $itemSequence,
@@ -2077,7 +2109,7 @@ final class WorkflowExecutor
                 );
             }
         }
-        $pending = true;
+        $group->pending = true;
         return true;
     }
 
@@ -2085,15 +2117,8 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         array $descriptor,
-        WorkflowParallelDispatch $group,
+        WorkflowParallelDispatch $group
     ): bool {
-        $scheduledTasks = &$group->scheduledTasks;
-        $pending = &$group->pending;
-        $results = &$group->results;
-        $failure = &$group->failure;
-        $failures = &$group->failures;
-        $successTime = &$group->successTime;
-
         $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
@@ -2120,15 +2145,15 @@ final class WorkflowExecutor
         }
         if ($resolutionEvent !== null) {
             if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                $results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
-                $successTime = $this->latestReplayTime(
-                    $successTime,
+                $group->results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+                $group->successTime = $this->latestReplayTime(
+                    $group->successTime,
                     $resolutionEvent->recorded_at ?? $resolutionEvent->created_at
                 );
                 return true;
             }
-            $failure = ParallelFailureSelector::select(
-                $failure,
+            $group->failure = ParallelFailureSelector::select(
+                $group->failure,
                 $offset,
                 ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
                 $resolutionEvent->recorded_at?->getTimestampMs() ?? $resolutionEvent->created_at?->getTimestampMs() ?? PHP_INT_MAX,
@@ -2137,7 +2162,7 @@ final class WorkflowExecutor
                 ) ? $resolutionEvent->payload['failure_id'] : null,
                 $this->childFailureHandledPayload($resolutionEvent)
             );
-            $failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
+            $group->failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
             return true;
         }
         if (! $childRun instanceof WorkflowRun) {
@@ -2145,7 +2170,7 @@ final class WorkflowExecutor
                 $run,
                 $itemSequence
             ) !== null || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null) {
-                $pending = true;
+                $group->pending = true;
                 return true;
             }
             $childTask = $this->scheduleChildWorkflowOrFailRun(
@@ -2159,8 +2184,8 @@ final class WorkflowExecutor
             if (! $childTask instanceof WorkflowTask) {
                 return false;
             }
-            $scheduledTasks[] = $childTask;
-            $pending = true;
+            $group->scheduledTasks[] = $childTask;
+            $group->pending = true;
             return true;
         }
         $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
@@ -2177,27 +2202,27 @@ final class WorkflowExecutor
             )) {
                 return false;
             }
-            $pending = true;
+            $group->pending = true;
             return true;
         }
         if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
             return false;
         }
         if ($childStatus === RunStatus::Completed) {
-            $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
-            $successTime = $this->latestReplayTime(
-                $successTime,
+            $group->results[$offset] = ChildRunHistory::outputForChildRun($childRun);
+            $group->successTime = $this->latestReplayTime(
+                $group->successTime,
                 $childRun->closed_at ?? $childRun->updated_at ?? $childRun->created_at
             );
             return true;
         }
-        $failure = ParallelFailureSelector::select(
-            $failure,
+        $group->failure = ParallelFailureSelector::select(
+            $group->failure,
             $offset,
             ChildRunHistory::exceptionForChildRun($childRun),
             $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX
         );
-        $failures[$offset] = ChildRunHistory::exceptionForChildRun($childRun);
+        $group->failures[$offset] = ChildRunHistory::exceptionForChildRun($childRun);
         return true;
     }
 
