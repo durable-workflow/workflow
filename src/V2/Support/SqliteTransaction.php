@@ -49,7 +49,7 @@ final class SqliteTransaction
 
         [$maximumAttempts, $deadline] = self::retryLimits($attempts, $admission !== null, $admissionDeadline);
         for ($attempt = 1; ; $attempt++) {
-            $outcome = self::attempt($connection, $pdo, $operation, $admission);
+            $outcome = self::attempt($connection, $pdo, $operation, $admission, $deadline);
             if (! isset($outcome['error'])) {
                 return $outcome['value'];
             }
@@ -124,8 +124,13 @@ final class SqliteTransaction
      * @param Closure(Connection): void|null $admission
      * @return array{value: T}|array{error: Throwable, retry: bool}
      */
-    private static function attempt(Connection $connection, PDO $pdo, Closure $operation, ?Closure $admission): array
-    {
+    private static function attempt(
+        Connection $connection,
+        PDO $pdo,
+        Closure $operation,
+        ?Closure $admission,
+        int $deadline,
+    ): array {
         $failedInRoot = false;
         $returned = false;
         $entered = false;
@@ -135,6 +140,7 @@ final class SqliteTransaction
                 $operation,
                 $admission,
                 $pdo,
+                $deadline,
                 &$failedInRoot,
                 &$returned,
                 &$entered,
@@ -142,7 +148,7 @@ final class SqliteTransaction
             ): mixed {
                 try {
                     if ($admission !== null) {
-                        $admission($database);
+                        self::admit($database, $pdo, $admission, $deadline);
                     }
                     $entered = true;
                     $result = $operation($database);
@@ -170,6 +176,33 @@ final class SqliteTransaction
                     && self::isContention($exception) && $connection->transactionLevel() === 0
                     && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction(),
             ];
+        }
+    }
+
+    /**
+     * @param Closure(Connection): void $admission
+     */
+    private static function admit(Connection $database, PDO $pdo, Closure $admission, int $deadline): void
+    {
+        $statement = $pdo->query('PRAGMA busy_timeout');
+        if ($statement === false) {
+            throw new \RuntimeException('Cannot inspect the SQLite admission busy timeout.');
+        }
+        $originalTimeout = (int) $statement->fetchColumn();
+        $statement->closeCursor();
+        $waitMilliseconds = min(100, max(1, (int) (($deadline - hrtime(true)) / 1_000_000)));
+        if ($originalTimeout <= $waitMilliseconds) {
+            $admission($database);
+            return;
+        }
+
+        // A single driver wait must not consume the root retry budget. Only the
+        // admission uses a short wait; application code keeps its original setting.
+        $pdo->exec('PRAGMA busy_timeout=' . $waitMilliseconds);
+        try {
+            $admission($database);
+        } finally {
+            $pdo->exec('PRAGMA busy_timeout=' . $originalTimeout);
         }
     }
 
