@@ -2,7 +2,7 @@
     "name": "durable-workflow/current-queue-consumer",
     "require": {
         "php": "^8.3.6",
-        "durable-workflow/workflow": "2.5.31",
+        "durable-workflow/workflow": "2.5.32",
         "laravel/framework": "13.37.0",
         "orchestra/testbench": "11.3.0",
         "phpunit/phpunit": "12.5.40"
@@ -12,6 +12,6 @@
         "sort-packages": true
     },
     "extra": {
-        "workflow-published-reference": "3b5e58cfbec52783d28202ce860f7f83f8aad0ac"
+        "workflow-published-reference": "78075b6f7e513a93db7d613bdd09b9e777fbb58a"
     }
 }
