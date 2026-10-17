@@ -109,6 +109,29 @@ positive history SELECT counts bounded by all-SQL counts. Style and focused
 static analysis pass. Later failure-only progress diagnostics remain separate
 from these successful component executions.
 
+Exact `af19fc58` [PR CI](https://github.com/durable-workflow/workflow/actions/runs/39057111488)
+is **failed**: five setup cohorts pass and three reject a worker's zero history
+SELECT count. Requiring every worker to read history is an incorrect probe
+assumption. The bounded failure report records complete run/task counts,
+10/80 history events, one/eight effects and zero repairs for the affected cohorts;
+the later semantic audits are not reached. This is separate from the earlier
+local repaired-task failure. The correction permits nonnegative per-worker
+counts bounded by all SQL, and requires a positive history-read count across
+the cohort. It changes no runtime, history, task/repair/deadline policy or workload.
+
+The corrected local eight-cohort run is also **failed**, with six passing cells
+and two distinct failures under the one-CPU limit. The four-worker/single-run
+retained cell has seven completed tasks and zero repairs/failed jobs, but leaves
+one transport row when workers stop. The four-worker/eight-run replay cell has
+eight completed originals, two repaired tasks and one failed queue job; one
+retained task diagnostic records SQLite error 5 while updating a run summary.
+These observations do not establish the failed job's exception or the first
+cohort's outstanding job type. They are not attributed to a current release or
+the retained runtime. No zero-repair, failed-job or empty-queue assertion is
+removed. The passing four-worker/single-run replay control records per-worker
+history SELECT counts `[0, 5, 17, 18]`, confirming why the cohort-level metric
+check is needed.
+
 The next acceptance still includes 1,000-event and concurrent/multiworker cells,
 actual hit/miss/capacity behavior under the aggregate limit, minimally observed
 paired measurements, remaining lifetime/failure cases and published consumers.

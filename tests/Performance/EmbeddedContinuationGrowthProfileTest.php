@@ -204,7 +204,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
             $this->assertSame(0, $reports[$index]['cache']['entries']);
             if ($observers) {
                 $this->assertLessThanOrEqual(4, $reports[$index]['observed_peak_entries']);
-                $this->assertGreaterThan(0, $reports[$index]['history_selects']);
+                $this->assertGreaterThanOrEqual(0, $reports[$index]['history_selects']);
                 $this->assertLessThanOrEqual($reports[$index]['queries'], $reports[$index]['history_selects']);
             } else {
                 foreach (['queries', 'query_elapsed_ms', 'history_selects', 'history_select_elapsed_ms',
@@ -270,6 +270,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         $tasks = WorkflowTask::query()->get();
         $this->assertSame(['completed'], $tasks->pluck('status')->map->value->unique()->values()->all());
         if ($observers) {
+            $this->assertGreaterThan(0, array_sum(array_column($reports, 'history_selects')));
             $this->assertSame(
                 (int) $tasks->sum('attempt_count'),
                 array_sum(array_column(array_column($reports, 'task_queue_delay'), 'count'))
