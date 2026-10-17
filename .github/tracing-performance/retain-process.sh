@@ -3,7 +3,7 @@ set -u
 
 : "${BENCH_STATE:?Select disposable state}" "${BENCH_ROLE:?Select worker or probe}" "${HOSTNAME:?Missing container identity}"
 case "$BENCH_ROLE" in worker|probe) ;; *) exit 2 ;; esac
-case "$#" in 0) exit 2 ;; esac
+case "$#" in 0) exit 2 ;; *) ;; esac
 
 if [ -n "${BENCH_RELEASE_FILE:-}" ]; then
     while [ ! -f "$BENCH_RELEASE_FILE" ]; do sleep 0.05; done

@@ -192,3 +192,9 @@ includes startup and warmup; also report the peak sampled within the window.
 
 The retainer and snapshot reader are measurement tools. They do not establish
 that a workload meets its observer, overhead target or throughput requirement.
+
+After the last snapshot and audit, stop and remove the exact detached probe
+container explicitly. Compose `down` can leave a running one-off retainer even
+with `--remove-orphans`. Then retire the ordinary services and volumes, and
+verify no container with the experiment's project label remains. Cleanup
+failure keeps the aggregate cell unsuccessful even when business work passes.
