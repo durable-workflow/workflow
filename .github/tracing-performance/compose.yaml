@@ -1,0 +1,117 @@
+x-runtime: &runtime
+  image: ${BENCH_PHP_IMAGE:?Set the qualified PHP image}
+  user: "1000:1000"
+  entrypoint: []
+  init: true
+  stop_signal: SIGTERM
+  healthcheck: {disable: true}
+  working_dir: /app
+  volumes:
+    - ${BENCH_APP_DIR:-.}:/app:ro
+    - ${BENCH_STATE_DIR:-./state}/runtime:/state
+  environment:
+    DB_HOST: mysql
+    DB_PORT: "3306"
+    DB_DATABASE: benchmark
+    DB_USERNAME: benchmark
+    DB_PASSWORD: disposable-benchmark
+    REDIS_HOST: redis
+    BENCH_STATE: /state
+    BENCH_TRACING: ${BENCH_TRACING:-false}
+    BENCH_QUEUE_WAKE: ${BENCH_QUEUE_WAKE:-true}
+    BENCH_QUEUE_DRIVER: ${BENCH_QUEUE_DRIVER:-database}
+    BENCH_COLLECTOR: http://collector:4318/v1/traces
+  depends_on:
+    mysql: {condition: service_healthy}
+    redis: {condition: service_healthy}
+
+services:
+  mysql:
+    image: ${BENCH_MYSQL_IMAGE:-mysql:8.4}
+    cpus: 1
+    mem_limit: 2g
+    memswap_limit: 2g
+    command: ["--innodb-buffer-pool-size=536870912", "--skip-log-bin"]
+    environment:
+      MYSQL_ROOT_PASSWORD: disposable-root-benchmark
+      MYSQL_DATABASE: benchmark
+      MYSQL_USER: benchmark
+      MYSQL_PASSWORD: disposable-benchmark
+    volumes: ["database:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --user=$$MYSQL_USER --database=$$MYSQL_DATABASE --host=127.0.0.1 -Nse 'SELECT 1'"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  redis:
+    image: ${BENCH_REDIS_IMAGE:-redis:7.4}
+    user: "1000:1000"
+    cpus: 0.1
+    mem_limit: 128m
+    memswap_limit: 128m
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  prepare:
+    <<: *runtime
+    profiles: ["tools"]
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    command: ["php", "app.php", "prepare"]
+  app:
+    <<: *runtime
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+    command: ["php", "-S", "0.0.0.0:8080", "app.php"]
+  worker:
+    <<: *runtime
+    cpus: 1
+    mem_limit: 384m
+    memswap_limit: 384m
+    stop_grace_period: 10s
+    command: ["php", "app.php", "work"]
+  collector:
+    image: ${BENCH_PHP_IMAGE:?Set the qualified PHP image}
+    user: "1000:1000"
+    entrypoint: []
+    init: true
+    stop_signal: SIGTERM
+    healthcheck: {disable: true}
+    working_dir: /app
+    cpus: 0.2
+    mem_limit: 256m
+    memswap_limit: 256m
+    volumes:
+      - ${BENCH_APP_DIR:-.}:/app:ro
+      - ${BENCH_STATE_DIR:-./state}/collector:/state
+    environment: {BENCH_STATE: /state}
+    command: ["php", "-S", "0.0.0.0:4318", "collector.php"]
+  probe:
+    image: ${BENCH_NODE_IMAGE:-node:22-alpine}
+    user: "1000:1000"
+    working_dir: /app
+    profiles: ["tools"]
+    cpus: 0.2
+    mem_limit: 256m
+    memswap_limit: 256m
+    volumes:
+      - ${BENCH_APP_DIR:-.}:/app:ro
+      - ${BENCH_STATE_DIR:-./state}/results:/results
+    environment:
+      BASE_URL: http://app:8080
+      PROFILE_NAME: ${PROFILE_NAME:?Set a unique synthetic profile}
+      WORKLOAD_NAME: ${WORKLOAD_NAME:-}
+      MEMBERS: ${MEMBERS:-1}
+      OFFERED_RATE: ${OFFERED_RATE:-5}
+      DURATION_SECONDS: ${DURATION_SECONDS:-120}
+      DIAGNOSTIC_ONLY: ${DIAGNOSTIC_ONLY:-false}
+      BENCH_QUEUE_DRIVER: ${BENCH_QUEUE_DRIVER:-database}
+    command: ["node", "probe.mjs"]
+
+volumes:
+  database:

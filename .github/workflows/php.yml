@@ -253,6 +253,15 @@ jobs:
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
 
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+      with:
+        node-version: '22'
+
+    - name: Check tracing overhead recipe
+      run: |
+        composer --working-dir=.github/tracing-performance validate --strict --no-check-all --no-check-publish
+        node --test .github/tracing-performance/probe.test.mjs
+
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
