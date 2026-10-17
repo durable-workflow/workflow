@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.30 - 2026-10-17
+
+- Skip payload decoding for history event types that cannot match an activity
+  or a parallel member failure during replay.
+- Preserve recorded activity retry policies, member identity and failure order.
+
 ## 2.5.29 - 2026-10-17
 
 - Reuse an event's decoded payload within each timer projection, avoiding

@@ -42,12 +42,15 @@ final class ActivityReplayIdentity
             $run->load('historyEvents');
         }
         foreach ($run->historyEvents as $event) {
+            if ($event->event_type !== HistoryEventType::ActivityScheduled) {
+                continue;
+            }
+
             $recordedSequence = $event->payload['sequence'] ?? null;
             if (is_string($recordedSequence) && is_numeric($recordedSequence)) {
                 $recordedSequence = (int) $recordedSequence;
             }
-            if ($event->event_type !== HistoryEventType::ActivityScheduled
-                || $recordedSequence !== $sequence
+            if ($recordedSequence !== $sequence
                 || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
                 || ($event->payload['activity']['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
                 continue;
