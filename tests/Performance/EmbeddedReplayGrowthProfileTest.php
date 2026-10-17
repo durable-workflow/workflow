@@ -131,7 +131,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             $this->assertSame(0, $task->repair_count);
         }
 
-        fwrite(STDERR, json_encode([
+        echo json_encode([
             'profile' => 'embedded-replay-growth',
             'rounds' => $rounds,
             'repetition' => $repetition,
@@ -147,7 +147,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             'summary_projections' => $projections,
             'process_peak_rss_kib' => getrusage()['ru_maxrss'],
             'php_peak_allocated_bytes' => memory_get_peak_usage(true),
-        ], JSON_THROW_ON_ERROR) . PHP_EOL);
+        ], JSON_THROW_ON_ERROR) . PHP_EOL;
     }
 
     /**
