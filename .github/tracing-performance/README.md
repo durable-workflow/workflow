@@ -1,7 +1,8 @@
 # Embedded tracing overhead workload
 
-This is a prospective qualification recipe for draft Workflow #788. It has no
-measured result yet. The encoded-baggage regression and the other acceptance
+This is the qualification recipe for draft Workflow #788. The
+[October 17 measurement](RESULTS-2026-10-17.md) completed, but did not qualify
+any of the four CPU budgets. The encoded-baggage regression and the other acceptance
 requirements of [#773](https://github.com/durable-workflow/workflow/issues/773)
 remain separate release gates.
 
@@ -230,6 +231,12 @@ cell, missing role, changed container or resource limit, decreasing CPU,
 missing samples, nonzero child exit, OOM/restart, unfinished business work or
 span loss. It normalizes CPU by measured completions, excluding warmup counts.
 Metadata, span and audit totals explicitly include warmup.
+
+The declared offer window remains 120 seconds. Node timers use integer-delay
+precision, so the probe's actual elapsed value can be fractionally below its
+nominal window. The reader preserves that value and requires every cgroup's
+counter interval to cover the full declared window, as well as all offers and
+original completions. It does not round or rescale measured CPU.
 
 Run from the copied experiment's parent directory. The input root must resolve
 inside the working directory. Each data file must resolve inside the selected

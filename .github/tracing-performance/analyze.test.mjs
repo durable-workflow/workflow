@@ -53,6 +53,24 @@ test('normalizes all nine CPU deltas by measured work, excluding warmup counts',
     assert.equal(result.sample_interval_ms.mean, 1000);
 });
 
+test('integer timer precision keeps the actual elapsed value without shortening CPU coverage', () => {
+    const data = cellData();
+    data.measure.elapsed_seconds = 119.999219339;
+    assert.equal(summarizeCell(data).measured.elapsed_seconds, 119.999219339);
+});
+
+test('every cgroup interval must cover the declared offer window', () => {
+    const data = cellData();
+    data.after[0].sampled_at = '2026-01-01T00:01:59.999Z';
+    assert.throws(() => summarizeCell(data), /CPU interval/);
+});
+
+test('the observation cannot finish before the last declared offer', () => {
+    const data = cellData();
+    data.measure.elapsed_seconds = 118.999;
+    assert.throws(() => summarizeCell(data));
+});
+
 for (const [name, corrupt] of [
     ['failed original', data => { data.outcome.result = 1; }],
     ['lost span', data => { data.outcome.cell = 'on'; data.telemetry = {ended: 10, received: 9}; }],

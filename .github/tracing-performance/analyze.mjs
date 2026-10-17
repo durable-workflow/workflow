@@ -67,7 +67,8 @@ function validateBusiness(data) {
     }
     assert.equal(measure.duration_seconds, 120);
     assert.equal(measure.rate, ordinary ? 1 : 1 / 60);
-    assert.ok(Number.isFinite(measure.elapsed_seconds) && measure.elapsed_seconds >= 120);
+    const lastOfferSeconds = (expected - 1) / measure.rate;
+    assert.ok(Number.isFinite(measure.elapsed_seconds) && measure.elapsed_seconds >= lastOfferSeconds);
     assert.ok([measure.p50_ms, measure.p95_ms, measure.p99_ms].every(value => Number.isFinite(value) && value > 0));
     assert.ok(measure.p50_ms <= measure.p95_ms && measure.p95_ms <= measure.p99_ms);
     const runs = expected + (ordinary ? 30 : 1);
@@ -125,7 +126,8 @@ function summarizeComponents(data, before, after) {
         const intervals = times.slice(1).map((value, index) => value - times[index]);
         assert.ok(intervals.every(value => value > 0), 'Invalid sampling order');
         observedIntervals.push(...intervals);
-        assert.ok(Date.parse(final.sampled_at) > Date.parse(initial.sampled_at));
+        const intervalMs = Date.parse(final.sampled_at) - Date.parse(initial.sampled_at);
+        assert.ok(intervalMs >= data.measure.duration_seconds * 1000, 'CPU interval must cover the offer window');
     }
     return {components, observedIntervals};
 }
