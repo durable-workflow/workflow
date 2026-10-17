@@ -356,6 +356,14 @@ jobs:
         --testdox --fail-on-warning
         --log-junit build/test-results/pr-retained-execution.xml
 
+    - name: Run growing continuation worker setup controls
+      env:
+        PROFILE_EMBEDDED_CONTINUATION: setup
+      run: >-
+        vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php
+        --testdox --fail-on-warning --display-phpunit-deprecations
+        --log-junit build/test-results/pr-continuation-growth.xml
+
     - name: Resolve bounded pull-request test selection
       run: >-
         php scripts/ci/select-pr-tests.php

@@ -1,0 +1,94 @@
+# Embedded continuation growth probe
+
+This is an opt-in source probe for [#748](https://github.com/durable-workflow/workflow/issues/748).
+It does not run in the ordinary unit or feature suites. Functional setup results
+do not establish a speedup, capacity, production readiness or published-package
+acceptance.
+
+## Workload and invariants
+
+Each original uses an actual Laravel database queue and real one-second timers.
+There is no fake queue, activity mock, virtual clock or history rewrite. Every
+round executes one typed activity and one timer; a final timer gives exactly
+`5 * rounds + 5` events: 10, 100 or 1,000 for 1, 19 or 199 rounds. The activity
+records every invocation in an isolated effect table. The audit requires one
+effect per round, exact bigint/null/Unicode values, contiguous history, preserved
+admission prefix, original deadlines, completed tasks and zero repairs/errors.
+
+Workflow time begins at the persisted run's `started_at`, as required by the
+existing executor, then advances to recorded activity completions and timer
+firings. The `WorkflowStarted` event can be recorded later than `started_at`;
+the probe does not substitute its recording timestamp for the initial clock.
+
+Replay and retained modes change only the existing live-execution allowlist.
+Both use the same source, workflow, policy and budgets. Retention keeps its
+four-entry, 30-second nonrenewing age and 128 MiB worker-RSS thresholds. Neither
+queue affinity nor a cache hit is forced. One/eight concurrent runs and one/four
+workers expose ordinary reuse, handoff and capacity misses. Report actual counters;
+do not label a cell hit-heavy merely because it was intended to be.
+
+## Execution and measurements
+
+The controller prepares a fresh database. Each Symfony child process boots its
+own real Testbench worker application without migrating that database. A readiness
+barrier separates actual cold test-worker startup from admission and queue execution.
+This startup includes PHPUnit/Testbench, source verification and opening SQLite;
+it is not a stock application's Artisan-only startup measurement.
+All workers start from the same source; their loaded hashes and PIDs are checked.
+Every run completes through ordinary `queue:work`, and workers drain successfully
+after committed completion markers. Startup is not added to or hidden inside the
+reported steady queue CPU. The cgroup workload CPU also includes controller and
+worker-drain overhead; it is not pure replay CPU.
+
+SQL counts and elapsed time, task-claim delay, timer lateness, authored entries,
+round visits, cache counters and observed entry counts come from in-process
+observers. They add overhead. SQL elapsed is not database CPU. Queue CPU includes
+projection, serialization, transaction and activity work. Per-worker peak RSS
+includes startup; process peaks are not simultaneous aggregate peaks. The cgroup
+peak covers the whole fresh container and is reported separately. Retained-frame
+bytes are not isolated from the worker's other memory. Small observer-free
+comparisons are still required before attributing a production saving.
+
+`setup` selects only 10-event functional cohorts, with one/eight runs, one/four
+workers and both replay modes. Their predeclared observation bounds are 30 seconds
+for one run and 120 seconds for eight runs. They may run on shared development
+hardware; their timings must not be used as comparative performance evidence.
+
+```sh
+PROFILE_EMBEDDED_CONTINUATION=setup \
+  vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php \
+  --cache-directory /tmp/continuation-profile-parent --testdox --fail-on-warning
+```
+
+`measure` selects all three history sizes, worker/run combinations, both modes
+and three fresh repetitions. Each original has a 3,600-second run/execution and
+observation budget. Startup has its own 30-second bound and graceful drain has
+15 seconds. No failed original is resumed, repaired or rebudgeted by this probe.
+Failure remains a failure, with unfinished work and bounded diagnostic tails.
+
+Run **one selected cell per fresh container** on an isolated machine. Otherwise
+the cgroup memory peak can include an earlier cell. Use the same prepared PHP image
+and dependency lock, with actual `pcntl` timeout/signal support. The probe refuses
+measurement mode without that support or the declared cgroup v2 limits: one CPU,
+1 GiB aggregate memory and zero swap, including controller and all workers. The
+kernel must expose the cgroup aggregate peak-memory counter; its absence refuses
+measurement rather than substituting a sum of process peaks.
+Capture machine/kernel/CPU/storage facts and competing workload before admission.
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" \
+  --cpus 1 --memory 1g --memory-swap 1g \
+  --env PROFILE_EMBEDDED_CONTINUATION=measure \
+  --volume "$PWD:/app" --workdir /app "$DWF_PROFILE_IMAGE" \
+  php vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php \
+  --filter '100-events_1-workers_1-runs_retained_repeat-1' \
+  --cache-directory /tmp/continuation-profile-parent --testdox --fail-on-warning
+```
+
+Alternate replay/retained pair order between repetitions, as the data provider
+does, to reduce ordering bias. Repeat each declared cell, preserving failed and
+unfinished outcomes in the readable report. Do not dispatch the complete matrix
+before small-cell cost/runtime observations justify its bounded admission. Review
+the `CONTINUATION_GROWTH_REPORT` JSON records, publish a compact outcome table and
+remove disposable databases, dependencies, samples and transport afterward. Full
+histories and effect rows are validated in place, not exported as bulk archives.
