@@ -4,6 +4,8 @@ services:
       BENCH_ROLE: worker
     command: ["sh", "retain-process.sh", "php", "app.php", "work"]
   probe:
+    init: true
+    stop_signal: SIGTERM
     environment:
       BENCH_ROLE: probe
       BENCH_STATE: /results
