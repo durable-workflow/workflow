@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\Queue;
 
+use Illuminate\Database\Query\Builder;
 use Illuminate\Database\QueryException;
 use Illuminate\Queue\DatabaseQueue;
 use PDO;
@@ -46,13 +47,7 @@ class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
                     try {
                         // One conditional write avoids SQLite's SELECT-to-write upgrade.
                         // A newer reservation cannot match the original claim.
-                        if ($boundedWait) {
-                            SqliteWriteWait::run($pdo, static function () use ($query): void {
-                                $query->delete();
-                            }, $deadline);
-                        } else {
-                            $query->delete();
-                        }
+                        self::deleteWithBoundedWait($query, $pdo, $boundedWait, $deadline);
                     } catch (QueryException $exception) {
                         $deleteFailure = $exception;
                         throw $exception;
@@ -97,5 +92,16 @@ class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
             $this->connectionName,
             $queue,
         );
+    }
+
+    private static function deleteWithBoundedWait(Builder $query, PDO $pdo, bool $boundedWait, int $deadline): void
+    {
+        if ($boundedWait) {
+            SqliteWriteWait::run($pdo, static function () use ($query): void {
+                $query->delete();
+            }, $deadline);
+            return;
+        }
+        $query->delete();
     }
 }
