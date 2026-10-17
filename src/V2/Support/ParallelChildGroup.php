@@ -1084,9 +1084,12 @@ final class ParallelChildGroup
                 $memberSequences,
                 $conditionResolutions
             ): bool {
+                if (! in_array($event->event_type, $types, true)) {
+                    return false;
+                }
+
                 $sequence = $event->payload['sequence'] ?? null;
-                if (! in_array($event->event_type, $types, true)
-                    || ! is_int($sequence)
+                if (! is_int($sequence)
                     || ! array_key_exists($sequence, $memberSequences)) {
                     return false;
                 }
