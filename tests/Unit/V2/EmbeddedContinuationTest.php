@@ -15,10 +15,13 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use RuntimeException;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\Support\TestDatabaseServiceProvider;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -374,6 +377,352 @@ final class EmbeddedContinuationTest extends TestCase
         }
     }
 
+    public static function fallbackOperations(): iterable
+    {
+        $operations = [
+            'parallel' => [HistoryEventType::TimerScheduled, [true, true]],
+            'selection' => [
+                HistoryEventType::TimerScheduled, [
+                    'key' => 'left',
+                    'winner' => true,
+                    'remaining' => true,
+                ]],
+            'child' => [HistoryEventType::ChildWorkflowScheduled, 'child-value'],
+            'condition' => [HistoryEventType::ConditionWaitOpened, true],
+            'continue' => [HistoryEventType::WorkflowContinuedAsNew, 'continued'],
+        ];
+        foreach ($operations as $operation => [$event, $result]) {
+            foreach ([false, true] as $enabled) {
+                yield $operation . ($enabled ? ' retained fallback' : ' cold') => [
+                    $enabled,
+                    $operation,
+                    $event,
+                    $result,
+                ];
+            }
+        }
+    }
+
+    #[DataProvider('fallbackOperations')]
+    public function testExcludedOperationsReplayBeforeTheirFirstDurableWrite(
+        bool $enabled,
+        string $operation,
+        HistoryEventType $firstEvent,
+        mixed $result,
+    ): void {
+        ContinuationFallbackWorkflow::$entries = [];
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => $enabled ? [ContinuationFallbackWorkflow::class] : [],
+                'build' => 'excluded-operations',
+            ]);
+        $stub = WorkflowStub::make(ContinuationFallbackWorkflow::class, 'fallback-' . $operation, 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), $operation);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        $atWrite = [];
+        WorkflowHistoryEvent::creating(static function (WorkflowHistoryEvent $event) use (
+            $run,
+            $firstEvent,
+            &$atWrite
+        ): void {
+            if ($event->workflow_run_id === $run->id && $event->event_type === $firstEvent) {
+                $atWrite[] = ContinuationFallbackWorkflow::$entries[$run->id] ?? 0;
+            }
+        });
+        $this->workOnce();
+        $this->assertSame($enabled ? 1 : 0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->workOnce();
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $this->workOnce();
+        $this->assertNotEmpty($atWrite);
+        $this->assertSame([2], array_values(array_unique($atWrite)));
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        if ($enabled) {
+            $this->assertSame(
+                1,
+                app(WorkflowContinuationCache::class)->snapshot()['counts']['cold_unsupported_operation'] ?? 0
+            );
+        }
+        Carbon::setTestNow(now()->addSeconds(2));
+        for ($jobs = 0; $jobs < 12 && DB::table('jobs')->exists(); ++$jobs) {
+            $this->workOnce();
+            Carbon::setTestNow(now()->addSeconds(2));
+        }
+        $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
+        $this->assertSame([
+            'value' => [
+                'integer' => 9007199254740993,
+                'optional' => null,
+                'unicode' => 'λ',
+            ],
+            'operation' => $result,
+        ], $stub->output());
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
+        $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $this->assertSame(
+            ['completed'],
+            WorkflowTask::query()->get()->pluck('status')->map->value->unique()->values()->all()
+        );
+        $this->assertSame([1], WorkflowTask::query()->pluck('attempt_count')->unique()->values()->all());
+        $this->assertSame([0], WorkflowTask::query()->pluck('repair_count')->unique()->values()->all());
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+    }
+
+    #[DataProvider('modelProfiles')]
+    public function testDeclaredQueriesUpdatesAndSignalsKeepTheirColdReplayContract(bool $enabled): void
+    {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => $enabled ? [TestUpdateWorkflow::class] : [],
+            'build' => 'interactive-cold-profile',
+        ]);
+        $stub = WorkflowStub::make(TestUpdateWorkflow::class, 'interactive', 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+        $this->workOnce();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $this->assertSame(
+            [
+                'stage' => 'waiting-for-name',
+                'approved' => false,
+                'events' => ['started'],
+            ],
+            $stub->query('currentState')
+        );
+        $this->assertSame(
+            $prefix,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+                ->get()
+                ->map->getRawOriginal()
+                ->all()
+        );
+        $update = $stub->submitUpdate('approve', true, 'cold-profile');
+        $this->assertTrue($update->accepted());
+        $this->workOnce();
+        $this->assertTrue($stub->inspectUpdate($update->updateId())->completed());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => true,
+            'events' => ['started', 'approved:yes:cold-profile'],
+        ], $stub->query('currentState'));
+        $this->assertTrue($stub->signal('name-provided', 'λ')->accepted());
+        for ($jobs = 0; $jobs < 8 && DB::table('jobs')->exists(); ++$jobs) {
+            $this->workOnce();
+        }
+        $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
+        $this->assertTrue($stub->output()['approved']);
+        $this->assertSame(['started', 'approved:yes:cold-profile', 'signal:λ'], $stub->output()['events']);
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
+        foreach ([HistoryEventType::UpdateAccepted, HistoryEventType::UpdateCompleted,
+            HistoryEventType::SignalApplied, HistoryEventType::WorkflowCompleted] as $type) {
+            $this->assertCount(1, $events->where('event_type', $type));
+        }
+        $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+    }
+
+    public static function terminalCommands(): iterable
+    {
+        foreach ([
+            'cancel' => 'cancelled',
+            'terminate' => 'terminated',
+        ] as $command => $status) {
+            foreach ([false, true] as $enabled) {
+                yield $command . ($enabled ? ' retained' : ' cold') => [$enabled, $command, $status];
+            }
+        }
+    }
+
+    #[DataProvider('terminalCommands')]
+    public function testExternalTerminalCommandsNeverResumeTheRetainedFrame(
+        bool $enabled,
+        string $command,
+        string $status,
+    ): void {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => $enabled ? [ContinuationWorkflow::class] : [],
+            'build' => 'terminal-authority',
+        ]);
+        $stub = WorkflowStub::make(ContinuationWorkflow::class, 'terminal-' . $command, 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+        $this->workOnce();
+        $this->workOnce();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        $this->assertSame($enabled ? 1 : 0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $this->assertTrue($stub->{$command}('original terminal command')->accepted());
+        for ($jobs = 0; $jobs < 8 && DB::table('jobs')->exists(); ++$jobs) {
+            $this->workOnce();
+        }
+        $this->assertSame($status, $stub->refresh()->status());
+        $this->assertSame(1, ContinuationWorkflow::$entries);
+        $this->assertSame(0, ContinuationWorkflow::$afterActivity);
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
+        $this->assertCount(0, $events->where('event_type', HistoryEventType::TimerScheduled));
+        $this->assertCount(0, $events->where('event_type', HistoryEventType::WorkflowCompleted));
+        $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $this->app->make('queue.worker')
+            ->stop();
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+    }
+
+    public static function injectedWorkflows(): iterable
+    {
+        foreach ([ContinuationConstructorWorkflow::class, ContinuationMethodWorkflow::class] as $class) {
+            foreach ([false, true] as $enabled) {
+                yield $class . ($enabled ? ' configured' : ' cold') => [$enabled, $class];
+            }
+        }
+    }
+
+    /**
+     * @param class-string<Workflow> $class
+     */
+    #[DataProvider('injectedWorkflows')]
+    public function testScopedDependenciesAreRebuiltAcrossColdJobBoundaries(bool $enabled, string $class): void
+    {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => $enabled ? [$class] : [],
+            'build' => 'scoped-dependencies',
+        ]);
+        config()
+            ->set('continuation_test.scope', 'first-job');
+        $this->app->scoped(
+            ContinuationScopedDependency::class,
+            static fn () => new ContinuationScopedDependency(config('continuation_test.scope'))
+        );
+        $stub = WorkflowStub::make($class, 'scoped', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->app->forgetScopedInstances();
+        config()
+            ->set('continuation_test.scope', 'second-job');
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
+        $this->assertSame([
+            'scope' => 'second-job',
+            'value' =>
+                        [
+                            'integer' => 9007199254740993,
+                            'optional' => null,
+                            'unicode' => 'λ',
+                        ],
+        ], $stub->output());
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+        if ($enabled) {
+            $this->assertGreaterThan(
+                0,
+                app(WorkflowContinuationCache::class)->snapshot()['counts']['cold_profile'] ?? 0
+            );
+        }
+    }
+
+    #[DataProvider('modelProfiles')]
+    public function testFailedActivityRedriveDoesNotRepeatTheCommittedPrefix(bool $enabled): void
+    {
+        ContinuationRedriveActivity::$calls = 0;
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => $enabled ? [ContinuationRedriveWorkflow::class] : [],
+                'build' => 'redrive-original-prefix',
+            ]);
+        $stub = WorkflowStub::make(ContinuationRedriveWorkflow::class, 'redrive', 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame($enabled ? 1 : 0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->workOnce();
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('failed', $stub->refresh()->status(), Artisan::output());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$source->getRawOriginal('execution_deadline_at'), $source->getRawOriginal('run_deadline_at')];
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $source->id)->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(1, ContinuationRedriveActivity::$calls);
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $controlPlane = app(WorkflowControlPlane::class);
+        $options = [
+            'namespace' => 'continuation-test',
+            'request_id' => 'redrive-once',
+        ];
+        $redrive = $controlPlane->redrive('redrive', $source->id, $options);
+        $this->assertTrue($redrive['accepted'], (string) $redrive['reason']);
+        $this->assertNotSame($source->id, $redrive['workflow_run_id']);
+        $this->assertSame($source->id, $redrive['continued_from_run_id']);
+        $this->assertSame(2, $redrive['resume_step_sequence']);
+        $this->assertSame(
+            $redrive['workflow_run_id'],
+            $controlPlane->redrive('redrive', $source->id, $options)['workflow_run_id']
+        );
+        for ($jobs = 0; $jobs < 8 && DB::table('jobs')->exists(); ++$jobs) {
+            $this->workOnce();
+        }
+        $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
+        $this->assertSame([
+            'integer' => 9007199254740993,
+            'optional' => null,
+            'unicode' => 'λ',
+        ], $stub->output());
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(2, ContinuationRedriveActivity::$calls);
+        $this->assertSame(2, WorkflowRun::query()->count());
+        $this->assertSame('failed', $source->fresh()->status->value);
+        $this->assertSame(
+            $prefix,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $source->id)->orderBy('sequence')
+                ->get()
+                ->map->getRawOriginal()
+                ->all()
+        );
+        $this->assertSame($deadlines, [$source->fresh()->getRawOriginal('execution_deadline_at'),
+            $source->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $successor = WorkflowRun::query()->findOrFail($redrive['workflow_run_id']);
+        $this->assertSame($deadlines[0], $successor->getRawOriginal('execution_deadline_at'));
+        $this->assertSame([0], $successor->tasks()->pluck('repair_count')->unique()->values()->all());
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+    }
+
     protected function getPackageProviders($app): array
     {
         return [TestDatabaseServiceProvider::class, WorkflowServiceProvider::class];
@@ -460,8 +809,128 @@ final class ContinuationActivity extends Activity
     }
 }
 
+final class ContinuationRedriveWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        $value = Workflow::activity(ContinuationActivity::class);
+
+        return Workflow::activity(ContinuationRedriveActivity::class, $value);
+    }
+}
+
+final class ContinuationRedriveActivity extends Activity
+{
+    public static int $calls = 0;
+
+    public function handle(array $value): array
+    {
+        if (++self::$calls === 1) {
+            throw new NonRetryableException('Original redrive failure.');
+        }
+
+        return $value;
+    }
+}
+
+final class ContinuationScopedDependency
+{
+    public function __construct(
+        public readonly string $scope
+    ) {
+    }
+}
+
+final class ContinuationConstructorWorkflow extends Workflow
+{
+    public function __construct(
+        private readonly ContinuationScopedDependency $dependency
+    ) {
+    }
+
+    public function handle(): array
+    {
+        $value = Workflow::activity(ContinuationActivity::class);
+
+        return [
+            'scope' => $this->dependency->scope,
+            'value' => $value,
+        ];
+    }
+}
+
+final class ContinuationMethodWorkflow extends Workflow
+{
+    public function handle(ContinuationScopedDependency $dependency): array
+    {
+        $value = Workflow::activity(ContinuationActivity::class);
+
+        return [
+            'scope' => $dependency->scope,
+            'value' => $value,
+        ];
+    }
+}
+
 final class ContinuationConfiguredRun extends WorkflowRun
 {
+}
+
+final class ContinuationFallbackWorkflow extends Workflow
+{
+    /**
+     * @var array<string, int>
+     */
+    public static array $entries = [];
+
+    public function handle(string $operation, ?array $continued = null): array
+    {
+        self::$entries[$this->run->id] = (self::$entries[$this->run->id] ?? 0) + 1;
+        if ($continued !== null) {
+            return $continued;
+        }
+        $value = Workflow::activity(ContinuationActivity::class);
+        $result = match ($operation) {
+            'parallel' => Workflow::all([
+                static fn () => Workflow::timer(1),
+                static fn () => Workflow::timer(1),
+            ]),
+            'selection' => $this->selection(),
+            'child' => Workflow::child(ContinuationFallbackChild::class),
+            'condition' => Workflow::await(static fn (): bool => true, 1, 'fallback-ready'),
+            'continue' => Workflow::continueAsNew($operation, [
+                'value' => $value,
+                'operation' => 'continued',
+            ]),
+        };
+
+        return [
+            'value' => $value,
+            'operation' => $result,
+        ];
+    }
+
+    private function selection(): array
+    {
+        $selected = Workflow::select([
+            'left' => static fn () => Workflow::timer(1),
+            'right' => static fn () => Workflow::timer(1),
+        ]);
+
+        return [
+            'key' => $selected->key,
+            'winner' => $selected->result(),
+            'remaining' => $selected->handles['right']->await(),
+        ];
+    }
+}
+
+final class ContinuationFallbackChild extends Workflow
+{
+    public function handle(): string
+    {
+        return 'child-value';
+    }
 }
 
 final class ContinuationModelWorkflow extends Workflow
