@@ -304,6 +304,11 @@ $diagnostics = (object) [
     'rollback' => null,
     'errors' => 0,
     'repairs' => 0,
+    'job_started_ns' => null,
+    'job_pdo' => null,
+    'claim_task_id' => null,
+    'claim_started_ns' => null,
+    'claim_admissions' => 0,
 ];
 $deliveryErrorPath = $directory . '/delivery-errors.jsonl';
 $repairObservationPath = $directory . '/repair-observations.jsonl';
@@ -337,6 +342,29 @@ if (getenv('DW_PROBE_REPAIR_OBSERVATIONS') === 'true') {
 }
 $app['events']->listen(Illuminate\Queue\Events\JobProcessing::class, static function () use ($diagnostics): void {
     $diagnostics->rollback = null;
+    $diagnostics->job_started_ns = hrtime(true);
+    $diagnostics->job_pdo = DB::connection('baseline')->getRawPdo();
+    $diagnostics->claim_task_id = null;
+    $diagnostics->claim_started_ns = null;
+    $diagnostics->claim_admissions = 0;
+});
+DB::connection('baseline')->beforeExecuting(static function (string $sql, array $bindings) use ($diagnostics): void {
+    if (! str_starts_with($sql, 'update "workflow_tasks" set "id" =') || ! isset($bindings[0])) {
+        return;
+    }
+    foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 24) as $frame) {
+        if (($frame['class'] ?? null) !== Workflow\V2\Support\ActivityTaskClaimer::class
+            || ($frame['function'] ?? null) !== 'claimDetailed') {
+            continue;
+        }
+        if ($diagnostics->claim_task_id !== $bindings[0]) {
+            $diagnostics->claim_task_id = $bindings[0];
+            $diagnostics->claim_started_ns = hrtime(true);
+            $diagnostics->claim_admissions = 0;
+        }
+        $diagnostics->claim_admissions++;
+        return;
+    }
 });
 $app['events']->listen(Illuminate\Database\Events\TransactionRolledBack::class, static function ($event) use (
     $diagnostics
@@ -345,6 +373,7 @@ $app['events']->listen(Illuminate\Database\Events\TransactionRolledBack::class, 
     $diagnostics->rollback = [
         'level' => $event->connection->transactionLevel(),
         'pdo_in_transaction' => $pdo instanceof PDO ? $pdo->inTransaction() : null,
+        'same_pdo_as_job' => $pdo instanceof PDO && $pdo === $diagnostics->job_pdo,
     ];
 });
 $app['events']->listen(Illuminate\Queue\Events\JobExceptionOccurred::class, static function ($event) use (
@@ -361,6 +390,14 @@ $app['events']->listen(Illuminate\Queue\Events\JobExceptionOccurred::class, stat
         'queue_job' => $event->job->getJobId(),
         'task_id' => transportTaskId($event->job->payload()),
         'summary' => substr($event->exception->getMessage(), 0, 384),
+        'exception_class' => $event->exception::class,
+        'native_error_info' => $event->exception instanceof PDOException ? $event->exception->errorInfo : null,
+        'job_elapsed_ms' => $diagnostics->job_started_ns === null ? null
+            : round((hrtime(true) - $diagnostics->job_started_ns) / 1_000_000, 3),
+        'claim_task_id' => $diagnostics->claim_task_id,
+        'claim_admissions' => $diagnostics->claim_admissions,
+        'claim_elapsed_ms' => $diagnostics->claim_started_ns === null ? null
+            : round((hrtime(true) - $diagnostics->claim_started_ns) / 1_000_000, 3),
         'frames' => array_slice(array_values($frames), 0, 8),
         'last_rollback' => $diagnostics->rollback,
     ], JSON_THROW_ON_ERROR) . "\n", FILE_APPEND | LOCK_EX);
