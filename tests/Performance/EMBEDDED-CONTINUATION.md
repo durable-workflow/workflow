@@ -49,6 +49,19 @@ peak covers the whole fresh container and is reported separately. Retained-frame
 bytes are not isolated from the worker's other memory. Small observer-free
 comparisons are still required before attributing a production saving.
 
+Set `DWF_GROWTH_OBSERVERS=off` for a paired control without the optional SQL,
+task-delay, timer-lateness and cache-peak listeners. Those unmeasured fields are
+reported as `null`. The committed-completion barrier, source/lock checks,
+authored-entry counters, process CPU/memory readings and final history/effect/
+deadline audit remain. This is a minimally observed control, not an uninstrumented
+production benchmark. Use the same observer setting for both replay modes and
+report it alongside their results.
+
+With observers enabled, `history_selects` counts SELECT statements mentioning
+the actual history table, and `history_select_elapsed_ms` sums their reported SQL
+duration. These are separate from all SQL statements and elapsed SQL time. They
+do not measure history decoding, PHP projection CPU or database CPU.
+
 `setup` selects only 10-event functional cohorts, with one/eight runs, one/four
 workers and both replay modes. Their predeclared observation bounds are 30 seconds
 for one run and 120 seconds for eight runs. They may run on shared development

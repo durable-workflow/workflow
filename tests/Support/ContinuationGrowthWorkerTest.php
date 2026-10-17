@@ -13,6 +13,7 @@ use Tests\Fixtures\V2\TestContinuationGrowthWorkflow;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -31,6 +32,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
         $loaded = ContinuationGrowthEnvironment::loadedSources();
         $sqlite = DB::selectOne('SELECT sqlite_version() AS version')->version;
         $async = function_exists('pcntl_async_signals') && function_exists('pcntl_signal');
+        $observers = getenv('DWF_GROWTH_OBSERVERS') !== 'off';
         if (getenv('PROFILE_EMBEDDED_CONTINUATION') === 'measure') {
             $this->assertTrue($async, 'Qualified measurements require the actual worker timeout/signal path.');
         }
@@ -40,6 +42,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
             'startup_cpu_us' => $startupCpu,
             'loaded_sources' => $loaded,
             'async_signals' => $async,
+            'observers_enabled' => $observers,
             'php' => PHP_VERSION,
             'laravel' => $this->app->version(),
             'sqlite' => $sqlite,
@@ -48,9 +51,11 @@ final class ContinuationGrowthWorkerTest extends TestCase
         while (! is_file($directory . '/start')) {
             usleep(10_000);
         }
-        $peakEntries = 0;
-        $this->app['events']->listen(Looping::class, function () use ($directory, &$peakEntries): void {
-            $peakEntries = max($peakEntries, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $peakEntries = $observers ? 0 : null;
+        $this->app['events']->listen(Looping::class, function () use ($directory, $observers, &$peakEntries): void {
+            if ($observers) {
+                $peakEntries = max($peakEntries, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+            }
             if (is_file($directory . '/stop')) {
                 $worker = $this->app->make('queue.worker');
                 $worker->shouldQuit = true;
@@ -63,27 +68,43 @@ final class ContinuationGrowthWorkerTest extends TestCase
             }
         });
         $claims = [];
-        WorkflowTask::updated(static function (WorkflowTask $task) use (&$claims): void {
-            if ($task->status === TaskStatus::Leased && $task->wasChanged('status')
-                && $task->available_at !== null && $task->leased_at !== null) {
-                $claims[$task->id . ':' . $task->attempt_count] = $task->available_at->diffInMicroseconds(
-                    $task->leased_at,
-                    false
-                );
-            }
-        });
         $timers = [];
-        WorkflowTimer::updated(static function (WorkflowTimer $timer) use (&$timers): void {
-            if ($timer->status === TimerStatus::Fired && $timer->wasChanged('status')) {
-                $timers[$timer->id] = $timer->fire_at->diffInMicroseconds($timer->fired_at, false);
-            }
-        });
         $queries = 0;
         $queryMilliseconds = 0.0;
-        DB::listen(static function (QueryExecuted $query) use (&$queries, &$queryMilliseconds): void {
-            ++$queries;
-            $queryMilliseconds += $query->time;
-        });
+        $historySelects = 0;
+        $historyMilliseconds = 0.0;
+        if ($observers) {
+            $historyTable = (new WorkflowHistoryEvent())->getTable();
+            WorkflowTask::updated(static function (WorkflowTask $task) use (&$claims): void {
+                if ($task->status === TaskStatus::Leased && $task->wasChanged('status')
+                    && $task->available_at !== null && $task->leased_at !== null) {
+                    $claims[$task->id . ':' . $task->attempt_count] = $task->available_at->diffInMicroseconds(
+                        $task->leased_at,
+                        false
+                    );
+                }
+            });
+            WorkflowTimer::updated(static function (WorkflowTimer $timer) use (&$timers): void {
+                if ($timer->status === TimerStatus::Fired && $timer->wasChanged('status')) {
+                    $timers[$timer->id] = $timer->fire_at->diffInMicroseconds($timer->fired_at, false);
+                }
+            });
+            DB::listen(static function (QueryExecuted $query) use (
+                &$queries,
+                &$queryMilliseconds,
+                &$historySelects,
+                &$historyMilliseconds,
+                $historyTable
+            ): void {
+                ++$queries;
+                $queryMilliseconds += $query->time;
+                if (strncasecmp(ltrim($query->sql), 'select', 6) === 0
+                    && str_contains($query->sql, $historyTable)) {
+                    ++$historySelects;
+                    $historyMilliseconds += $query->time;
+                }
+            });
+        }
         TestContinuationGrowthWorkflow::$entries = 0;
         TestContinuationGrowthWorkflow::$roundVisits = 0;
         $started = hrtime(true);
@@ -102,19 +123,22 @@ final class ContinuationGrowthWorkerTest extends TestCase
         ContinuationGrowthEnvironment::writeReport($reportPath . '.json', [
             'pid' => getmypid(),
             'exit' => $exit,
+            'observers_enabled' => $observers,
             'queue_cpu_us' => $cpu,
             'queue_wall_ns' => $elapsed,
             'startup_cpu_us' => $startupCpu,
             'peak_rss_kib' => getrusage()['ru_maxrss'],
             'peak_allocated_bytes' => memory_get_peak_usage(true),
-            'queries' => $queries,
-            'query_elapsed_ms' => $queryMilliseconds,
+            'queries' => $observers ? $queries : null,
+            'query_elapsed_ms' => $observers ? $queryMilliseconds : null,
+            'history_selects' => $observers ? $historySelects : null,
+            'history_select_elapsed_ms' => $observers ? $historyMilliseconds : null,
             'entries' => TestContinuationGrowthWorkflow::$entries,
             'round_visits' => TestContinuationGrowthWorkflow::$roundVisits,
             'cache' => app(WorkflowContinuationCache::class)->snapshot(),
             'observed_peak_entries' => $peakEntries,
-            'task_queue_delay' => ContinuationGrowthEnvironment::distribution($claims),
-            'timer_lateness' => ContinuationGrowthEnvironment::distribution($timers),
+            'task_queue_delay' => $observers ? ContinuationGrowthEnvironment::distribution($claims) : null,
+            'timer_lateness' => $observers ? ContinuationGrowthEnvironment::distribution($timers) : null,
         ]);
         $this->assertSame(0, $exit, Artisan::output());
     }

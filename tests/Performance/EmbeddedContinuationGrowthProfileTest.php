@@ -16,6 +16,7 @@ use Tests\Support\ContinuationGrowthEnvironment;
 use Throwable;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
@@ -58,6 +59,9 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                 $worker->stop(0, 9);
             }
         }
+        if ($this->status()->isFailure() || $this->status()->isError()) {
+            $this->reportFailedState();
+        }
         parent::tearDown();
         (new Filesystem())->deleteDirectory($this->directory);
     }
@@ -99,6 +103,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
             $this->markTestSkipped('Explicit isolated growing-history qualification only.');
         }
         $budget = $mode === 'setup' ? ($concurrent === 1 ? 30 : 120) : 3600;
+        $observers = getenv('DWF_GROWTH_OBSERVERS') !== 'off';
         $limits = [
             'cpu_max' => trim((string) @file_get_contents('/sys/fs/cgroup/cpu.max')),
             'memory_max' => trim((string) @file_get_contents('/sys/fs/cgroup/memory.max')),
@@ -129,6 +134,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         foreach ($this->workers as $index => $worker) {
             $ready[] = $this->readReport('/worker-' . $index . '.ready');
             $this->assertSame($worker->getPid(), $ready[$index]['pid']);
+            $this->assertSame($observers, $ready[$index]['observers_enabled']);
             $this->assertSame(ContinuationGrowthEnvironment::loadedSources(), $ready[$index]['loaded_sources']);
             $this->assertSame(
                 hash_file('sha256', dirname(__DIR__, 2) . '/composer.lock'),
@@ -194,8 +200,19 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
             $this->assertSame(0, $worker->getExitCode(), $this->diagnostic($worker));
             $reports[] = $this->readReport('/worker-' . $index . '.json');
             $this->assertSame(0, $reports[$index]['exit']);
+            $this->assertSame($observers, $reports[$index]['observers_enabled']);
             $this->assertSame(0, $reports[$index]['cache']['entries']);
-            $this->assertLessThanOrEqual(4, $reports[$index]['observed_peak_entries']);
+            if ($observers) {
+                $this->assertLessThanOrEqual(4, $reports[$index]['observed_peak_entries']);
+                $this->assertGreaterThan(0, $reports[$index]['history_selects']);
+                $this->assertLessThanOrEqual($reports[$index]['queries'], $reports[$index]['history_selects']);
+            } else {
+                foreach (['queries', 'query_elapsed_ms', 'history_selects', 'history_select_elapsed_ms',
+                    'task_queue_delay', 'timer_lateness',
+                    'observed_peak_entries'] as $metric) {
+                    $this->assertNull($reports[$index][$metric]);
+                }
+            }
         }
         $audit = [];
         foreach ($originals as $original) {
@@ -252,14 +269,16 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         }
         $tasks = WorkflowTask::query()->get();
         $this->assertSame(['completed'], $tasks->pluck('status')->map->value->unique()->values()->all());
-        $this->assertSame(
-            (int) $tasks->sum('attempt_count'),
-            array_sum(array_column(array_column($reports, 'task_queue_delay'), 'count'))
-        );
-        $this->assertSame(
-            ($rounds + 1) * $concurrent,
-            array_sum(array_column(array_column($reports, 'timer_lateness'), 'count'))
-        );
+        if ($observers) {
+            $this->assertSame(
+                (int) $tasks->sum('attempt_count'),
+                array_sum(array_column(array_column($reports, 'task_queue_delay'), 'count'))
+            );
+            $this->assertSame(
+                ($rounds + 1) * $concurrent,
+                array_sum(array_column(array_column($reports, 'timer_lateness'), 'count'))
+            );
+        }
         $this->assertSame(0, DB::table('failed_jobs')->count());
         $this->assertSame(0, DB::table('jobs')->count());
         if (! $retained) {
@@ -269,6 +288,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         echo 'CONTINUATION_GROWTH_REPORT=' . json_encode([
             'schema' => 'embedded-continuation-growth-v1',
             'mode' => $mode,
+            'observers_enabled' => $observers,
             'events_per_run' => 5 * $rounds + 5,
             'rounds' => $rounds,
             'worker_count' => $workerCount,
@@ -310,6 +330,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                 'DWF_GROWTH_RETAINED' => $retained ? '1' : '0',
                 'DWF_GROWTH_BUDGET' => (string) $budget,
                 'DWF_GROWTH_MEMORY' => (string) intdiv(1024, $workers),
+                'DWF_GROWTH_OBSERVERS' => getenv('DWF_GROWTH_OBSERVERS') === 'off' ? 'off' : 'on',
                 'XDEBUG_MODE' => 'off',
                 'APP_SERVICES_CACHE' => $this->directory . '/services-' . $index . '.php',
                 'APP_PACKAGES_CACHE' => $this->directory . '/packages-' . $index . '.php',
@@ -331,6 +352,39 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
     private function diagnostic(Process $worker): string
     {
         return substr($worker->getOutput(), -4096) . substr($worker->getErrorOutput(), -4096);
+    }
+
+    private function reportFailedState(): void
+    {
+        try {
+            $fields = ['id', 'workflow_run_id', 'task_type', 'status', 'attempt_count', 'repair_count',
+                'available_at', 'leased_at', 'lease_expires_at', 'last_dispatch_attempt_at',
+                'last_dispatched_at', 'last_claim_failed_at', 'last_claim_error', 'last_error'];
+            $tasks = WorkflowTask::query()->where('repair_count', '>', 0)->orderBy('id')->limit(16)->get();
+            echo 'CONTINUATION_GROWTH_AUDIT_FAILURE=' . json_encode([
+                'test' => $this->nameWithDataSet(),
+                'run_count' => WorkflowRun::query()->count(),
+                'completed_runs' => WorkflowRun::query()->where('status', 'completed')->count(),
+                'history_events' => WorkflowHistoryEvent::query()->count(),
+                'activity_effects' => DB::table('continuation_effects')->count(),
+                'task_count' => WorkflowTask::query()->count(),
+                'completed_tasks' => WorkflowTask::query()->where('status', 'completed')->count(),
+                'repaired_task_count' => WorkflowTask::query()->where('repair_count', '>', 0)->count(),
+                'repaired_tasks' => $tasks->map(static function (WorkflowTask $task) use ($fields): array {
+                    $row = array_intersect_key($task->getRawOriginal(), array_flip($fields));
+                    foreach (['last_error', 'last_claim_error'] as $field) {
+                        if (is_string($row[$field] ?? null)) {
+                            $row[$field] = substr($row[$field], 0, 1024);
+                        }
+                    }
+
+                    return $row;
+                })->all(),
+                'failed_jobs' => DB::table('failed_jobs')->count(),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+        } catch (Throwable $failure) {
+            echo 'CONTINUATION_GROWTH_AUDIT_UNAVAILABLE=' . substr($failure->getMessage(), 0, 1024) . PHP_EOL;
+        }
     }
 
     private function readReport(string $suffix): array
