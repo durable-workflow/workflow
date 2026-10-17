@@ -118,7 +118,7 @@ final class WorkflowExecutor
         while (true) {
             if ($continuation !== null && $workflowExecution->valid() && ! $continuation->accepts($current)) {
                 $resumed = $continuation->resumed();
-                $continuation->disable();
+                $continuation->disable('cold_unsupported_operation');
                 $continuation = null;
                 if ($resumed) {
                     // The unsupported call has not entered its durable handler.

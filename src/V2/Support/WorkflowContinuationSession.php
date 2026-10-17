@@ -50,7 +50,7 @@ final class WorkflowContinuationSession
             && $this->hasAuthority($run, $task) && $this->safeHistory($run);
         $prefix = $eligible ? $this->prefix($run) : null;
         if ($prefix === null) {
-            $this->disable();
+            $this->disable($eligible ? 'cold_history_cursor' : 'cold_profile');
             return null;
         }
         $this->key = hash('sha256', serialize([
@@ -94,8 +94,9 @@ final class WorkflowContinuationSession
         return $this->resumed;
     }
 
-    public function disable(): void
+    public function disable(string $reason = 'discard'): void
     {
+        $this->cache->count($reason);
         if ($this->scope !== null) {
             $this->cache->invalidate($this->scope);
         }
@@ -149,7 +150,7 @@ final class WorkflowContinuationSession
     private function eligibleClass(string $class): bool
     {
         $allowed = config('workflows.v2.live_execution.workflows', []);
-        if (! is_array($allowed) || ! in_array($class, $allowed, true)) {
+        if (! is_array($allowed) || ! in_array($class, $allowed, true) || app()->bound($class)) {
             return false;
         }
         $reflection = new ReflectionClass($class);

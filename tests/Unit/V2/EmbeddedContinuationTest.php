@@ -74,6 +74,7 @@ final class EmbeddedContinuationTest extends TestCase
             'new application build' => [true, 2, 1, 'build'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
             'worker stop' => [true, 2, 1, 'stop'],
+            'container binding stays cold' => [true, 3, 2, 'binding'],
         ];
     }
 
@@ -88,6 +89,9 @@ final class EmbeddedContinuationTest extends TestCase
             'workflows' => $enabled ? [ContinuationWorkflow::class] : [],
             'build' => 'continuation-test-build',
         ]);
+        if ($change === 'binding') {
+            $this->app->bind(ContinuationWorkflow::class, static fn () => new ContinuationWorkflow());
+        }
         $stub = WorkflowStub::make(ContinuationWorkflow::class, 'original', 'continuation-test');
         $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
         $run = WorkflowRun::query()->findOrFail($stub->runId());
@@ -185,6 +189,40 @@ final class EmbeddedContinuationTest extends TestCase
             ->get()
             ->map->getRawOriginal()
             ->all());
+    }
+
+    public function testOnePersistentDaemonKeepsItsFrameAcrossARealOneSecondTimer(): void
+    {
+        $this->enable();
+        Carbon::setTestNow();
+        $stub = WorkflowStub::make(ContinuationWorkflow::class, 'daemon-original', 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        $started = hrtime(true);
+        $status = Artisan::call('queue:work', [
+            'connection' => 'database',
+            '--queue' => 'default',
+            '--max-jobs' => 5,
+            '--max-time' => 30,
+            '--sleep' => 1,
+            '--tries' => 1,
+            '--timeout' => 30,
+        ]);
+        $elapsed = (hrtime(true) - $started) / 1_000_000_000;
+        $this->assertSame(0, $status, Artisan::output());
+        $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
+        $this->assertSame(1, ContinuationWorkflow::$entries);
+        $this->assertSame(1, ContinuationWorkflow::$afterActivity);
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(5, $run->tasks()->where('status', 'completed')->where('attempt_count', 1)->count());
+        $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $this->assertGreaterThanOrEqual(1, $elapsed);
+        $this->assertLessThan(30, $elapsed);
+        $this->assertSame(0, $this->app->make(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(0, DB::table('failed_jobs')->count());
     }
 
     public function testUnsupportedMemoFallsBackBeforeItsDurableWrite(): void

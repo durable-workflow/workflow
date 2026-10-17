@@ -10,6 +10,12 @@
     "arguments": [1],
     "payload_codec": "avro"
   },
+  "history": [{
+    "sequence": 1,
+    "event_type": "WorkflowStarted",
+    "payload": {},
+    "recorded_at": "2026-10-17T15:15:00.123456Z"
+  }],
   "expected": {
     "completed": false,
     "result": null,

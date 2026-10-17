@@ -88,7 +88,7 @@ final class RunWorkflowTask implements ShouldQueue
                 }
 
                 if ($continuation !== null && ! $continuation->hasAuthority($run, $task)) {
-                    $continuation->disable();
+                    $continuation->disable('lost_task_authority');
                     return null;
                 }
 
@@ -98,7 +98,7 @@ final class RunWorkflowTask implements ShouldQueue
                 return $nextTask;
             });
         } catch (Throwable $throwable) {
-            $continuation?->disable();
+            $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
