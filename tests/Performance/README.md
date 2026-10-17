@@ -160,7 +160,9 @@ counts and remaining uncertainty.
 
 Set `PROFILE_EMBEDDED_SAMPLE_WINDOWS=1` to add each original's PHP child PID,
 physical measurement start/end, SQL count/elapsed time and process/PHP peak
-memory. The window covers workflow start and ready-task handling, before the
+memory. A three-second observer setup delay precedes the measured admission;
+it is outside the CPU window and does not advance virtual workflow time.
+The window covers workflow start and ready-task handling, before the
 validation queries. SQL elapsed time is not SQL CPU. Leave
 `PROFILE_HISTORY_ACCESS` unset when sampling ordinary history models.
 

@@ -72,6 +72,10 @@ final class ProjectionRoleProbeTest extends TestCase
         $queries = 0;
         $sqlMilliseconds = 0.0;
         if ($observe) {
+            ReplayGrowthWorkflow::$entries = 0;
+            ReplayGrowthWorkflow::$roundVisits = 0;
+            // Let an external observer attach before the measured admission.
+            usleep(3_000_000);
             DB::listen(static function (QueryExecuted $query) use (&$queries, &$sqlMilliseconds): void {
                 ++$queries;
                 $sqlMilliseconds += $query->time;
@@ -138,6 +142,8 @@ final class ProjectionRoleProbeTest extends TestCase
                 'queries' => $measuredQueries,
                 'sql_ms' => $measuredSqlMilliseconds,
                 'history_payload_instrumentation' => $recordPayloadReads,
+                'workflow_entries' => ReplayGrowthWorkflow::$entries,
+                'round_visits' => ReplayGrowthWorkflow::$roundVisits,
                 'process_peak_rss_kib' => getrusage()['ru_maxrss'],
                 'php_peak_allocated_bytes' => memory_get_peak_usage(true),
             ] : []),
