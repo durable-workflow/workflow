@@ -110,6 +110,16 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
         $this->app->singleton(\Workflow\V2\Support\WorkflowContinuationCache::class);
+        $this->app['events']->listen(\Illuminate\Queue\Events\Looping::class, function (): void {
+            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
+            }
+        });
+        $this->app['events']->listen(\Illuminate\Queue\Events\WorkerStopping::class, function (): void {
+            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear();
+            }
+        });
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);

@@ -68,6 +68,11 @@ final class WorkflowContinuationCache
     public function publish(string $key, int $generation, WorkflowContinuation $entry): void
     {
         $this->trim();
+        $now = hrtime(true);
+        if ($entry->retainedAt !== 0 && $now - $entry->retainedAt >= 30_000_000_000) {
+            $this->count('discard_age');
+            return;
+        }
         if (($this->generations[$key] ?? null) !== $generation || ! $this->memoryAvailable()) {
             $this->count('discard_publication');
             return;
@@ -77,7 +82,9 @@ final class WorkflowContinuationCache
             unset($this->entries[array_key_first($this->entries)]);
             $this->count('evict_capacity');
         }
-        $entry->retainedAt = hrtime(true);
+        if ($entry->retainedAt === 0) {
+            $entry->retainedAt = $now;
+        }
         $entry->workflow->run->unsetRelations();
         $this->entries[$key] = $entry;
         $this->count('retained');

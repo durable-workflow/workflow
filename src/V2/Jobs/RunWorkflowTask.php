@@ -54,7 +54,8 @@ final class RunWorkflowTask implements ShouldQueue
         }
 
         $nextTask = null;
-        $continuation = app(WorkflowContinuationCache::class)->session($this->job);
+        $continuation = config('workflows.v2.live_execution.workflows', []) === []
+            ? null : app(WorkflowContinuationCache::class)->session($this->job);
 
         try {
             $nextTask = SqliteTransaction::forTask($this->taskId, function () use (
