@@ -95,6 +95,30 @@ payloads and 1,836 were other event types. This identifies repeated payload
 decoding inside the helper. It does not measure the remaining bridge work,
 prove a cache design or establish a speedup.
 
+## Cold bridge payload probe
+
+`BridgePayloadProbeTest.php` uses the same genuine 102-event workload and the
+normal `WorkflowFiberRunner::forClass` constructor. A Laravel resolving callback
+captures its workflow object. Ordinary samples use the runner-created transient
+models. Instrumented samples replace them after initialization with the existing
+profiling subclass, preserving raw attributes, original state, casts, connection,
+table, relations and persistence flags. The complete command output must match
+across all three modes. Product code is loaded from the normal published lock.
+
+The probe measures three fresh cold steps per mode, separating initialization
+from step CPU and requiring zero SQL in both. It counts model payload access by
+event type, authored workflow entries and round visits, while preserving stored
+history, effects and task state. Cast clocks include their own overhead. The
+unmeasured remainder is not an exact authored-code CPU measurement.
+
+```sh
+cd benchmarks/embedded-replay
+DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
+  PROFILE_REPLAY_GROWTH=1 vendor/bin/phpunit --configuration ../../phpunit.xml \
+  --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
+  ../../tests/Performance/BridgePayloadProbeTest.php
+```
+
 ## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
