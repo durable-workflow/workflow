@@ -110,7 +110,11 @@ final class ProjectionSqliteContentionTest extends TestCase
             }
         });
         $connection->getEventDispatcher()
-            ->listen(TransactionRolledBack::class, static function ($event) use ($connection, $writer, &$rollbacks): void {
+            ->listen(TransactionRolledBack::class, static function ($event) use (
+                $connection,
+                $writer,
+                &$rollbacks
+            ): void {
                 if ($event->connection === $connection && $writer->inTransaction()) {
                     self::assertSame(0, $connection->transactionLevel());
                     self::assertFalse($connection->getPdo()->inTransaction());
@@ -152,6 +156,16 @@ final class ProjectionSqliteContentionTest extends TestCase
             'unicode' => 'λ',
         ], $stub->output());
         self::assertSame(1, SqliteContentionActivity::$invocations);
+        self::assertSame($run->id, $stub->runId());
+        self::assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        self::assertSame($prefix, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->limit(count($prefix))
+            ->get()
+            ->map->getRawOriginal()
+            ->all());
         self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->sum('repair_count'));
         self::assertSame(0, DB::table('jobs')->count());
         self::assertSame(0, DB::table('failed_jobs')->count());

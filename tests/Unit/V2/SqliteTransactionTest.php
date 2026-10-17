@@ -102,6 +102,30 @@ final class SqliteTransactionTest extends TestCase
         $this->assertFalse($this->connection->getPdo()->inTransaction());
     }
 
+    public function testExplicitConnectionDoesNotResolveAnUnrelatedApplicationDatabase(): void
+    {
+        DB::swap(new class() {
+            public function connection(): never
+            {
+                throw new \LogicException('The unrelated application database must not be resolved.');
+            }
+        });
+        $calls = 0;
+        $value = SqliteTransaction::run(function ($database) use (&$calls): int {
+            $this->assertSame($this->connection, $database);
+            $calls++;
+            $database->update('UPDATE state SET value=value+1 WHERE id=1');
+
+            return (int) $database->selectOne('SELECT value FROM state WHERE id=1')
+->value;
+        }, connection: $this->connection);
+
+        $this->assertSame(1, $value);
+        $this->assertSame(1, $calls);
+        $this->assertSame(0, $this->connection->transactionLevel());
+        $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
     public function testConfiguredStorageMutationRollsBackItsOwnRoot(): void
     {
         $primary = $this->separateApplicationConnection();
