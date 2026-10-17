@@ -662,39 +662,7 @@ final class WorkflowExecutor
             return $this->resumeCancellation($run, $task, $frame);
         }
         if ($activityCompletion !== null) {
-            $propagatedActivityFailure = null;
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                    $current = $workflowExecution->send(
-                        $this->activityResult($activityCompletion, $run),
-                        RedriveReplayClock::activityCompletedAt($activityCompletion)
-                    );
-                } else {
-                    $failureId = $activityCompletion->payload['failure_id'] ?? null;
-                    $propagatedActivityFailure = $this->activityException($activityCompletion, null, $run);
-                    $current = $workflowExecution->throw($propagatedActivityFailure, $activityCompletion->recorded_at);
-                    $this->recordFailureHandled(
-                        $run,
-                        $task,
-                        is_string($failureId) ? $failureId : null,
-                        $sequence,
-                        $activityCompletion->payload
-                    );
-                }
-            } catch (Throwable $throwable) {
-                $this->failRun(
-                    $run,
-                    $task,
-                    $throwable,
-                    'workflow_run',
-                    $run->id,
-                    $activityCompletion->event_type === HistoryEventType::ActivityFailed && $throwable === $propagatedActivityFailure ? $sequence : null
-                );
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeRecordedActivity($run, $task, $frame, $activityCompletion);
         }
         if ($this->activityOpenEvent($run, $sequence) !== null) {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -716,6 +684,64 @@ final class WorkflowExecutor
         if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
             return null;
         }
+        return $this->resumeActivityExecution($run, $task, $frame, $execution);
+    }
+
+    private function resumeRecordedActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent $activityCompletion,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+        $propagatedActivityFailure = null;
+        try {
+            $this->syncWorkflowCursor($workflow, $sequence + 1);
+            if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                $current = $workflowExecution->send(
+                    $this->activityResult($activityCompletion, $run),
+                    RedriveReplayClock::activityCompletedAt($activityCompletion)
+                );
+            } else {
+                $failureId = $activityCompletion->payload['failure_id'] ?? null;
+                $propagatedActivityFailure = $this->activityException($activityCompletion, null, $run);
+                $current = $workflowExecution->throw($propagatedActivityFailure, $activityCompletion->recorded_at);
+                $this->recordFailureHandled(
+                    $run,
+                    $task,
+                    is_string($failureId) ? $failureId : null,
+                    $sequence,
+                    $activityCompletion->payload
+                );
+            }
+        } catch (Throwable $throwable) {
+            $this->failRun(
+                $run,
+                $task,
+                $throwable,
+                'workflow_run',
+                $run->id,
+                $activityCompletion->event_type === HistoryEventType::ActivityFailed && $throwable === $propagatedActivityFailure ? $sequence : null
+            );
+            return null;
+        }
+        ++$sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeActivityExecution(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        ActivityExecution $execution,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
         $propagatedActivityFailure = null;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1173,15 +1199,7 @@ final class WorkflowExecutor
             return $this->resumeCancellation($run, $task, $frame);
         }
         if ($timerFired !== null) {
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(true, $timerFired->recorded_at);
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeTimer($run, $task, $frame, $timerFired);
         }
         if ($this->timerScheduledEvent($run, $sequence) !== null) {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1192,15 +1210,7 @@ final class WorkflowExecutor
         if ($timer === null) {
             if ($current->seconds === 0) {
                 $fired = $this->fireImmediateTimer($run, $task, $sequence, $current);
-                try {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(true, $fired->recorded_at);
-                } catch (Throwable $throwable) {
-                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                    return null;
-                }
-                ++$sequence;
-                return WorkflowTaskStep::ContinueExecution;
+                return $this->resumeTimer($run, $task, $frame, $fired);
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->scheduleTimer($run, $task, $sequence, $current);
@@ -1215,9 +1225,25 @@ final class WorkflowExecutor
         if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
             return null;
         }
+        return $this->resumeTimer($run, $task, $frame, $timer);
+    }
+
+    private function resumeTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent|WorkflowTimer $timer,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
-            $current = $workflowExecution->send(true, $timer->fired_at);
+            $current = $workflowExecution->send(
+                true,
+                $timer instanceof WorkflowHistoryEvent ? $timer->recorded_at : $timer->fired_at,
+            );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
@@ -1262,15 +1288,7 @@ final class WorkflowExecutor
             return $this->resumeCancellation($run, $task, $frame);
         }
         if ($signalEvent !== null) {
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send($this->signalValue($signalEvent, $run), $signalEvent->recorded_at);
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeSignal($run, $task, $frame, $signalEvent);
         }
         /** @var WorkflowTimer|null $timeoutTimer */
         $timeoutTimer = $current->timeoutSeconds !== null ? $run->timers->firstWhere('sequence', $sequence) : null;
@@ -1286,24 +1304,17 @@ final class WorkflowExecutor
         ) : null;
         $signalWaitId = $this->signalWaitId($run, $sequence, $current) ?? (string) Str::ulid();
         $signalCommand = $this->pendingSignalCommand($run, $current);
-        $timeoutHasWon = $current->timeoutSeconds !== null && ($timeoutFiredEvent !== null || $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired);
-        if ($timeoutHasWon && $signalCommand !== null && $timeoutFiredEvent !== null) {
-            $signalReceivedEvent = $this->signalReceivedEventForCommand($run, $signalCommand);
-            if ($signalReceivedEvent !== null && $signalReceivedEvent->sequence < $timeoutFiredEvent->sequence) {
-                $timeoutHasWon = false;
-            }
-        }
+        $timeoutHasWon = $this->signalTimeoutHasWon(
+            $run,
+            $current->timeoutSeconds !== null,
+            $timeoutTimer,
+            $timeoutScheduledEvent,
+            $timeoutFiredEvent,
+            $signalCommand,
+        );
         if ($timeoutHasWon) {
             $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(null, $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at);
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeSignalTimeout($run, $task, $frame, $timeoutFiredEvent, $timeoutTimer);
         }
         if ($signalCommand !== null) {
             $signalWaitId = $this->signalWaitIdForCommand($run, $signalCommand, $current->name);
@@ -1312,29 +1323,27 @@ final class WorkflowExecutor
                 $this->cancelSignalTimeout($run, $task, $timeoutTimer);
             }
             $signalEvent = $this->applySignal($run, $task, $sequence, $current, $signalCommand, $signalWaitId);
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send($this->signalValue($signalEvent, $run), $signalEvent?->recorded_at);
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeSignal($run, $task, $frame, $signalEvent);
         }
+        return $this->waitForSignal($run, $task, $frame, $signalWaitId, $timeoutTimer);
+    }
+
+    private function waitForSignal(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        string $signalWaitId,
+        ?WorkflowTimer $timeoutTimer,
+    ): WorkflowTask|WorkflowTaskStep|null {
+        $workflow = $frame->workflow;
+        /** @var SignalCall $current */
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
         $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
         if ($current->timeoutSeconds !== null) {
             if ($current->timeoutSeconds === 0) {
                 $firedTimer = $this->fireImmediateSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
-                try {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(null, $firedTimer->fired_at);
-                } catch (Throwable $throwable) {
-                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                    return null;
-                }
-                ++$sequence;
-                return WorkflowTaskStep::ContinueExecution;
+                return $this->resumeSignalTimeout($run, $task, $frame, null, $firedTimer);
             }
             if ($timeoutTimer === null) {
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1343,6 +1352,67 @@ final class WorkflowExecutor
         }
         $this->syncWorkflowCursor($workflow, $sequence + 1);
         return $this->waitForNextResumeSource($run, $task, true);
+    }
+
+    private function signalTimeoutHasWon(
+        WorkflowRun $run,
+        bool $hasTimeout,
+        ?WorkflowTimer $timeoutTimer,
+        ?WorkflowHistoryEvent $timeoutScheduledEvent,
+        ?WorkflowHistoryEvent $timeoutFiredEvent,
+        ?WorkflowCommand $signalCommand,
+    ): bool {
+        $timeoutHasWon = $hasTimeout && ($timeoutFiredEvent !== null || $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired);
+        if ($timeoutHasWon && $signalCommand !== null && $timeoutFiredEvent !== null) {
+            $signalReceivedEvent = $this->signalReceivedEventForCommand($run, $signalCommand);
+            if ($signalReceivedEvent !== null && $signalReceivedEvent->sequence < $timeoutFiredEvent->sequence) {
+                $timeoutHasWon = false;
+            }
+        }
+        return $timeoutHasWon;
+    }
+
+    private function resumeSignal(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent $signalEvent,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+        try {
+            $this->syncWorkflowCursor($workflow, $sequence + 1);
+            $current = $workflowExecution->send($this->signalValue($signalEvent, $run), $signalEvent->recorded_at);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        ?WorkflowHistoryEvent $timeoutFiredEvent,
+        ?WorkflowTimer $timeoutTimer,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+        try {
+            $this->syncWorkflowCursor($workflow, $sequence + 1);
+            $current = $workflowExecution->send(null, $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$sequence;
+        return WorkflowTaskStep::ContinueExecution;
     }
 
     private function executeServiceOperation(
@@ -1397,6 +1467,19 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->waitForNextResumeSource($run, $task);
         }
+        return $this->resumeServiceOperation($run, $task, $frame, $serviceEvent);
+    }
+
+    private function resumeServiceOperation(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent $serviceEvent,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             if (in_array(
@@ -1460,33 +1543,7 @@ final class WorkflowExecutor
             return $this->resumeCancellation($run, $task, $frame);
         }
         if ($resolutionEvent !== null) {
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                    $current = $workflowExecution->send(
-                        ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
-                        $resolutionEvent->recorded_at
-                    );
-                } else {
-                    $failureId = $resolutionEvent->payload['failure_id'] ?? null;
-                    $current = $workflowExecution->throw(
-                        ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                        $resolutionEvent->recorded_at
-                    );
-                    $this->recordFailureHandled(
-                        $run,
-                        $task,
-                        is_string($failureId) ? $failureId : null,
-                        $sequence,
-                        $this->childFailureHandledPayload($resolutionEvent)
-                    );
-                }
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            ++$sequence;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeChildResolution($run, $task, $frame, $resolutionEvent, $childRun);
         }
         if ($childRun === null) {
             if (ChildRunHistory::scheduledEventForSequence(
@@ -1511,6 +1568,20 @@ final class WorkflowExecutor
             return null;
         }
         $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childRun);
+        return $this->resumeChildResolution($run, $task, $frame, $resolutionEvent, $childRun);
+    }
+
+    private function resumeChildResolution(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        WorkflowHistoryEvent $resolutionEvent,
+        ?WorkflowRun $childRun,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
@@ -1649,48 +1720,10 @@ final class WorkflowExecutor
             )['parallel_group_path'][0]['parallel_group_id'];
             $selection = ParallelChildGroup::selectionResolution($run, $groupId);
             if ($selection instanceof WorkflowHistoryEvent) {
-                try {
-                    $winner = ParallelChildGroup::validatedSelectionResolution($run, $current, $sequence, $selection);
-                    $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                    $current = $workflowExecution->send(
-                        $current->resolved(
-                            $sequence,
-                            $winner,
-                            $group->results,
-                            $group->failures,
-                            ParallelChildGroup::durableOperationIdentities($run)
-                        ),
-                        $selection->recorded_at
-                    );
-                } catch (Throwable $throwable) {
-                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                    return null;
-                }
-                $sequence += $groupSize;
-                return WorkflowTaskStep::ContinueExecution;
+                return $this->resumeParallelSelection($run, $task, $frame, $groupSize, $group, $selection);
             }
         } elseif ($group->failure !== null) {
-            try {
-                $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                $failureTime = isset($group->failure['recorded_at']) && is_int(
-                    $group->failure['recorded_at']
-                ) && $group->failure['recorded_at'] !== PHP_INT_MAX ? \Carbon\Carbon::createFromTimestampMs(
-                    $group->failure['recorded_at']
-                ) : null;
-                $current = $workflowExecution->throw($group->failure['exception'], $failureTime);
-                $this->recordFailureHandled(
-                    $run,
-                    $task,
-                    is_string($group->failure['failure_id'] ?? null) ? $group->failure['failure_id'] : null,
-                    $sequence + (int) $group->failure['index'],
-                    is_array($group->failure['failure_payload'] ?? null) ? $group->failure['failure_payload'] : []
-                );
-            } catch (Throwable $throwable) {
-                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-                return null;
-            }
-            $sequence += $groupSize;
-            return WorkflowTaskStep::ContinueExecution;
+            return $this->resumeParallelFailure($run, $task, $frame, $groupSize, $group);
         }
         if (! $group->pending) {
             ksort($group->results);
@@ -1713,6 +1746,74 @@ final class WorkflowExecutor
         }
         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
         return null;
+    }
+
+    private function resumeParallelSelection(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        int $groupSize,
+        WorkflowParallelDispatch $group,
+        WorkflowHistoryEvent $selection,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        /** @var SelectCall $current */
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+        try {
+            $winner = ParallelChildGroup::validatedSelectionResolution($run, $current, $sequence, $selection);
+            $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
+            $current = $workflowExecution->send(
+                $current->resolved(
+                    $sequence,
+                    $winner,
+                    $group->results,
+                    $group->failures,
+                    ParallelChildGroup::durableOperationIdentities($run)
+                ),
+                $selection->recorded_at
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        $sequence += $groupSize;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function resumeParallelFailure(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+        int $groupSize,
+        WorkflowParallelDispatch $group,
+    ): ?WorkflowTaskStep {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+        try {
+            $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
+            $failureTime = isset($group->failure['recorded_at']) && is_int(
+                $group->failure['recorded_at']
+            ) && $group->failure['recorded_at'] !== PHP_INT_MAX ? \Carbon\Carbon::createFromTimestampMs(
+                $group->failure['recorded_at']
+            ) : null;
+            $current = $workflowExecution->throw($group->failure['exception'], $failureTime);
+            $this->recordFailureHandled(
+                $run,
+                $task,
+                is_string($group->failure['failure_id'] ?? null) ? $group->failure['failure_id'] : null,
+                $sequence + (int) $group->failure['index'],
+                is_array($group->failure['failure_payload'] ?? null) ? $group->failure['failure_payload'] : []
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        $sequence += $groupSize;
+        return WorkflowTaskStep::ContinueExecution;
     }
 
     private function dispatchParallelMember(
@@ -2043,13 +2144,14 @@ final class WorkflowExecutor
         ) : null;
         $signalWaitId = $this->signalWaitId($run, $itemSequence, $call) ?? (string) Str::ulid();
         $signalCommand = $this->pendingSignalCommand($run, $call);
-        $timeoutHasWon = $call->timeoutSeconds !== null && ($timeoutFired !== null || $timeoutScheduled === null && $timeoutTimer?->status === TimerStatus::Fired);
-        if ($timeoutHasWon && $signalCommand !== null && $timeoutFired !== null) {
-            $signalReceived = $this->signalReceivedEventForCommand($run, $signalCommand);
-            if ($signalReceived !== null && $signalReceived->sequence < $timeoutFired->sequence) {
-                $timeoutHasWon = false;
-            }
-        }
+        $timeoutHasWon = $this->signalTimeoutHasWon(
+            $run,
+            $call->timeoutSeconds !== null,
+            $timeoutTimer,
+            $timeoutScheduled,
+            $timeoutFired,
+            $signalCommand,
+        );
         if ($timeoutHasWon) {
             $this->recordSignalWait($run, $task, $itemSequence, $call, $signalWaitId, $parallelMetadata);
             $resolutionEvent = $timeoutFired ?? $this->signalTimeoutFiredEvent($run, $itemSequence, $call->name);
@@ -2080,6 +2182,29 @@ final class WorkflowExecutor
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'signal', $signalEvent);
             return true;
         }
+        return $this->dispatchParallelSignalTimeout(
+            $run,
+            $task,
+            $descriptor,
+            $group,
+            $signalWaitId,
+            $timeoutTimer,
+            $parallelMetadata
+        );
+    }
+
+    private function dispatchParallelSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $descriptor,
+        WorkflowParallelDispatch $group,
+        string $signalWaitId,
+        ?WorkflowTimer $timeoutTimer,
+        array $parallelMetadata,
+    ): bool {
+        $call = $descriptor['call'];
+        $offset = $descriptor['offset'];
+        $itemSequence = $group->baseSequence + $offset;
         $this->recordSignalWait($run, $task, $itemSequence, $call, $signalWaitId, $parallelMetadata);
         if ($call->timeoutSeconds !== null && $timeoutTimer === null) {
             if ($call->timeoutSeconds === 0) {
@@ -2119,7 +2244,6 @@ final class WorkflowExecutor
         array $descriptor,
         WorkflowParallelDispatch $group
     ): bool {
-        $call = $descriptor['call'];
         $offset = $descriptor['offset'];
         $itemSequence = $group->baseSequence + $offset;
         $parallelMetadata = ParallelChildGroup::payloadForPath($descriptor['group_path']);
@@ -2144,49 +2268,17 @@ final class WorkflowExecutor
             }
         }
         if ($resolutionEvent !== null) {
-            if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                $group->results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
-                $group->successTime = $this->latestReplayTime(
-                    $group->successTime,
-                    $resolutionEvent->recorded_at ?? $resolutionEvent->created_at
-                );
-                return true;
-            }
-            $group->failure = ParallelFailureSelector::select(
-                $group->failure,
-                $offset,
-                ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                $resolutionEvent->recorded_at?->getTimestampMs() ?? $resolutionEvent->created_at?->getTimestampMs() ?? PHP_INT_MAX,
-                is_string(
-                    $resolutionEvent->payload['failure_id'] ?? null
-                ) ? $resolutionEvent->payload['failure_id'] : null,
-                $this->childFailureHandledPayload($resolutionEvent)
-            );
-            $group->failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
-            return true;
+            return $this->resolveParallelChildFromEvent($childRun, $resolutionEvent, $offset, $group);
         }
         if (! $childRun instanceof WorkflowRun) {
-            if (ChildRunHistory::scheduledEventForSequence(
-                $run,
-                $itemSequence
-            ) !== null || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null) {
-                $group->pending = true;
-                return true;
-            }
-            $childTask = $this->scheduleChildWorkflowOrFailRun(
+            return $this->dispatchMissingParallelChild(
                 $run,
                 $task,
+                $descriptor,
+                $group,
                 $itemSequence,
-                $call,
-                $parallelMetadata,
-                false
+                $parallelMetadata
             );
-            if (! $childTask instanceof WorkflowTask) {
-                return false;
-            }
-            $group->scheduledTasks[] = $childTask;
-            $group->pending = true;
-            return true;
         }
         $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
         if (! $childStatus instanceof RunStatus || in_array(
@@ -2208,6 +2300,15 @@ final class WorkflowExecutor
         if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
             return false;
         }
+        return $this->resolveParallelChildRun($childRun, $childStatus, $offset, $group);
+    }
+
+    private function resolveParallelChildRun(
+        WorkflowRun $childRun,
+        RunStatus $childStatus,
+        int $offset,
+        WorkflowParallelDispatch $group,
+    ): bool {
         if ($childStatus === RunStatus::Completed) {
             $group->results[$offset] = ChildRunHistory::outputForChildRun($childRun);
             $group->successTime = $this->latestReplayTime(
@@ -2223,6 +2324,63 @@ final class WorkflowExecutor
             $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX
         );
         $group->failures[$offset] = ChildRunHistory::exceptionForChildRun($childRun);
+        return true;
+    }
+
+    private function resolveParallelChildFromEvent(
+        ?WorkflowRun $childRun,
+        WorkflowHistoryEvent $resolutionEvent,
+        int $offset,
+        WorkflowParallelDispatch $group,
+    ): bool {
+        if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+            $group->results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+            $group->successTime = $this->latestReplayTime(
+                $group->successTime,
+                $resolutionEvent->recorded_at ?? $resolutionEvent->created_at
+            );
+            return true;
+        }
+        $group->failure = ParallelFailureSelector::select(
+            $group->failure,
+            $offset,
+            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
+            $resolutionEvent->recorded_at?->getTimestampMs() ?? $resolutionEvent->created_at?->getTimestampMs() ?? PHP_INT_MAX,
+            is_string($resolutionEvent->payload['failure_id'] ?? null) ? $resolutionEvent->payload['failure_id'] : null,
+            $this->childFailureHandledPayload($resolutionEvent)
+        );
+        $group->failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
+        return true;
+    }
+
+    private function dispatchMissingParallelChild(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $descriptor,
+        WorkflowParallelDispatch $group,
+        int $itemSequence,
+        array $parallelMetadata,
+    ): bool {
+        if (ChildRunHistory::scheduledEventForSequence(
+            $run,
+            $itemSequence
+        ) !== null || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null) {
+            $group->pending = true;
+            return true;
+        }
+        $childTask = $this->scheduleChildWorkflowOrFailRun(
+            $run,
+            $task,
+            $itemSequence,
+            $descriptor['call'],
+            $parallelMetadata,
+            false
+        );
+        if (! $childTask instanceof WorkflowTask) {
+            return false;
+        }
+        $group->scheduledTasks[] = $childTask;
+        $group->pending = true;
         return true;
     }
 
