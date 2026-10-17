@@ -6,21 +6,23 @@ does not add a cache or establish a speedup.
 
 `EmbeddedReplayGrowthProfileTest.php` uses the existing projection-replay
 workload: three parallel mocked no-op activities followed by a durable timer, repeated
-1, 10 or 100 times. Report the actual history size, rather than treating a
-round count as an event count. Each size has three independent runs.
+1, 8 or 83 times, targeting histories near 10, 100 and 1000 events. Report the
+actual history size, rather than treating a round count as an event count.
+Each size has three independent runs.
 
 Run explicitly with the repository's ordinary test dependencies and an isolated
 SQLite database:
 
 ```sh
 DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
-  PROFILE_REPLAY_GROWTH=1 vendor/bin/phpunit --no-coverage \
+  PROFILE_REPLAY_GROWTH=1 vendor/bin/phpunit --no-coverage --do-not-cache-result \
   tests/Performance/EmbeddedReplayGrowthProfileTest.php
 ```
 
 The profile reports:
 
-- Whole ready-task batches, including executor replay, persistence and
+- Start/admission with its initial synchronous work, then whole ready-task
+  batches, including executor replay, persistence and
   synchronous projections: wall/CPU time and SQL counts/time.
 - History fetch/envelope mapping and cold bridge Fiber replay as separate operations.
 - Idempotent summary projection at the same committed history.

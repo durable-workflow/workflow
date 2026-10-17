@@ -22,10 +22,12 @@ use Workflow\V2\WorkflowStub;
 
 final class EmbeddedReplayGrowthProfileTest extends TestCase
 {
-    /** @return iterable<string, array{int, int}> */
+    /**
+     * @return iterable<string, array{int, int}>
+     */
     public static function workloads(): iterable
     {
-        foreach ([1, 10, 100] as $rounds) {
+        foreach ([1, 8, 83] as $rounds) {
             foreach ([1, 2, 3] as $repetition) {
                 yield sprintf('%d-rounds-repeat-%d', $rounds, $repetition) => [$rounds, $repetition];
             }
@@ -58,7 +60,11 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         });
 
         $workflow = WorkflowStub::make(ReplayGrowthWorkflow::class, 'replay-growth');
-        $workflow->start($rounds);
+        $start = $this->measure(static function () use ($workflow, $rounds): int {
+            $workflow->start($rounds);
+
+            return 1;
+        }, $queries, $sqlMilliseconds);
         $batches = [];
         for ($round = 0; $round <= $rounds; ++$round) {
             $batches[] = $this->measure(
@@ -66,7 +72,8 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
                 $queries,
                 $sqlMilliseconds,
             );
-            $this->travel(2)->seconds();
+            $this->travel(2)
+                ->seconds();
         }
 
         $workflow = WorkflowStub::load('replay-growth');
@@ -129,6 +136,7 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             'activity_effects' => $effects,
             'executor_workflow_entries' => $generationEntries,
             'executor_round_visits' => $generationVisits,
+            'start_and_initial_tasks' => $start,
             'ready_batches' => $batches,
             'history_materialization' => $historyLoad,
             'cold_bridge_replays' => $replays,
@@ -167,19 +175,24 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
             + $usage['ru_utime.tv_usec'] + $usage['ru_stime.tv_usec'];
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * @return list<array<string, mixed>>
+     */
     private static function historyFrames(WorkflowRun $run): array
     {
-        return $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
-            'id' => $event->id,
-            'sequence' => (int) $event->sequence,
-            'event_type' => $event->event_type->value,
-            'namespace' => $run->namespace,
-            'payload' => $event->payload,
-            'workflow_task_id' => $event->workflow_task_id,
-            'workflow_command_id' => $event->workflow_command_id,
-            'recorded_at' => $event->recorded_at?->toJSON(),
-        ])->all();
+        return $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn ($event): array => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type->value,
+                'namespace' => $run->namespace,
+                'payload' => $event->payload,
+                'workflow_task_id' => $event->workflow_task_id,
+                'workflow_command_id' => $event->workflow_command_id,
+                'recorded_at' => $event->recorded_at?->toJSON(),
+            ])->all();
     }
 }
 
