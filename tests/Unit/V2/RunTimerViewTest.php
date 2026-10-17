@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Database\Eloquent\Collection;
 use Orchestra\Testbench\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -15,6 +16,136 @@ use Workflow\V2\Support\RunTimerView;
 
 final class RunTimerViewTest extends TestCase
 {
+    #[DataProvider('timerEventTypes')]
+    public function testTimerProjectionBoundsPayloadDecodingPerEvent(HistoryEventType $type, string $status): void
+    {
+        $event = new CountedTimerHistoryEvent();
+        $event->forceFill([
+            'sequence' => 1,
+            'event_type' => $type->value,
+            'payload' => [
+                'timer_id' => 'observed-timer',
+                'sequence' => 7,
+                'delay_seconds' => 30,
+                'fire_at' => '2026-01-01T00:00:30.123456Z',
+                'fired_at' => '2026-01-01T00:00:31.234567Z',
+                'cancelled_at' => '2026-01-01T00:00:15.345678Z',
+                'timer_kind' => 'condition_timeout',
+                'condition_wait_id' => 'condition-1',
+                'condition_key' => 'ready',
+                'condition_definition_fingerprint' => 'condition-fingerprint',
+                'signal_wait_id' => 'signal-wait-1',
+                'signal_name' => 'release',
+                'parallel_group_id' => 'parallel-timers-1',
+                'parallel_group_kind' => 'timer',
+                'parallel_group_base_sequence' => 7,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 0,
+            ],
+            'recorded_at' => '2026-01-01T00:00:00.456789Z',
+        ]);
+        $run = $this->runWithTimers([$event]);
+
+        $timer = RunTimerView::timersForRun($run)[0];
+
+        $this->assertSame('observed-timer', $timer['id']);
+        $this->assertSame(7, $timer['sequence']);
+        $this->assertSame(30, $timer['delay_seconds']);
+        $this->assertSame($status, $timer['status']);
+        $this->assertSame(RunTimerView::HISTORY_AUTHORITY_TYPED, $timer['history_authority']);
+        $this->assertFalse($timer['diagnostic_only']);
+        $this->assertSame([$type->value], $timer['history_event_types']);
+        $this->assertSame('condition_timeout', $timer['timer_kind']);
+        $this->assertSame('condition-1', $timer['condition_wait_id']);
+        $this->assertSame('ready', $timer['condition_key']);
+        $this->assertSame('condition-fingerprint', $timer['condition_definition_fingerprint']);
+        $this->assertSame('signal-wait-1', $timer['signal_wait_id']);
+        $this->assertSame('release', $timer['signal_name']);
+        $this->assertSame([[
+            'parallel_group_id' => 'parallel-timers-1',
+            'parallel_group_kind' => 'timer',
+            'parallel_group_base_sequence' => 7,
+            'parallel_group_size' => 3,
+            'parallel_group_index' => 0,
+        ]], $timer['parallel_group_path']);
+        $this->assertSame(
+            $type === HistoryEventType::TimerFired ? null : '2026-01-01T00:00:30.123456Z',
+            $timer['fire_at']?->toJSON(),
+        );
+        $this->assertSame(
+            $type === HistoryEventType::TimerFired ? '2026-01-01T00:00:31.234567Z' : null,
+            $timer['fired_at']?->toJSON(),
+        );
+        $this->assertSame(
+            $type === HistoryEventType::TimerCancelled ? '2026-01-01T00:00:15.345678Z' : null,
+            $timer['cancelled_at']?->toJSON(),
+        );
+        $this->assertLessThanOrEqual(2, $event->payloadCasts);
+
+        $event->payload = array_replace($event->payload, [
+            'delay_seconds' => 45,
+        ]);
+        $event->payloadCasts = 0;
+        $next = RunTimerView::timersForRun($run)[0];
+        $this->assertSame(45, $next['delay_seconds']);
+        $this->assertSame($status, $next['status']);
+        $this->assertLessThanOrEqual(2, $event->payloadCasts);
+    }
+
+    /**
+     * @return iterable<string, array{HistoryEventType, string}>
+     */
+    public static function timerEventTypes(): iterable
+    {
+        yield 'scheduled' => [HistoryEventType::TimerScheduled, 'pending'];
+        yield 'fired' => [HistoryEventType::TimerFired, 'fired'];
+        yield 'cancelled' => [HistoryEventType::TimerCancelled, 'cancelled'];
+    }
+
+    public function testPartialHistoryModelRemainsUnavailableWithStrictMissingAttributes(): void
+    {
+        $event = new WorkflowHistoryEvent();
+        $event->setRawAttributes([
+            'id' => 'partial-timer-event',
+            'sequence' => 1,
+            'event_type' => HistoryEventType::TimerScheduled->value,
+        ]);
+        $event->exists = true;
+        $previous = WorkflowHistoryEvent::preventsAccessingMissingAttributes();
+        WorkflowHistoryEvent::preventAccessingMissingAttributes();
+        try {
+            $this->assertSame([], RunTimerView::timersForRun($this->runWithTimers([$event])));
+            $this->assertTrue(WorkflowHistoryEvent::preventsAccessingMissingAttributes());
+        } finally {
+            WorkflowHistoryEvent::preventAccessingMissingAttributes($previous);
+        }
+    }
+
+    #[DataProvider('unusablePayloads')]
+    public function testUnusablePayloadDoesNotInventTimer(?string $rawPayload): void
+    {
+        $event = new WorkflowHistoryEvent();
+        $event->setRawAttributes([
+            'sequence' => 1,
+            'event_type' => HistoryEventType::TimerScheduled->value,
+            'payload' => $rawPayload,
+        ]);
+
+        $this->assertSame([], RunTimerView::timersForRun($this->runWithTimers([$event])));
+    }
+
+    /**
+     * @return iterable<string, array{string|null}>
+     */
+    public static function unusablePayloads(): iterable
+    {
+        yield 'SQL null' => [null];
+        yield 'JSON null' => ['null'];
+        yield 'number' => ['17'];
+        yield 'string' => ['"not a timer payload"'];
+        yield 'invalid JSON' => ['{invalid'];
+    }
+
     public function testTypedHistoryWinsOverAConflictingTerminalTimerRow(): void
     {
         $run = $this->runWithTimers(
@@ -134,5 +265,19 @@ final class RunTimerViewTest extends TestCase
         ]);
 
         return $timer;
+    }
+}
+
+final class CountedTimerHistoryEvent extends WorkflowHistoryEvent
+{
+    public int $payloadCasts = 0;
+
+    protected function castAttribute($key, $value): mixed
+    {
+        if ($key === 'payload') {
+            ++$this->payloadCasts;
+        }
+
+        return parent::castAttribute($key, $value);
     }
 }
