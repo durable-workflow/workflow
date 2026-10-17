@@ -24,6 +24,7 @@ final class SqliteTransaction
      * @param int|null $attempts Explicit existing attempt limits also pass through to other drivers.
      * @param Closure(Connection): void|null $admission Acquire the write lock before a body that must not repeat.
      * @param int|null $admissionDeadline Captured monotonic nanoseconds for an already claimed outcome.
+     * @param Connection|null $connection Use the caller's model storage connection when supplied.
      * @return T
      */
     public static function run(
@@ -31,8 +32,9 @@ final class SqliteTransaction
         ?int $attempts = null,
         ?Closure $admission = null,
         ?int $admissionDeadline = null,
+        ?Connection $connection = null,
     ): mixed {
-        $connection = self::connection();
+        $connection ??= self::connection();
         if ($connection->getDriverName() !== 'sqlite' || $connection->transactionLevel() !== 0) {
             return $connection->transaction($operation, $attempts ?? 1);
         }
