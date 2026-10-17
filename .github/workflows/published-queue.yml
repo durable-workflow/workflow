@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   published-queue:
-    runs-on: ubuntu-latest
+    # Qualify the image's stock PHP 8.3 without a floating OS migration.
+    runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
