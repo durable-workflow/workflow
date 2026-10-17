@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {writeFile} from 'node:fs/promises';
+import {readFile, writeFile} from 'node:fs/promises';
 import {performance} from 'node:perf_hooks';
 
 const base = process.env.BASE_URL ?? 'http://app:8080';
 const profile = process.env.PROFILE_NAME;
 const members = Number(process.env.MEMBERS ?? 1);
+const workloads = JSON.parse(await readFile(new URL('./workloads.json', import.meta.url), 'utf8'));
+const defaults = workloads[members === 1 ? 'ordinary' : 'fanout'];
 const workload = process.env.WORKLOAD_NAME || (members === 1 ? 'ordinary' : 'fanout');
-const rate = Number(process.env.OFFERED_RATE ?? (members === 1 ? 5 : 0.25));
-const duration = Number(process.env.DURATION_SECONDS ?? 120);
+const rate = Number(process.env.OFFERED_RATE || 1000 / defaults.interval_ms);
+const duration = Number(process.env.DURATION_SECONDS || defaults.duration_seconds);
 const observation = 90_000;
 const diagnostic = process.env.DIAGNOSTIC_ONLY === 'true';
 const queueDriver = process.env.BENCH_QUEUE_DRIVER ?? 'database';
@@ -16,6 +18,7 @@ const allowedLagMs = 100;
 assert.match(profile ?? '', /^[a-z0-9-]{1,55}$/);
 assert.match(workload, /^[a-z0-9-]{1,55}$/);
 assert.ok([1, 64].includes(members) && rate > 0 && duration > 0);
+assert.equal(defaults.members, members);
 assert.ok(['database', 'redis'].includes(queueDriver));
 const health = await fetch(base + '/health', {signal: AbortSignal.timeout(10_000)});
 assert.equal(health.status, 200);

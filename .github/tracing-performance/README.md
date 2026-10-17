@@ -58,8 +58,16 @@ name to keep its original runs distinct from the measured offers.
 
 | Workload | Members per workflow | Offered workflows/second | Offer window |
 | --- | ---: | ---: | ---: |
-| Ordinary activity | 1 | 5 | 120 seconds |
-| Large fan-out | 64 | 0.25 | 120 seconds |
+| Ordinary activity | 1 | 1 | 120 seconds |
+| Large fan-out | 64 | 1/60 | 120 seconds |
+
+Defaults live in `workloads.json`. These rates are chosen prospectively after
+the guest functional controls, before matched overhead windows. They seek a
+healthy comparison, retaining all 64 concurrent member activities and the
+original observers. They establish no maximum-capacity or throughput claim.
+The earlier prospective 5/s and 0.25/s inputs were not qualified and are not
+reinterpreted as these new profiles. Verify the new rates with the published
+baseline before using them for the three-cell comparison.
 
 Each member performs one durable database insertion, one Laravel log call and
 returns the exact int64/null/Unicode result. A unique activity ID and run/member
@@ -130,7 +138,7 @@ docker compose stop collector
 docker compose down --volumes --remove-orphans
 ```
 
-Select `MEMBERS=64` and `OFFERED_RATE=0.25` for fan-out. Short functional
+Select `MEMBERS=64` for fan-out. Short functional
 controls use one offered workflow; their durations and results are not a
 measured comparison. Use a fresh project/database for the next cell.
 Keep the collector running until all workers and HTTP requests have stopped

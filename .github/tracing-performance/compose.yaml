@@ -107,8 +107,8 @@ services:
       PROFILE_NAME: ${PROFILE_NAME:?Set a unique synthetic profile}
       WORKLOAD_NAME: ${WORKLOAD_NAME:-}
       MEMBERS: ${MEMBERS:-1}
-      OFFERED_RATE: ${OFFERED_RATE:-5}
-      DURATION_SECONDS: ${DURATION_SECONDS:-120}
+      OFFERED_RATE: ${OFFERED_RATE:-}
+      DURATION_SECONDS: ${DURATION_SECONDS:-}
       DIAGNOSTIC_ONLY: ${DIAGNOSTIC_ONLY:-false}
       BENCH_QUEUE_DRIVER: ${BENCH_QUEUE_DRIVER:-database}
     command: ["node", "probe.mjs"]
