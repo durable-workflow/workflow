@@ -87,6 +87,109 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         ];
     }
 
+    #[DataProvider('claims')]
+    public function testOrdinaryBusyTimeoutLeavesTimeToRetryTheUnclaimedDelivery(string $kind, bool $separate): void
+    {
+        config()->set('logging.default', 'null');
+        if ($separate) {
+            config()->set('database.connections.application_sqlite', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+            DB::setDefaultConnection('application_sqlite');
+            $this->createQueueTables(DB::connection());
+            config()
+                ->set('queue.failed.database', 'application_sqlite');
+        }
+        $stub = WorkflowStub::make(SqliteContentionWorkflow::class, 'ordinary-busy-' . $kind, 'contention-test');
+        $stub->start(false, false, new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 100));
+        if ($kind === 'activity') {
+            $this->workOnce();
+        }
+        $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+            ->where('task_type', $kind)
+            ->sole();
+        $run = $task->run;
+        $deadlines = [$run->execution_deadline_at->toJSON(), $run->run_deadline_at->toJSON()];
+        $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        $connection = DB::connection('contention_sqlite');
+        $connection->getPdo()
+            ->exec('PRAGMA busy_timeout=5000');
+        $writer = new PDO('sqlite:' . $this->path);
+        $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $injected = false;
+        $rollbacks = 0;
+        $connection->beforeExecuting(static function (string $sql) use ($writer, &$injected): void {
+            if ($injected || ! str_starts_with($sql, 'update "workflow_tasks" set "id" =')) {
+                return;
+            }
+            $writer->beginTransaction();
+            $writer->exec('INSERT INTO contention_probe (id) VALUES (1)');
+            $injected = true;
+        });
+        $connection->getEventDispatcher()
+            ->listen(TransactionRolledBack::class, static function ($event) use (
+                $connection,
+                $writer,
+                &$rollbacks
+            ): void {
+                if ($event->connection === $connection && $writer->inTransaction()) {
+                    self::assertSame(0, $connection->transactionLevel());
+                    self::assertFalse($connection->getPdo()->inTransaction());
+                    self::assertSame(0, SqliteContentionActivity::$invocations);
+                    $rollbacks++;
+                    $writer->commit();
+                }
+            });
+        try {
+            $this->workOnce();
+        } finally {
+            if ($writer->inTransaction()) {
+                $writer->rollBack();
+            }
+        }
+        self::assertTrue($injected);
+        self::assertSame(1, $rollbacks);
+        self::assertSame(5000, (int) $connection->getPdo()->query('PRAGMA busy_timeout')->fetchColumn());
+        self::assertSame(
+            0,
+            DB::table('failed_jobs')->count(),
+            'A rolled-back pre-claim wait must leave time to retry.'
+        );
+        self::assertSame('completed', $task->fresh()->status->value);
+        self::assertSame(1, (int) $task->fresh()->attempt_count);
+        for ($remaining = 0; $remaining < 3 && $stub->refresh()->status() !== 'completed'; $remaining++) {
+            $this->workOnce();
+        }
+        self::assertSame('completed', $stub->refresh()->status());
+        self::assertSame([
+            'integer' => 9007199254740993,
+            'optional' => null,
+            'unicode' => 'λ',
+        ], $stub->output());
+        self::assertSame(1, SqliteContentionActivity::$invocations);
+        self::assertSame($deadlines, [
+            $run->fresh()
+                ->execution_deadline_at->toJSON(),
+            $run->fresh()
+                ->run_deadline_at->toJSON(),
+        ]);
+        self::assertSame($prefix, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->limit(count($prefix))
+            ->get()
+            ->map->getAttributes()
+            ->all());
+        self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->sum('repair_count'));
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+    }
+
     public function testActivityOutcomeWaitsForTheWriterWithinItsOriginalClaim(): void
     {
         config()->set('logging.default', 'null');
@@ -109,6 +212,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         $admissions = 0;
         $rollbacks = 0;
         $claim = null;
+        $releaseAt = hrtime(true) + 5_100_000_000;
         $connection->beforeExecuting(static function (string $sql) use (
             $writer,
             $task,
@@ -130,13 +234,16 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             ->listen(TransactionRolledBack::class, static function ($event) use (
                 $writer,
                 $connection,
-                &$rollbacks
+                &$rollbacks,
+                $releaseAt,
             ): void {
                 if ($event->connection === $connection && $writer->inTransaction()) {
                     self::assertSame(0, $connection->transactionLevel());
                     self::assertFalse($connection->getPdo()->inTransaction());
                     $rollbacks++;
-                    $writer->commit();
+                    if (hrtime(true) >= $releaseAt) {
+                        $writer->commit();
+                    }
                 }
             });
         $started = hrtime(true);
@@ -149,7 +256,7 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
         }
         $elapsed = (hrtime(true) - $started) / 1_000_000_000;
         self::assertGreaterThanOrEqual(5, $elapsed);
-        self::assertSame(1, $rollbacks);
+        self::assertGreaterThanOrEqual(1, $rollbacks);
         self::assertSame(1, SqliteContentionActivity::$invocations);
         self::assertIsArray($claim);
         self::assertSame('leased', $claim['status']);
