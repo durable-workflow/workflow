@@ -65,17 +65,18 @@ had all 937 source/resource files verified against the tag, with product code
 loaded from the normal Composer installation. PHP 8.5.6, Laravel 13.37.0,
 Testbench 11.3.0, Avro 1.12.2, SQLite, 1 CPU, 1 GiB and no swap.
 
-The role-probe component passed three tests and 468 assertions. Each original
+The role-probe component at `51f5432b86f56f9fcf5a0a1a08a37706f881b467`
+passed three tests and 468 assertions. Each original
 has 91 events, 24 activity effects, 49 completed first-attempt tasks and zero
 repairs. Each invokes `projectRun` 124 times and `recordActivityStarted` 24 times.
 
 | Repetition | Start + ready-task CPU (s) | `projectRun` CPU (s) | Activity-start history + projection CPU (s) |
 | --- | ---: | ---: | ---: |
-| 1 | 19.182 | 11.900 | 2.318 |
-| 2 | 18.719 | 11.605 | 2.259 |
-| 3 | 19.445 | 12.081 | 2.342 |
+| 1 | 18.907 | 11.718 | 2.278 |
+| 2 | 18.958 | 11.745 | 2.289 |
+| 3 | 19.177 | 11.904 | 2.310 |
 
-The two delegated role paths account for 74.12% of measured CPU across these
+The two delegated role paths account for 74.06% of measured CPU across these
 three runs. `recordActivityStarted` includes history recording and projection;
 it is not a pure projection measurement. The remaining CPU includes execution,
 task handling and other persistence, so it must not be called replay CPU.
