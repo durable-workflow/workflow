@@ -206,3 +206,34 @@ container explicitly. Compose `down` can leave a running one-off retainer even
 with `--remove-orphans`. Then retire the ordinary services and volumes, and
 verify no container with the experiment's project label remains. Cleanup
 failure keeps the aggregate cell unsuccessful even when business work passes.
+
+## Analyze the fixed comparison
+
+After all declared cells finish, copy their `proof/tracing-measure-*` and
+`state/tracing-measure-*` directories to a temporary local experiment root.
+The state copy must include the worker and probe exit markers. Analysis runs
+after measurement and does not share the experiment's CPU allocation.
+
+```sh
+node --test analyze.test.mjs
+node analyze.mjs /temporary/experiment-root > /temporary/result.json
+```
+
+The reader requires all 20 cells: three baseline/disabled/enabled repetitions
+for each workload and one final baseline per workload. It refuses a failed
+cell, missing role, changed container or resource limit, decreasing CPU,
+missing samples, nonzero child exit, OOM/restart, unfinished business work or
+span loss. It normalizes CPU by measured completions, excluding warmup counts.
+Metadata, span and audit totals explicitly include warmup.
+
+The fixed statistical method uses paired relative differences and a
+conventional two-sided 95% paired-t interval with three pairs, two degrees of
+freedom and critical value 4.3026527299. This small sample relies on the usual
+t-interval assumptions. A target passes only when both its interval upper
+bound and absolute final baseline drift meet the previously declared limit.
+Do not select extra repetitions after inspecting the result.
+
+Memory means and container sample peaks describe the observed sampling
+interval, not RSS or an exact simultaneous peak. Worker peak fields are the
+sum of the four individual container peaks. Lifetime peaks include startup
+and warmup. Review the readable result, then delete the copied raw data.

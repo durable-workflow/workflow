@@ -260,7 +260,7 @@ jobs:
     - name: Check tracing overhead recipe
       run: |
         composer --working-dir=.github/tracing-performance validate --strict --no-check-all --no-check-publish
-        node --test .github/tracing-performance/probe.test.mjs
+        node --test .github/tracing-performance/probe.test.mjs .github/tracing-performance/analyze.test.mjs
 
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
