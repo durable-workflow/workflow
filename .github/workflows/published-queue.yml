@@ -47,10 +47,22 @@ jobs:
           php -r 'require ".github/queue-contention/current/vendor/autoload.php"; $manifest=json_decode(file_get_contents(".github/queue-contention/current/composer.json"), true, flags: JSON_THROW_ON_ERROR); if (Composer\InstalledVersions::getPrettyVersion("durable-workflow/workflow") !== $manifest["require"]["durable-workflow/workflow"] || Composer\InstalledVersions::getReference("durable-workflow/workflow") !== $manifest["extra"]["workflow-published-reference"]) { throw new RuntimeException("Installed package provenance differs."); }'
 
       - name: Execute the original continuous four-worker cohort
+        id: ordinary
         run: |
           sudo systemd-run --scope --quiet \
             --property=CPUQuota=200% --property=MemoryMax=2G --property=MemorySwapMax=0 \
             runuser --user "$(id -un)" -- \
             env XDEBUG_MODE=off DW_PROBE_QUEUE_WAKE=true DW_PROBE_CONTINUOUS=true \
+            DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php" \
+            bash .github/queue-contention/current/limited-cohort.sh
+
+      - name: Capture one fresh diagnostic original after a cohort failure
+        if: ${{ failure() && steps.ordinary.outcome == 'failure' }}
+        run: |
+          sudo systemd-run --scope --quiet \
+            --property=CPUQuota=200% --property=MemoryMax=2G --property=MemorySwapMax=0 \
+            runuser --user "$(id -un)" -- \
+            env XDEBUG_MODE=off DW_PROBE_QUEUE_WAKE=true DW_PROBE_CONTINUOUS=true \
+            DW_PROBE_REPAIR_OBSERVATIONS=true \
             DW_QUALIFICATION_AUTOLOAD="$PWD/.github/queue-contention/current/vendor/autoload.php" \
             bash .github/queue-contention/current/limited-cohort.sh
