@@ -174,6 +174,11 @@ delay. Do not use bridge-only CPU samples to predict an embedded warm-cache
 benefit. Keep physical sample windows separate from virtual workflow time,
 and include active authored-Fiber stacks in the observer selection.
 
+The [installed 2.5.30 embedded executor sample](results/issue-748-20261017/EMBEDDED-EXECUTOR-SAMPLING.md)
+records three ordinary and three observed originals, actual SQL/prefix visits,
+the rejected collector, corrected process coverage and the transaction boundary
+needed for a retained-execution prototype.
+
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
 interface while preserving the installed default delegate and its optional
 interfaces. Nested calls are counted but their CPU is not counted twice. It uses
