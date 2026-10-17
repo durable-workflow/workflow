@@ -530,8 +530,8 @@ final class RunSummaryProjector
         array $values,
         array $failureIds,
     ): WorkflowRunSummary {
-        return $run->getConnection()
-            ->transaction(static function () use ($summaryModel, $run, $values, $failureIds): WorkflowRunSummary {
+        return SqliteTransaction::run(
+            static function () use ($summaryModel, $run, $values, $failureIds): WorkflowRunSummary {
                 /** @var WorkflowRunSummary $summary */
                 $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
                     'id' => $run->id,
@@ -540,7 +540,16 @@ final class RunSummaryProjector
                 ChildProjectionRepairStore::markSnapshotFailuresCounted($run, $failureIds);
 
                 return $summary;
-            });
+            },
+            admission: static function () use ($summaryModel, $run): void {
+                // Acquire SQLite's writer before updateOrCreate reads or model hooks run.
+                // A rejected admission may retry; the projection body must execute once.
+                $summaryModel::query()->where('id', $run->id)->toBase()->update([
+                    'id' => $run->id,
+                ]);
+            },
+            connection: $run->getConnection(),
+        );
     }
 
     /**
