@@ -47,6 +47,12 @@ final class ProjectionRoleProbeTest extends TestCase
 
         Queue::fake();
         $this->freezeTime();
+        $recordPayloadReads = getenv('PROFILE_HISTORY_ACCESS') === '1';
+        if ($recordPayloadReads) {
+            ProfiledHistoryEvent::$payloadReads = [];
+            ProfiledHistoryEvent::$payloadBytes = 0;
+            $this->app['config']->set('workflows.v2.history_event_model', ProfiledHistoryEvent::class);
+        }
         $delegate = $this->app->make(HistoryProjectionRole::class);
         $this->assertInstanceOf(DefaultHistoryProjectionRole::class, $delegate);
         $role = new ProfiledHistoryRole($delegate);
@@ -66,6 +72,8 @@ final class ProjectionRoleProbeTest extends TestCase
                 ->seconds();
         }
         $total = ProfiledHistoryRole::cpuMicroseconds() - $started;
+        $payloadReads = ProfiledHistoryEvent::$payloadReads;
+        $payloadBytes = ProfiledHistoryEvent::$payloadBytes;
         $workflow = WorkflowStub::load('projection-role-growth');
         $this->assertTrue($workflow->completed());
         $this->assertSame(24, $workflow->output());
@@ -82,6 +90,11 @@ final class ProjectionRoleProbeTest extends TestCase
         $this->assertGreaterThan(0, $role->calls['projectRun'] ?? 0);
         $this->assertGreaterThan(0, $role->calls['recordActivityStarted'] ?? 0);
         $this->assertGreaterThan(array_sum($role->cpuMicroseconds), $total);
+        if ($recordPayloadReads) {
+            $this->assertNotEmpty($payloadReads);
+            $this->assertGreaterThan(0, $payloadBytes);
+            $this->assertInstanceOf(ProfiledHistoryEvent::class, $run->historyEvents()->first());
+        }
         echo json_encode([
             'profile' => 'projection-role-probe',
             'repetition' => $repetition,
@@ -91,7 +104,35 @@ final class ProjectionRoleProbeTest extends TestCase
             'whole_cpu_us' => $total,
             'role_cpu_us' => $role->cpuMicroseconds,
             'role_calls' => $role->calls,
+            ...($recordPayloadReads ? [
+                'history_payload_reads' => array_sum($payloadReads),
+                'history_payload_records' => count($payloadReads),
+                'history_payload_max_reads_per_record' => max($payloadReads),
+                'history_payload_json_bytes_presented_to_cast' => $payloadBytes,
+            ] : []),
         ], JSON_THROW_ON_ERROR) . PHP_EOL;
+    }
+}
+
+final class ProfiledHistoryEvent extends WorkflowHistoryEvent
+{
+    /**
+     * @var array<string, int>
+     */
+    public static array $payloadReads = [];
+
+    public static int $payloadBytes = 0;
+
+    public function getAttribute($key): mixed
+    {
+        if ($key === 'payload' && is_string($this->attributes['id'] ?? null)) {
+            $id = $this->attributes['id'];
+            self::$payloadReads[$id] = (self::$payloadReads[$id] ?? 0) + 1;
+            $raw = $this->attributes['payload'] ?? null;
+            self::$payloadBytes += is_string($raw) ? strlen($raw) : 0;
+        }
+
+        return parent::getAttribute($key);
     }
 }
 

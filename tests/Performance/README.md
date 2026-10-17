@@ -102,6 +102,30 @@ The measured projection cost merits investigation before choosing a live-Fiber
 cache. Keep that decision open until larger histories and the remaining actual
 queue/concurrency profiles distinguish which costs retention can remove.
 
+### Optional history-payload access counts
+
+Set `PROFILE_HISTORY_ACCESS=1` when running `ProjectionRoleProbeTest.php` to
+count history-model payload reads during start and ready-task execution. The
+probe uses the supported history-model override and always delegates to the
+released model accessor. It does not cache, replace or skip a payload cast.
+
+The additional fields report total reads, distinct persisted event IDs, the
+largest read count for one event and the sum of raw JSON lengths presented to
+the model's payload accessor. Repeated accesses count repeatedly. These are
+access counters, not fetched bytes, unique memory or a measured decoding cost.
+They include every caller in the measured execution, not only the projection
+role. The override adds instrumentation overhead, so its CPU totals must not be
+used as a performance comparison with the uninstrumented baseline.
+
+```sh
+cd benchmarks/embedded-replay
+DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
+  QUEUE_CONNECTION=sync PROFILE_REPLAY_GROWTH=1 PROFILE_HISTORY_ACCESS=1 \
+  vendor/bin/phpunit --configuration ../../phpunit.xml \
+  --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
+  ../../tests/Performance/ProjectionRoleProbeTest.php
+```
+
 ## Reproduce the published-package cohort
 
 The ordinary repository commands above exercise source. For the reported
