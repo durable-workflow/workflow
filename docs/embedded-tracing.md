@@ -16,6 +16,131 @@ operation. An unavailable or non-array baggage allowlist permits no baggage;
 only string entries are used. Neither optional setting can prevent admission,
 timer or activity execution, or replace the workflow's own failure.
 
+## Configure the source integration
+
+In a qualification application, use one application-owned environment flag for
+tracing and its optional log tap. Set `DW_TRACING_ENABLED=true` in that
+application's environment, then configure the existing `tracing` section of
+`config/workflows.php`:
+
+```php
+'tracing' => [
+    'enabled' => (bool) env('DW_TRACING_ENABLED', false),
+    'baggage_allowlist' => [],
+],
+```
+
+The empty allowlist propagates no baggage. Add only the application-approved
+keys that must cross durable boundaries. The application's installed
+propagator must support those fields. The encoded-baggage regression remains
+a release blocker even when this example uses an empty allowlist.
+The package reads the configured boolean; the environment mapping above is
+part of the application example.
+
+Register the application's chosen OpenTelemetry provider and propagators
+before admitting or processing workflows. Existing compatible HTTP/database
+instrumentation then uses the active standard context inside an activity.
+The application continues to own sampling, export and process shutdown.
+The [optional HTTP dependency profile](../.github/tracing-http/composer.json)
+shows the packages used by the source controls, with the exporter limits
+described below.
+
+### Laravel log correlation
+
+Append the supported tap to each existing Laravel channel used by the workflow,
+activity and injected services. In that channel's `config/logging.php` entry:
+
+```php
+'tap' => [
+    // Keep the channel's existing taps here.
+    ...((bool) env('DW_TRACING_ENABLED', false)
+        ? [\Workflow\V2\Tracing\LogContext::class]
+        : []),
+],
+```
+
+Load this configuration before the channel is resolved. Choose a formatter
+that emits the record's `context` fields, such as Monolog's `JsonFormatter`.
+Enabling span emission alone does not install this channel tap. Application
+code can keep its ordinary `Log::info(...)` calls and injected logger usage.
+The [cold HTTP/worker control](../tests/Unit/V2/IncomingHttpTracingTest.php)
+checks both actual callback logs and spans after the request process exits.
+
+The tap reads only the active durable scope. It restores ordinary logging
+outside that scope and preserves an existing application `request_id`. Logging
+adapter errors leave the original record usable.
+
+Restart the application's workers after changing their loaded configuration.
+The overhead recipe uses this conditional tap profile. Always-installed custom
+logging processors need their own measurement.
+
+## Correlation fields and instrumentation scope
+
+The tracing scope name is `durable-workflow/workflow`. Its version comes from
+Composer's installed pretty version when available. A development or benchmark
+alias remains that alias; it is not evidence of a published release.
+
+The current operation supplies these bounded fields when their identities are
+available:
+
+| Field | Meaning |
+| --- | --- |
+| `workflow_instance_id` | Logical workflow identity, which can have multiple runs. |
+| `workflow_run_id` | The exact run being admitted or processed. |
+| `workflow_type` | The recorded workflow type. |
+| `namespace` | The operation's namespace when scoped. |
+| `task_id` | The current physical task. |
+| `activity_id` | Logical activity identity, retained across its ordinary retries. |
+| `activity_type` | The authored activity type. |
+| `activity_attempt_id` | The concrete activity attempt when available. |
+| `activity_attempt_number` | The positive attempt number. |
+| `request_id` | Application-supplied request correlation, kept separate from durable identities. |
+| `trace_id`, `span_id` | Active OpenTelemetry context identifiers, also exposed to the log tap. |
+| `timer_id` | The timer associated with a timer operation. |
+| `workflow_command_id` | The command associated with an admission or delivery. |
+| `schedule_id` | The schedule associated with a trigger. |
+
+Trace and span IDs are part of OpenTelemetry's span context. They are not
+duplicated as custom span attributes. Missing or invalid optional fields are
+omitted. Runtime-supplied string correlation fields are bounded to 512 bytes
+and exclude control characters; attempt numbers remain integers. Existing
+application log context retains its application-defined format.
+
+Durable identifiers come from the current execution scope. An existing
+`request_id` on a log record keeps its application meaning. These identifiers
+are not automatically used as metric labels. The integration excludes workflow
+arguments, results, HTTP bodies and credentials from its default attributes.
+Application-chosen identifiers and explicitly allowlisted baggage still need
+the access controls appropriate to their contents.
+
+## Runtime and SDK qualification
+
+This matrix describes this draft's durable propagation and correlation
+contract. Ordinary application HTTP instrumentation has a separate scope.
+
+| Runtime or client | Scope established by this draft | Support status |
+| --- | --- | --- |
+| Embedded Laravel | Source controls cover incoming HTTP context, separate queue workers, retries, recovery and the transitions described below. | Unreleased. Baggage, remaining full gates and overhead acceptance still block stable support. |
+| PHP Server | This embedded draft adds no service transport contract. | Separate integration and consumer qualification required. |
+| Rust Server draft | Proposed observability columns and carriers have not been adopted by its catalog. | Unqualified for this contract. |
+| Cloud | No deployment of this draft is claimed. | Separate release and deployment qualification required. |
+| PHP service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
+| Python service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
+| Rust service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
+
+The package's optional tracing API can be absent, and tracing is disabled by
+default. In those modes the execution callback still runs with its ordinary
+business outcome. Enabling this source requires review of its proposed nullable
+`observability_context` columns on runs, commands and tasks. Existing rows keep
+null metadata. Older executions use independent processing segments instead
+of borrowing an unrelated worker's parent. Canonical histories, command receipt
+comparisons, retry policies and deadlines retain their existing contracts.
+
+Worker processes can handle successive jobs, but this integration scopes
+context to the current operation. It does not keep one execution span open
+for the lifetime of a worker session. Concurrent Fiber and cold-process controls
+check the scope restoration described below.
+
 ## Keep collector outages outside business work
 
 PHP exporters can perform synchronous HTTP requests. A batch processor alone

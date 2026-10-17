@@ -91,6 +91,10 @@ a failed cell complete.
 qualification inputs, not production sizing advice.
 
 All three cells install the same application-owned OpenTelemetry provider.
+The optional Laravel `LogContext` tap is registered only in the enabled cell,
+using the same flag as tracing. Disabled CPU measurements cover that conditional
+configuration. The [source integration guide](../../docs/embedded-tracing.md)
+shows the corresponding application setup.
 Workers share Redis cache on a separate logical database from their queue.
 The runtime's repair throttle therefore coordinates across all four workers;
 a process-local array cache is not this multi-process profile.
