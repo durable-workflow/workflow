@@ -216,7 +216,8 @@ after measurement and does not share the experiment's CPU allocation.
 
 ```sh
 node --test analyze.test.mjs
-node analyze.mjs /temporary/experiment-root > /temporary/result.json
+cd /temporary
+node /path/to/recipe/analyze.mjs ./experiment-root > ./result.json
 ```
 
 The reader requires all 20 cells: three baseline/disabled/enabled repetitions
@@ -225,6 +226,11 @@ cell, missing role, changed container or resource limit, decreasing CPU,
 missing samples, nonzero child exit, OOM/restart, unfinished business work or
 span loss. It normalizes CPU by measured completions, excluding warmup counts.
 Metadata, span and audit totals explicitly include warmup.
+
+Run from the copied experiment's parent directory. The input root must resolve
+inside the working directory. Each data file must resolve inside the selected
+experiment root, including symbolic links. This keeps input selection scoped
+to the data mounted for analysis.
 
 The fixed statistical method uses paired relative differences and a
 conventional two-sided 95% paired-t interval with three pairs, two degrees of

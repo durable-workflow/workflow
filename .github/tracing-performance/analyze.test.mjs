@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
-import {compare, summarizeCell} from './analyze.mjs';
+import {compare, dataPath, experimentRoot, summarizeCell} from './analyze.mjs';
 
 function pairData() {
     const cells = [];
@@ -103,4 +105,34 @@ test('missing or duplicate cells cannot be silently selected out', () => {
     const cells = pairData();
     cells[0] = {...cells[1]};
     assert.throws(() => compare(cells), /Missing or repeated/);
+});
+
+test('canonical input selection refuses parent, sibling-prefix and linked escapes', async t => {
+    const workspace = await mkdtemp(path.join(process.cwd(), '.analysis-input-'));
+    const sibling = workspace + '-sibling';
+    await mkdir(sibling);
+    t.after(async () => {
+        await rm(workspace, {recursive: true});
+        await rm(sibling, {recursive: true});
+    });
+    assert.equal(await experimentRoot('.', workspace), workspace);
+    await assert.rejects(experimentRoot('..', workspace), /escapes/);
+    await assert.rejects(experimentRoot(sibling, workspace), /escapes/);
+    await symlink(sibling, path.join(workspace, 'linked-root'));
+    await assert.rejects(experimentRoot('linked-root', workspace), /escapes/);
+});
+
+test('a copied result cannot link a data file outside its selected experiment', async t => {
+    const workspace = await mkdtemp(path.join(process.cwd(), '.analysis-data-'));
+    t.after(async () => { await rm(workspace, {recursive: true}); });
+    const root = path.join(workspace, 'experiment');
+    await mkdir(root);
+    const normal = path.join(root, 'result.json');
+    const outside = path.join(workspace, 'outside.json');
+    await writeFile(normal, '{}');
+    await writeFile(outside, '{}');
+    assert.equal(await dataPath(root, normal), normal);
+    const link = path.join(root, 'linked.json');
+    await symlink(outside, link);
+    await assert.rejects(dataPath(root, link), /escapes/);
 });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readdir, readFile} from 'node:fs/promises';
+import {readdir, readFile, realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 
@@ -79,7 +79,7 @@ function validateBusiness(data) {
         ActivityScheduled: runs * members, ActivityStarted: runs * members,
         ActivityCompleted: runs * members, WorkflowCompleted: runs});
     assert.ok(Number.isSafeInteger(audit.repairs) && audit.repairs >= 0);
-    assert.deepEqual(Object.keys(audit.metadata_bytes).sort(), ['activity_executions', 'workflow_runs', 'workflow_tasks']);
+    assert.deepEqual(new Set(Object.keys(audit.metadata_bytes)), new Set(['activity_executions', 'workflow_runs', 'workflow_tasks']));
     for (const bytes of Object.values(audit.metadata_bytes)) assert.ok(Number.isSafeInteger(bytes) && bytes >= 0);
     for (const key of ['unfinished_runs', 'unfinished_activities', 'unfinished_tasks', 'nonfirst_tasks',
         'unfinished_attempts', 'nonfirst_attempts', 'queue', 'failed_jobs']) assert.equal(audit[key], 0, key);
@@ -99,7 +99,7 @@ function validateTelemetry({outcome, audit, telemetry}) {
 }
 
 function summarizeComponents(data, before, after) {
-    assert.deepEqual([...before.keys()].sort(), [...after.keys()].sort(), 'Container replacement invalidates CPU');
+    assert.deepEqual(new Set(before.keys()), new Set(after.keys()), 'Container replacement invalidates CPU');
     const samples = data.samples;
     assert.ok(samples.length >= 18 && samples.length % 9 === 0, 'Incomplete sampler output');
     const components = {};
@@ -135,7 +135,7 @@ function validateExits(data, before) {
     assert.equal(data.probeExits.length, 2);
     for (const code of [...data.workerExits, ...data.probeExits]) assert.equal(code, 0);
     assert.equal(data.exits.length, 9);
-    assert.deepEqual(data.exits.map(item => item.id).sort(), [...before.keys()].sort());
+    assert.deepEqual(new Set(data.exits.map(item => item.id)), new Set(before.keys()));
     for (const item of data.exits) {
         assert.equal(item.oom, false);
         assert.equal(item.restarts, 0);
@@ -194,32 +194,53 @@ export function compare(cells) {
     return result;
 }
 
-const json = async file => JSON.parse(await readFile(file, 'utf8'));
-const jsonLines = async file => (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+function within(directory, resolved) {
+    if (resolved !== directory && !resolved.startsWith(directory + path.sep)) {
+        throw new RangeError('Experiment input escapes its selected directory');
+    }
+    return resolved;
+}
+
+export async function experimentRoot(input, directory = process.cwd()) {
+    const allowed = await realpath(directory);
+    return within(allowed, await realpath(path.resolve(allowed, input)));
+}
+
+export async function dataPath(root, file) {
+    return within(root, await realpath(file));
+}
+
+const json = async (root, file) => JSON.parse(await readFile(await dataPath(root, file), 'utf8'));
+const jsonLines = async (root, file) => (await readFile(await dataPath(root, file), 'utf8'))
+    .trim().split('\n').map(line => JSON.parse(line));
 
 export async function loadCell(root, name) {
-    const proof = path.join(root, 'proof', name);
-    const state = path.join(root, 'state', name);
+    root = await experimentRoot(root);
+    assert.match(name, /^tracing-measure-(base|off|on)-(ordinary|fanout)-(1|2|3|drift)$/);
+    const proof = await dataPath(root, path.join(root, 'proof', name));
+    const state = await dataPath(root, path.join(root, 'state', name));
     const exitCodes = async directory => {
-        const files = (await readdir(directory)).filter(file => file.endsWith('.exit'));
+        const files = (await readdir(await dataPath(root, directory))).filter(file => file.endsWith('.exit'));
         return Promise.all(files.map(async file => {
-            const value = (await readFile(path.join(directory, file), 'utf8')).trim();
-            assert.match(value, /^(0|[1-9][0-9]*)$/, 'Missing or invalid child exit');
+            const value = (await readFile(await dataPath(root, path.join(directory, file)), 'utf8')).trim();
+            assert.match(value, /^(0|[1-9]\d*)$/, 'Missing or invalid child exit');
             return Number(value);
         }));
     };
-    return summarizeCell({outcome: await json(path.join(proof, 'outcome.json')),
-        measure: await json(path.join(proof, 'measure-result.json')), warmup: await json(path.join(proof, 'warmup-result.json')),
-        audit: await json(path.join(proof, 'audit.json')), telemetry: await json(path.join(proof, 'telemetry.json')),
-        before: await jsonLines(path.join(proof, 'before.jsonl')), after: await jsonLines(path.join(proof, 'after.jsonl')),
-        samples: await jsonLines(path.join(proof, 'samples.jsonl')), exits: await jsonLines(path.join(proof, 'exits.jsonl')),
+    return summarizeCell({outcome: await json(root, path.join(proof, 'outcome.json')),
+        measure: await json(root, path.join(proof, 'measure-result.json')), warmup: await json(root, path.join(proof, 'warmup-result.json')),
+        audit: await json(root, path.join(proof, 'audit.json')), telemetry: await json(root, path.join(proof, 'telemetry.json')),
+        before: await jsonLines(root, path.join(proof, 'before.jsonl')), after: await jsonLines(root, path.join(proof, 'after.jsonl')),
+        samples: await jsonLines(root, path.join(proof, 'samples.jsonl')), exits: await jsonLines(root, path.join(proof, 'exits.jsonl')),
         workerExits: await exitCodes(path.join(state, 'runtime')), probeExits: await exitCodes(path.join(state, 'results'))});
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    const root = process.argv[2];
-    assert.ok(root, 'Usage: node analyze.mjs COPIED_EXPERIMENT_ROOT');
-    const names = (await readdir(path.join(root, 'proof'))).filter(name => name.startsWith('tracing-measure-'));
+    const input = process.argv[2];
+    assert.ok(input, 'Usage: node analyze.mjs COPIED_EXPERIMENT_ROOT');
+    const root = await experimentRoot(input);
+    const names = (await readdir(await dataPath(root, path.join(root, 'proof'))))
+        .filter(name => name.startsWith('tracing-measure-'));
     const cells = await Promise.all(names.map(name => loadCell(root, name)));
     console.log(JSON.stringify({method: 'paired-t-95-n3-df2; targets and drift frozen before admission',
         comparison: compare(cells), cells}, null, 2));
