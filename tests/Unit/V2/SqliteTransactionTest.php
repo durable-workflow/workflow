@@ -126,6 +126,49 @@ final class SqliteTransactionTest extends TestCase
         $this->assertFalse($this->connection->getPdo()->inTransaction());
     }
 
+    public function testAdmissionRestoresTheOriginalBusyTimeoutBeforeTheBody(): void
+    {
+        $pdo = $this->connection->getPdo();
+        $pdo->exec('PRAGMA busy_timeout=5000');
+        $calls = 0;
+        SqliteTransaction::run(function () use ($pdo, &$calls): void {
+            self::assertSame(5000, (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn());
+            $calls++;
+            $this->connection->update('UPDATE state SET value=value+1 WHERE id=1');
+        }, admission: function (): void {
+            $this->connection->update('UPDATE state SET id=id WHERE id=1');
+        });
+        self::assertSame(1, $calls);
+        self::assertSame(5000, (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn());
+        self::assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testRejectedAdmissionRestoresTheOriginalBusyTimeoutWithoutEnteringTheBody(): void
+    {
+        $pdo = $this->connection->getPdo();
+        $pdo->exec('PRAGMA busy_timeout=5000');
+        $writer = $this->writer();
+        $writer->beginTransaction();
+        $writer->exec('UPDATE state SET value=1 WHERE id=2');
+        $calls = 0;
+        try {
+            SqliteTransaction::run(static function () use (&$calls): void {
+                $calls++;
+            }, 1, admission: function (): void {
+                $this->connection->update('UPDATE state SET id=id WHERE id=1');
+            });
+            self::fail('Persistent contention must keep the original admission failure.');
+        } catch (PDOException $exception) {
+            self::assertSame(5, $exception->errorInfo[1] & 255);
+        } finally {
+            $writer->rollBack();
+        }
+        self::assertSame(0, $calls);
+        self::assertSame(5000, (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn());
+        self::assertSame(0, $this->connection->transactionLevel());
+        self::assertFalse($pdo->inTransaction());
+    }
+
     public function testConfiguredStorageMutationRollsBackItsOwnRoot(): void
     {
         $primary = $this->separateApplicationConnection();
