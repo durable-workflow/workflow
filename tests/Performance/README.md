@@ -158,6 +158,20 @@ counts and remaining uncertainty.
 
 ## History/projection role probe
 
+Set `PROFILE_EMBEDDED_SAMPLE_WINDOWS=1` to add each original's PHP child PID,
+physical measurement start/end, SQL count/elapsed time and process/PHP peak
+memory. The window covers workflow start and ready-task handling, before the
+validation queries. SQL elapsed time is not SQL CPU. Leave
+`PROFILE_HISTORY_ACCESS` unset when sampling ordinary history models.
+
+This probe's fake dispatcher invokes the actual embedded job handlers through
+`TaskDispatcher`, including `RunWorkflowTask::handle` and `WorkflowExecutor::run`.
+It does not use the separate cold `WorkflowFiberRunner` path for those tasks.
+It also does not measure queue transport, worker replacement or real timer
+delay. Do not use bridge-only CPU samples to predict an embedded warm-cache
+benefit. Keep physical sample windows separate from virtual workflow time,
+and include active authored-Fiber stacks in the observer selection.
+
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
 interface while preserving the installed default delegate and its optional
 interfaces. Nested calls are counted but their CPU is not counted twice. It uses
