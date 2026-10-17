@@ -50,6 +50,51 @@ concurrent, real-queue and one-second continuation cases. A retained-execution
 implementation also needs a qualified cache identity, authority check,
 invalidation and safe Fiber disposal design.
 
+## Activity identity matching probe
+
+The separate `ActivityIdentityProbeTest.php` uses one genuine 102-event fixture
+to call activity-identity validation over its 27 recorded activity positions.
+It runs three samples each with ordinary preloaded models, payload counters,
+and counters with cast timing. Every matching sample must issue zero SQL; the
+whole stored history, effects and task state are checked afterwards. Enable it
+with `PROFILE_REPLAY_GROWTH=1`, using the same locked published consumer.
+
+This measures the public identity helper in isolation, not the complete bridge
+step or authored workflow replay. Counter/timer overhead changes its cost, and
+cast timing includes clock overhead. Do not subtract it from another path or
+call its fraction an exact replay attribution. Missing measurements are null.
+
+```sh
+cd benchmarks/embedded-replay
+DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
+  PROFILE_REPLAY_GROWTH=1 vendor/bin/phpunit --configuration ../../phpunit.xml \
+  --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
+  ../../tests/Performance/ActivityIdentityProbeTest.php
+```
+
+### Initial helper measurement, October 17, 2026
+
+The unchanged published 2.5.28 consumer on PHP 8.5.6, Laravel 13.37.0 and
+Testbench 11.3.0 passed one genuine original with 102 events, 27 activity
+effects, 55 first-attempt tasks and zero repairs. All 27 activity snapshots
+were present; the calls supplied no explicit retry overrides. The stored
+history remained unchanged. The container had one CPU, 1 GiB memory and no
+swap on an Intel i5-6500 host.
+
+Each sample checked all 27 recorded positions; each mode had three samples:
+
+| Mode | Median process CPU | Payload casts per sample | SQL per sample |
+| --- | ---: | ---: | ---: |
+| Ordinary models | 38.057 ms | Unmeasured | 0 |
+| Counters without cast clocks | 39.544 ms | 2,754 | 0 |
+| Counters with cast clocks | 51.408 ms | 2,754 | 0 |
+
+Each instrumented sample presented 5,039,100 JSON bytes to the model cast,
+including repeat reads. Of its 2,754 casts, 918 were activity-scheduled
+payloads and 1,836 were other event types. This identifies repeated payload
+decoding inside the helper. It does not measure the remaining bridge work,
+prove a cache design or establish a speedup.
+
 ## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
