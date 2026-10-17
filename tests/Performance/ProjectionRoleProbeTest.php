@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Performance;
 
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
@@ -66,6 +68,20 @@ final class ProjectionRoleProbeTest extends TestCase
             return $value;
         });
         $workflow = WorkflowStub::make(ReplayGrowthWorkflow::class, 'projection-role-growth');
+        $observe = getenv('PROFILE_EMBEDDED_SAMPLE_WINDOWS') === '1';
+        $queries = 0;
+        $sqlMilliseconds = 0.0;
+        if ($observe) {
+            ReplayGrowthWorkflow::$entries = 0;
+            ReplayGrowthWorkflow::$roundVisits = 0;
+            // Let an external observer attach before the measured admission.
+            usleep(3_000_000);
+            DB::listen(static function (QueryExecuted $query) use (&$queries, &$sqlMilliseconds): void {
+                ++$queries;
+                $sqlMilliseconds += $query->time;
+            });
+        }
+        $observationStarted = $observe ? microtime(true) : null;
         $started = ProfiledHistoryRole::cpuMicroseconds();
         $workflow->start(8);
         for ($round = 0; $round <= 8; ++$round) {
@@ -74,6 +90,9 @@ final class ProjectionRoleProbeTest extends TestCase
                 ->seconds();
         }
         $total = ProfiledHistoryRole::cpuMicroseconds() - $started;
+        $observationEnded = $observe ? microtime(true) : null;
+        $measuredQueries = $queries;
+        $measuredSqlMilliseconds = $sqlMilliseconds;
         $payloadReads = ProfiledHistoryEvent::$payloadReads;
         $payloadBytes = ProfiledHistoryEvent::$payloadBytes;
         $payloadCasts = ProfiledHistoryEvent::$payloadCasts;
@@ -94,6 +113,10 @@ final class ProjectionRoleProbeTest extends TestCase
         $this->assertGreaterThan(0, $role->calls['projectRun'] ?? 0);
         $this->assertGreaterThan(0, $role->calls['recordActivityStarted'] ?? 0);
         $this->assertGreaterThan(array_sum($role->cpuMicroseconds), $total);
+        if ($observe) {
+            $this->assertGreaterThan(0, $measuredQueries);
+            $this->assertGreaterThan($observationStarted, $observationEnded);
+        }
         if ($recordPayloadReads) {
             $this->assertNotEmpty($payloadReads);
             $this->assertGreaterThan(0, $payloadBytes);
@@ -110,6 +133,20 @@ final class ProjectionRoleProbeTest extends TestCase
             'whole_cpu_us' => $total,
             'role_cpu_us' => $role->cpuMicroseconds,
             'role_calls' => $role->calls,
+            ...($observe ? [
+                'observation_window' => [
+                    'pid' => getmypid(),
+                    'unix_start' => $observationStarted,
+                    'unix_end' => $observationEnded,
+                ],
+                'queries' => $measuredQueries,
+                'sql_ms' => $measuredSqlMilliseconds,
+                'history_payload_instrumentation' => $recordPayloadReads,
+                'workflow_entries' => ReplayGrowthWorkflow::$entries,
+                'round_visits' => ReplayGrowthWorkflow::$roundVisits,
+                'process_peak_rss_kib' => getrusage()['ru_maxrss'],
+                'php_peak_allocated_bytes' => memory_get_peak_usage(true),
+            ] : []),
             ...($recordPayloadReads ? [
                 'history_payload_reads' => array_sum($payloadReads),
                 'history_payload_records' => count($payloadReads),
