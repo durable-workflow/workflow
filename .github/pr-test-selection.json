@@ -15,7 +15,6 @@
     "tests/Unit/V2/ReadmeBranchDestinationsTest.php",
     "tests/Unit/V2/ScopedCancellationContextTest.php",
     "tests/Unit/V2/SqliteTransactionTest.php",
-    "tests/Unit/V2/ProjectionSqliteContentionTest.php",
     "tests/Unit/V2/StartOptionsTest.php",
     "tests/Unit/V2/VersionMarkerWireFormatTest.php",
     "tests/Unit/V2/WorkflowFiberRunnerTest.php",
