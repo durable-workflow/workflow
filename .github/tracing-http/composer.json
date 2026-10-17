@@ -1,0 +1,14 @@
+{
+    "require": {
+        "open-telemetry/api": "^1.10",
+        "open-telemetry/sdk": "^1.15",
+        "open-telemetry/exporter-otlp": "^1.4",
+        "open-telemetry/context": "^1.5",
+        "open-telemetry/opentelemetry-auto-guzzle": "^1.5",
+        "guzzlehttp/guzzle": "^8.2"
+    },
+    "autoload": {
+        "psr-4": {"Workflow\\": "../../src/"}
+    },
+    "config": {"allow-plugins": false}
+}

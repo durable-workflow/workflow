@@ -17,8 +17,11 @@ use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\EntryMethod;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Testing\ActivityFakeContext;
@@ -32,6 +35,9 @@ final class RunActivityTask implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
+
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
 
     public function __construct(
         public readonly string $taskId,
@@ -63,6 +69,37 @@ final class RunActivityTask implements ShouldQueue
             return;
         }
 
+        if (! ExecutionTracing::enabled()) {
+            $this->executeClaim($claim);
+
+            return;
+        }
+
+        $allowlist = ExecutionTracing::baggageAllowlist();
+        $storedContext = TraceCarrier::fromRun($claim->run);
+        ExecutionTracing::activity(
+            [
+                'workflow_instance_id' => $claim->run->workflow_instance_id,
+                'workflow_run_id' => $claim->run->id,
+                'workflow_type' => $claim->run->workflow_type,
+                'namespace' => $claim->run->namespace,
+                'task_id' => $claim->task->id,
+                'activity_id' => $claim->execution->id,
+                'activity_type' => $claim->execution->activity_type,
+                'activity_attempt_id' => $claim->attemptId(),
+                'activity_attempt_number' => $claim->attemptNumber(),
+                ...TaskTraceTimings::forTask($claim->task),
+            ],
+            $storedContext,
+            fn () => $this->executeClaim($claim),
+            $allowlist,
+            true,
+            $this->dispatchObservabilityContext,
+        );
+    }
+
+    private function executeClaim(ActivityTaskClaim $claim): void
+    {
         $attemptId = $claim->attemptId();
         $attemptCount = $claim->attemptNumber();
 
@@ -107,6 +144,9 @@ final class RunActivityTask implements ShouldQueue
         }
 
         $maxAttempts = ActivityRetryPolicy::maxAttempts($execution, $activity);
+        if ($throwable !== null && ExecutionTracing::enabled()) {
+            ExecutionTracing::recordFailure($throwable);
+        }
         $backoffSeconds = ActivityRetryPolicy::backoffSeconds($execution, $activity, $attemptCount);
 
         $outcome = ActivityOutcomeRecorder::record(

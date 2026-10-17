@@ -24,13 +24,14 @@ class WorkflowTask extends Model
 
     protected $guarded = [];
 
-    protected $hidden = ['queue_delivery_reference'];
+    protected $hidden = ['observability_context', 'queue_delivery_reference'];
 
     protected $keyType = 'string';
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
+        'observability_context' => 'array',
         'task_type' => TaskType::class,
         'status' => TaskStatus::class,
         'payload' => 'array',

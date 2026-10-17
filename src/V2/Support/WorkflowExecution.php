@@ -44,6 +44,7 @@ final class WorkflowExecution
         ?StraightLineWorkflowRequiredException $straightLineError = null,
         ?CarbonInterface $eventTime = null,
     ): self {
+        $callback = ExecutionTracing::bind($callback);
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
             WorkflowFiberContext::enter();
 

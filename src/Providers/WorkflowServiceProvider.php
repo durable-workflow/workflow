@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Support\Facades\Event;
@@ -61,6 +62,7 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
@@ -201,6 +203,9 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         // Register long-poll wake signal observers
         $this->registerLongPollObservers();
+        Event::listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
+            ExecutionTracing::discardTaskOutcomes($event->connectionName);
+        });
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();

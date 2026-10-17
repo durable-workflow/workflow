@@ -20,6 +20,11 @@ use Workflow\Support\Env;
 return [
     'workflows_folder' => 'Workflows',
 
+    'tracing' => [
+        'enabled' => false,
+        'baggage_allowlist' => [],
+    ],
+
     'stored_workflow_model' => Workflow\Models\StoredWorkflow::class,
 
     'stored_workflow_exception_model' => Workflow\Models\StoredWorkflowException::class,

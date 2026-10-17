@@ -1,0 +1,25 @@
+{
+    "workflow": "2.5.22",
+    "tag_source": "908e2db9b4337ceae52ebe5fc5e64f3de8e5338b",
+    "workflow_reference": "1d6acb2db83aa8c0a033e1a5f647d9fda0ce84c7",
+    "image": "ghcr.io/durable-workflow/server@sha256:f6a6507a5a424dfad03e636ec690b0f1e813d385be9940691c59116446dfd1cc",
+    "laravel": "v13.34.0",
+    "php": "8.3.35",
+    "jobs": [
+        {
+            "class": "Workflow\\V2\\Jobs\\RunWorkflowTask",
+            "source_sha256": "a139d5807e15d3c62da7289471fd0a4e02f7caab3ffacf5d86b8a147ce2c4168",
+            "serialized": "O:32:\"Workflow\\V2\\Jobs\\RunWorkflowTask\":2:{s:6:\"taskId\";s:13:\"legacy-task-0\";s:11:\"afterCommit\";b:1;}"
+        },
+        {
+            "class": "Workflow\\V2\\Jobs\\RunActivityTask",
+            "source_sha256": "47f88ab431d81090ecd097fc667f06a6848164c4fe5bc20d44ca013d8730f09c",
+            "serialized": "O:32:\"Workflow\\V2\\Jobs\\RunActivityTask\":2:{s:6:\"taskId\";s:13:\"legacy-task-1\";s:11:\"afterCommit\";b:1;}"
+        },
+        {
+            "class": "Workflow\\V2\\Jobs\\RunTimerTask",
+            "source_sha256": "95b033891bd766049c1d5b4a56417ec80176a85b1bce0130c1e1d9d75da656a4",
+            "serialized": "O:29:\"Workflow\\V2\\Jobs\\RunTimerTask\":2:{s:6:\"taskId\";s:13:\"legacy-task-2\";s:11:\"afterCommit\";b:1;}"
+        }
+    ]
+}

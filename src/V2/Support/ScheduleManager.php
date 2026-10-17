@@ -360,100 +360,16 @@ final class ScheduleManager
         ?CommandContext $context = null,
         ?DateTimeInterface $occurrenceTime = null,
     ): ScheduleTriggerResult {
-        return DB::transaction(static function () use (
+        return ExecutionTracing::scheduleAdmission(
             $schedule,
-            $overlapPolicyOverride,
-            $context,
-            $occurrenceTime
-        ): ScheduleTriggerResult {
-            /** @var WorkflowSchedule $schedule */
-            $schedule = WorkflowSchedule::query()
-                ->lockForUpdate()
-                ->findOrFail($schedule->id);
-
-            // A tick may have selected this occurrence before another trigger
-            // or update changed the schedule. Decide using the locked row.
-            if ($occurrenceTime !== null && (
-                $schedule->next_fire_at === null
-                || UtcScheduleTimestamp::databaseValue($schedule->next_fire_at)
-                    !== UtcScheduleTimestamp::databaseValue($occurrenceTime)
-            )) {
-                self::recordSkip($schedule, 'stale_occurrence', $context);
-
-                return new ScheduleTriggerResult('skipped', null, null, 'stale_occurrence');
-            }
-
-            if (! $schedule->status->allowsTrigger()) {
-                self::recordSkip($schedule, 'status_not_triggerable', $context);
-
-                return new ScheduleTriggerResult('skipped', null, null, 'status_not_triggerable');
-            }
-
-            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
-                self::recordSkip($schedule, 'remaining_actions_exhausted', $context);
-
-                return new ScheduleTriggerResult('skipped', null, null, 'remaining_actions_exhausted');
-            }
-
-            if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
-                self::skipFiredOccurrence($schedule, $occurrenceTime, $context);
-
-                return new ScheduleTriggerResult('skipped', null, null, 'already_fired_occurrence');
-            }
-
-            $overlapPolicy = $overlapPolicyOverride
-                ?? ScheduleOverlapPolicy::tryFrom($schedule->overlap_policy ?? '')
-                ?? ScheduleOverlapPolicy::Skip;
-
-            if ($overlapPolicy->isBuffer() && self::runningRunExists($schedule)) {
-                if ($schedule->isAtBufferCapacity($overlapPolicy->value)) {
-                    self::recordSkip($schedule, 'buffer_full', $context);
-                    $schedule->forceFill([
-                        'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
-                    ])->save();
-
-                    return new ScheduleTriggerResult('buffer_full', null, null, 'buffer_full');
-                }
-
-                $schedule->bufferAction($occurrenceTime);
-                $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
-                $schedule->save();
-
-                return new ScheduleTriggerResult('buffered', null, null, null);
-            }
-
-            if (! self::overlapAllowed($schedule, $overlapPolicy)) {
-                $reason = 'overlap_policy_' . $overlapPolicy->value;
-                self::recordSkip($schedule, $reason, $context);
-                $schedule->forceFill([
-                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
-                ])->save();
-
-                return new ScheduleTriggerResult('skipped', null, null, $reason);
-            }
-
-            if ($overlapPolicy === ScheduleOverlapPolicy::CancelOther || $overlapPolicy === ScheduleOverlapPolicy::TerminateOther) {
-                self::closeExistingRun($schedule, $overlapPolicy);
-            }
-
-            try {
-                $startResult = self::startRun(
-                    $schedule,
-                    occurrenceTime: $occurrenceTime,
-                    effectiveOverlapPolicy: $overlapPolicy->value,
-                    context: $context,
-                );
-            } catch (WorkflowExecutionUnavailableException $exception) {
-                self::recordSkip($schedule, $exception->blockedReason(), $context);
-                $schedule->forceFill([
-                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
-                ])->save();
-
-                return new ScheduleTriggerResult('skipped', null, null, $exception->blockedReason());
-            }
-
-            return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
-        });
+            static fn (): ScheduleTriggerResult => self::triggerAtomically(
+                $schedule,
+                $overlapPolicyOverride,
+                $context,
+                $occurrenceTime
+            ),
+            $occurrenceTime === null ? 'manual' : 'scheduled'
+        );
     }
 
     /**
@@ -474,40 +390,60 @@ final class ScheduleManager
             }
 
             try {
-                $drained = DB::transaction(static function () use ($schedule): ?array {
-                    /** @var WorkflowSchedule $schedule */
-                    $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
+                $drained = ExecutionTracing::scheduleAdmission(
+                    $schedule,
+                    static function () use ($schedule): ?array {
+                        $drained = DB::transaction(static function () use ($schedule): ?array {
+                            /** @var WorkflowSchedule $schedule */
+                            $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
-                    $bufferedAction = $schedule->drainBuffer();
+                            $bufferedAction = $schedule->drainBuffer();
 
-                    if ($bufferedAction === null) {
-                        return null;
-                    }
+                            if ($bufferedAction === null) {
+                                return null;
+                            }
 
-                    $schedule->save();
+                            $schedule->save();
 
-                    $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
-                    if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
-                        self::skipFiredOccurrence($schedule, $occurrenceTime);
+                            $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
+                            if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                                self::skipFiredOccurrence($schedule, $occurrenceTime);
 
-                        return [
-                            'instance_id' => null,
-                            'run_id' => null,
-                            'outcome' => 'skipped',
-                            'reason' => 'already_fired_occurrence',
-                            'occurrence_time' => $occurrenceTime->format('Y-m-d\TH:i:s.uP'),
-                        ];
-                    }
+                                return [
+                                    'instance_id' => null,
+                                    'run_id' => null,
+                                    'outcome' => 'skipped',
+                                    'reason' => 'already_fired_occurrence',
+                                    'occurrence_time' => $occurrenceTime->format('Y-m-d\TH:i:s.uP'),
+                                ];
+                            }
 
-                    $startResult = self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'drained');
+                            $startResult = self::startRun(
+                                $schedule,
+                                occurrenceTime: $occurrenceTime,
+                                outcome: 'drained'
+                            );
 
-                    return [
-                        'instance_id' => $startResult->instanceId,
-                        'run_id' => $startResult->runId,
-                        'outcome' => 'drained',
-                        'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
-                    ];
-                });
+                            return [
+                                'instance_id' => $startResult->instanceId,
+                                'run_id' => $startResult->runId,
+                                'outcome' => 'drained',
+                                'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
+                                'observability_context' => $bufferedAction['observability_context'] ?? null,
+                            ];
+                        });
+                        if ($drained !== null) {
+                            ExecutionTracing::linkBufferedSchedule(
+                                $schedule,
+                                $drained['observability_context'] ?? null
+                            );
+                            unset($drained['observability_context']);
+                        }
+
+                        return $drained;
+                    },
+                    'buffered'
+                );
 
                 if ($drained !== null) {
                     $schedule->refresh();
@@ -671,6 +607,111 @@ final class ScheduleManager
         return $results;
     }
 
+    private static function triggerAtomically(
+        WorkflowSchedule $schedule,
+        ?ScheduleOverlapPolicy $overlapPolicyOverride,
+        ?CommandContext $context,
+        ?DateTimeInterface $occurrenceTime,
+    ): ScheduleTriggerResult {
+        $observabilityContext = ExecutionTracing::enabled() ? TraceCarrier::admissionParent() : null;
+
+        return DB::transaction(static function () use (
+            $schedule,
+            $overlapPolicyOverride,
+            $context,
+            $occurrenceTime,
+            $observabilityContext
+        ): ScheduleTriggerResult {
+            /** @var WorkflowSchedule $schedule */
+            $schedule = WorkflowSchedule::query()
+                ->lockForUpdate()
+                ->findOrFail($schedule->id);
+
+            // A tick may have selected this occurrence before another trigger
+            // or update changed the schedule. Decide using the locked row.
+            if ($occurrenceTime !== null && (
+                $schedule->next_fire_at === null
+                || UtcScheduleTimestamp::databaseValue($schedule->next_fire_at)
+                    !== UtcScheduleTimestamp::databaseValue($occurrenceTime)
+            )) {
+                self::recordSkip($schedule, 'stale_occurrence', $context);
+
+                return new ScheduleTriggerResult('skipped', null, null, 'stale_occurrence');
+            }
+
+            if (! $schedule->status->allowsTrigger()) {
+                self::recordSkip($schedule, 'status_not_triggerable', $context);
+
+                return new ScheduleTriggerResult('skipped', null, null, 'status_not_triggerable');
+            }
+
+            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                self::recordSkip($schedule, 'remaining_actions_exhausted', $context);
+
+                return new ScheduleTriggerResult('skipped', null, null, 'remaining_actions_exhausted');
+            }
+
+            if ($occurrenceTime !== null && self::hasFiredOccurrence($schedule, $occurrenceTime)) {
+                self::skipFiredOccurrence($schedule, $occurrenceTime, $context);
+
+                return new ScheduleTriggerResult('skipped', null, null, 'already_fired_occurrence');
+            }
+
+            $overlapPolicy = $overlapPolicyOverride
+                ?? ScheduleOverlapPolicy::tryFrom($schedule->overlap_policy ?? '')
+                ?? ScheduleOverlapPolicy::Skip;
+
+            if ($overlapPolicy->isBuffer() && self::runningRunExists($schedule)) {
+                if ($schedule->isAtBufferCapacity($overlapPolicy->value)) {
+                    self::recordSkip($schedule, 'buffer_full', $context);
+                    $schedule->forceFill([
+                        'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
+                    ])->save();
+
+                    return new ScheduleTriggerResult('buffer_full', null, null, 'buffer_full');
+                }
+
+                $schedule->bufferAction($occurrenceTime, $observabilityContext);
+                $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
+                $schedule->save();
+
+                return new ScheduleTriggerResult('buffered', null, null, null);
+            }
+
+            if (! self::overlapAllowed($schedule, $overlapPolicy)) {
+                $reason = 'overlap_policy_' . $overlapPolicy->value;
+                self::recordSkip($schedule, $reason, $context);
+                $schedule->forceFill([
+                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
+                ])->save();
+
+                return new ScheduleTriggerResult('skipped', null, null, $reason);
+            }
+
+            if ($overlapPolicy === ScheduleOverlapPolicy::CancelOther || $overlapPolicy === ScheduleOverlapPolicy::TerminateOther) {
+                self::closeExistingRun($schedule, $overlapPolicy);
+            }
+
+            try {
+                $startResult = self::startRun(
+                    $schedule,
+                    occurrenceTime: $occurrenceTime,
+                    effectiveOverlapPolicy: $overlapPolicy->value,
+                    context: $context,
+                );
+            } catch (WorkflowExecutionUnavailableException $exception) {
+                self::recordSkip($schedule, $exception->blockedReason(), $context);
+                $schedule->forceFill([
+                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
+                ])->save();
+
+                return new ScheduleTriggerResult('skipped', null, null, $exception->blockedReason());
+            }
+
+            return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
+        });
+    }
+
     /**
      * Select a bounded oldest-first batch without allowing one namespace to
      * occupy every slot. Namespace order is based on each namespace's oldest
@@ -783,6 +824,24 @@ final class ScheduleManager
         ScheduleOverlapPolicy $overlapPolicy,
         DateTimeInterface $occurrenceTime,
         ?CommandContext $context = null,
+    ): ?string {
+        return ExecutionTracing::scheduleAdmission(
+            $schedule,
+            static fn (): ?string => self::triggerBackfillAtomically(
+                $schedule,
+                $overlapPolicy,
+                $occurrenceTime,
+                $context
+            ),
+            'backfill'
+        );
+    }
+
+    private static function triggerBackfillAtomically(
+        WorkflowSchedule $schedule,
+        ScheduleOverlapPolicy $overlapPolicy,
+        DateTimeInterface $occurrenceTime,
+        ?CommandContext $context,
     ): ?string {
         $effectivePolicy = $overlapPolicy->isBuffer()
             ? ScheduleOverlapPolicy::AllowAll

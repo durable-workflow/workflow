@@ -7,9 +7,15 @@ namespace Tests\Unit\V2;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Foundation\Application;
+use OpenTelemetry\API\Instrumentation\Configurator;
+use OpenTelemetry\Context\Context;
+use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
+use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
+use OpenTelemetry\SDK\Trace\TracerProvider;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Tests\Fixtures\V2\TestReplayMapOrderWorkflow;
+use Tests\Fixtures\V2\TestTracingReplayWorkflow;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
@@ -18,6 +24,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -111,6 +118,12 @@ final class ReplayRegressionCorpusTest extends TestCase
             is_a($workflowClass, Workflow::class, true),
             sprintf('Replay fixture workflow [%s] must be an autoloadable V2 workflow.', $workflowClass),
         );
+
+        if ($fixture['id'] === 'workflow-fiber-observability-context') {
+            $this->assertWorkflowFiberObservabilityContext($fixture);
+
+            return;
+        }
 
         if (isset($fixture['expected_failure'])) {
             try {
@@ -329,6 +342,55 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         return $fixtures;
+    }
+
+    private function assertWorkflowFiberObservabilityContext(array $fixture): void
+    {
+        $exporter = new InMemoryExporter();
+        $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+        $scope = Configurator::create()->withTracerProvider($provider)->activate();
+        $initial = Context::getCurrent();
+        TestTracingReplayWorkflow::$contexts = [];
+        $runner = null;
+        $fields = [];
+        try {
+            $step = ExecutionTracing::workflow([
+                'workflow_run_id' => 'replay-origin',
+                'namespace' => '0',
+                'task_id' => 'original-task',
+            ], null, static function () use ($fixture, &$runner, &$fields): WorkflowStep {
+                $fields = ExecutionTracing::current();
+                $runner = WorkflowFiberRunner::forClass(
+                    $fixture['workflow']['type'],
+                    'replay-origin',
+                    'replay-origin',
+                    $fixture['workflow']['arguments'],
+                    $fixture['workflow']['payload_codec'],
+                );
+
+                return $runner->step();
+            }, enabled: true);
+            $this->assertStepMatches($fixture['command_sequence'][0], $step, 'Original context first step');
+            $this->assertSame($initial, Context::getCurrent());
+            $step = ExecutionTracing::workflow([
+                'workflow_run_id' => 'unrelated-run',
+                'task_id' => 'unrelated-task',
+            ], null, static fn (): WorkflowStep => $runner->step(
+                $fixture['command_sequence'][0]['resume_with']
+            ), enabled: true);
+            $this->assertStepMatches($fixture['expected'], $step, 'Original context resumed step');
+            $this->assertSame([$fields, $fields], TestTracingReplayWorkflow::$contexts);
+            $this->assertSame($initial, Context::getCurrent());
+            $this->assertSame([], ExecutionTracing::current());
+            // Replaying an activity outcome never executes or traces that activity again.
+            $this->assertCount(2, $exporter->getSpans());
+            foreach ($exporter->getSpans() as $span) {
+                $this->assertSame('durable.workflow.task', $span->getName());
+            }
+        } finally {
+            $scope->detach();
+            $provider->shutdown();
+        }
     }
 
     /**
