@@ -150,7 +150,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             );
             $this->assertSame(
                 $prefix,
-                $run->historyEvents()->limit(count($prefix))->get()->map->getRawOriginal()->all()
+                $run->historyEvents()
+                    ->limit(count($prefix))
+                    ->get()
+                    ->map->getRawOriginal()
+                    ->all()
             );
             $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
                 $run->fresh()
@@ -180,6 +184,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'embedded-committed-timer-continuation') {
+                // Its positive executor path runs in the isolated queue test above.
+                continue;
+            }
 
             if ($fixture['id'] === 'embedded-local-activity-retry-queue-delivery') {
                 $this->assertEmbeddedLocalRetryQueuesItsOriginalTask($fixture);
