@@ -26,6 +26,11 @@ The profile reports:
   batches, including executor replay, persistence and
   synchronous projections: wall/CPU time and SQL counts/time.
 - History fetch/envelope mapping and cold bridge Fiber replay as separate operations.
+- Each cold bridge sample retains its whole-operation measurement and includes
+  `phases.initialization` for runner construction/history indexing and
+  `phases.step` for workflow execution, replay matching and value delivery.
+  Both phases must issue zero SQL queries. The additional timing calls have
+  overhead; this diagnostic split is not a runtime optimization or speedup.
 - Idempotent summary projection at the same committed history.
 - Workflow entry/prefix visits, actual activity effects, history/task counts
   and process peak RSS.

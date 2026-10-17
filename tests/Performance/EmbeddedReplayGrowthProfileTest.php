@@ -117,20 +117,32 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         $projections = [];
         for ($sample = 0; $sample < 3; ++$sample) {
             $report('cold_bridge_replay', $sample + 1);
-            $replays[] = $this->measure(function () use ($run, $history, $rounds): int {
-                $step = WorkflowFiberRunner::forClass(
+            $phases = [];
+            $replays[] = $this->measure(function () use ($run, $history, $rounds, &$phases, &$queries, &$sqlMilliseconds): int {
+                $initialization = $this->measure(static fn (): WorkflowFiberRunner => WorkflowFiberRunner::forClass(
                     ReplayGrowthWorkflow::class,
                     $run->workflow_instance_id,
                     $run->id,
                     [$rounds],
                     historyEvents: $history,
                     namespace: $run->namespace,
-                )->step();
-                $this->assertTrue($step->completed);
-                $this->assertSame($rounds * 3, $step->result);
+                ), $queries, $sqlMilliseconds);
+                $runner = $initialization['result'];
+                $initialization['result'] = 1;
+                $phases['initialization'] = $initialization;
+                $phases['step'] = $this->measure(function () use ($runner, $rounds): int {
+                    $step = $runner->step();
+                    $this->assertTrue($step->completed);
+                    $this->assertSame($rounds * 3, $step->result);
 
-                return count($step->commands);
+                    return count($step->commands);
+                }, $queries, $sqlMilliseconds);
+                $this->assertSame(0, $phases['initialization']['queries']);
+                $this->assertSame(0, $phases['step']['queries']);
+
+                return $phases['step']['result'];
             }, $queries, $sqlMilliseconds);
+            $replays[array_key_last($replays)]['phases'] = $phases;
             $report('summary_projection', $sample + 1);
             $projections[] = $this->measure(static function () use ($run): int {
                 RunSummaryProjector::project($run->fresh());
@@ -173,8 +185,9 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
     }
 
     /**
-     * @param callable(): int $operation
-     * @return array{wall_ms: float, cpu_ms: float, queries: int, sql_ms: float, result: int}
+     * @template T
+     * @param callable(): T $operation
+     * @return array{wall_ms: float, cpu_ms: float, queries: int, sql_ms: float, result: T}
      */
     private function measure(callable $operation, int &$queries, float &$sqlMilliseconds): array
     {
