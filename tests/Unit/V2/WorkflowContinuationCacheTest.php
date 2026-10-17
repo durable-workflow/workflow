@@ -62,6 +62,22 @@ final class WorkflowContinuationCacheTest extends TestCase
         $this->assertSame(1, $cache->snapshot()['counts']['evict_age']);
     }
 
+    public function testAHitAndRepublishNeverRenewOriginalAge(): void
+    {
+        $cache = new WorkflowContinuationCache();
+        $entry = $this->entry();
+        $cache->publish('one', $cache->observe('one'), $entry);
+        $entry->retainedAt = hrtime(true) - 20_000_000_000;
+        $original = $entry->retainedAt;
+        $this->assertSame($entry, $cache->take('one'));
+        $cache->publish('one', $cache->observe('one'), $entry);
+        $this->assertSame($original, $entry->retainedAt);
+        $entry->retainedAt = hrtime(true) - 30_000_000_000;
+        $cache->publish('one', $cache->observe('one'), $entry);
+        $this->assertNull($cache->take('one'));
+        $this->assertSame(1, $cache->snapshot()['counts']['discard_age']);
+    }
+
     public function testActualResidentPressureEvictsAndRefusesPublication(): void
     {
         $cache = new WorkflowContinuationCache();

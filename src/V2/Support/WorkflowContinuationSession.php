@@ -28,6 +28,8 @@ final class WorkflowContinuationSession
 
     private ?WorkflowContinuation $pending = null;
 
+    private ?WorkflowContinuation $active = null;
+
     public function __construct(
         private readonly WorkflowContinuationCache $cache,
         private readonly Connection $database,
@@ -56,20 +58,19 @@ final class WorkflowContinuationSession
         ]));
         $this->generation = $this->cache->observe($this->key);
         $entry = $this->cache->take($this->key);
-        if ($entry === null) {
-            return null;
-        }
-        if ($entry->guard !== $this->guard($run)
-            || $entry->prefix !== array_slice($this->prefix($run), 0, count($entry->prefix))) {
+        if ($entry !== null && ($entry->guard !== $this->guard($run)
+            || $entry->prefix !== array_slice($this->prefix($run), 0, count($entry->prefix)))) {
             $this->cache->count('invalidate_history_or_run');
             return null;
         }
-        // Keep references captured by authoring code attached to the refreshed model.
-        $bound = $entry->workflow->run;
-        $bound->setRawAttributes($run->getAttributes(), true);
-        $bound->setRelations($run->getRelations());
-        $this->resumed = true;
-        $this->cache->count('hit');
+        if ($entry !== null) {
+            // Keep references captured by authoring code attached to the refreshed model.
+            $bound = $entry->workflow->run;
+            $bound->setRawAttributes($run->getAttributes(), true);
+            $bound->setRelations($run->getRelations());
+            $this->resumed = true;
+            $this->cache->count('hit');
+        }
 
         return $entry;
     }
@@ -96,10 +97,21 @@ final class WorkflowContinuationSession
     {
         $this->enabled = false;
         $this->pending = null;
+        $this->active = null;
     }
 
-    public function offer(WorkflowContinuation $entry, WorkflowTask $task): void
+    public function track(WorkflowContinuation $entry): void
     {
+        $this->active = $this->enabled ? $entry : null;
+    }
+
+    public function offer(WorkflowTask $task): void
+    {
+        $entry = $this->active;
+        $this->active = null;
+        if ($entry === null) {
+            return;
+        }
         $run = $entry->workflow->run;
         if (! $this->accepts($entry->current) || ! $entry->execution->valid()
             || $run->status !== RunStatus::Waiting || $task->status !== TaskStatus::Completed
@@ -133,27 +145,23 @@ final class WorkflowContinuationSession
             return false;
         }
         $reflection = new ReflectionClass($class);
-        if ($reflection->getConstructor() !== null) {
-            return false;
-        }
-        foreach ($reflection->getAttributes() as $attribute) {
-            if ($attribute->getName() !== Type::class) {
-                return false;
-            }
-        }
-        foreach ($reflection->getMethods() as $method) {
-            if ($method->getAttributes() !== []) {
-                return false;
-            }
-        }
-        foreach (EntryMethod::forWorkflow($class)->getParameters() as $parameter) {
-            $type = $parameter->getType();
-            if (! $type instanceof ReflectionNamedType || ! $type->isBuiltin()) {
-                return false;
-            }
-        }
+        $unsupportedAttributes = array_filter(
+            $reflection->getAttributes(),
+            static fn ($attribute): bool => $attribute->getName() !== Type::class
+        );
+        $decoratedMethods = array_filter(
+            $reflection->getMethods(),
+            static fn ($method): bool => $method->getAttributes() !== []
+        );
+        $injectedParameters = array_filter(
+            EntryMethod::forWorkflow($class)->getParameters(),
+            static fn ($parameter): bool => ! $parameter->getType() instanceof ReflectionNamedType
+                || ! $parameter->getType()
+                    ->isBuiltin()
+        );
 
-        return true;
+        return $reflection->getConstructor() === null && $unsupportedAttributes === []
+            && $decoratedMethods === [] && $injectedParameters === [];
     }
 
     private function safeHistory(WorkflowRun $run): bool
@@ -177,7 +185,8 @@ final class WorkflowContinuationSession
     {
         return $run->historyEvents()
             ->get()
-            ->map(static fn ($event): string => hash('sha256', serialize($event->getRawOriginal())))->all();
+            ->map(static fn ($event): string => hash('sha256', serialize($event->getRawOriginal())))
+            ->all();
     }
 
     private function guard(WorkflowRun $run): string

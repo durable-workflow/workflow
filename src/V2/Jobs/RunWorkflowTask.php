@@ -92,7 +92,10 @@ final class RunWorkflowTask implements ShouldQueue
                     return null;
                 }
 
-                return $executor->run($run, $task, $continuation);
+                $nextTask = $executor->run($run, $task, $continuation);
+                $continuation?->offer($task);
+
+                return $nextTask;
             });
         } catch (Throwable $throwable) {
             $continuation?->disable();

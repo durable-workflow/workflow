@@ -73,6 +73,7 @@ final class EmbeddedContinuationTest extends TestCase
             'lost process-local state' => [true, 2, 1, 'evict'],
             'new application build' => [true, 2, 1, 'build'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
+            'worker stop' => [true, 2, 1, 'stop'],
         ];
     }
 
@@ -111,6 +112,9 @@ final class EmbeddedContinuationTest extends TestCase
             $this->app->make(WorkflowContinuationCache::class)->clear();
         } elseif ($change === 'build') {
             config()->set('workflows.v2.live_execution.build', 'new-build');
+        } elseif ($change === 'stop') {
+            $this->app->make('queue.worker')
+                ->stop();
         }
         $this->workOnce(); // workflow resumes, then parks on its timer
         Carbon::setTestNow(now()->addSeconds(2));
@@ -183,6 +187,76 @@ final class EmbeddedContinuationTest extends TestCase
             ->all());
     }
 
+    public function testUnsupportedMemoFallsBackBeforeItsDurableWrite(): void
+    {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => [ContinuationMemoWorkflow::class],
+            'build' => 'memo-fallback',
+        ]);
+        ContinuationMemoWorkflow::$entries = 0;
+        $atWrite = [];
+        WorkflowHistoryEvent::creating(static function (WorkflowHistoryEvent $event) use (&$atWrite): void {
+            if ($event->event_type === HistoryEventType::MemoUpserted) {
+                $atWrite[] = ContinuationMemoWorkflow::$entries;
+            }
+        });
+        $stub = WorkflowStub::make(ContinuationMemoWorkflow::class, 'memo-fallback', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame([2], $atWrite);
+        $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(0, $this->app->make(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
+            ->where('event_type', HistoryEventType::MemoUpserted)->count());
+    }
+
+    public function testRunAndNamespaceStateStayBoundToTheirOwnContinuationAndEventClocks(): void
+    {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => [ScopedContinuationWorkflow::class],
+            'build' => 'namespace-test',
+        ]);
+        ScopedContinuationWorkflow::$entries = [];
+        $stubs = [];
+        foreach (['17', '017'] as $namespace) {
+            $stub = WorkflowStub::make(ScopedContinuationWorkflow::class, 'same-business-key', $namespace);
+            $stub->start($namespace);
+            $stubs[] = $stub;
+        }
+        foreach ([0, 1, 2] as $phase) {
+            if ($phase === 1) {
+                Carbon::setTestNow(now()->addMicroseconds(13));
+            }
+            $this->workOnce();
+            $this->workOnce();
+        }
+        Carbon::setTestNow(now()->addSeconds(2));
+        for ($job = 0; $job < 4; ++$job) {
+            $this->workOnce();
+        }
+        foreach ($stubs as $stub) {
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $this->assertSame('completed', $stub->refresh()->status());
+            $result = $stub->output();
+            $this->assertSame($run->namespace, $result['tag']);
+            $this->assertSame($run->namespace, $result['namespace']);
+            $this->assertSame($run->id, $result['run']);
+            $events = $run->historyEvents()
+                ->get();
+            $timer = $events->where('event_type', HistoryEventType::TimerFired)->sole();
+            $activity = $events->where('event_type', HistoryEventType::ActivityCompleted)->sole();
+            $this->assertSame($timer->sequence, $result['history_at_return']);
+            $this->assertSame([$run->started_at->toJSON(), $activity->recorded_at->toJSON(),
+                $timer->recorded_at->toJSON()], $result['clocks']);
+            $this->assertSame(1, ScopedContinuationWorkflow::$entries[$run->id]);
+            $this->assertSame(5, $run->tasks()->where('status', 'completed')->where('attempt_count', 1)->count());
+        }
+        $this->assertSame(2, ContinuationActivity::$calls);
+    }
+
     public static function failures(): array
     {
         return [
@@ -221,7 +295,8 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertCount($phase === 'ack' ? 1 : 0, $events->where('event_type', HistoryEventType::TimerScheduled));
         $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
         $this->assertCount(0, $events->where('event_type', HistoryEventType::WorkflowCompleted));
-        $this->assertSame(1, DB::table('failed_jobs')->count());
+        $failed = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where('status', 'failed')->sole();
+        $this->assertSame('controlled-' . $phase, $failed->last_error);
     }
 
     protected function getPackageProviders($app): array
@@ -306,6 +381,49 @@ final class ContinuationActivity extends Activity
             'integer' => 9007199254740993,
             'optional' => null,
             'unicode' => 'λ',
+        ];
+    }
+}
+
+final class ContinuationMemoWorkflow extends Workflow
+{
+    public static int $entries = 0;
+
+    public function handle(): array
+    {
+        ++self::$entries;
+        $value = Workflow::activity(ContinuationActivity::class);
+        Workflow::upsertMemo([
+            'phase' => 'completed',
+        ]);
+
+        return $value;
+    }
+}
+
+final class ScopedContinuationWorkflow extends Workflow
+{
+    /**
+     * @var array<string, int>
+     */
+    public static array $entries = [];
+
+    public function handle(string $tag): array
+    {
+        $bound = $this->run;
+        self::$entries[$bound->id] = (self::$entries[$bound->id] ?? 0) + 1;
+        $clocks = [Workflow::now()->toJSON()];
+        Workflow::activity(ContinuationActivity::class);
+        $clocks[] = Workflow::now()->toJSON();
+        Workflow::timer(1);
+        $clocks[] = Workflow::now()->toJSON();
+
+        return [
+            'tag' => $tag,
+            'namespace' => $bound->namespace,
+            'run' => $bound->id,
+            'history_at_return' => $bound->last_history_sequence,
+            'clocks' => $clocks,
         ];
     }
 }

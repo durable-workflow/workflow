@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-committed-timer-continuation",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+    "arguments": [1],
+    "payload_codec": "avro"
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [{"type": "start_timer", "delay_seconds": 1}]
+  }
+}
