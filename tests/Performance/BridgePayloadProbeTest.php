@@ -74,12 +74,15 @@ final class BridgePayloadProbeTest extends TestCase
         $originalTiming = ProfiledHistoryEvent::$timePayloadCasts;
         $phases = [];
         $expectedCommands = null;
+        $modes = getenv('PROFILE_REPLAY_ORDINARY_ONLY') === '1' ? [
+            'ordinary' => null,
+        ] : [
+            'ordinary' => null,
+            'counts' => false,
+            'cast_timed' => true,
+        ];
         try {
-            foreach ([
-                'ordinary' => null,
-                'counts' => false,
-                'cast_timed' => true,
-            ] as $mode => $timing) {
+            foreach ($modes as $mode => $timing) {
                 for ($sample = 0; $sample < 3; ++$sample) {
                     $measurement = $this->replay($run, $history, $timing, $queries);
                     $expectedCommands ??= $measurement['commands'];
