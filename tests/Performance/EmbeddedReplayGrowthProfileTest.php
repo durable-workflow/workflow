@@ -118,7 +118,14 @@ final class EmbeddedReplayGrowthProfileTest extends TestCase
         for ($sample = 0; $sample < 3; ++$sample) {
             $report('cold_bridge_replay', $sample + 1);
             $phases = [];
-            $replays[] = $this->measure(function () use ($run, $history, $rounds, &$phases, &$queries, &$sqlMilliseconds): int {
+            $replays[] = $this->measure(function () use (
+                $run,
+                $history,
+                $rounds,
+                &$phases,
+                &$queries,
+                &$sqlMilliseconds
+            ): int {
                 $initialization = $this->measure(static fn (): WorkflowFiberRunner => WorkflowFiberRunner::forClass(
                     ReplayGrowthWorkflow::class,
                     $run->workflow_instance_id,
