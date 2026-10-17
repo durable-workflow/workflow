@@ -9,6 +9,7 @@ use Illuminate\Queue\DatabaseQueue;
 use PDO;
 use PDOException;
 use Throwable;
+use Workflow\Support\SqliteWriteWait;
 
 /** Keep Laravel's pop lifecycle while acknowledging only the original reservation. */
 class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
@@ -20,6 +21,8 @@ class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
         $rootTransaction = $this->database->transactionLevel() === 0;
         $pdo = $this->database->getPdo();
         $deadline = hrtime(true) + 5_000_000_000;
+        $boundedWait = $rootTransaction && $pdo instanceof PDO
+            && $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite';
 
         for ($attempt = 0; $attempt < self::MAX_DELETE_ATTEMPTS; $attempt++) {
             $deleteFailure = null;
@@ -33,11 +36,23 @@ class SqliteAcknowledgingDatabaseQueue extends DatabaseQueue
             $bindings = $query->getBindings();
 
             try {
-                $this->database->transaction(static function () use ($query, &$deleteFailure): void {
+                $this->database->transaction(static function () use (
+                    $query,
+                    &$deleteFailure,
+                    $boundedWait,
+                    $pdo,
+                    $deadline,
+                ): void {
                     try {
                         // One conditional write avoids SQLite's SELECT-to-write upgrade.
                         // A newer reservation cannot match the original claim.
-                        $query->delete();
+                        if ($boundedWait) {
+                            SqliteWriteWait::run($pdo, static function () use ($query): void {
+                                $query->delete();
+                            }, $deadline);
+                        } else {
+                            $query->delete();
+                        }
                     } catch (QueryException $exception) {
                         $deleteFailure = $exception;
                         throw $exception;

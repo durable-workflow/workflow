@@ -17,7 +17,7 @@ use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
-use Workflow\V2\Exceptions\SqliteAdmissionException;
+use Workflow\Support\SqliteWriteWaitException;
 use Workflow\V2\Support\SqliteTransaction;
 
 final class SqliteTransactionTest extends TestCase
@@ -167,7 +167,7 @@ final class SqliteTransactionTest extends TestCase
                 $admissions++;
             }, connection: $connection);
             self::fail('Unavailable settings must refuse before writer admission.');
-        } catch (SqliteAdmissionException $exception) {
+        } catch (SqliteWriteWaitException $exception) {
             self::assertSame('Cannot inspect the SQLite admission busy timeout.', $exception->getMessage());
         }
         self::assertSame(1, $pdo->queries);

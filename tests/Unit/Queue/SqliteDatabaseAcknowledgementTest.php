@@ -124,6 +124,44 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
     }
 
     #[DataProvider('writerReleasePoints')]
+    public function testNormalBusyTimeoutLeavesTimeForFencedAcknowledgementRetries(int $releaseAfter): void
+    {
+        $pdo = $this->connection->getPdo();
+        $pdo->exec('PRAGMA busy_timeout=5000');
+        $job = $this->job();
+        $neighbor = $this->push();
+        $neighborBefore = $this->connection->table('jobs')
+            ->find($neighbor);
+        $writer = $this->blockDelete();
+        $rollbacks = 0;
+        $this->events->listen(TransactionRolledBack::class, function () use (
+            $writer,
+            $releaseAfter,
+            &$rollbacks
+        ): void {
+            self::assertSame(1, AcknowledgementReceiptJob::$handled);
+            self::assertSame(0, $this->connection->transactionLevel());
+            self::assertFalse($this->connection->getPdo()->inTransaction());
+            if (++$rollbacks === $releaseAfter) {
+                $writer->rollBack();
+            }
+        });
+        try {
+            $job->fire();
+        } finally {
+            if ($writer->inTransaction()) {
+                $writer->rollBack();
+            }
+        }
+        self::assertSame($releaseAfter, $rollbacks);
+        self::assertSame($releaseAfter + 1, $this->deleteStatements);
+        self::assertSame(1, AcknowledgementReceiptJob::$handled);
+        self::assertNull($this->connection->table('jobs')->find($job->getJobId()));
+        self::assertEquals($neighborBefore, $this->connection->table('jobs')->find($neighbor));
+        self::assertSame(5000, (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn());
+    }
+
+    #[DataProvider('writerReleasePoints')]
     public function testAReclaimedReservationSurvivesTheOriginalAcknowledgementRetry(int $releaseAfter): void
     {
         $job = $this->job();

@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
 use PDO;
 use PDOException;
 use Throwable;
-use Workflow\V2\Exceptions\SqliteAdmissionException;
+use Workflow\Support\SqliteWriteWait;
 
 final class SqliteTransaction
 {
@@ -149,7 +149,9 @@ final class SqliteTransaction
             ): mixed {
                 try {
                     if ($admission !== null) {
-                        self::admit($database, $pdo, $admission, $deadline);
+                        SqliteWriteWait::run($pdo, static function () use ($admission, $database): void {
+                            $admission($database);
+                        }, $deadline);
                     }
                     $entered = true;
                     $result = $operation($database);
@@ -177,33 +179,6 @@ final class SqliteTransaction
                     && self::isContention($exception) && $connection->transactionLevel() === 0
                     && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction(),
             ];
-        }
-    }
-
-    /**
-     * @param Closure(Connection): void $admission
-     */
-    private static function admit(Connection $database, PDO $pdo, Closure $admission, int $deadline): void
-    {
-        $statement = $pdo->query('PRAGMA busy_timeout');
-        if ($statement === false) {
-            throw new SqliteAdmissionException('Cannot inspect the SQLite admission busy timeout.');
-        }
-        $originalTimeout = (int) $statement->fetchColumn();
-        $statement->closeCursor();
-        $waitMilliseconds = min(100, max(1, (int) (($deadline - hrtime(true)) / 1_000_000)));
-        if ($originalTimeout <= $waitMilliseconds) {
-            $admission($database);
-            return;
-        }
-
-        // A single driver wait must not consume the root retry budget. Only the
-        // admission uses a short wait; application code keeps its original setting.
-        $pdo->exec('PRAGMA busy_timeout=' . $waitMilliseconds);
-        try {
-            $admission($database);
-        } finally {
-            $pdo->exec('PRAGMA busy_timeout=' . $originalTimeout);
         }
     }
 
