@@ -230,7 +230,8 @@ final class RunTimerView
      */
     private static function stateFromEvent(WorkflowHistoryEvent $event): ?array
     {
-        $timerId = self::stringValue($event->payload['timer_id'] ?? null);
+        $payload = $event->payload ?? [];
+        $timerId = self::stringValue($payload['timer_id'] ?? null);
 
         if ($timerId === null) {
             return null;
@@ -238,7 +239,7 @@ final class RunTimerView
 
         return [
             'id' => $timerId,
-            'sequence' => self::intValue($event->payload['sequence'] ?? null),
+            'sequence' => self::intValue($payload['sequence'] ?? null),
             'status' => match ($event->event_type) {
                 HistoryEventType::TimerFired => TimerStatus::Fired->value,
                 HistoryEventType::TimerCancelled => TimerStatus::Cancelled->value,
@@ -249,33 +250,33 @@ final class RunTimerView
                 HistoryEventType::TimerCancelled => TimerStatus::Cancelled->value,
                 default => TimerStatus::Pending->value,
             },
-            'delay_seconds' => self::intValue($event->payload['delay_seconds'] ?? null),
+            'delay_seconds' => self::intValue($payload['delay_seconds'] ?? null),
             'fire_at' => in_array($event->event_type, [
                 HistoryEventType::TimerScheduled,
                 HistoryEventType::TimerCancelled,
             ], true)
-                ? self::timestamp($event->payload['fire_at'] ?? null)
+                ? self::timestamp($payload['fire_at'] ?? null)
                 : null,
             'fired_at' => $event->event_type === HistoryEventType::TimerFired
-                ? self::timestamp($event->payload['fired_at'] ?? null)
+                ? self::timestamp($payload['fired_at'] ?? null)
                 : null,
             'cancelled_at' => $event->event_type === HistoryEventType::TimerCancelled
-                ? self::timestamp($event->payload['cancelled_at'] ?? null)
+                ? self::timestamp($payload['cancelled_at'] ?? null)
                     ?? $event->recorded_at
                     ?? $event->created_at
                 : null,
             'created_at' => $event->event_type === HistoryEventType::TimerScheduled
                 ? ($event->recorded_at ?? $event->created_at)
                 : null,
-            'timer_kind' => self::stringValue($event->payload['timer_kind'] ?? null),
-            'condition_wait_id' => self::stringValue($event->payload['condition_wait_id'] ?? null),
-            'condition_key' => self::stringValue($event->payload['condition_key'] ?? null),
+            'timer_kind' => self::stringValue($payload['timer_kind'] ?? null),
+            'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
+            'condition_key' => self::stringValue($payload['condition_key'] ?? null),
             'condition_definition_fingerprint' => self::stringValue(
-                $event->payload['condition_definition_fingerprint'] ?? null
+                $payload['condition_definition_fingerprint'] ?? null
             ),
-            'signal_wait_id' => self::stringValue($event->payload['signal_wait_id'] ?? null),
-            'signal_name' => self::stringValue($event->payload['signal_name'] ?? null),
-            ...ParallelChildGroup::payloadForPath(ParallelChildGroup::metadataPathFromPayload($event->payload)),
+            'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
+            'signal_name' => self::stringValue($payload['signal_name'] ?? null),
+            ...ParallelChildGroup::payloadForPath(ParallelChildGroup::metadataPathFromPayload($payload)),
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
             'history_event_types' => [$event->event_type->value],
             'history_unsupported_reason' => null,
