@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.5.31 - 2026-10-17
+
+- Admit SQLite summary writes before projection reads and model hooks so proven
+  root rollbacks can recover from write contention.
+- Execute summary hooks once and preserve the workflow's storage connection,
+  original history, task state and deadlines.
+
 ## 2.5.30 - 2026-10-17
 
 - Skip payload decoding for history event types that cannot match an activity
