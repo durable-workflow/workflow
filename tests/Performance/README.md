@@ -119,17 +119,19 @@ DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
   ../../tests/Performance/BridgePayloadProbeTest.php
 ```
 
-## History/projection role probe
-
-### Active-stack sampling of cold replay
+## Active-stack sampling of cold replay
 
 Set `PROFILE_REPLAY_ORDINARY_ONLY=1` with `PROFILE_REPLAY_GROWTH=1` to run only
 the three ordinary-model bridge samples. This leaves payload counters and cast
 clocks disabled. The default still runs all three modes above. An external
 sampler must observe PHPUnit's PHP child process, not just its waiting parent.
-Filter complete stack samples for `WorkflowFiberRunner::step`; keep their leaf
-functions when distinguishing authored instructions from framework calls.
-Initialization and application startup are outside that selected span.
+Also set `PROFILE_REPLAY_SAMPLE_WINDOWS=1` to emit that child's PID and physical
+start/end timestamps around each measured step. Those optional timestamps do
+not change the workflow clock. Select complete stack records by PID and that
+window, retaining the leaf functions when distinguishing authored instructions
+from framework calls. Include stacks inside the authored Fiber even if its
+parent call chain is unavailable. Initialization and application startup are
+outside each selected span.
 
 Before trusting a profiler across Fiber suspension, run
 `benchmarks/embedded-replay/fiber-profiler-control.php plain` and `heavy`, with
@@ -149,6 +151,8 @@ samples, process CPU with and without observation, and the exact published
 package cohort. Keep the committed 2.5.28 consumer unchanged when measuring a
 later release. Do not use samples from counter-instrumented runs to claim an
 ordinary-model CPU share.
+
+## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
 interface while preserving the installed default delegate and its optional

@@ -166,9 +166,12 @@ final class BridgePayloadProbeTest extends TestCase
         ReplayGrowthWorkflow::$entries = 0;
         ReplayGrowthWorkflow::$roundVisits = 0;
         $beforeQueries = $queries;
+        $observe = getenv('PROFILE_REPLAY_SAMPLE_WINDOWS') === '1';
+        $observationStarted = $observe ? microtime(true) : null;
         $started = ProfiledHistoryRole::cpuMicroseconds();
         $step = $runner->step();
         $stepCpu = ProfiledHistoryRole::cpuMicroseconds() - $started;
+        $observationEnded = $observe ? microtime(true) : null;
         $stepQueries = $queries - $beforeQueries;
         $this->assertSame(0, $stepQueries);
         $this->assertTrue($step->completed);
@@ -187,7 +190,7 @@ final class BridgePayloadProbeTest extends TestCase
             ksort($readsByType);
         }
 
-        return [
+        $measurement = [
             'initialization_cpu_us' => $initializationCpu,
             'initialization_queries' => $initializationQueries,
             'step_cpu_us' => $stepCpu,
@@ -202,6 +205,15 @@ final class BridgePayloadProbeTest extends TestCase
             'payload_reads_by_type' => $timing !== null ? $readsByType : null,
             'commands' => $step->commands,
         ];
+        if ($observe) {
+            $measurement['observation_window'] = [
+                'pid' => getmypid(),
+                'unix_start' => $observationStarted,
+                'unix_end' => $observationEnded,
+            ];
+        }
+
+        return $measurement;
     }
 
     private static function storedDigest(WorkflowRun $run): string
