@@ -1,0 +1,25 @@
+{
+    "name": "durable-workflow/replay-profile-consumer",
+    "description": "Published-package fixture for the embedded replay profile.",
+    "license": "MIT",
+    "require": {
+        "durable-workflow/workflow": "2.5.28"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^11.0",
+        "symplify/easy-coding-standard": "^11.0",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "../../tests/",
+            "Workbench\\App\\": "../../workbench/app/",
+            "Workbench\\Database\\Factories\\": "../../workbench/database/factories/",
+            "Workbench\\Database\\Seeders\\": "../../workbench/database/seeders/"
+        }
+    },
+    "config": {
+        "allow-plugins": false,
+        "preferred-install": "dist"
+    }
+}
