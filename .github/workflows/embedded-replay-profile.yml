@@ -25,7 +25,7 @@ jobs:
       PROFILE_HISTORY_SIZES: ${{ inputs.history_sizes }}
       PROFILE_IMAGE: composer:2.9@sha256:b09bccd91a78fe8a9ab4b33d707b862e8fe54fec17782e32683ad2a69c46867d
       PROFILE_CONTAINER: dw-workflow-replay-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.repetition }}
-      PROFILE_DIR: ${{ runner.temp }}/embedded-replay-${{ matrix.repetition }}
+      PROFILE_DIR: embedded-replay-${{ matrix.repetition }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -34,6 +34,7 @@ jobs:
       - name: Record the host and install the locked published consumer
         timeout-minutes: 6
         run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
           test "$(uname -m)" = x86_64
           uname -srmo
           lscpu | grep -E 'Architecture:|Model name:|CPU\(s\):'
@@ -55,6 +56,7 @@ jobs:
 
       - name: Verify every installed product source and resource against the release
         run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
           reference=$(jq -r '.packages[] | select(.name == "durable-workflow/workflow") | .source.reference' benchmarks/embedded-replay/composer.lock)
           [[ "$reference" =~ ^[0-9a-f]{40}$ ]]
           GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch --no-tags --depth=1 \
@@ -68,6 +70,7 @@ jobs:
         id: profile
         timeout-minutes: 110
         run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
           case "$PROFILE_REPETITION" in 1|2|3) ;; *) exit 2 ;; esac
           case "$PROFILE_HISTORY_SIZES" in
             all) sizes='(1|9|91)' ;;
@@ -113,6 +116,7 @@ jobs:
         env:
           PROFILE_OUTCOME: ${{ steps.profile.outcome }}
         run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
           {
             echo '## Embedded replay diagnostic'
             echo "Source: $GITHUB_SHA"
@@ -132,6 +136,7 @@ jobs:
       - name: Remove task containers and disposable consumer data
         if: always()
         run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
           for container in "$PROFILE_CONTAINER" "${PROFILE_CONTAINER}-install"; do
             if docker container inspect "$container" >/dev/null 2>&1; then
               docker container rm --force "$container"

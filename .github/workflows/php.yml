@@ -72,6 +72,14 @@ jobs:
     - name: Validate workflow YAML syntax
       run: yq eval-all '.' .github/workflows/*.yml >/dev/null
 
+    - name: Validate GitHub Actions expressions
+      run: |
+        docker run --rm --network none --user "$(id -u):$(id -g)" \
+          --cpus 1 --memory 256m --memory-swap 256m \
+          --volume "$PWD:/repo:ro" --workdir /repo \
+          rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+          -shellcheck= -pyflakes= .github/workflows/*.yml
+
     - name: Validate CI script syntax
       run: |
         bash -n \
