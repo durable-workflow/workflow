@@ -124,3 +124,21 @@ DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
 Select `EmbeddedReplayGrowthProfileTest.php` instead for the growth profile.
 The reported PHPUnit 13 runs passed with one deprecated `--do-not-cache-result`
 option notice; the locked consumer command uses its replacement above.
+
+## Hosted growing-history run
+
+Manually dispatch **Published embedded replay profile** to run the locked
+published consumer. `all` selects the 10/100/1000-event targets, `small` selects
+10/100 for setup verification, and `large` selects only the 1000-event target.
+Actual event counts remain authoritative. Each of three jobs runs one
+repetition, with every selected size in its own PHP process on that job's host.
+
+The workflow records the host CPU model and uses a pinned PHP 8.5.6 image,
+1 CPU, 1 GiB and no swap. It verifies all installed source/resources against
+the released commit. Live scalar phase/counter reports and completed results
+go to the job log; no database, history or profiler archive is uploaded.
+
+Each repetition has a fixed 105-minute observation cap. A cap, interruption
+or incomplete cell supplies no passing large-case result. Setup smoke runs
+are separate from full comparisons. These hosted diagnostics retain the fake
+queue, mocked activities and virtual timer time described above.
