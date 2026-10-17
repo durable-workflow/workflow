@@ -50,6 +50,28 @@ concurrent, real-queue and one-second continuation cases. A retained-execution
 implementation also needs a qualified cache identity, authority check,
 invalidation and safe Fiber disposal design.
 
+## Activity identity matching probe
+
+The separate `ActivityIdentityProbeTest.php` uses one genuine 102-event fixture
+to call activity-identity validation over its 27 recorded activity positions.
+It runs three samples each with ordinary preloaded models, payload counters,
+and counters with cast timing. Every matching sample must issue zero SQL; the
+whole stored history, effects and task state are checked afterwards. Enable it
+with `PROFILE_REPLAY_GROWTH=1`, using the same locked published consumer.
+
+This measures the public identity helper in isolation, not the complete bridge
+step or authored workflow replay. Counter/timer overhead changes its cost, and
+cast timing includes clock overhead. Do not subtract it from another path or
+call its fraction an exact replay attribution. Missing measurements are null.
+
+```sh
+cd benchmarks/embedded-replay
+DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
+  PROFILE_REPLAY_GROWTH=1 vendor/bin/phpunit --configuration ../../phpunit.xml \
+  --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
+  ../../tests/Performance/ActivityIdentityProbeTest.php
+```
+
 ## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection

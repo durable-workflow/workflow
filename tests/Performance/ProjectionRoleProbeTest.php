@@ -135,6 +135,8 @@ final class ProfiledHistoryEvent extends WorkflowHistoryEvent
 
     public static int $payloadCastCpuMicroseconds = 0;
 
+    public static bool $timePayloadCasts = true;
+
     public function getAttribute($key): mixed
     {
         if ($key === 'payload' && is_string($this->attributes['id'] ?? null)) {
@@ -154,6 +156,9 @@ final class ProfiledHistoryEvent extends WorkflowHistoryEvent
         }
 
         ++self::$payloadCasts;
+        if (! self::$timePayloadCasts) {
+            return parent::castAttribute($key, $value);
+        }
         $started = ProfiledHistoryRole::cpuMicroseconds();
         try {
             return parent::castAttribute($key, $value);
