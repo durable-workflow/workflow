@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.5.29 - 2026-10-17
+
+- Reuse an event's decoded payload within each timer projection, avoiding
+  repeated casts while preserving exact timestamps and timer metadata.
+- Keep strict missing-attribute handling and read current payload values on
+  later projection calls. Timer scheduling, histories and deadlines are unchanged.
+
 ## 2.5.28 - 2026-10-16
 
 - Retry rolled-back MySQL root transactions for signal, signal-with-start,
