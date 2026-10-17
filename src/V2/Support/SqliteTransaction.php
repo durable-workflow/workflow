@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use PDO;
 use PDOException;
 use Throwable;
+use Workflow\Support\SqliteWriteWait;
 
 final class SqliteTransaction
 {
@@ -49,7 +50,7 @@ final class SqliteTransaction
 
         [$maximumAttempts, $deadline] = self::retryLimits($attempts, $admission !== null, $admissionDeadline);
         for ($attempt = 1; ; $attempt++) {
-            $outcome = self::attempt($connection, $pdo, $operation, $admission);
+            $outcome = self::attempt($connection, $pdo, $operation, $admission, $deadline);
             if (! isset($outcome['error'])) {
                 return $outcome['value'];
             }
@@ -124,8 +125,13 @@ final class SqliteTransaction
      * @param Closure(Connection): void|null $admission
      * @return array{value: T}|array{error: Throwable, retry: bool}
      */
-    private static function attempt(Connection $connection, PDO $pdo, Closure $operation, ?Closure $admission): array
-    {
+    private static function attempt(
+        Connection $connection,
+        PDO $pdo,
+        Closure $operation,
+        ?Closure $admission,
+        int $deadline,
+    ): array {
         $failedInRoot = false;
         $returned = false;
         $entered = false;
@@ -135,6 +141,7 @@ final class SqliteTransaction
                 $operation,
                 $admission,
                 $pdo,
+                $deadline,
                 &$failedInRoot,
                 &$returned,
                 &$entered,
@@ -142,7 +149,9 @@ final class SqliteTransaction
             ): mixed {
                 try {
                     if ($admission !== null) {
-                        $admission($database);
+                        SqliteWriteWait::run($pdo, static function () use ($admission, $database): void {
+                            $admission($database);
+                        }, $deadline);
                     }
                     $entered = true;
                     $result = $operation($database);

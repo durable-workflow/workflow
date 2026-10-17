@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.32 - 2026-10-17
+
+- Keep individual SQLite writer waits within the existing claim and queue
+  acknowledgment retry budgets, so a normal busy timeout leaves time to retry.
+- Restore the connection's configured wait before workflow code and after a
+  refused write. Preserve original reservation fences, claims and deadlines.
+- Retry only proven root rollbacks. Do not repeat handlers or activity callbacks,
+  or retry uncertain commit and rollback outcomes.
+
 ## 2.5.31 - 2026-10-17
 
 - Admit SQLite summary writes before projection reads and model hooks so proven
