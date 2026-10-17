@@ -152,6 +152,10 @@ package cohort. Keep the committed 2.5.28 consumer unchanged when measuring a
 later release. Do not use samples from counter-instrumented runs to claim an
 ordinary-model CPU share.
 
+The [October 17 Fiber qualification and installed 2.5.30 sample](results/issue-748-20261017/FIBER-SAMPLING.md)
+records the rejected observers, actual replay windows, process CPU, sample
+counts and remaining uncertainty.
+
 ## History/projection role probe
 
 `ProjectionRoleProbeTest.php` measures CPU inside the existing history/projection
