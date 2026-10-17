@@ -54,7 +54,7 @@ final class WorkflowContinuationSession
             return null;
         }
         $this->key = hash('sha256', serialize([
-            $this->scope, $class, WorkflowDefinition::fingerprint($class),
+            $this->scope, $run::class, $class, WorkflowDefinition::fingerprint($class),
             $build, config('workflows.v2.compatibility.current'), PHP_VERSION,
         ]));
         $entry = $this->cache->take($this->key, $this->scope);

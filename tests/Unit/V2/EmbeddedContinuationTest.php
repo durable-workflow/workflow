@@ -337,6 +337,43 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame('controlled-' . $phase, $failed->last_error);
     }
 
+    public static function modelProfiles(): array
+    {
+        return [
+            'ordinary cold' => [false],
+            'retained' => [true],
+        ];
+    }
+
+    #[DataProvider('modelProfiles')]
+    public function testAConfiguredRunModelChangeUsesFreshRuntimeState(bool $enabled): void
+    {
+        ContinuationModelWorkflow::$entries = 0;
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => $enabled ? [ContinuationModelWorkflow::class] : [],
+                'build' => 'unchanged-model-build',
+            ]);
+        $stub = WorkflowStub::make(ContinuationModelWorkflow::class, 'model-change', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertSame($enabled ? 1 : 0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        config()
+            ->set('workflows.v2.run_model', ContinuationConfiguredRun::class);
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame(ContinuationConfiguredRun::class, $stub->output()['model']);
+        $this->assertSame(2, ContinuationModelWorkflow::$entries);
+        $this->assertSame(1, ContinuationActivity::$calls);
+        if ($enabled) {
+            $this->assertSame(
+                1,
+                app(WorkflowContinuationCache::class)->snapshot()['counts']['invalidate_identity'] ?? 0
+            );
+        }
+    }
+
     protected function getPackageProviders($app): array
     {
         return [TestDatabaseServiceProvider::class, WorkflowServiceProvider::class];
@@ -419,6 +456,25 @@ final class ContinuationActivity extends Activity
             'integer' => 9007199254740993,
             'optional' => null,
             'unicode' => 'λ',
+        ];
+    }
+}
+
+final class ContinuationConfiguredRun extends WorkflowRun
+{
+}
+
+final class ContinuationModelWorkflow extends Workflow
+{
+    public static int $entries = 0;
+
+    public function handle(): array
+    {
+        ++self::$entries;
+        Workflow::activity(ContinuationActivity::class);
+
+        return [
+            'model' => get_class($this->run),
         ];
     }
 }
