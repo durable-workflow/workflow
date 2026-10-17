@@ -17,6 +17,7 @@ use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
+use Workflow\V2\Exceptions\SqliteAdmissionException;
 use Workflow\V2\Support\SqliteTransaction;
 
 final class SqliteTransactionTest extends TestCase
@@ -141,6 +142,39 @@ final class SqliteTransactionTest extends TestCase
         self::assertSame(1, $calls);
         self::assertSame(5000, (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn());
         self::assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
+    }
+
+    public function testUnavailableAdmissionSettingsRefuseBeforeAdmissionOrBody(): void
+    {
+        $pdo = new class('sqlite:' . $this->path) extends PDO {
+            public int $queries = 0;
+
+            public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): \PDOStatement|false
+            {
+                $this->queries++;
+                return false;
+            }
+        };
+        $connection = new SQLiteConnection($pdo, $this->path, '', [
+            'driver' => 'sqlite',
+        ]);
+        $calls = 0;
+        $admissions = 0;
+        try {
+            SqliteTransaction::run(static function () use (&$calls): void {
+                $calls++;
+            }, admission: static function () use (&$admissions): void {
+                $admissions++;
+            }, connection: $connection);
+            self::fail('Unavailable settings must refuse before writer admission.');
+        } catch (SqliteAdmissionException $exception) {
+            self::assertSame('Cannot inspect the SQLite admission busy timeout.', $exception->getMessage());
+        }
+        self::assertSame(1, $pdo->queries);
+        self::assertSame(0, $admissions);
+        self::assertSame(0, $calls);
+        self::assertSame(0, $connection->transactionLevel());
+        self::assertFalse($pdo->inTransaction());
     }
 
     public function testRejectedAdmissionRestoresTheOriginalBusyTimeoutWithoutEnteringTheBody(): void

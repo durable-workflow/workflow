@@ -133,7 +133,11 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
             $injected = true;
         });
         $connection->getEventDispatcher()
-            ->listen(TransactionRolledBack::class, static function ($event) use ($connection, $writer, &$rollbacks,): void {
+            ->listen(TransactionRolledBack::class, static function ($event) use (
+                $connection,
+                $writer,
+                &$rollbacks
+            ): void {
                 if ($event->connection === $connection && $writer->inTransaction()) {
                     self::assertSame(0, $connection->transactionLevel());
                     self::assertFalse($connection->getPdo()->inTransaction());

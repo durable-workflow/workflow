@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use PDO;
 use PDOException;
 use Throwable;
+use Workflow\V2\Exceptions\SqliteAdmissionException;
 
 final class SqliteTransaction
 {
@@ -186,7 +187,7 @@ final class SqliteTransaction
     {
         $statement = $pdo->query('PRAGMA busy_timeout');
         if ($statement === false) {
-            throw new \RuntimeException('Cannot inspect the SQLite admission busy timeout.');
+            throw new SqliteAdmissionException('Cannot inspect the SQLite admission busy timeout.');
         }
         $originalTimeout = (int) $statement->fetchColumn();
         $statement->closeCursor();
