@@ -114,8 +114,12 @@ largest read count for one event and the sum of raw JSON lengths presented to
 the model's payload accessor. Repeated accesses count repeatedly. These are
 access counters, not fetched bytes, unique memory or a measured decoding cost.
 They include every caller in the measured execution, not only the projection
-role. The override adds instrumentation overhead, so its CPU totals must not be
-used as a performance comparison with the uninstrumented baseline.
+role. The probe also records actual parent payload-cast calls and CPU measured
+around them. Cast CPU includes clock-read overhead and the complete inherited
+cast path; it is not pure JSON-decoder CPU. The override adds instrumentation
+overhead, so its CPU totals must not be used as a performance comparison with
+the uninstrumented baseline. These measurements overlap the role timings and
+must not be added to them.
 
 ```sh
 cd benchmarks/embedded-replay
@@ -125,6 +129,30 @@ DB_CONNECTION=sqlite DB_DATABASE=:memory: CACHE_STORE=array CACHE_DRIVER=array \
   --bootstrap vendor/autoload.php --no-coverage --do-not-record-test-run-history \
   ../../tests/Performance/ProjectionRoleProbeTest.php
 ```
+
+#### Installed-package access observations, October 17, 2026
+
+The separate cast-timed probe on the same published 2.5.28 tuple above passed
+three tests / 483 assertions. Each original retained 91 events, 24 mocked
+activity effects and 49 completed first-attempt tasks with zero repairs.
+Each recorded 430,164 payload accesses and inherited casts across all 91 event
+IDs, with a maximum of 9,789 reads for one event. The cumulative raw JSON length
+was 780,850,080 bytes. These bytes were repeatedly accessed in memory, not
+fetched or retained as a diagnostic artifact.
+
+| Repetition | Instrumented whole CPU (s) | Instrumented payload-cast CPU (s) |
+| --- | ---: | ---: |
+| 1 | 20.861 | 5.715 |
+| 2 | 20.658 | 5.628 |
+| 3 | 20.293 | 5.560 |
+
+The inherited cast timing includes clock-read overhead, so it does not establish
+a pure decoding share or a potential speedup. It confirms repeated conversion
+as one cost to investigate alongside projection work. No model cache, live
+execution cache, result change or reduced observation budget was used. The
+ordinary accessor path separately passes one test / 156 assertions on the final
+probe source; the earlier access-count-only component passed three ordinary
+controls / 468 assertions and three instrumented controls / 477 assertions.
 
 ## Reproduce the published-package cohort
 

@@ -51,6 +51,8 @@ final class ProjectionRoleProbeTest extends TestCase
         if ($recordPayloadReads) {
             ProfiledHistoryEvent::$payloadReads = [];
             ProfiledHistoryEvent::$payloadBytes = 0;
+            ProfiledHistoryEvent::$payloadCasts = 0;
+            ProfiledHistoryEvent::$payloadCastCpuMicroseconds = 0;
             $this->app['config']->set('workflows.v2.history_event_model', ProfiledHistoryEvent::class);
         }
         $delegate = $this->app->make(HistoryProjectionRole::class);
@@ -74,6 +76,8 @@ final class ProjectionRoleProbeTest extends TestCase
         $total = ProfiledHistoryRole::cpuMicroseconds() - $started;
         $payloadReads = ProfiledHistoryEvent::$payloadReads;
         $payloadBytes = ProfiledHistoryEvent::$payloadBytes;
+        $payloadCasts = ProfiledHistoryEvent::$payloadCasts;
+        $payloadCastCpu = ProfiledHistoryEvent::$payloadCastCpuMicroseconds;
         $workflow = WorkflowStub::load('projection-role-growth');
         $this->assertTrue($workflow->completed());
         $this->assertSame(24, $workflow->output());
@@ -93,6 +97,8 @@ final class ProjectionRoleProbeTest extends TestCase
         if ($recordPayloadReads) {
             $this->assertNotEmpty($payloadReads);
             $this->assertGreaterThan(0, $payloadBytes);
+            $this->assertGreaterThan(0, $payloadCasts);
+            $this->assertGreaterThan(0, $payloadCastCpu);
             $this->assertInstanceOf(ProfiledHistoryEvent::class, $run->historyEvents()->first());
         }
         echo json_encode([
@@ -109,6 +115,8 @@ final class ProjectionRoleProbeTest extends TestCase
                 'history_payload_records' => count($payloadReads),
                 'history_payload_max_reads_per_record' => max($payloadReads),
                 'history_payload_json_bytes_presented_to_cast' => $payloadBytes,
+                'history_payload_casts' => $payloadCasts,
+                'history_payload_cast_cpu_us' => $payloadCastCpu,
             ] : []),
         ], JSON_THROW_ON_ERROR) . PHP_EOL;
     }
@@ -123,6 +131,10 @@ final class ProfiledHistoryEvent extends WorkflowHistoryEvent
 
     public static int $payloadBytes = 0;
 
+    public static int $payloadCasts = 0;
+
+    public static int $payloadCastCpuMicroseconds = 0;
+
     public function getAttribute($key): mixed
     {
         if ($key === 'payload' && is_string($this->attributes['id'] ?? null)) {
@@ -133,6 +145,21 @@ final class ProfiledHistoryEvent extends WorkflowHistoryEvent
         }
 
         return parent::getAttribute($key);
+    }
+
+    protected function castAttribute($key, $value): mixed
+    {
+        if ($key !== 'payload') {
+            return parent::castAttribute($key, $value);
+        }
+
+        ++self::$payloadCasts;
+        $started = ProfiledHistoryRole::cpuMicroseconds();
+        try {
+            return parent::castAttribute($key, $value);
+        } finally {
+            self::$payloadCastCpuMicroseconds += ProfiledHistoryRole::cpuMicroseconds() - $started;
+        }
     }
 }
 
