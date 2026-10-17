@@ -75,8 +75,22 @@ kernel must expose the cgroup aggregate peak-memory counter; its absence refuses
 measurement rather than substituting a sum of process peaks.
 Capture machine/kernel/CPU/storage facts and competing workload before admission.
 
+The pinned Composer/PHP image can be prepared with the standard PHP extension
+installer. Install dependencies before the measured container starts, then keep
+that lock and vendor tree unchanged across the comparison:
+
+```sh
+docker build --tag dw-continuation-profile:local tests/Performance/continuation
+export DWF_PROFILE_IMAGE=dw-continuation-profile:local
+docker run --rm --user "$(id -u):$(id -g)" \
+  --env COMPOSER_HOME=/tmp/composer \
+  --volume "$PWD:/app" --workdir /app "$DWF_PROFILE_IMAGE" \
+  composer install --prefer-dist --no-interaction --no-progress
+```
+
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" \
+  --network none \
   --cpus 1 --memory 1g --memory-swap 1g \
   --env PROFILE_EMBEDDED_CONTINUATION=measure \
   --volume "$PWD:/app" --workdir /app "$DWF_PROFILE_IMAGE" \
