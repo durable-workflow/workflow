@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.0 - Unreleased
+
+- Deliver cooperative cancellation to a caller waiting for an owned Nexus
+  service workflow to complete. The caller waits for the target's cleanup and
+  resumes at its original service-call boundary.
+- Preserve the original call, cancellation lineage and cleanup deadline through
+  duplicate requests and cold replay. Calls returning an existing workflow do
+  not acquire cancellation authority over it.
+- Service-mode callers require a compatible runtime and SDK with the
+  `nexus_cooperative_cancellation` capability. Upgrading this package alone does
+  not update a pinned Server image or SDK.
+
 ## 2.5.15 - 2026-10-13
 
 - Preserve unclaimed database-queue jobs when SQLite refuses a reservation write
