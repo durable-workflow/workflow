@@ -864,7 +864,8 @@ final class EmbeddedContinuationTest extends TestCase
         $control = Mockery::mock(WorkflowControlPlane::class);
         $control->shouldReceive('start')
             ->once()
-            ->andReturnUsing(static function () use ($run, &$starts): array {
+            ->andReturnUsing(function () use ($run, &$starts): array {
+                $this->assertSame([2], array_values(ContinuationFallbackWorkflow::$entries));
                 ++$starts;
                 return [
                     'started' => true,

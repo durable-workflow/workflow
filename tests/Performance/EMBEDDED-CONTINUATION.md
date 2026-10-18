@@ -5,6 +5,20 @@ It does not run in the ordinary unit or feature suites. Functional setup results
 do not establish a speedup, capacity, production readiness or published-package
 acceptance.
 
+## Source correctness controls
+
+Nexus service operations use cold replay after a retained activity prefix. The
+unit controls require that replay before both service-call record creation and
+backend admission, then check one activity/backend start, typed completion,
+unchanged history prefixes and deadlines, and first-attempt tasks without repairs.
+They use the real embedded service control plane, history and queue paths;
+the downstream workflow-launch boundary is mocked. Service-operation frames
+remain outside the retained allowlist.
+
+```sh
+vendor/bin/phpunit tests/Unit/V2/EmbeddedContinuationTest.php --filter nexus
+```
+
 ## Workload and invariants
 
 Each original uses an actual Laravel database queue and real one-second timers.
