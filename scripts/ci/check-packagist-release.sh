@@ -48,7 +48,7 @@ package_path="${tmp_dir}/packagist-package.json"
 attempt=1
 
 while [ "$attempt" -le "$attempts" ]; do
-    if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$package_path" "$package_url"; then
+    if curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$package_path" "$package_url"; then
         if node - "$package_path" "$package_name" "$package_version" "$package_url" <<'NODE'
 const fs = require('fs');
 
