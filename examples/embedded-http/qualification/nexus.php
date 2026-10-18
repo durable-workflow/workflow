@@ -36,8 +36,8 @@ final class PublishedEmbeddedNexusProbe
     public function run(): void
     {
         $this->check(PHP_INT_SIZE === 8, 'The int64 profile requires 64-bit PHP');
-        $this->check(InstalledVersions::getPrettyVersion(self::PACKAGE_NAME) === '2.6.0-rc.1', 'Wrong published Core version');
-        $this->check(InstalledVersions::getReference(self::PACKAGE_NAME) === '59bdfb207f0ecd68261b8776e57042397eb494d4', 'Wrong published Core source');
+        $this->check(InstalledVersions::getPrettyVersion(self::PACKAGE_NAME) === '2.6.0', 'Wrong published Core version');
+        $this->check(InstalledVersions::getReference(self::PACKAGE_NAME) === '05f1fb3cd65e2950de7e498e12be19a8b4c45ca8', 'Wrong published Core source');
         $package = realpath(InstalledVersions::getInstallPath(self::PACKAGE_NAME));
         $this->check(is_string($package) && str_starts_with($package, base_path('vendor') . '/'), 'Product must be normally installed under vendor');
         $this->check(config('queue.default') === 'database', 'A real database queue is required');
@@ -55,7 +55,7 @@ final class PublishedEmbeddedNexusProbe
         }
         $this->check(WorkflowRun::query()->count() === 24, 'Every original must retain exactly caller and target runs');
         $this->check(DB::table('failed_jobs')->count() === 0, 'Unexpected failed Laravel jobs');
-        echo json_encode(['outcome' => 'pass', 'version' => '2.6.0-rc.1', 'source' => InstalledVersions::getReference(self::PACKAGE_NAME),
+        echo json_encode(['outcome' => 'pass', 'version' => '2.6.0', 'source' => InstalledVersions::getReference(self::PACKAGE_NAME),
             'php' => PHP_VERSION, 'framework' => app()->version(), 'composer_lock_sha256' => hash_file('sha256', base_path('composer.lock')),
             'cases' => count($cases), 'queue_processes' => count($this->processes), 'distinct_queue_processes' => count(array_unique($this->processes)),
             'runs' => WorkflowRun::query()->count(), 'calls' => WorkflowServiceCall::query()->count()], JSON_THROW_ON_ERROR), "\n";

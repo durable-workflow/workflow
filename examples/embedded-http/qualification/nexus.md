@@ -1,6 +1,6 @@
 # Published embedded Nexus qualification
 
-This profile uses a normally installed Core preview, a real SQLite database
+This profile uses the normally installed Core 2.6.0 release, a real SQLite database
 queue and a new `queue:work --once` PHP process for each delivery. It exercises
 same-namespace and cross-namespace completion, failure, target cancellation,
 waiting-caller cancellation, backend interruption and external payloads.
@@ -30,7 +30,7 @@ $path = "composer.json";
 $composer = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
 $composer["require"] = [
     "php" => "^8.3",
-    "durable-workflow/workflow" => "2.6.0-rc.1",
+    "durable-workflow/workflow" => "2.6.0",
     "laravel/framework" => "^12.69.3",
 ];
 file_put_contents($path, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
