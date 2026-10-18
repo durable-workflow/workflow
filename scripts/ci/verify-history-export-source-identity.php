@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use Workflow\V2\Conformance\PlatformArtifactSourceIdentity;
 
-require dirname(__DIR__, 2) . '/src/V2/Conformance/PlatformArtifactSourceIdentity.php';
+require_once dirname(__DIR__, 2) . '/src/V2/Conformance/PlatformArtifactSourceIdentity.php';
 
 if ($argc < 3 || ! in_array($argv[1], ['resolver-url', 'verify'], true)) {
     fwrite(

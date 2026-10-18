@@ -42,7 +42,7 @@ jobs:
       with:
         python-version: "3.13"
     - name: Install policy dependencies
-      run: python -m pip install PyYAML==6.0.2
+      run: "python -m pip install --only-binary :all: PyYAML==6.0.2"
     - name: Require centrally approved immutable action commits
       run: >-
         python .central-action-policy/scripts/qualification_policy.py validate
@@ -1306,7 +1306,7 @@ jobs:
     - name: Verify pinned Codecov CLI
       if: ${{ github.server_url == 'https://github.com' }}
       run: |
-        curl --fail --location --retry 3 --connect-timeout 10 --max-time 60 \
+        curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time 60 \
           https://github.com/codecov/codecov-cli/releases/download/v11.3.1/codecovcli_linux \
           --output "$RUNNER_TEMP/codecovcli"
         printf '%s  %s\n' \
