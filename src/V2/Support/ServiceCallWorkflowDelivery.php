@@ -8,6 +8,7 @@ use RuntimeException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -223,7 +224,7 @@ final class ServiceCallWorkflowDelivery
             'completed_at' => $call->completed_at?->toJSON(),
             'failed_at' => $call->failed_at?->toJSON(),
             'cancelled_at' => $call->cancelled_at?->toJSON(),
-            'result_envelope' => ServiceCallResultEnvelope::fromCall($call),
+            'result_envelope' => self::resultForCaller($call),
         ]);
         $payload = array_replace($payload, [
             'status' => $call->status,
@@ -252,5 +253,27 @@ final class ServiceCallWorkflowDelivery
         }
 
         return $payload;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function resultForCaller(WorkflowServiceCall $call): ?array
+    {
+        $result = ServiceCallResultEnvelope::fromCall($call);
+        if ($call->caller_namespace === $call->target_namespace
+            || ! is_array($result['external_storage'] ?? null)) {
+            return $result;
+        }
+
+        // Terminal delivery grants the caller the value, not access to the
+        // service namespace's provider or authenticated transport reference.
+        $blob = ExternalPayloads::payloadBlob($result, $call->payload_codec, $call->target_namespace);
+        if ($blob === null) {
+            throw new ExternalPayloadIntegrityException('The external Nexus result has no encoded payload.');
+        }
+        $stored = ExternalPayloads::externalizeForNamespace($blob, $call->payload_codec, $call->caller_namespace);
+
+        return ExternalPayloads::wireEnvelope($stored, $call->payload_codec, $call->caller_namespace);
     }
 }
