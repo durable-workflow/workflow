@@ -11,6 +11,8 @@ exporters:
     sampling_thereafter: 100000
 service:
   telemetry:
+    resource:
+      qualification.container_id_prefix: ${env:HOSTNAME}
     logs:
       level: error
     metrics:
@@ -22,7 +24,7 @@ service:
                 port: 8888
                 without_type_suffix: true
                 with_resource_constant_labels:
-                  included: [service.instance.id, service.version]
+                  included: [service.instance.id, service.version, qualification.container_id_prefix]
   pipelines:
     traces:
       receivers: [otlp]

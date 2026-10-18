@@ -58,7 +58,9 @@ function officialCollectorData() {
     const data = cellData();
     data.outcome.collector = 'otelcol';
     data.outcome.collector_image = COLLECTOR_IMAGE;
+    const container = data.before.find(row => row.role === 'collector').container.slice(0, 12);
     const initial = {schema: 'durable-workflow.collector-snapshot-v1', instance: 'collector-one',
+        container_prefix: container,
         version: COLLECTOR_VERSION, uptime_seconds: 1,
         accepted: 1, sent: 1, refused: 0, receiver_failed: 0, in_flight: 0, failed: null};
     data.telemetry.collector = {before: initial, after: {...initial, uptime_seconds: 2}};
@@ -97,6 +99,10 @@ for (const [name, corrupt] of [
     ['new exporter failure', data => { data.telemetry.collector.after.failed = 1; }],
     ['in-flight export', data => { data.telemetry.collector.after.in_flight = 1; }],
     ['nonadvancing collector clock', data => { data.telemetry.collector.after.uptime_seconds = 1; }],
+    ['counter proof from another CPU role', data => {
+        data.telemetry.collector.before.container_prefix = 'ffffffffffff';
+        data.telemetry.collector.after.container_prefix = 'ffffffffffff';
+    }],
 ]) {
     test(`official collector proof refuses ${name}`, () => {
         const data = officialCollectorData();
@@ -106,7 +112,8 @@ for (const [name, corrupt] of [
 }
 
 function collectorText() {
-    const identity = `service_instance_id="collector-one",service_version="${COLLECTOR_VERSION}"`;
+    const container = officialCollectorData().telemetry.collector.before.container_prefix;
+    const identity = `service_instance_id="collector-one",service_version="${COLLECTOR_VERSION}",qualification_container_id_prefix="${container}"`;
     return [
         `otelcol_process_uptime{${identity}} 1`,
         `otelcol_receiver_accepted_spans{receiver="otlp",${identity},transport="http"} 1`,
@@ -130,12 +137,15 @@ for (const [name, corrupt] of [
     ['fractional counter', text => text.replace('transport="http"} 1', 'transport="http"} 1.5')],
     ['unsafe counter', text => text.replace('transport="http"} 1', 'transport="http"} 9007199254740992')],
     ['nonfinite counter', text => text.replace('transport="http"} 1', 'transport="http"} NaN')],
-    ['mixed instances', text => text.replace('collector-one', 'collector-two')],
+    ['mixed instances', text => text.replace('service_instance_id="', 'service_instance_id="other-')],
     ['wrong version', text => text.replaceAll(COLLECTOR_VERSION, '0.0.0')],
     ['wrong receiver', text => text.replaceAll('receiver="otlp"', 'receiver="other"')],
     ['wrong transport', text => text.replaceAll('transport="http"', 'transport="grpc"')],
     ['wrong exporter', text => text.replaceAll('exporter="debug"', 'exporter="other"')],
     ['duplicate labels', text => text.replace('receiver="otlp"', 'receiver="otlp",receiver="other"')],
+    ['missing series instance', text => text.replace('service_instance_id="collector-one",', '')],
+    ['missing series version', text => text.replace(`service_version="${COLLECTOR_VERSION}",`, '')],
+    ['missing series CPU role', text => text.replace(/,qualification_container_id_prefix="[^"]+"/, '')],
 ]) {
     test(`Collector metrics refuse ${name}`, () => {
         assert.throws(() => parseCollectorMetrics(corrupt(collectorText())));

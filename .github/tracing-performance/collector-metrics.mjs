@@ -47,6 +47,7 @@ function validateSnapshot(snapshot) {
     assert.equal(snapshot.schema, 'durable-workflow.collector-snapshot-v1');
     assert.equal(snapshot.version, COLLECTOR_VERSION, 'Unexpected Collector version');
     assert.match(snapshot.instance, /^[a-zA-Z0-9._-]{1,128}$/, 'Missing Collector instance');
+    assert.match(snapshot.container_prefix, /^[a-f0-9]{12}$/, 'Missing Collector container identity');
     assert.ok(Number.isFinite(snapshot.uptime_seconds) && snapshot.uptime_seconds > 0, 'Invalid Collector uptime');
     for (const field of ['accepted', 'sent', 'refused', 'receiver_failed', 'in_flight']) {
         assert.ok(Number.isSafeInteger(snapshot[field]) && snapshot[field] >= 0, `Missing/invalid ${field} counter`);
@@ -70,10 +71,16 @@ export function parseCollectorMetrics(text) {
         assert.ok(!seen.has(sample.field), 'Duplicate Collector counter series');
         seen.add(sample.field);
         const {service_instance_id: instance, service_version: version} = sample.attributes;
+        const container = sample.attributes.qualification_container_id_prefix;
+        assert.match(instance, /^[a-zA-Z0-9._-]{1,128}$/, 'Missing series instance');
+        assert.equal(version, COLLECTOR_VERSION, 'Missing/wrong series version');
+        assert.match(container, /^[a-f0-9]{12}$/, 'Missing series container identity');
         snapshot.instance ??= instance;
         snapshot.version ??= version;
+        snapshot.container_prefix ??= container;
         assert.equal(instance, snapshot.instance, 'Mixed Collector instances');
         assert.equal(version, snapshot.version, 'Mixed Collector versions');
+        assert.equal(container, snapshot.container_prefix, 'Mixed Collector containers');
         snapshot[sample.field] = sample.value;
     }
     validateSnapshot(snapshot);
@@ -86,6 +93,7 @@ export function collectorDelta(proof) {
     validateSnapshot(before);
     validateSnapshot(after);
     assert.equal(before.instance, after.instance, 'Collector instance changed');
+    assert.equal(before.container_prefix, after.container_prefix, 'Collector container changed');
     assert.ok(after.uptime_seconds > before.uptime_seconds, 'Collector uptime did not advance');
     assert.ok(after.accepted >= before.accepted && after.sent >= before.sent, 'Collector counter reset');
     for (const field of ['refused', 'receiver_failed', 'failed']) {

@@ -63,6 +63,14 @@ PHP-collector records lack these fields and remain explicitly the legacy method.
 The official Collector must exit zero on SIGTERM. A forced 143 exit is not
 graceful cleanup for this profile; the historical PHP receiver keeps its original
 shutdown expectation.
+The configuration preserves the Collector's process instance identifier and adds
+a separate Docker-hostname label. The analyzer requires that container label to
+match the measured CPU role's container-ID prefix. A same-container process restart
+still changes the process identifier and refuses the old counter proof.
+
+The prospective package baseline is published Workflow 2.6.1. The October 17
+study's 2.5.28 lock and measurements remain available at their recorded source;
+they are not measurements of this new source/baseline/Collector combination.
 
 ## Fixed comparison
 

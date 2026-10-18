@@ -88,10 +88,14 @@ function validateBusiness(data) {
     return expected;
 }
 
-function validateTelemetry({outcome, audit, telemetry}) {
+function validateTelemetry({outcome, audit, telemetry, before}) {
     if (outcome.collector === 'otelcol') {
         assert.equal(outcome.collector_image, COLLECTOR_IMAGE, 'Unexpected Collector image');
         assert.equal(telemetry.received, collectorDelta(telemetry.collector), 'Collector count proof differs');
+        const collectorRows = before.filter(row => row.role === 'collector');
+        assert.equal(collectorRows.length, 1, 'Missing Collector CPU role');
+        assert.equal(telemetry.collector.before.container_prefix, collectorRows[0].container.slice(0, 12),
+            'Counter proof belongs to another Collector CPU role');
     } else {
         assert.equal(outcome.collector, undefined, 'Unknown collector profile');
         assert.equal(telemetry.collector, undefined, 'Official proof requires its declared profile');
