@@ -53,6 +53,37 @@ test('normalizes all nine CPU deltas by measured work, excluding warmup counts',
     assert.equal(result.sample_interval_ms.mean, 1000);
 });
 
+function officialCollectorData() {
+    const data = cellData();
+    data.outcome.collector = 'otelcol';
+    const initial = {instance: 'collector-one', version: '0.163.1', uptime_seconds: 1,
+        accepted: 1, sent: 1, refused: null, failed: null};
+    data.telemetry.collector = {before: initial, after: {...initial, uptime_seconds: 2}};
+    return data;
+}
+
+test('an initialized official collector can prove zero new spans without inventing missing metrics', () => {
+    assert.equal(summarizeCell(officialCollectorData()).spans_including_warmup.received, 0);
+});
+
+for (const [name, corrupt] of [
+    ['missing collector proof', data => { delete data.telemetry.collector; }],
+    ['collector replacement', data => { data.telemetry.collector.after.instance = 'collector-two'; }],
+    ['counter reset', data => { data.telemetry.collector.after.accepted = 0; }],
+    ['unreported accepted span', data => {
+        data.telemetry.collector.after.accepted = 2;
+        data.telemetry.collector.after.sent = 2;
+    }],
+    ['collector export loss', data => { data.telemetry.collector.after.accepted = 2; }],
+    ['new refusal observation', data => { data.telemetry.collector.after.refused = 1; }],
+]) {
+    test(`official collector proof refuses ${name}`, () => {
+        const data = officialCollectorData();
+        corrupt(data);
+        assert.throws(() => summarizeCell(data));
+    });
+}
+
 test('integer timer precision keeps the actual elapsed value without shortening CPU coverage', () => {
     const data = cellData();
     data.measure.elapsed_seconds = 119.999219339;
