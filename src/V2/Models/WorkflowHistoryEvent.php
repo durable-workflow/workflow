@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Models;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,6 +14,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryEventPayloadContract;
+use Workflow\V2\Support\HistoryPayloadJson;
 use Workflow\V2\Support\HistoryRecordedAt;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
@@ -42,7 +44,10 @@ class WorkflowHistoryEvent extends Model
 
     private ?string $cachedPayloadJson = null;
 
-    private mixed $cachedPayloadValue = null;
+    /**
+     * @var array<array-key, mixed>|null
+     */
+    private ?array $cachedPayloadValue = null;
 
     public function run(): BelongsTo
     {
@@ -151,7 +156,9 @@ class WorkflowHistoryEvent extends Model
             return parent::castAttribute($key, $value);
         }
 
-        if (($this->getCasts()['payload'] ?? null) !== 'array' || ! is_string($value)) {
+        if (($this->getCasts()['payload'] ?? null) !== 'array'
+            || ! is_string($value)
+            || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
             $this->cachedPayloadJson = null;
             $this->cachedPayloadValue = null;
 
@@ -162,6 +169,12 @@ class WorkflowHistoryEvent extends Model
             // Let Laravel decode before publishing any reusable value. Keep
             // raw attributes unchanged for mutation, dirty checks and storage.
             $decoded = parent::castAttribute($key, $value);
+            if (! is_array($decoded)) {
+                $this->cachedPayloadJson = null;
+                $this->cachedPayloadValue = null;
+
+                return $decoded;
+            }
             $this->cachedPayloadJson = $value;
             $this->cachedPayloadValue = $decoded;
         }

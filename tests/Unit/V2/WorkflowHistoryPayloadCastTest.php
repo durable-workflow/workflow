@@ -9,29 +9,33 @@ use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\MissingAttributeException;
 use Illuminate\Database\Eloquent\Model;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Fixtures\V2\HistoryPayloadDecodeCounter;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 
+#[RunTestsInSeparateProcesses]
+#[PreserveGlobalState(false)]
 final class WorkflowHistoryPayloadCastTest extends TestCase
 {
     private const RAW = '{ "maximum":9223372036854775807, "null":null, "text":"\\u96ea", "nested":{"value":"original"} }';
 
-    private int $decodes = 0;
-
     protected function setUp(): void
     {
         parent::setUp();
-        Json::decodeUsing(function (mixed $value, bool $associative = true): mixed {
-            ++$this->decodes;
-
-            return json_decode($value, $associative);
-        });
+        HistoryPayloadDecodeCounter::$decodes = 0;
+        if (class_exists(Json::class)) {
+            Json::decodeUsing(null);
+        }
     }
 
     protected function tearDown(): void
     {
-        Json::decodeUsing(null);
+        if (class_exists(Json::class)) {
+            Json::decodeUsing(null);
+        }
         parent::tearDown();
     }
 
@@ -43,7 +47,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
             $this->assertSame($expected, $event->payload);
         }
 
-        $this->assertSame(1, $this->decodes);
+        $this->assertSame(1, HistoryPayloadDecodeCounter::$decodes);
         $this->assertSame(self::RAW, $event->getRawOriginal('payload'));
         $this->assertSame([
             'payload' => self::RAW,
@@ -55,7 +59,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $this->assertSame([
             'payload' => $expected,
         ], json_decode($event->toJson(), true));
-        $this->assertSame(1, $this->decodes);
+        $this->assertSame(1, HistoryPayloadDecodeCounter::$decodes);
     }
 
     public function testAssignedPayloadAndReturnedArrayMutationStayIndependent(): void
@@ -64,7 +68,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $original = $event->payload;
         $original['nested']['value'] = 'caller mutation';
         $this->assertSame('original', $event->payload['nested']['value']);
-        $this->assertSame(1, $this->decodes);
+        $this->assertSame(1, HistoryPayloadDecodeCounter::$decodes);
 
         $event->payload = [
             'nested' => [
@@ -74,7 +78,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         ];
         $this->assertSame('replacement', $event->payload['nested']['value']);
         $this->assertNull($event->payload['null']);
-        $this->assertSame(2, $this->decodes);
+        $this->assertSame(2, HistoryPayloadDecodeCounter::$decodes);
         $this->assertTrue($event->isDirty('payload'));
         $this->assertSame(self::RAW, $event->getRawOriginal('payload'));
     }
@@ -96,7 +100,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
             'payload' => self::RAW,
         ], true);
         $this->assertSame('original', $event->payload['nested']['value']);
-        $this->assertSame(3, $this->decodes);
+        $this->assertSame(3, HistoryPayloadDecodeCounter::$decodes);
         $this->assertFalse($event->isDirty());
     }
 
@@ -111,7 +115,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $this->assertSame($expected, $restored->payload);
         $other = $this->event();
         $this->assertSame($expected, $other->payload);
-        $this->assertSame(3, $this->decodes);
+        $this->assertSame(3, HistoryPayloadDecodeCounter::$decodes);
 
         $copy = clone $event;
         $copy->payload = [
@@ -136,7 +140,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         ]);
         $this->assertSame($expected, $event->payload);
         $this->assertSame($expected, $event->payload);
-        $this->assertSame(2, $this->decodes);
+        $this->assertSame(2, HistoryPayloadDecodeCounter::$decodes);
 
         $event->mergeCasts([
             'payload' => FreshHistoryPayloadCast::class,
@@ -152,7 +156,17 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
             'payload' => 'array',
         ]);
         $this->assertSame($expected, $event->payload);
-        $this->assertSame(3, $this->decodes);
+        $this->assertSame(3, HistoryPayloadDecodeCounter::$decodes);
+    }
+
+    public function testCachedPayloadDoesNotKeepTheModelAlive(): void
+    {
+        $event = $this->event();
+        $reference = \WeakReference::create($event);
+        $this->assertIsArray($event->payload);
+        unset($event);
+        gc_collect_cycles();
+        $this->assertNull($reference->get());
     }
 
     public function testConfiguredSubclassKeepsItsCustomCastPath(): void
@@ -163,22 +177,36 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         ], true);
         $this->assertTrue($event->payload['configured']);
         $this->assertTrue($event->payload['configured']);
-        $this->assertSame(2, $this->decodes);
+        $this->assertSame(2, HistoryPayloadDecodeCounter::$decodes);
         $this->assertSame(2, $event->payloadReads);
     }
 
     public function testCustomGlobalDecoderIsStillInvokedForEveryRead(): void
     {
+        if (! class_exists(Json::class)) {
+            $this->markTestSkipped('Laravel 9 has no configurable JSON decoder API.');
+        }
+
         $event = $this->event();
+        $expected = $event->payload;
         $calls = 0;
         Json::decodeUsing(static function () use (&$calls): array {
-            return ['call' => ++$calls];
+            return [
+                'call' => ++$calls,
+            ];
         });
-        $this->assertSame(['call' => 1], $event->payload);
-        $this->assertSame(['call' => 2], $event->payload);
+        $this->assertSame([
+            'call' => 1,
+        ], $event->payload);
+        $this->assertSame([
+            'call' => 2,
+        ], $event->payload);
+        Json::decodeUsing(null);
+        $this->assertSame($expected, $event->payload);
+        $this->assertSame(2, HistoryPayloadDecodeCounter::$decodes);
     }
 
-    public function testMissingPayloadStillRefusesUnderStrictAttributeAccess(): void
+    public function testMissingPayloadKeepsTheFrameworkStrictAttributeBehavior(): void
     {
         $event = $this->event();
         $this->assertIsArray($event->payload);
@@ -186,11 +214,27 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
             'id' => 'history-without-payload',
         ], true);
         $event->exists = true;
+        $uncached = new class() extends WorkflowHistoryEvent {
+        };
+        $uncached->setRawAttributes($event->getAttributes(), true);
+        $uncached->exists = true;
         $previous = Model::preventsAccessingMissingAttributes();
         Model::preventAccessingMissingAttributes();
         try {
-            $this->expectException(MissingAttributeException::class);
-            $event->getAttribute('payload');
+            $read = static function (WorkflowHistoryEvent $model): array {
+                try {
+                    return [
+                        'value' => $model->getAttribute('payload'),
+                    ];
+                } catch (MissingAttributeException $exception) {
+                    return [
+                        'exception' => $exception::class,
+                    ];
+                }
+            };
+            // Laravel 9 permits missing primitive casts; newer majors throw.
+            $this->assertTrue(Model::preventsAccessingMissingAttributes());
+            $this->assertSame($read($uncached), $read($event));
         } finally {
             Model::preventAccessingMissingAttributes($previous);
         }
@@ -218,11 +262,29 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         yield 'empty list' => ['[]', []];
     }
 
-    public function testFailedCustomDecodesNeverPublishAReusableValue(): void
+    public function testInvalidJsonStillUpdatesTheNativeDecoderError(): void
     {
         $event = $this->event();
-        Json::decodeUsing(function (): never {
-            ++$this->decodes;
+        $this->assertIsArray($event->payload);
+        $event->setRawAttributes([
+            'payload' => '{broken',
+        ], true);
+        $this->assertNull($event->payload);
+        json_decode('{}', true);
+        $this->assertSame(JSON_ERROR_NONE, json_last_error());
+        $this->assertNull($event->payload);
+        $this->assertSame(JSON_ERROR_SYNTAX, json_last_error());
+    }
+
+    public function testFailedCustomDecodesNeverPublishAReusableValue(): void
+    {
+        if (! class_exists(Json::class)) {
+            $this->markTestSkipped('Laravel 9 has no configurable JSON decoder API.');
+        }
+
+        $event = $this->event();
+        Json::decodeUsing(static function (): never {
+            ++HistoryPayloadDecodeCounter::$decodes;
             throw new RuntimeException('decoder rejected payload');
         });
         for ($read = 0; $read < 2; ++$read) {
@@ -233,7 +295,7 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
                 $this->assertSame('decoder rejected payload', $exception->getMessage());
             }
         }
-        $this->assertSame(2, $this->decodes);
+        $this->assertSame(2, HistoryPayloadDecodeCounter::$decodes);
     }
 
     private function event(): WorkflowHistoryEvent
@@ -267,14 +329,14 @@ final class FreshHistoryPayloadCast implements CastsAttributes
 {
     public static int $reads = 0;
 
-    public function get(Model $model, string $key, mixed $value, array $attributes): array
+    public function get($model, string $key, $value, array $attributes): array
     {
         return [
             'read' => ++self::$reads,
         ];
     }
 
-    public function set(Model $model, string $key, mixed $value, array $attributes): string
+    public function set($model, string $key, $value, array $attributes): string
     {
         return json_encode($value, JSON_THROW_ON_ERROR);
     }
