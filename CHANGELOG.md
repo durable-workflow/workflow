@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.2 - 2026-10-18
+
+- Reuse small unchanged JSON history payloads on the default Eloquent model to
+  avoid decoding them again on each read. Cached entries are limited to 4 KiB
+  of JSON and 128 recursive values. Larger payloads use the ordinary cast,
+  without a new workflow data or admission limit.
+- Preserve configured models, custom casts and JSON decoders, payload mutation,
+  raw stored bytes and model serialization. This change does not enable retained
+  workflow execution or establish a production performance gain.
+
 ## 2.6.0 - 2026-10-18
 
 - Deliver cooperative cancellation to a caller waiting for an owned Nexus
