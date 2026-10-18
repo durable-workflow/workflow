@@ -16,7 +16,7 @@ const metricFields = new Map([
 
 function labels(value) {
     const result = Object.create(null);
-    const pattern = /([a-zA-Z_][a-zA-Z0-9_]*)=("(?:[^"\\]|\\["\\n])*")(?:,|$)/gy;
+    const pattern = /([a-zA-Z_]\w*)=("(?:[^"\\]|\\["\\n])*")(?:,|$)/gy;
     let offset = 0;
     for (const match of value.matchAll(pattern)) {
         assert.equal(match.index, offset, 'Malformed metric labels');
@@ -29,8 +29,10 @@ function labels(value) {
 }
 
 function metric(line) {
-    const match = /^(otelcol_[a-z_]+)\{(.*)\} ([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/.exec(line);
+    const match = /^(otelcol_[a-z_]+)\{(.*)\} (\S+)$/.exec(line);
     assert.ok(match, 'Malformed Collector counter sample');
+    assert.match(match[3], /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/,
+        'Malformed Collector counter number');
     const attributes = labels(match[2]);
     if (match[1].startsWith('otelcol_receiver_')) {
         assert.equal(attributes.receiver, 'otlp', 'Unexpected receiver');
@@ -88,7 +90,7 @@ export function parseCollectorMetrics(text) {
 }
 
 export function collectorDelta(proof) {
-    assert.ok(proof && proof.before && proof.after, 'Missing Collector proof');
+    assert.ok(proof?.before && proof?.after, 'Missing Collector proof');
     const {before, after} = proof;
     validateSnapshot(before);
     validateSnapshot(after);

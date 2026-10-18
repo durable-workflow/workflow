@@ -130,6 +130,13 @@ test('reads initialized official metrics and preserves an unavailable failure se
     assert.equal(collectorDelta({before: parsed, after: {...parsed, uptime_seconds: 2, accepted: 4, sent: 4}}), 3);
 });
 
+test('Collector numeric samples retain decimal and exponent forms', () => {
+    for (const value of ['1.', '+1', '+1.0e0', '1E0']) {
+        const text = collectorText().replaceAll('} 1', '} ' + value);
+        assert.equal(parseCollectorMetrics(text).accepted, 1);
+    }
+});
+
 for (const [name, corrupt] of [
     ['uninitialized series', text => text.split('\n')[0]],
     ['missing refusal series', text => text.split('\n').filter(line => !line.includes('refused_spans')).join('\n')],
