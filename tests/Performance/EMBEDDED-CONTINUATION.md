@@ -74,6 +74,15 @@ deadline audit remain. This is a minimally observed control, not an uninstrument
 production benchmark. Use the same observer setting for both replay modes and
 report it alongside their results.
 
+The [October 18 observer comparison](results/issue-748-20261018/OBSERVER-OVERHEAD.md)
+contains thirteen fresh 100-event cells on current prepared source, including
+three pairs per execution mode and a final drift control. All originals pass.
+Paired listener CPU changes are smaller than the observed baseline drift, so a
+positive observer cost remains unresolved. The report preserves the exact input
+lock, actual cache counters and SQL/claim/timer diagnostics. Its conclusions apply
+to the measured topology; larger histories, concurrency and published consumers
+remain separate acceptance requirements.
+
 With observers enabled, `history_selects` counts SELECT statements mentioning
 the actual history table, and `history_select_elapsed_ms` sums their reported SQL
 duration. These are separate from all SQL statements and elapsed SQL time. They
