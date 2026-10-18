@@ -45,10 +45,16 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
 
         $this->assertSame(1, $this->decodes);
         $this->assertSame(self::RAW, $event->getRawOriginal('payload'));
-        $this->assertSame(['payload' => self::RAW], $event->getAttributes());
+        $this->assertSame([
+            'payload' => self::RAW,
+        ], $event->getAttributes());
         $this->assertFalse($event->isDirty());
-        $this->assertSame(['payload' => $expected], $event->toArray());
-        $this->assertSame(['payload' => $expected], json_decode($event->toJson(), true));
+        $this->assertSame([
+            'payload' => $expected,
+        ], $event->toArray());
+        $this->assertSame([
+            'payload' => $expected,
+        ], json_decode($event->toJson(), true));
         $this->assertSame(1, $this->decodes);
     }
 
@@ -60,7 +66,12 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $this->assertSame('original', $event->payload['nested']['value']);
         $this->assertSame(1, $this->decodes);
 
-        $event->payload = ['nested' => ['value' => 'replacement'], 'null' => null];
+        $event->payload = [
+            'nested' => [
+                'value' => 'replacement',
+            ],
+            'null' => null,
+        ];
         $this->assertSame('replacement', $event->payload['nested']['value']);
         $this->assertNull($event->payload['null']);
         $this->assertSame(2, $this->decodes);
@@ -72,10 +83,18 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
     {
         $event = $this->event();
         $this->assertSame('original', $event->payload['nested']['value']);
-        $event->setRawAttributes(['payload' => '{"value":"replacement"}'], true);
-        $this->assertSame(['value' => 'replacement'], $event->payload);
-        $this->assertSame(['value' => 'replacement'], $event->payload);
-        $event->setRawAttributes(['payload' => self::RAW], true);
+        $event->setRawAttributes([
+            'payload' => '{"value":"replacement"}',
+        ], true);
+        $this->assertSame([
+            'value' => 'replacement',
+        ], $event->payload);
+        $this->assertSame([
+            'value' => 'replacement',
+        ], $event->payload);
+        $event->setRawAttributes([
+            'payload' => self::RAW,
+        ], true);
         $this->assertSame('original', $event->payload['nested']['value']);
         $this->assertSame(3, $this->decodes);
         $this->assertFalse($event->isDirty());
@@ -95,8 +114,12 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $this->assertSame(3, $this->decodes);
 
         $copy = clone $event;
-        $copy->payload = ['copy' => true];
-        $this->assertSame(['copy' => true], $copy->payload);
+        $copy->payload = [
+            'copy' => true,
+        ];
+        $this->assertSame([
+            'copy' => true,
+        ], $copy->payload);
         $this->assertSame($expected, $event->payload);
     }
 
@@ -104,18 +127,30 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
     {
         $event = $this->event();
         $expected = $event->payload;
-        $event->mergeCasts(['payload' => 'string']);
+        $event->mergeCasts([
+            'payload' => 'string',
+        ]);
         $this->assertSame(self::RAW, $event->payload);
-        $event->mergeCasts(['payload' => 'array']);
+        $event->mergeCasts([
+            'payload' => 'array',
+        ]);
         $this->assertSame($expected, $event->payload);
         $this->assertSame($expected, $event->payload);
         $this->assertSame(2, $this->decodes);
 
-        $event->mergeCasts(['payload' => FreshHistoryPayloadCast::class]);
+        $event->mergeCasts([
+            'payload' => FreshHistoryPayloadCast::class,
+        ]);
         FreshHistoryPayloadCast::$reads = 0;
-        $this->assertSame(['read' => 1], $event->payload);
-        $this->assertSame(['read' => 2], $event->payload);
-        $event->mergeCasts(['payload' => 'array']);
+        $this->assertSame([
+            'read' => 1,
+        ], $event->payload);
+        $this->assertSame([
+            'read' => 2,
+        ], $event->payload);
+        $event->mergeCasts([
+            'payload' => 'array',
+        ]);
         $this->assertSame($expected, $event->payload);
         $this->assertSame(3, $this->decodes);
     }
@@ -123,18 +158,33 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
     public function testConfiguredSubclassKeepsItsCustomCastPath(): void
     {
         $event = new ConfiguredPayloadHistoryEvent();
-        $event->setRawAttributes(['payload' => self::RAW], true);
+        $event->setRawAttributes([
+            'payload' => self::RAW,
+        ], true);
         $this->assertTrue($event->payload['configured']);
         $this->assertTrue($event->payload['configured']);
         $this->assertSame(2, $this->decodes);
         $this->assertSame(2, $event->payloadReads);
     }
 
+    public function testCustomGlobalDecoderIsStillInvokedForEveryRead(): void
+    {
+        $event = $this->event();
+        $calls = 0;
+        Json::decodeUsing(static function () use (&$calls): array {
+            return ['call' => ++$calls];
+        });
+        $this->assertSame(['call' => 1], $event->payload);
+        $this->assertSame(['call' => 2], $event->payload);
+    }
+
     public function testMissingPayloadStillRefusesUnderStrictAttributeAccess(): void
     {
         $event = $this->event();
         $this->assertIsArray($event->payload);
-        $event->setRawAttributes(['id' => 'history-without-payload'], true);
+        $event->setRawAttributes([
+            'id' => 'history-without-payload',
+        ], true);
         $event->exists = true;
         $previous = Model::preventsAccessingMissingAttributes();
         Model::preventAccessingMissingAttributes();
@@ -150,7 +200,9 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
     public function testSparseAndMalformedPayloadsKeepTheNativeCastResult(?string $raw, mixed $expected): void
     {
         $event = new WorkflowHistoryEvent();
-        $event->setRawAttributes(['payload' => $raw], true);
+        $event->setRawAttributes([
+            'payload' => $raw,
+        ], true);
         $this->assertSame($expected, $event->payload);
         $this->assertSame($expected, $event->payload);
         $this->assertSame($raw, $event->getRawOriginal('payload'));
@@ -187,7 +239,9 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
     private function event(): WorkflowHistoryEvent
     {
         $event = new WorkflowHistoryEvent();
-        $event->setRawAttributes(['payload' => self::RAW], true);
+        $event->setRawAttributes([
+            'payload' => self::RAW,
+        ], true);
 
         return $event;
     }
@@ -215,7 +269,9 @@ final class FreshHistoryPayloadCast implements CastsAttributes
 
     public function get(Model $model, string $key, mixed $value, array $attributes): array
     {
-        return ['read' => ++self::$reads];
+        return [
+            'read' => ++self::$reads,
+        ];
     }
 
     public function set(Model $model, string $key, mixed $value, array $attributes): string

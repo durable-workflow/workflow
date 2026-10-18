@@ -40,6 +40,10 @@ class WorkflowHistoryEvent extends Model
         'recorded_at' => HistoryRecordedAt::class,
     ];
 
+    private ?string $cachedPayloadJson = null;
+
+    private mixed $cachedPayloadValue = null;
+
     public function run(): BelongsTo
     {
         return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
@@ -133,6 +137,36 @@ class WorkflowHistoryEvent extends Model
             });
 
         return $event;
+    }
+
+    /**
+     * @param string $key
+     * @param mixed $value
+     * @return mixed
+     */
+    protected function castAttribute($key, $value)
+    {
+        // Configured models keep their own casting and accessor hooks.
+        if ($key !== 'payload' || static::class !== self::class) {
+            return parent::castAttribute($key, $value);
+        }
+
+        if (($this->getCasts()['payload'] ?? null) !== 'array' || ! is_string($value)) {
+            $this->cachedPayloadJson = null;
+            $this->cachedPayloadValue = null;
+
+            return parent::castAttribute($key, $value);
+        }
+
+        if ($this->cachedPayloadJson !== $value) {
+            // Let Laravel decode before publishing any reusable value. Keep
+            // raw attributes unchanged for mutation, dirty checks and storage.
+            $decoded = parent::castAttribute($key, $value);
+            $this->cachedPayloadJson = $value;
+            $this->cachedPayloadValue = $decoded;
+        }
+
+        return $this->cachedPayloadValue;
     }
 
     private static function nextSequenceForRun(WorkflowRun $run): int
