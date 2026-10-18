@@ -6,14 +6,36 @@ namespace App\Workflows;
 
 use RuntimeException;
 use Throwable;
+use Illuminate\Support\ServiceProvider;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Workflow;
 use function Workflow\V2\timer;
 use function Workflow\V2\upsertMemo;
 
 require_once dirname(__DIR__) . '/vendor/autoload.php';
+
+final class PublishedNexusStorageProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->singleton(ExternalPayloadStoragePolicy::class, static fn () => new class implements ExternalPayloadStoragePolicy {
+            public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+            {
+                return new LocalFilesystemExternalPayloadStorage('/state/nexus-payloads');
+            }
+
+            public function thresholdBytesFor(?string $namespace): ?int
+            {
+                return 1024;
+            }
+        });
+    }
+}
 
 final class PublishedNexusFailure extends RuntimeException
 {

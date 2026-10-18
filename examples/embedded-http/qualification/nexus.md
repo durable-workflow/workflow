@@ -2,8 +2,9 @@
 
 This profile uses a normally installed Core preview, a real SQLite database
 queue and a new `queue:work --once` PHP process for each delivery. It exercises
-same-namespace and cross-namespace completion, failure, target cancellation and
-waiting-caller cancellation. Each original has a 30-second observer budget;
+same-namespace and cross-namespace completion, failure, target cancellation,
+waiting-caller cancellation, backend interruption and external payloads.
+Each original has a 30-second observer budget;
 the recorded call/execution deadlines and cancellation cleanup budget remain
 separate and immutable.
 
@@ -23,6 +24,7 @@ touch "$DB_DATABASE"
 
 # This CLI profile does not install the example's optional HTTP host packages.
 rm config/octane.php composer.lock
+cp qualification/nexus-providers.php bootstrap/providers.php
 php -r '
 $path = "composer.json";
 $composer = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
@@ -37,6 +39,14 @@ composer install --prefer-dist --no-interaction
 php artisan migrate --force
 php qualification/nexus.php
 ```
+
+The application provider uses the package's normal local-filesystem external
+storage driver with a 1,024-byte threshold. The large case must retain real
+external argument/result references and return the exact original data through
+a separate cold reader. Every cold read must leave database bytes unchanged.
+The backend control temporarily denies access to its own SQLite DELETE-mode
+file, requires a real pre-claim refusal without changing the database, restores
+the original permissions, and completes the same run inside its original budget.
 
 The probe refuses an existing workflow database, a package outside `vendor`,
 the wrong package version/reference, an in-memory database, or synchronous

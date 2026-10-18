@@ -10,6 +10,7 @@ use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Process\Process;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
@@ -18,6 +19,7 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\WorkflowStub;
 
 require_once dirname(__DIR__) . '/vendor/autoload.php';
@@ -38,17 +40,18 @@ final class PublishedEmbeddedNexusProbe
         $this->check(is_string($package) && str_starts_with($package, base_path('vendor') . '/'), 'Product must be normally installed under vendor');
         $this->check(config('queue.default') === 'database', 'A real database queue is required');
         $this->check(config('workflows.v2.task_dispatch_mode') === 'queue', 'Queue dispatch is required');
+        $this->check(app(ExternalPayloadStoragePolicy::class)->thresholdBytesFor('shared') === 1024, 'The real local external-payload policy must be configured');
         $this->check(config('database.connections.' . config('database.default') . '.database') !== ':memory:', 'A persistent database is required');
         $this->check(WorkflowRun::query()->count() === 0 && WorkflowServiceCall::query()->count() === 0, 'Use a fresh database');
         $this->catalog();
         $cases = [];
         foreach (['shared', 'tenant-a'] as $namespace) {
-            foreach (['completed', 'failed', 'target_cancel', 'caller_cancel'] as $scenario) {
+            foreach (['completed', 'failed', 'target_cancel', 'caller_cancel', 'backend_interruption', 'external'] as $scenario) {
                 $cases[] = $this->runCase($namespace, $scenario);
                 echo json_encode(end($cases), JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), "\n";
             }
         }
-        $this->check(WorkflowRun::query()->count() === 16, 'Every original must retain exactly caller and target runs');
+        $this->check(WorkflowRun::query()->count() === 24, 'Every original must retain exactly caller and target runs');
         $this->check(DB::table('failed_jobs')->count() === 0, 'Unexpected failed Laravel jobs');
         echo json_encode(['outcome' => 'pass', 'version' => '2.6.0-rc.1', 'source' => InstalledVersions::getReference('durable-workflow/workflow'),
             'php' => PHP_VERSION, 'framework' => app()->version(), 'composer_lock_sha256' => hash_file('sha256', base_path('composer.lock')),
@@ -73,6 +76,9 @@ final class PublishedEmbeddedNexusProbe
         $started = microtime(true);
         $deadline = $started + 30;
         $payload = ['long' => PHP_INT_MAX, 'nothing' => null, 'unicode' => 'λ雪'];
+        if ($scenario === 'external') {
+            $payload['large'] = str_repeat('external-λ雪', 8192);
+        }
         $caller = WorkflowStub::make(PublishedNexusCaller::class, 'embedded-' . $scenario . '-' . bin2hex(random_bytes(5)), $namespace);
         $caller->start($scenario, $payload, new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 120));
         $originalRun = $caller->runId();
@@ -84,6 +90,9 @@ final class PublishedEmbeddedNexusProbe
             'A completion-waiting caller must not complete at admission');
         $callDeadline = $call->getRawOriginal('call_deadline_at');
         $target = WorkflowStub::loadRun($call->linked_workflow_run_id);
+        if ($scenario === 'backend_interruption') {
+            $this->interruptBackend($deadline);
+        }
         $root = null;
         while (! $caller->refresh()->run()->status->isTerminal()) {
             $this->check(microtime(true) < $deadline, 'Original thirty-second observation budget expired');
@@ -104,6 +113,12 @@ final class PublishedEmbeddedNexusProbe
         $this->check($call->getRawOriginal('call_deadline_at') === $callDeadline, 'Original call deadline changed');
         $this->check($call->caller_workflow_run_id === $originalRun && $call->caller_namespace === $namespace && $call->target_namespace === 'shared', 'Original call binding changed');
         $this->verifyOutcome($caller, $target, $call, $scenario, $payload);
+        $this->coldRead($caller);
+        if ($scenario === 'external') {
+            $this->check(ExternalPayloads::isStoredReference($caller->run()->getRawOriginal('arguments'))
+                && ExternalPayloads::isStoredReference($target->run()->getRawOriginal('output')),
+                'The external case must retain actual argument/result references');
+        }
         if ($root !== null) {
             $cleanup = $target->memo()['nexus_cleanup'] ?? null;
             $this->check(is_array($cleanup) && $cleanup['root_request_id'] === $root->rootRequestId
@@ -123,7 +138,7 @@ final class PublishedEmbeddedNexusProbe
 
     private function verifyOutcome(WorkflowStub $caller, WorkflowStub $target, WorkflowServiceCall $call, string $scenario, array $payload): void
     {
-        if ($scenario === 'completed') {
+        if (in_array($scenario, ['completed', 'backend_interruption', 'external'], true)) {
             $this->check($call->status === 'completed' && $target->run()->status === RunStatus::Completed, 'Target completion did not converge');
             $this->check($caller->output() === ['status' => 'completed', 'call_id' => $call->id, 'value' => $payload], 'Exact typed result changed');
             return;
@@ -145,7 +160,37 @@ final class PublishedEmbeddedNexusProbe
         }
     }
 
-    private function worker(float $deadline): void
+    private function interruptBackend(float $deadline): void
+    {
+        $path = realpath(config('database.connections.' . config('database.default') . '.database'));
+        $this->check(is_string($path) && str_starts_with($path, '/state/'), 'Only the disposable source database may be interrupted');
+        $this->check(DB::select('PRAGMA journal_mode')[0]->journal_mode === 'delete', 'This fault control requires DELETE mode');
+        $before = hash_file('sha256', $path);
+        $mode = fileperms($path) & 0777;
+        try {
+            $this->check(chmod($path, 0000), 'Could not interrupt the disposable backend');
+            $this->worker($deadline, true);
+        } finally {
+            chmod($path, $mode);
+        }
+        $this->check(hash_file('sha256', $path) === $before, 'Failed pre-claim access changed the database');
+    }
+
+    private function coldRead(WorkflowStub $caller): void
+    {
+        $path = config('database.connections.' . config('database.default') . '.database');
+        $before = hash_file('sha256', $path);
+        $process = new Process([PHP_BINARY, __FILE__, '--inspect', $caller->runId()], dirname(__DIR__));
+        $process->setTimeout(10);
+        $process->mustRun();
+        $read = json_decode($process->getOutput(), true, 512, JSON_THROW_ON_ERROR);
+        $this->check($read['run_id'] === $caller->runId()
+            && $read['output_sha256'] === hash('sha256', serialize($caller->output()))
+            && $read['status'] === $caller->run()->status->value, 'Cold reader changed the original typed result');
+        $this->check(hash_file('sha256', $path) === $before, 'Cold reads changed database bytes');
+    }
+
+    private function worker(float $deadline, bool $expectBackendRefusal = false): void
     {
         $process = new Process([PHP_BINARY, '-d', 'auto_prepend_file=' . __DIR__ . '/nexus-workflows.php', 'artisan',
             'queue:work', 'database', '--once', '--queue=default', '--sleep=0', '--tries=1', '--timeout=10'], dirname(__DIR__));
@@ -155,6 +200,12 @@ final class PublishedEmbeddedNexusProbe
         $this->check(is_int($pid), 'No actual queue process was started');
         $this->processes[] = $pid;
         $process->wait();
+        if ($expectBackendRefusal) {
+            $this->check(! $process->isSuccessful()
+                && str_contains($process->getErrorOutput() . $process->getOutput(), 'unable to open database file'),
+                'The intended unavailable backend did not refuse before claim');
+            return;
+        }
         $this->check($process->isSuccessful(), 'Queue process failed: ' . substr($process->getErrorOutput() . $process->getOutput(), -2000));
     }
 
@@ -166,4 +217,10 @@ final class PublishedEmbeddedNexusProbe
     }
 }
 
-(new PublishedEmbeddedNexusProbe())->run();
+if (($argv[1] ?? null) === '--inspect') {
+    $workflow = WorkflowStub::loadRun($argv[2]);
+    echo json_encode(['run_id' => $workflow->runId(), 'status' => $workflow->run()->status->value,
+        'output_sha256' => hash('sha256', serialize($workflow->output())), 'process_id' => getmypid()], JSON_THROW_ON_ERROR), "\n";
+} else {
+    (new PublishedEmbeddedNexusProbe())->run();
+}
