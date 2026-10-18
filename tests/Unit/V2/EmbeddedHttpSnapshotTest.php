@@ -36,8 +36,14 @@ final class EmbeddedHttpSnapshotTest extends TestCase
             $process->mustRun();
             $result = json_decode($process->getOutput(), true, 512, JSON_THROW_ON_ERROR);
 
-            $this->assertSame([['id' => 1, 'value' => 'plain']], $result['workflow_plain']);
-            $this->assertSame([['id' => 2, 'value' => 'quoteλ']], $result['workflow_quote"test']);
+            $this->assertSame([[
+                'id' => 1,
+                'value' => 'plain',
+            ]], $result['workflow_plain']);
+            $this->assertSame([[
+                'id' => 2,
+                'value' => 'quoteλ',
+            ]], $result['workflow_quote"test']);
             $this->assertSame([], $result['jobs']);
             $this->assertSame([], $result['failed_jobs']);
             $this->assertSame($before, hash_file('sha256', $path));
