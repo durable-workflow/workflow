@@ -26,6 +26,10 @@ class WorkflowHistoryEvent extends Model
 
     use HasUlids;
 
+    private const MAX_CACHED_PAYLOAD_JSON_BYTES = 4_096;
+
+    private const MAX_CACHED_PAYLOAD_VALUES = 128;
+
     public $incrementing = false;
 
     protected $table = 'workflow_history_events';
@@ -158,6 +162,7 @@ class WorkflowHistoryEvent extends Model
 
         if (($this->getCasts()['payload'] ?? null) !== 'array'
             || ! is_string($value)
+            || strlen($value) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
             || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
             $this->cachedPayloadJson = null;
             $this->cachedPayloadValue = null;
@@ -169,7 +174,7 @@ class WorkflowHistoryEvent extends Model
             // Let Laravel decode before publishing any reusable value. Keep
             // raw attributes unchanged for mutation, dirty checks and storage.
             $decoded = parent::castAttribute($key, $value);
-            if (! is_array($decoded)) {
+            if (! is_array($decoded) || count($decoded, COUNT_RECURSIVE) > self::MAX_CACHED_PAYLOAD_VALUES) {
                 $this->cachedPayloadJson = null;
                 $this->cachedPayloadValue = null;
 

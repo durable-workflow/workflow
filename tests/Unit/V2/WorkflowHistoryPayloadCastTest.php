@@ -179,7 +179,9 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $models = [];
         for ($row = 0; $row < 16; ++$row) {
             $model = new WorkflowHistoryEvent();
-            $model->setRawAttributes(['payload' => $raw], true);
+            $model->setRawAttributes([
+                'payload' => $raw,
+            ], true);
             $models[] = $model;
         }
         gc_collect_cycles();
@@ -196,8 +198,12 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
 
     public static function largePayloads(): iterable
     {
-        yield 'large string' => [['value' => str_repeat('x', 128 * 1024)]];
-        yield 'wide graph with small JSON' => [['values' => array_fill(0, 256, ['x'])]];
+        yield 'large string' => [[
+            'value' => str_repeat('x', 128 * 1024),
+        ]];
+        yield 'wide graph with small JSON' => [[
+            'values' => array_fill(0, 256, ['x']),
+        ]];
     }
 
     public function testConfiguredSubclassKeepsItsCustomCastPath(): void
