@@ -6,10 +6,13 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -29,9 +32,12 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallView;
+use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\TaskWatchdog;
@@ -818,6 +824,137 @@ final class LinkedServiceCallCloserTest extends TestCase
         ], $view['result_envelope']);
     }
 
+    #[DataProvider('externalCallerNamespaces')]
+    public function testExternalTerminalDeliveryBelongsToTheCallerNamespace(string $namespace): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+        try {
+            [$caller, $call, $task, $targetStorage, $callerStorage, $blob] = $this->externalCaller($namespace);
+            $originalCall = $call->getAttributes();
+            $claim = $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'cold-caller');
+            $this->assertTrue($claim['claimed']);
+            $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallCompleted->value)->sole();
+            $envelope = $event->payload['response_payload'];
+            $this->assertStringStartsWith('memory://' . $namespace . '/', $envelope['external_storage']['uri']);
+            $this->assertSame($call->id, $event->payload['service_call_id']);
+            $this->assertSame(7, $event->payload['sequence']);
+            $this->assertSame($task->id, $event->workflow_task_id);
+            $this->assertSame($envelope, $event->payload['service_call']['result_envelope']);
+            $this->assertSame($envelope, $event->payload['response_or_failure_surface']['result_envelope']);
+            $this->assertSame($originalCall, $call->refresh()->getAttributes());
+            $this->assertSame(strlen($blob), $envelope['external_storage']['size_bytes']);
+            $this->assertSame(hash('sha256', $blob), $envelope['external_storage']['sha256']);
+            if ($namespace === 'service') {
+                $this->assertSame($call->output_payload_reference, $envelope['external_storage']['uri']);
+                $this->assertSame(1, $targetStorage->writes);
+            } else {
+                $this->assertNotSame($call->output_payload_reference, $envelope['external_storage']['uri']);
+                $this->assertSame(1, $callerStorage->writes);
+                $targetStorage->failReads = true;
+            }
+            ExternalPayloadStorage::flushVerifiedCache();
+            $this->assertSame($blob, ExternalPayloads::payloadBlob($envelope, 'avro', $namespace));
+            $originalEvent = $event->getAttributes();
+            ServiceCallWorkflowDelivery::recordForClaim($task->fresh(), $caller->fresh());
+            $this->assertSame($originalEvent, $event->refresh()->getAttributes());
+            $this->assertSame(1, $callerStorage->writes);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallCompleted->value)->count());
+        } finally {
+            ExternalPayloadStorage::flushVerifiedCache();
+        }
+    }
+
+    public static function externalCallerNamespaces(): iterable
+    {
+        yield 'cross namespace' => ['caller'];
+        yield 'same namespace' => ['service'];
+    }
+
+    public function testCallerStorageFailureRollsBackTheOriginalClaimAndCanRecover(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+        try {
+            [$caller, $call, $task, , $callerStorage] = $this->externalCaller('caller');
+            $originalCall = $call->getAttributes();
+            $callerStorage->failWrites = true;
+            $failure = null;
+            try {
+                $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'refused-caller');
+            } catch (RuntimeException $error) {
+                $failure = $error;
+            }
+            $this->assertInstanceOf(
+                RuntimeException::class,
+                $failure,
+                'Caller storage must be available before publishing its result history.'
+            );
+            $this->assertSame('caller write refused', $failure->getMessage());
+            $this->assertSame(TaskStatus::Ready, $task->refresh()->status);
+            $this->assertSame(0, $task->attempt_count);
+            $this->assertNull($task->lease_owner);
+            $this->assertTrue($task->payload['service_call_terminal_pending']);
+            $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallCompleted->value)->count());
+            $this->assertSame($originalCall, $call->refresh()->getAttributes());
+            $callerStorage->failWrites = false;
+            $this->assertTrue(
+                $this->app->make(WorkflowTaskBridge::class)->claimStatus($task->id, 'restored-caller')['claimed']
+            );
+            $this->assertSame(1, $task->refresh()->attempt_count);
+            $this->assertSame($task->id, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)
+                ->where('event_type', HistoryEventType::ServiceCallCompleted->value)->sole()->workflow_task_id);
+        } finally {
+            ExternalPayloadStorage::flushVerifiedCache();
+        }
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowServiceCall, WorkflowTask, NexusNamespaceExternalStorage, NexusNamespaceExternalStorage, string}
+     */
+    private function externalCaller(string $namespace): array
+    {
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $targetStorage = new NexusNamespaceExternalStorage('service');
+        $callerStorage = $namespace === 'service' ? $targetStorage : new NexusNamespaceExternalStorage('caller');
+        $drivers = [
+            'service' => $targetStorage,
+            $namespace => $callerStorage,
+        ];
+        $policy = Mockery::mock(ExternalPayloadStoragePolicy::class);
+        $policy->shouldReceive('driverFor')
+            ->andReturnUsing(static fn ($name) => $drivers[$name] ?? null);
+        $policy->shouldReceive('thresholdBytesFor')
+            ->andReturn(32);
+        $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
+        $service = $this->createRun();
+        $caller = $this->createRun($namespace);
+        $call = $this->createCall($service, [
+            'caller_namespace' => $namespace,
+            'caller_workflow_instance_id' => $caller->workflow_instance_id,
+            'caller_workflow_run_id' => $caller->id,
+            'operation_mode' => 'sync',
+        ]);
+        $this->recordAdmission($caller, $call);
+        $blob = Serializer::serializeWithCodec('avro', [
+            'payload' => str_repeat('value', 50),
+            'bigint' => PHP_INT_MAX,
+            'nullable' => null,
+            'unicode' => '雪☃',
+        ]);
+        $stored = ExternalPayloads::externalizeForNamespace($blob, 'avro', 'service');
+        WorkflowHistoryEvent::record($service, HistoryEventType::WorkflowCompleted, [
+            'output' => ExternalPayloads::historyValue($stored, 'avro', 'service'),
+            'payload_codec' => 'avro',
+        ]);
+
+        return [$caller, $call->refresh(), WorkflowTask::query()->where('workflow_run_id', $caller->id)->sole(),
+            $targetStorage, $callerStorage, $blob];
+    }
+
     /**
      * @param array<string, mixed> $options
      */
@@ -906,6 +1043,51 @@ final class LinkedServiceCallCloserTest extends TestCase
             'accepted_at' => now(),
             'started_at' => now(),
         ], $overrides));
+    }
+}
+
+final class NexusNamespaceExternalStorage implements ExternalPayloadStorageDriver
+{
+    public bool $failWrites = false;
+
+    public bool $failReads = false;
+
+    public int $writes = 0;
+
+    /**
+     * @var array<string, string>
+     */
+    private array $objects = [];
+
+    public function __construct(
+        private readonly string $namespace
+    ) {
+    }
+
+    public function put(string $data, string $sha256, string $codec): string
+    {
+        if ($this->failWrites) {
+            throw new RuntimeException('caller write refused');
+        }
+        ++$this->writes;
+        $uri = 'memory://' . $this->namespace . '/' . $sha256;
+        $this->objects[$uri] = $data;
+
+        return $uri;
+    }
+
+    public function get(string $uri): string
+    {
+        if ($this->failReads || ! isset($this->objects[$uri])) {
+            throw new RuntimeException('Reference is unavailable in this namespace.');
+        }
+
+        return $this->objects[$uri];
+    }
+
+    public function delete(string $uri): void
+    {
+        unset($this->objects[$uri]);
     }
 }
 

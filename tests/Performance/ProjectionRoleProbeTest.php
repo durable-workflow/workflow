@@ -1,0 +1,314 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Performance;
+
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
+use Tests\TestCase;
+use Workflow\V2\Contracts\BufferedSignalProjectionRole;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
+use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\WorkflowStub;
+
+require_once __DIR__ . '/EmbeddedReplayGrowthProfileTest.php';
+
+#[RunTestsInSeparateProcesses]
+#[PreserveGlobalState(false)]
+final class ProjectionRoleProbeTest extends TestCase
+{
+    /**
+     * @return iterable<array{int}>
+     */
+    public static function repetitions(): iterable
+    {
+        yield [1];
+        yield [2];
+        yield [3];
+    }
+
+    #[DataProvider('repetitions')]
+    public function testProjectionRoleCost(int $repetition): void
+    {
+        if (getenv('PROFILE_REPLAY_GROWTH') !== '1') {
+            $this->markTestSkipped('Explicit profiling run only.');
+        }
+
+        Queue::fake();
+        $this->freezeTime();
+        $recordPayloadReads = getenv('PROFILE_HISTORY_ACCESS') === '1';
+        if ($recordPayloadReads) {
+            ProfiledHistoryEvent::$payloadReads = [];
+            ProfiledHistoryEvent::$payloadBytes = 0;
+            ProfiledHistoryEvent::$payloadCasts = 0;
+            ProfiledHistoryEvent::$payloadCastCpuMicroseconds = 0;
+            $this->app['config']->set('workflows.v2.history_event_model', ProfiledHistoryEvent::class);
+        }
+        $delegate = $this->app->make(HistoryProjectionRole::class);
+        $this->assertInstanceOf(DefaultHistoryProjectionRole::class, $delegate);
+        $role = new ProfiledHistoryRole($delegate);
+        $this->app->instance(HistoryProjectionRole::class, $role);
+        $effects = 0;
+        WorkflowStub::mock(ReplayGrowthActivity::class, static function ($context, int $value) use (&$effects): int {
+            ++$effects;
+
+            return $value;
+        });
+        $workflow = WorkflowStub::make(ReplayGrowthWorkflow::class, 'projection-role-growth');
+        $observe = getenv('PROFILE_EMBEDDED_SAMPLE_WINDOWS') === '1';
+        $queries = 0;
+        $sqlMilliseconds = 0.0;
+        if ($observe) {
+            ReplayGrowthWorkflow::$entries = 0;
+            ReplayGrowthWorkflow::$roundVisits = 0;
+            // Let an external observer attach before the measured admission.
+            usleep(3_000_000);
+            DB::listen(static function (QueryExecuted $query) use (&$queries, &$sqlMilliseconds): void {
+                ++$queries;
+                $sqlMilliseconds += $query->time;
+            });
+        }
+        $observationStarted = $observe ? microtime(true) : null;
+        $started = ProfiledHistoryRole::cpuMicroseconds();
+        $workflow->start(8);
+        for ($round = 0; $round <= 8; ++$round) {
+            WorkflowStub::runReadyTasks();
+            $this->travel(2)
+                ->seconds();
+        }
+        $total = ProfiledHistoryRole::cpuMicroseconds() - $started;
+        $observationEnded = $observe ? microtime(true) : null;
+        $measuredQueries = $queries;
+        $measuredSqlMilliseconds = $sqlMilliseconds;
+        $payloadReads = ProfiledHistoryEvent::$payloadReads;
+        $payloadBytes = ProfiledHistoryEvent::$payloadBytes;
+        $payloadCasts = ProfiledHistoryEvent::$payloadCasts;
+        $payloadCastCpu = ProfiledHistoryEvent::$payloadCastCpuMicroseconds;
+        $workflow = WorkflowStub::load('projection-role-growth');
+        $this->assertTrue($workflow->completed());
+        $this->assertSame(24, $workflow->output());
+        $this->assertSame(24, $effects);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->assertSame(91, $run->historyEvents()->count());
+        $tasks = WorkflowTask::query()->where('workflow_run_id', $run->id)->get();
+        $this->assertCount(49, $tasks);
+        foreach ($tasks as $task) {
+            $this->assertSame('completed', $task->status->value);
+            $this->assertSame(1, $task->attempt_count);
+            $this->assertSame(0, $task->repair_count);
+        }
+        $this->assertGreaterThan(0, $role->calls['projectRun'] ?? 0);
+        $this->assertGreaterThan(0, $role->calls['recordActivityStarted'] ?? 0);
+        $this->assertGreaterThan(array_sum($role->cpuMicroseconds), $total);
+        if ($observe) {
+            $this->assertGreaterThan(0, $measuredQueries);
+            $this->assertGreaterThan($observationStarted, $observationEnded);
+        }
+        if ($recordPayloadReads) {
+            $this->assertNotEmpty($payloadReads);
+            $this->assertGreaterThan(0, $payloadBytes);
+            $this->assertGreaterThan(0, $payloadCasts);
+            $this->assertGreaterThan(0, $payloadCastCpu);
+            $this->assertInstanceOf(ProfiledHistoryEvent::class, $run->historyEvents()->first());
+        }
+        echo json_encode([
+            'profile' => 'projection-role-probe',
+            'repetition' => $repetition,
+            'history_events' => 91,
+            'tasks' => 49,
+            'activity_effects' => $effects,
+            'whole_cpu_us' => $total,
+            'role_cpu_us' => $role->cpuMicroseconds,
+            'role_calls' => $role->calls,
+            ...($observe ? [
+                'observation_window' => [
+                    'pid' => getmypid(),
+                    'unix_start' => $observationStarted,
+                    'unix_end' => $observationEnded,
+                ],
+                'queries' => $measuredQueries,
+                'sql_ms' => $measuredSqlMilliseconds,
+                'history_payload_instrumentation' => $recordPayloadReads,
+                'workflow_entries' => ReplayGrowthWorkflow::$entries,
+                'round_visits' => ReplayGrowthWorkflow::$roundVisits,
+                'process_peak_rss_kib' => getrusage()['ru_maxrss'],
+                'php_peak_allocated_bytes' => memory_get_peak_usage(true),
+            ] : []),
+            ...($recordPayloadReads ? [
+                'history_payload_reads' => array_sum($payloadReads),
+                'history_payload_records' => count($payloadReads),
+                'history_payload_max_reads_per_record' => max($payloadReads),
+                'history_payload_json_bytes_presented_to_cast' => $payloadBytes,
+                'history_payload_casts' => $payloadCasts,
+                'history_payload_cast_cpu_us' => $payloadCastCpu,
+            ] : []),
+        ], JSON_THROW_ON_ERROR) . PHP_EOL;
+    }
+}
+
+final class ProfiledHistoryEvent extends WorkflowHistoryEvent
+{
+    /**
+     * @var array<string, int>
+     */
+    public static array $payloadReads = [];
+
+    public static int $payloadBytes = 0;
+
+    public static int $payloadCasts = 0;
+
+    public static int $payloadCastCpuMicroseconds = 0;
+
+    public static bool $timePayloadCasts = true;
+
+    public function getAttribute($key): mixed
+    {
+        if ($key === 'payload' && is_string($this->attributes['id'] ?? null)) {
+            $id = $this->attributes['id'];
+            self::$payloadReads[$id] = (self::$payloadReads[$id] ?? 0) + 1;
+            $raw = $this->attributes['payload'] ?? null;
+            self::$payloadBytes += is_string($raw) ? strlen($raw) : 0;
+        }
+
+        return parent::getAttribute($key);
+    }
+
+    protected function castAttribute($key, $value): mixed
+    {
+        if ($key !== 'payload') {
+            return parent::castAttribute($key, $value);
+        }
+
+        ++self::$payloadCasts;
+        if (! self::$timePayloadCasts) {
+            return parent::castAttribute($key, $value);
+        }
+        $started = ProfiledHistoryRole::cpuMicroseconds();
+        try {
+            return parent::castAttribute($key, $value);
+        } finally {
+            self::$payloadCastCpuMicroseconds += ProfiledHistoryRole::cpuMicroseconds() - $started;
+        }
+    }
+}
+
+final class ProfiledHistoryRole implements HistoryProjectionMaintenanceRole, BufferedSignalProjectionRole, WorkflowTaskRepairProjectionRole
+{
+    /**
+     * @var array<string, int>
+     */
+    public array $calls = [];
+
+    /**
+     * @var array<string, int>
+     */
+    public array $cpuMicroseconds = [];
+
+    private int $depth = 0;
+
+    public function __construct(
+        private readonly DefaultHistoryProjectionRole $delegate
+    ) {
+    }
+
+    public function projectRun(WorkflowRun $run): WorkflowRunSummary
+    {
+        return $this->measure('projectRun', fn () => $this->delegate->projectRun($run));
+    }
+
+    public function recordActivityStarted(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        WorkflowTask $task
+    ): WorkflowRunSummary {
+        return $this->measure(
+            'recordActivityStarted',
+            fn () => $this->delegate->recordActivityStarted($run, $execution, $attempt, $task)
+        );
+    }
+
+    public function projectRepairedWorkflowTask(WorkflowRun $run, WorkflowTask $task): WorkflowRunSummary
+    {
+        return $this->delegate->projectRepairedWorkflowTask($run, $task);
+    }
+
+    public function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary
+    {
+        return $this->delegate->bufferedSignalSummary($run);
+    }
+
+    public function projectBufferedSignal(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $summary
+    ): WorkflowRunSummary {
+        return $this->delegate->projectBufferedSignal($run, $event, $summary);
+    }
+
+    /**
+     * @param class-string<\Illuminate\Database\Eloquent\Model> $projectionModel
+     * @param list<string> $seenProjectionIds
+     */
+    public function pruneStaleProjectionRowsForRun(
+        string $projectionModel,
+        string $runId,
+        array $seenProjectionIds
+    ): void {
+        $this->delegate->pruneStaleProjectionRowsForRun($projectionModel, $runId, $seenProjectionIds);
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @return array{
+     *     run_summaries: int,
+     *     run_waits: int,
+     *     run_timeline_entries: int,
+     *     run_timer_entries: int,
+     *     run_lineage_entries: int
+     * }
+     */
+    public function pruneStaleProjections(array $runIds = [], ?string $instanceId = null, bool $dryRun = false): array
+    {
+        return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
+    }
+
+    public static function cpuMicroseconds(): int
+    {
+        $usage = getrusage();
+
+        return ($usage['ru_utime.tv_sec'] + $usage['ru_stime.tv_sec']) * 1_000_000
+            + $usage['ru_utime.tv_usec'] + $usage['ru_stime.tv_usec'];
+    }
+
+    /**
+     * @param callable(): WorkflowRunSummary $operation
+     */
+    private function measure(string $name, callable $operation): WorkflowRunSummary
+    {
+        $this->calls[$name] = ($this->calls[$name] ?? 0) + 1;
+        $outer = $this->depth++ === 0;
+        $started = self::cpuMicroseconds();
+        try {
+            return $operation();
+        } finally {
+            --$this->depth;
+            if ($outer) {
+                $this->cpuMicroseconds[$name] = ($this->cpuMicroseconds[$name] ?? 0) + self::cpuMicroseconds() - $started;
+            }
+        }
+    }
+}

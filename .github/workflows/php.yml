@@ -42,7 +42,7 @@ jobs:
       with:
         python-version: "3.13"
     - name: Install policy dependencies
-      run: python -m pip install PyYAML==6.0.2
+      run: "python -m pip install --only-binary :all: PyYAML==6.0.2"
     - name: Require centrally approved immutable action commits
       run: >-
         python .central-action-policy/scripts/qualification_policy.py validate
@@ -71,6 +71,14 @@ jobs:
 
     - name: Validate workflow YAML syntax
       run: yq eval-all '.' .github/workflows/*.yml >/dev/null
+
+    - name: Validate GitHub Actions expressions
+      run: |
+        docker run --rm --network none --user "$(id -u):$(id -g)" \
+          --cpus 1 --memory 256m --memory-swap 256m \
+          --volume "$PWD:/repo:ro" --workdir /repo \
+          rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+          -shellcheck= -pyflakes= .github/workflows/*.yml
 
     - name: Validate CI script syntax
       run: |
@@ -383,6 +391,7 @@ jobs:
         mkdir -p build/test-results
         vendor/bin/phpunit tests/Unit/V2/DatabaseQueueRecoveryTest.php \
           tests/Unit/V2/EmbeddedSqliteTaskContentionTest.php \
+          tests/Unit/V2/ProjectionSqliteContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
 
     - name: Resolve bounded pull-request test selection
@@ -1337,7 +1346,7 @@ jobs:
     - name: Verify pinned Codecov CLI
       if: ${{ github.server_url == 'https://github.com' }}
       run: |
-        curl --fail --location --retry 3 --connect-timeout 10 --max-time 60 \
+        curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time 60 \
           https://github.com/codecov/codecov-cli/releases/download/v11.3.1/codecovcli_linux \
           --output "$RUNNER_TEMP/codecovcli"
         printf '%s  %s\n' \

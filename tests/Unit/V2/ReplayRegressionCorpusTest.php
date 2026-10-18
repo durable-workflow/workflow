@@ -148,6 +148,16 @@ final class ReplayRegressionCorpusTest extends TestCase
             $this->fail("{$fixture['id']} did not reject its malformed replay history.");
         }
 
+        $profiledWorkflow = null;
+        if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
+            Container::getInstance()->resolving(
+                $workflowClass,
+                static function (Workflow $instance) use (&$profiledWorkflow): void {
+                    $profiledWorkflow = $instance;
+                },
+            );
+        }
+
         $runner = WorkflowFiberRunner::forClass(
             $workflowClass,
             'regression-corpus-' . $fixture['id'],
@@ -157,7 +167,34 @@ final class ReplayRegressionCorpusTest extends TestCase
             $fixture['history'] ?? [],
         );
 
+        if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
+            $this->assertInstanceOf(Workflow::class, $profiledWorkflow);
+            $events = $profiledWorkflow->run->historyEvents->map(
+                static function (WorkflowHistoryEvent $event): ReplayBudgetHistoryEvent {
+                    $profiled = new ReplayBudgetHistoryEvent();
+                    $profiled->setConnection($event->getConnectionName());
+                    $profiled->setTable($event->getTable());
+                    $profiled->setRawAttributes($event->getAttributes());
+                    $profiled->setRelations($event->getRelations());
+                    $profiled->exists = $event->exists;
+                    $profiled->wasRecentlyCreated = $event->wasRecentlyCreated;
+
+                    return $profiled;
+                },
+            );
+            $profiledWorkflow->run->setRelation('historyEvents', $events);
+            ReplayBudgetHistoryEvent::$startedPayloadReads = 0;
+        }
+
         $step = $runner->step();
+
+        if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
+            $this->assertSame(
+                0,
+                ReplayBudgetHistoryEvent::$startedPayloadReads,
+                'Activity lookups must not decode start metadata already consumed during bridge initialization.',
+            );
+        }
 
         if (isset($fixture['command_sequence'])) {
             foreach ($fixture['command_sequence'] as $index => $expectedStep) {
@@ -551,5 +588,19 @@ final class ReplayRegressionCorpusTest extends TestCase
 
             $this->assertSame($expectedValue, $actual[$key], "{$context}.{$key} mismatch.");
         }
+    }
+}
+
+final class ReplayBudgetHistoryEvent extends WorkflowHistoryEvent
+{
+    public static int $startedPayloadReads = 0;
+
+    public function getAttribute($key): mixed
+    {
+        if ($key === 'payload' && parent::getAttribute('event_type') === HistoryEventType::WorkflowStarted) {
+            ++self::$startedPayloadReads;
+        }
+
+        return parent::getAttribute($key);
     }
 }

@@ -1,0 +1,149 @@
+name: Published embedded replay profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      history_sizes:
+        description: 'Event targets: all (10/100/1000), small (10/100), or large (1000)'
+        type: choice
+        options: [all, small, large]
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        repetition: [1, 2, 3]
+    env:
+      PROFILE_REPETITION: ${{ matrix.repetition }}
+      PROFILE_HISTORY_SIZES: ${{ inputs.history_sizes }}
+      PROFILE_IMAGE: composer:2.9@sha256:b09bccd91a78fe8a9ab4b33d707b862e8fe54fec17782e32683ad2a69c46867d
+      PROFILE_CONTAINER: dw-workflow-replay-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.repetition }}
+      PROFILE_DIR: embedded-replay-${{ matrix.repetition }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Record the host and install the locked published consumer
+        timeout-minutes: 6
+        run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
+          test "$(uname -m)" = x86_64
+          uname -srmo
+          lscpu | grep -E 'Architecture:|Model name:|CPU\(s\):'
+          mkdir -p "$PROFILE_DIR/progress"
+          docker run --rm --name "${PROFILE_CONTAINER}-install" \
+            --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            --cpus 1 --memory 1g --memory-swap 1g \
+            --volume "$PWD:/source" --workdir /source/benchmarks/embedded-replay \
+            --env COMPOSER_CACHE_DIR=/tmp/composer-cache \
+            "$PROFILE_IMAGE" sh -lc '
+              set -eu
+              php -r '\''if (PHP_VERSION !== "8.5.6") { throw new RuntimeException("Unexpected PHP baseline."); }'\''
+              php --version
+              composer --version
+              composer install --no-plugins --no-scripts --prefer-dist --no-progress --no-interaction
+              composer show --locked durable-workflow/workflow
+              php -r '\''require "vendor/autoload.php"; $path = (new ReflectionClass(Workflow\V2\Support\DefaultHistoryProjectionRole::class))->getFileName(); if (!is_string($path) || !str_starts_with($path, realpath("vendor/durable-workflow/workflow/src") . "/")) { throw new RuntimeException("Product classes must load from the installed package."); } echo $path, PHP_EOL;'\''
+            '
+
+      - name: Verify every installed product source and resource against the release
+        run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
+          reference=$(jq -r '.packages[] | select(.name == "durable-workflow/workflow") | .source.reference' benchmarks/embedded-replay/composer.lock)
+          [[ "$reference" =~ ^[0-9a-f]{40}$ ]]
+          GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch --no-tags --depth=1 \
+            https://github.com/durable-workflow/workflow.git "$reference"
+          mkdir -p "$PROFILE_DIR/expected"
+          git archive "$reference" src resources | tar -xf - -C "$PROFILE_DIR/expected"
+          diff -qr "$PROFILE_DIR/expected/src" benchmarks/embedded-replay/vendor/durable-workflow/workflow/src
+          diff -qr "$PROFILE_DIR/expected/resources" benchmarks/embedded-replay/vendor/durable-workflow/workflow/resources
+
+      - name: Profile selected history sizes for this repetition
+        id: profile
+        timeout-minutes: 110
+        run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
+          case "$PROFILE_REPETITION" in 1|2|3) ;; *) exit 2 ;; esac
+          case "$PROFILE_HISTORY_SIZES" in
+            all) sizes='(1|9|91)' ;;
+            small) sizes='(1|9)' ;;
+            large) sizes='91' ;;
+            *) exit 2 ;;
+          esac
+          filter="/(^|[^0-9])${sizes}-rounds-repeat-${PROFILE_REPETITION}([^0-9]|$)/"
+          set +e
+          timeout --signal=TERM --kill-after=30s 105m \
+            docker run --rm --name "$PROFILE_CONTAINER" \
+              --platform linux/amd64 --user "$(id -u):$(id -g)" --network none \
+              --cpus 1 --memory 1g --memory-swap 1g \
+              --volume "$PWD:/source" --volume "$PROFILE_DIR/progress:/progress" \
+              --workdir /source/benchmarks/embedded-replay \
+              --env TMPDIR=/progress --env PROFILE_REPLAY_GROWTH=1 \
+              --env DB_CONNECTION=sqlite --env DB_DATABASE=:memory: \
+              --env CACHE_STORE=array --env CACHE_DRIVER=array --env QUEUE_CONNECTION=sync \
+              --env "PROFILE_FILTER=$filter" "$PROFILE_IMAGE" sh -lc '
+                exec php vendor/bin/phpunit --configuration ../../phpunit.xml \
+                  --bootstrap vendor/autoload.php --no-coverage \
+                  --do-not-record-test-run-history --fail-on-empty-test-suite --fail-on-skipped \
+                  --filter "$PROFILE_FILTER" ../../tests/Performance/EmbeddedReplayGrowthProfileTest.php
+              ' > "$PROFILE_DIR/profile.log" 2>&1 &
+          profile_pid=$!
+          while kill -0 "$profile_pid" 2>/dev/null; do
+            for progress in "$PROFILE_DIR"/progress/dw-replay-*/progress.json; do
+              if test -f "$progress"; then
+                cat "$progress" 2>/dev/null
+                printf '\n'
+              fi
+            done
+            sleep 10
+          done
+          wait "$profile_pid"
+          profile_status=$?
+          set -e
+          cat "$PROFILE_DIR/profile.log"
+          exit "$profile_status"
+
+      - name: Report the actual observation scope
+        if: always()
+        env:
+          PROFILE_OUTCOME: ${{ steps.profile.outcome }}
+        run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
+          {
+            echo '## Embedded replay diagnostic'
+            echo "Source: $GITHUB_SHA"
+            echo "Repetition: $PROFILE_REPETITION; sizes: $PROFILE_HISTORY_SIZES; step: $PROFILE_OUTCOME"
+            echo 'Published package/lock and pinned PHP 8.5.6 image; 1 CPU / 1 GiB / no swap.'
+            echo '105-minute observation cap. A capped or interrupted cell is incomplete.'
+            echo 'Mocked activity effects, fake queue and advanced test time. No real queue/timer latency or retained execution measured.'
+            echo 'Scalar progress and completed measurements are in the job log. No database/history archive is retained.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for progress in "$PROFILE_DIR"/progress/dw-replay-*/progress.json; do
+            if test -f "$progress"; then
+              cat "$progress"
+              printf '\n'
+            fi
+          done
+
+      - name: Remove task containers and disposable consumer data
+        if: always()
+        run: |
+          PROFILE_DIR="$RUNNER_TEMP/$PROFILE_DIR"
+          for container in "$PROFILE_CONTAINER" "${PROFILE_CONTAINER}-install"; do
+            if docker container inspect "$container" >/dev/null 2>&1; then
+              docker container rm --force "$container"
+            fi
+          done
+          test "$PROFILE_DIR" = "$RUNNER_TEMP/embedded-replay-$PROFILE_REPETITION"
+          if test -d "$PROFILE_DIR"; then rm -r -- "$PROFILE_DIR"; fi
+          if test -d benchmarks/embedded-replay/vendor; then
+            rm -r -- benchmarks/embedded-replay/vendor
+          fi
