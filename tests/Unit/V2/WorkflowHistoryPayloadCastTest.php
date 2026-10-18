@@ -169,6 +169,37 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         $this->assertNull($reference->get());
     }
 
+    #[DataProvider('largePayloads')]
+    public function testLargePayloadReadsDoNotRetainDecodedCopies(array $payload): void
+    {
+        $warmup = $this->event();
+        $this->assertIsArray($warmup->payload);
+        unset($warmup);
+        $raw = json_encode($payload, JSON_THROW_ON_ERROR);
+        $models = [];
+        for ($row = 0; $row < 16; ++$row) {
+            $model = new WorkflowHistoryEvent();
+            $model->setRawAttributes(['payload' => $raw], true);
+            $models[] = $model;
+        }
+        gc_collect_cycles();
+        $before = memory_get_usage();
+        foreach ($models as $model) {
+            $decoded = $model->payload;
+            $this->assertSame($payload, $decoded);
+            unset($decoded);
+        }
+        gc_collect_cycles();
+        $this->assertLessThan(512 * 1024, memory_get_usage() - $before);
+        $this->assertCount(16, $models);
+    }
+
+    public static function largePayloads(): iterable
+    {
+        yield 'large string' => [['value' => str_repeat('x', 128 * 1024)]];
+        yield 'wide graph with small JSON' => [['values' => array_fill(0, 256, ['x'])]];
+    }
+
     public function testConfiguredSubclassKeepsItsCustomCastPath(): void
     {
         $event = new ConfiguredPayloadHistoryEvent();
