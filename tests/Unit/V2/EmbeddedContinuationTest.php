@@ -9,6 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Mockery;
 use Orchestra\Testbench\TestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -19,15 +20,25 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Providers\WorkflowServiceProvider;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -390,6 +401,11 @@ final class EmbeddedContinuationTest extends TestCase
             'child' => [HistoryEventType::ChildWorkflowScheduled, 'child-value'],
             'condition' => [HistoryEventType::ConditionWaitOpened, true],
             'continue' => [HistoryEventType::WorkflowContinuedAsNew, 'continued'],
+            'nexus' => [HistoryEventType::ServiceCallStarted, [
+                'integer' => 9007199254740993,
+                'optional' => null,
+                'unicode' => 'Nexus λ',
+            ]],
         ];
         foreach ($operations as $operation => [$event, $result]) {
             foreach ([false, true] as $enabled) {
@@ -416,11 +432,19 @@ final class EmbeddedContinuationTest extends TestCase
                 'workflows' => $enabled ? [ContinuationFallbackWorkflow::class] : [],
                 'build' => 'excluded-operations',
             ]);
+        $backendStarts = 0;
+        $serviceRun = $operation === 'nexus' ? $this->registerNexusService($backendStarts) : null;
         $stub = WorkflowStub::make(ContinuationFallbackWorkflow::class, 'fallback-' . $operation, 'continuation-test');
         $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), $operation);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
         $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
         $atWrite = [];
+        $atServiceCreate = [];
+        WorkflowServiceCall::creating(static function (WorkflowServiceCall $call) use ($run, &$atServiceCreate): void {
+            if ($call->caller_workflow_run_id === $run->id) {
+                $atServiceCreate[] = ContinuationFallbackWorkflow::$entries[$run->id] ?? 0;
+            }
+        });
         WorkflowHistoryEvent::creating(static function (WorkflowHistoryEvent $event) use (
             $run,
             $firstEvent,
@@ -447,6 +471,16 @@ final class EmbeddedContinuationTest extends TestCase
                 app(WorkflowContinuationCache::class)->snapshot()['counts']['cold_unsupported_operation'] ?? 0
             );
         }
+        if ($serviceRun !== null) {
+            $this->assertSame([2], $atServiceCreate);
+            $this->assertSame(1, $backendStarts);
+            $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+            $this->assertSame('started', $call->status);
+            WorkflowHistoryEvent::record($serviceRun, HistoryEventType::WorkflowCompleted, [
+                'output' => Serializer::serializeWithCodec('avro', $result),
+                'payload_codec' => 'avro',
+            ]);
+        }
         Carbon::setTestNow(now()->addSeconds(2));
         for ($jobs = 0; $jobs < 12 && DB::table('jobs')->exists(); ++$jobs) {
             $this->workOnce();
@@ -465,6 +499,21 @@ final class EmbeddedContinuationTest extends TestCase
         $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
         $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
         $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
+        if ($serviceRun !== null) {
+            $this->assertSame(1, $backendStarts);
+            $this->assertCount(1, $events->where('event_type', HistoryEventType::ServiceCallStarted));
+            $this->assertCount(1, $events->where('event_type', HistoryEventType::ServiceCallCompleted));
+            $this->assertSame(
+                2,
+                $events->firstWhere('event_type', HistoryEventType::ServiceCallStarted)->payload['sequence']
+            );
+            $this->assertSame(
+                2,
+                $events->firstWhere('event_type', HistoryEventType::ServiceCallCompleted)->payload['sequence']
+            );
+            $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+            $this->assertSame('completed', $call->status);
+        }
         $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
             $run->fresh()
                 ->getRawOriginal('run_deadline_at')]);
@@ -772,6 +821,60 @@ final class EmbeddedContinuationTest extends TestCase
             ->runNextJob('database', 'default', new WorkerOptions(sleep: 0, timeout: 30));
         $this->assertSame(0, DB::transactionLevel());
     }
+
+    private function registerNexusService(int &$starts): WorkflowRun
+    {
+        $instance = WorkflowInstance::query()->create([
+            'namespace' => 'service',
+            'workflow_type' => 'nexus.service',
+            'workflow_class' => 'nexus.service',
+            'run_count' => 1,
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'namespace' => 'service',
+            'run_number' => 1,
+            'workflow_type' => 'nexus.service',
+            'workflow_class' => 'nexus.service',
+            'status' => 'waiting',
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'connection' => 'sync',
+            'queue' => 'default',
+            'started_at' => now(),
+        ]);
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'service',
+            'endpoint_name' => 'php-service',
+        ]);
+        $service = WorkflowService::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'greeter',
+        ]);
+        WorkflowServiceOperation::query()->create([
+            'namespace' => 'service',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'greet',
+            'operation_mode' => 'async',
+            'handler_binding_kind' => 'workflow_run',
+            'handler_target_reference' => 'nexus.service',
+        ]);
+        $control = Mockery::mock(WorkflowControlPlane::class);
+        $control->shouldReceive('start')
+            ->once()
+            ->andReturnUsing(static function () use ($run, &$starts): array {
+                ++$starts;
+                return [
+                    'started' => true,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                ];
+            });
+        $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($control));
+        return $run;
+    }
 }
 
 #[Type('continuation-workflow')]
@@ -902,12 +1005,29 @@ final class ContinuationFallbackWorkflow extends Workflow
                 'value' => $value,
                 'operation' => 'continued',
             ]),
+            'nexus' => $this->nexus(),
         };
 
         return [
             'value' => $value,
             'operation' => $result,
         ];
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private function nexus(): array
+    {
+        $result = Workflow::serviceOperation('php-service', 'greeter', 'greet', ['world'], new ServiceOperationOptions(
+            targetNamespace: 'service',
+            modeOverride: 'sync',
+            waitFor: 'completed',
+        ));
+        if (! $result instanceof ServiceOperationResult || ! is_array($result->responsePayload)) {
+            throw new RuntimeException('Expected a completed Nexus response.');
+        }
+        return $result->responsePayload;
     }
 
     private function selection(): array
