@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.6.0 - Unreleased
+## 2.6.0-rc.1 - 2026-10-18
 
 - Deliver cooperative cancellation to a caller waiting for an owned Nexus
   service workflow to complete. The caller waits for the target's cleanup and
