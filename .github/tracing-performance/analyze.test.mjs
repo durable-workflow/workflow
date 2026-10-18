@@ -3,6 +3,7 @@ import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import {compare, dataPath, experimentRoot, summarizeCell} from './analyze.mjs';
+import {COLLECTOR_IMAGE, COLLECTOR_VERSION, collectorDelta, parseCollectorMetrics, readCollectorSnapshot} from './collector-metrics.mjs';
 
 function pairData() {
     const cells = [];
@@ -56,14 +57,29 @@ test('normalizes all nine CPU deltas by measured work, excluding warmup counts',
 function officialCollectorData() {
     const data = cellData();
     data.outcome.collector = 'otelcol';
-    const initial = {instance: 'collector-one', version: '0.163.1', uptime_seconds: 1,
-        accepted: 1, sent: 1, refused: null, failed: null};
+    data.outcome.collector_image = COLLECTOR_IMAGE;
+    const initial = {schema: 'durable-workflow.collector-snapshot-v1', instance: 'collector-one',
+        version: COLLECTOR_VERSION, uptime_seconds: 1,
+        accepted: 1, sent: 1, refused: 0, receiver_failed: 0, in_flight: 0, failed: null};
     data.telemetry.collector = {before: initial, after: {...initial, uptime_seconds: 2}};
+    data.exits[7].exit = 0;
     return data;
 }
 
 test('an initialized official collector can prove zero new spans without inventing missing metrics', () => {
     assert.equal(summarizeCell(officialCollectorData()).spans_including_warmup.received, 0);
+});
+
+test('official Collector graceful termination is exit zero', () => {
+    const data = officialCollectorData();
+    data.exits[7].exit = 0;
+    assert.doesNotThrow(() => summarizeCell(data));
+});
+
+test('official Collector forced termination is not graceful cleanup', () => {
+    const data = officialCollectorData();
+    data.exits[7].exit = 143;
+    assert.throws(() => summarizeCell(data));
 });
 
 for (const [name, corrupt] of [
@@ -76,6 +92,11 @@ for (const [name, corrupt] of [
     }],
     ['collector export loss', data => { data.telemetry.collector.after.accepted = 2; }],
     ['new refusal observation', data => { data.telemetry.collector.after.refused = 1; }],
+    ['missing accepted counter', data => { delete data.telemetry.collector.after.accepted; }],
+    ['wrong image', data => { data.outcome.collector_image = 'unqualified:latest'; }],
+    ['new exporter failure', data => { data.telemetry.collector.after.failed = 1; }],
+    ['in-flight export', data => { data.telemetry.collector.after.in_flight = 1; }],
+    ['nonadvancing collector clock', data => { data.telemetry.collector.after.uptime_seconds = 1; }],
 ]) {
     test(`official collector proof refuses ${name}`, () => {
         const data = officialCollectorData();
@@ -83,6 +104,60 @@ for (const [name, corrupt] of [
         assert.throws(() => summarizeCell(data));
     });
 }
+
+function collectorText() {
+    const identity = `service_instance_id="collector-one",service_version="${COLLECTOR_VERSION}"`;
+    return [
+        `otelcol_process_uptime{${identity}} 1`,
+        `otelcol_receiver_accepted_spans{receiver="otlp",${identity},transport="http"} 1`,
+        `otelcol_receiver_refused_spans{receiver="otlp",${identity},transport="http"} 0`,
+        `otelcol_receiver_failed_spans{receiver="otlp",${identity},transport="http"} 0`,
+        `otelcol_exporter_sent_spans{exporter="debug",${identity}} 1`,
+        `otelcol_exporter_in_flight_requests{data_type="traces",exporter="debug",${identity}} 0`,
+    ].join('\n');
+}
+
+test('reads initialized official metrics and preserves an unavailable failure series as null', () => {
+    const parsed = parseCollectorMetrics(collectorText());
+    assert.deepEqual(parsed, officialCollectorData().telemetry.collector.before);
+    assert.equal(collectorDelta({before: parsed, after: {...parsed, uptime_seconds: 2, accepted: 4, sent: 4}}), 3);
+});
+
+for (const [name, corrupt] of [
+    ['uninitialized series', text => text.split('\n')[0]],
+    ['missing refusal series', text => text.split('\n').filter(line => !line.includes('refused_spans')).join('\n')],
+    ['duplicate series', text => text + '\n' + text.split('\n')[1]],
+    ['fractional counter', text => text.replace('transport="http"} 1', 'transport="http"} 1.5')],
+    ['unsafe counter', text => text.replace('transport="http"} 1', 'transport="http"} 9007199254740992')],
+    ['nonfinite counter', text => text.replace('transport="http"} 1', 'transport="http"} NaN')],
+    ['mixed instances', text => text.replace('collector-one', 'collector-two')],
+    ['wrong version', text => text.replaceAll(COLLECTOR_VERSION, '0.0.0')],
+    ['wrong receiver', text => text.replaceAll('receiver="otlp"', 'receiver="other"')],
+    ['wrong transport', text => text.replaceAll('transport="http"', 'transport="grpc"')],
+    ['wrong exporter', text => text.replaceAll('exporter="debug"', 'exporter="other"')],
+    ['duplicate labels', text => text.replace('receiver="otlp"', 'receiver="otlp",receiver="other"')],
+]) {
+    test(`Collector metrics refuse ${name}`, () => {
+        assert.throws(() => parseCollectorMetrics(corrupt(collectorText())));
+    });
+}
+
+test('Collector HTTP and byte failures do not become zero-span observations', async () => {
+    for (const response of [
+        new Response('unavailable', {status: 503}),
+        new Response(null, {status: 200}),
+        new Response('x'.repeat(256 * 1024 + 1), {status: 200}),
+        new Response(new Uint8Array([255]), {status: 200}),
+    ]) {
+        await assert.rejects(readCollectorSnapshot(async () => response));
+    }
+    const parsed = await readCollectorSnapshot(async (url, options) => {
+        assert.equal(url, 'http://collector:8888/metrics');
+        assert.ok(options.signal instanceof AbortSignal);
+        return new Response(collectorText());
+    });
+    assert.equal(parsed.accepted, 1);
+});
 
 test('integer timer precision keeps the actual elapsed value without shortening CPU coverage', () => {
     const data = cellData();
@@ -127,6 +202,13 @@ test('uses paired relative overhead and the frozen confidence targets', () => {
         assert.equal(result[workload].off.qualified, true);
         assert.equal(result[workload].on.qualified, true);
     }
+});
+
+test('collector profiles cannot be mixed within a matched CPU comparison', () => {
+    const cells = pairData();
+    cells[0].collector = 'otelcol';
+    cells[0].collector_image = COLLECTOR_IMAGE;
+    assert.throws(() => compare(cells), /Collector profiles/);
 });
 
 test('a low mean with a wide interval does not qualify enabled tracing', () => {

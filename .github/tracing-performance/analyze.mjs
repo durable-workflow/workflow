@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {COLLECTOR_IMAGE, collectorDelta} from './collector-metrics.mjs';
 import {readdir, readFile, realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -88,6 +89,13 @@ function validateBusiness(data) {
 }
 
 function validateTelemetry({outcome, audit, telemetry}) {
+    if (outcome.collector === 'otelcol') {
+        assert.equal(outcome.collector_image, COLLECTOR_IMAGE, 'Unexpected Collector image');
+        assert.equal(telemetry.received, collectorDelta(telemetry.collector), 'Collector count proof differs');
+    } else {
+        assert.equal(outcome.collector, undefined, 'Unknown collector profile');
+        assert.equal(telemetry.collector, undefined, 'Official proof requires its declared profile');
+    }
     assert.equal(telemetry.ended, telemetry.received, 'Span loss invalidates the cell');
     assert.ok(Number.isSafeInteger(telemetry.ended) && telemetry.ended >= 0);
     if (outcome.cell === 'on') {
@@ -142,7 +150,9 @@ function validateExits(data, before) {
         assert.equal(item.oom, false);
         assert.equal(item.restarts, 0);
         const role = before.get(item.id).role;
-        assert.equal(item.exit, ['mysql', 'redis'].includes(role) ? 0 : 143);
+        const graceful = ['mysql', 'redis'].includes(role)
+            || (role === 'collector' && data.outcome.collector === 'otelcol');
+        assert.equal(item.exit, graceful ? 0 : 143);
     }
 }
 
@@ -174,6 +184,12 @@ function interval(values) {
 
 export function compare(cells) {
     assert.equal(cells.length, 20, 'All twenty declared cells are required');
+    const collectors = new Set(cells.map(cell => cell.collector ?? 'legacy-php'));
+    assert.equal(collectors.size, 1, 'Collector profiles cannot be mixed');
+    assert.ok(['legacy-php', 'otelcol'].includes([...collectors][0]), 'Unknown collector profile');
+    if (collectors.has('otelcol')) {
+        for (const cell of cells) assert.equal(cell.collector_image, COLLECTOR_IMAGE, 'Collector image drift');
+    }
     const result = {};
     for (const workload of ['ordinary', 'fanout']) {
         const select = (cell, repeat) => {

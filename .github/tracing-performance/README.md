@@ -6,6 +6,64 @@ any of the four CPU budgets. The encoded-baggage regression and the other accept
 requirements of [#773](https://github.com/durable-workflow/workflow/issues/773)
 remain separate release gates.
 
+## Prospective official Collector profile
+
+`compose.collector.yaml` selects a separately labelled official Collector profile.
+It pins Collector 0.163.1 to its verified image digest and retains the same nine
+roles, CPU/memory/swap limits and 1%/5% acceptance targets. The default PHP receiver
+and October 17 report remain their original method. Do not transfer or combine
+measurements across these collector profiles. The new protocol/counter controls
+do not qualify a complete application cohort, overhead budget or tracing release.
+
+The Collector decodes official OTLP protobuf and uses a basic debug exporter with
+logging suppressed. It retains no span payloads. Its
+[internal metrics](https://opentelemetry.io/docs/collector/internal-telemetry/)
+provide accepted, refused, receiver-failed and exported span counters, plus
+in-flight request counts.
+The exporter-failure series can be absent before a failure; the reader preserves
+that absence as `null` and refuses changed failure observations. It does not
+report missing counters as zero or infer payload equality from delivery counts.
+
+Before warmup, send exactly one synthetic calibration span using
+`collector-probe.php` with its default count. This bounded setup request creates
+the required counter series. The helper uses the normal official PHP SDK/exporter
+and never writes the application's `ended.jsonl`. Its one-second transport timeout
+is setup-only; business exports retain their existing 100 ms timeout. Read a
+drained initial snapshot after calibration, then retain the Collector through
+warmup, measured work and complete application/provider drain. Subtract only the
+initial snapshot. Application-ended spans, including warmup, must equal both the
+accepted and exported deltas. Disabled cells can prove a real zero delta on these
+initialized counters. An uninitialized/missing series refuses observation.
+
+Use the override explicitly for every command in this profile. For example, these
+commands exercise only calibration and metrics, without starting database or
+application roles:
+
+```sh
+docker compose -f compose.yaml -f compose.collector.yaml up -d collector
+docker compose -f compose.yaml -f compose.collector.yaml run --rm --no-deps prepare \
+  php collector-probe.php
+docker compose -f compose.yaml -f compose.collector.yaml run --rm --no-deps probe \
+  node collector-metrics.mjs
+```
+
+The snapshot command reads only the fixed internal `collector:8888/metrics`
+endpoint, with a two-second timeout and 256 KiB response bound. During a measured
+cell, execute it within the existing probe container before the final CPU snapshot
+so its work remains in the nine-role accounting. Do not create an uncounted
+measurement-side helper. No public port or production collector is needed.
+
+Declare `outcome.collector` as `otelcol` and `outcome.collector_image` as the exact
+digest-qualified override image. Store `telemetry.collector.before` and `.after`
+snapshots alongside the existing `ended` and `received` counts. The analyzer
+independently verifies those counts, version, instance, monotonic counters/uptime,
+drained exports and unchanged failure observations. Missing proof, replacement,
+reset, loss or a mixed-profile comparison refuses qualification. Historical
+PHP-collector records lack these fields and remain explicitly the legacy method.
+The official Collector must exit zero on SIGTERM. A forced 143 exit is not
+graceful cleanup for this profile; the historical PHP receiver keeps its original
+shutdown expectation.
+
 ## Fixed comparison
 
 The primary profile uses Laravel's database queue on MySQL and shared Redis
