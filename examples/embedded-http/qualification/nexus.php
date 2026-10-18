@@ -201,9 +201,12 @@ final class PublishedEmbeddedNexusProbe
         $this->processes[] = $pid;
         $process->wait();
         if ($expectBackendRefusal) {
-            $this->check(! $process->isSuccessful()
-                && str_contains($process->getErrorOutput() . $process->getOutput(), 'unable to open database file'),
-                'The intended unavailable backend did not refuse before claim');
+            // Laravel reports a queue-pop database exception and can still
+            // return exit 0 from --once; the actual refusal and unchanged
+            // database prove that no task was claimed.
+            $diagnostic = $process->getErrorOutput() . $process->getOutput();
+            $this->check(str_contains($diagnostic, 'unable to open database file'),
+                'Missing pre-claim backend refusal: exit=' . $process->getExitCode() . ' ' . substr($diagnostic, -1500));
             return;
         }
         $this->check($process->isSuccessful(), 'Queue process failed: ' . substr($process->getErrorOutput() . $process->getOutput(), -2000));
