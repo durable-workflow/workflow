@@ -31,6 +31,7 @@ final class PublishedEmbeddedNexusProbe
 
     public function run(): void
     {
+        $this->check(PHP_INT_SIZE === 8, 'The int64 profile requires 64-bit PHP');
         $this->check(InstalledVersions::getPrettyVersion('durable-workflow/workflow') === '2.6.0-rc.1', 'Wrong published Core version');
         $this->check(InstalledVersions::getReference('durable-workflow/workflow') === '59bdfb207f0ecd68261b8776e57042397eb494d4', 'Wrong published Core source');
         $package = realpath(InstalledVersions::getInstallPath('durable-workflow/workflow'));
@@ -50,6 +51,7 @@ final class PublishedEmbeddedNexusProbe
         $this->check(WorkflowRun::query()->count() === 16, 'Every original must retain exactly caller and target runs');
         $this->check(DB::table('failed_jobs')->count() === 0, 'Unexpected failed Laravel jobs');
         echo json_encode(['outcome' => 'pass', 'version' => '2.6.0-rc.1', 'source' => InstalledVersions::getReference('durable-workflow/workflow'),
+            'php' => PHP_VERSION, 'framework' => app()->version(), 'composer_lock_sha256' => hash_file('sha256', base_path('composer.lock')),
             'cases' => count($cases), 'queue_processes' => count($this->processes), 'distinct_queue_processes' => count(array_unique($this->processes)),
             'runs' => WorkflowRun::query()->count(), 'calls' => WorkflowServiceCall::query()->count()], JSON_THROW_ON_ERROR), "\n";
     }
@@ -128,7 +130,11 @@ final class PublishedEmbeddedNexusProbe
         }
         if ($scenario === 'failed') {
             $this->check($call->status === 'failed' && $target->run()->status === RunStatus::Failed, 'Target failure did not converge');
-            $this->check($caller->output() === ['error_class' => PublishedNexusFailure::class, 'error_message' => 'embedded service failure'], 'Typed failure changed');
+            $output = $caller->output();
+            $this->check(($output['error_type'] ?? null) === PublishedNexusFailure::class
+                && ($output['error_message'] ?? null) === 'embedded service failure'
+                && ($call->outcome_metadata['caller_observed_error_type'] ?? null) === PublishedNexusFailure::class,
+                'Typed failure changed: ' . json_encode(['output' => $output, 'cause' => $call->outcome_metadata], JSON_THROW_ON_ERROR));
             return;
         }
         $this->check($call->status === 'cancelled' && $target->run()->status === RunStatus::Cancelled, 'Target cancellation did not converge');

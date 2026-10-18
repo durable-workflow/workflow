@@ -6,6 +6,7 @@ namespace App\Workflows;
 
 use RuntimeException;
 use Throwable;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Workflow;
@@ -35,7 +36,9 @@ final class PublishedNexusCaller extends Workflow
             timer(1);
             throw $cancel;
         } catch (Throwable $failure) {
-            return ['error_class' => $failure::class, 'error_message' => $failure->getMessage()];
+            return ['error_class' => $failure::class,
+                'error_type' => $failure instanceof RestoredWorkflowException ? $failure->failurePayload()['type'] : $failure::class,
+                'error_message' => $failure->getMessage()];
         }
     }
 }
