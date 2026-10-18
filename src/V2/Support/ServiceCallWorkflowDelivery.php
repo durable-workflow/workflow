@@ -8,6 +8,7 @@ use RuntimeException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -269,7 +270,7 @@ final class ServiceCallWorkflowDelivery
         // service namespace's provider or authenticated transport reference.
         $blob = ExternalPayloads::payloadBlob($result, $call->payload_codec, $call->target_namespace);
         if ($blob === null) {
-            throw new RuntimeException('The external Nexus result has no encoded payload.');
+            throw new ExternalPayloadIntegrityException('The external Nexus result has no encoded payload.');
         }
         $stored = ExternalPayloads::externalizeForNamespace($blob, $call->payload_codec, $call->caller_namespace);
 
