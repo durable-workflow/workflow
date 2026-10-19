@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.4 - 2026-10-19
+
+- Chunk long activity retry and workflow-task delays to the queue driver's
+  dispatch ceiling, using the existing timer transport mechanism. SQS receives
+  a delay of at most 900 seconds per wakeup.
+- Defer early workflow-task deliveries without taking a lease, running user
+  code, consuming execution attempts or appending history. Preserve original
+  task availability, retry history and workflow deadlines. Queue drivers without
+  a delay cap retain their exact delays.
+
 ## 2.6.3 - 2026-10-19
 
 - Exclude retention-pruned runs from missing run-summary drift and lag metrics.

@@ -77,7 +77,9 @@ final class DelayedTaskTransportTest extends TestCase
             $this->runWorkflow($this->readyTask($stub->runId(), TaskType::Workflow));
         }
         $task = $this->readyTask($stub->runId(), $type);
-        $task->forceFill(['available_at' => now()->addDay()])->save();
+        $task->forceFill([
+            'available_at' => now()->addDay(),
+        ])->save();
         $due = $task->getRawOriginal('available_at');
         $history = $this->history($stub->runId());
 
@@ -89,7 +91,9 @@ final class DelayedTaskTransportTest extends TestCase
             TaskType::Timer => RunTimerTask::class,
         };
         $job = Bus::dispatched($jobClass)->last();
-        $expected = $driver === 'sqs' ? now()->addSeconds(900) : $task->available_at->copy()->ceilSecond();
+        $expected = $driver === 'sqs' ? now()
+            ->addSeconds(900) : $task->available_at->copy()
+            ->ceilSecond();
         $this->assertSame($task->id, $job->taskId);
         $this->assertSame($expected->format('Y-m-d H:i:s.u'), $job->delay->format('Y-m-d H:i:s.u'));
         $this->assertSame('chunk-queue', $job->connection);
@@ -110,7 +114,8 @@ final class DelayedTaskTransportTest extends TestCase
         $history = $this->history($stub->runId());
         $deadlines = $this->deadlines($stub->runId());
         $scheduledRetry = WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityRetryScheduled)
-            ->sole()->getRawOriginal();
+            ->sole()
+            ->getRawOriginal();
         $this->assertSame(now()->addDay()->toISOString(), $retry->available_at->toISOString());
         $this->assertSame(1, LongRetryActivity::$calls);
         $this->assertSame(1, ActivityAttempt::query()->count());
@@ -140,10 +145,20 @@ final class DelayedTaskTransportTest extends TestCase
         $this->runWorkflow($this->readyTask($stub->runId(), TaskType::Workflow));
         $this->assertSame([9223372036854775807, null, '雪'], $stub->refresh()->output());
         $this->assertSame($deadlines, $this->deadlines($stub->runId()));
-        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityCompleted)->count());
-        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::WorkflowCompleted)->count());
-        $this->assertSame($scheduledRetry, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityRetryScheduled)
-            ->sole()->getRawOriginal());
+        $this->assertSame(
+            1,
+            WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityCompleted)->count()
+        );
+        $this->assertSame(
+            1,
+            WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::WorkflowCompleted)->count()
+        );
+        $this->assertSame(
+            $scheduledRetry,
+            WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityRetryScheduled)
+                ->sole()
+                ->getRawOriginal()
+        );
     }
 
     public function testDelayedChildWorkflowCannotExecuteOnAnEarlyTransportDelivery(): void
@@ -153,7 +168,9 @@ final class DelayedTaskTransportTest extends TestCase
         $call = WorkflowChildCall::query()->where('parent_workflow_run_id', $parent->runId())->sole();
         $childId = $call->resolved_child_run_id;
         $task = $this->readyTask($childId, TaskType::Workflow);
-        $task->forceFill(['available_at' => now()->addHour()])->save();
+        $task->forceFill([
+            'available_at' => now()->addHour(),
+        ])->save();
         $due = $task->getRawOriginal('available_at');
         $parentHistory = $this->history($parent->runId());
         $childHistory = $this->history($childId);
@@ -179,7 +196,10 @@ final class DelayedTaskTransportTest extends TestCase
         $this->assertSame($parentHistory, $this->history($parent->runId()));
         $this->assertSame($childHistory, $this->history($childId));
         $this->assertSame($deadlines, $this->deadlines($childId));
-        $this->assertSame(now()->addSeconds(900)->toISOString(), Bus::dispatched(RunWorkflowTask::class)->last()->delay->toISOString());
+        $this->assertSame(
+            now()->addSeconds(900)->toISOString(),
+            Bus::dispatched(RunWorkflowTask::class)->last()->delay->toISOString()
+        );
 
         Carbon::setTestNow($task->available_at);
         $this->runWorkflow($task);
@@ -193,7 +213,12 @@ final class DelayedTaskTransportTest extends TestCase
 
     private function driver(string $driver): void
     {
-        config(['queue.connections.chunk-queue' => ['driver' => $driver, 'queue' => 'delayed-contract']]);
+        config([
+            'queue.connections.chunk-queue' => [
+                'driver' => $driver,
+                'queue' => 'delayed-contract',
+            ],
+        ]);
     }
 
     private function start(string $class): WorkflowStub
@@ -238,7 +263,10 @@ final class LongRetryWorkflow extends Workflow
     public function handle(): array
     {
         return self::activity(LongRetryActivity::class, new ActivityOptions(
-            maxAttempts: 2, backoff: [86400], startToCloseTimeout: 30, scheduleToCloseTimeout: 172800,
+            maxAttempts: 2,
+            backoff: [86400],
+            startToCloseTimeout: 30,
+            scheduleToCloseTimeout: 172800,
         ));
     }
 }
