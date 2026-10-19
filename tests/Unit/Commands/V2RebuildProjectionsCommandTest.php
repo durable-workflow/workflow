@@ -932,6 +932,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->nullable();
             $table->timestamp('archived_at', 6)
                 ->nullable();
+            $table->timestamp('details_pruned_at', 6)
+                ->nullable();
             $table->string('archive_command_id', 26)
                 ->nullable();
             $table->string('archive_reason')

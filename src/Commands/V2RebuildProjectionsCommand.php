@@ -132,6 +132,7 @@ class V2RebuildProjectionsCommand extends Command
         $summaryTable = (new $summaryModel())->getTable();
 
         $query = $runModel::query()
+            ->whereNull(sprintf('%s.details_pruned_at', $runTable))
             ->with([
                 'instance.runs',
                 'tasks',

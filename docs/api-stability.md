@@ -176,6 +176,16 @@ authoritative marker for those records. Consumers should use this field to
 label retained-detail state while preserving the run's original terminal
 status; they must not treat retained row counts as lifetime counts.
 
+Run-summary drift and missing-summary age exclude runs with a non-null
+`details_pruned_at`; the retained run still contributes to the total run count.
+`workflow:v2:rebuild-projections` skips these runs in every mode, including
+explicit run or instance selection, so maintenance does not recreate their
+deleted projections. An unmarked legacy run is still checked for missing
+summaries: empty detail tables alone do not establish intentional pruning.
+Confirm older cleanup from an authoritative retention record before choosing
+remediation. Do not use a projection rebuild to recover deleted history; restore
+an appropriate backup if that history is required.
+
 The package migration adds the nullable column to `workflow_runs`. Hosts that
 replace the configured run model's table must add the same column in their
 own migration before invoking retention cleanup. The run and its configured
