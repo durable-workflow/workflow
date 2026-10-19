@@ -454,7 +454,10 @@ their ordering and lifecycle across that boundary:
 
 - Signals are ordered by the instance message stream. A signal accepted
   before the continue-as-new transition commits remains pending until the
-  continued run consumes it. Cursor transfer is durable and monotonic.
+  current or continued run consumes it. Received instance-scoped signals
+  transfer with accepted updates in command order, retaining their signal
+  and command IDs, arguments and receipt time. The successor records its
+  start before these messages. Cursor transfer is durable and monotonic.
 - Instance-scoped updates accepted before the transition but not yet
   applied are carried to the continued run. The update id remains stable,
   `inspectUpdate()` follows the same lifecycle row, and the continued run
@@ -470,6 +473,26 @@ their ordering and lifecycle across that boundary:
 This contract is intentionally instance-first so external server, CLI,
 and SDK callers can reason about a stable logical workflow id without
 having to retry around the brief run handoff window.
+
+### Signals at terminal task boundaries
+
+`signal_received` acknowledges durable admission, not business processing.
+A successful remote workflow task cannot close or continue the run while an
+eligible signal delivery remains pending. Its nonterminal commands commit,
+its task completes, and the existing ordered message-task path delivers the
+signal before the workflow makes a fresh terminal decision. The original
+execution deadline stays unchanged. A task-completion receipt acknowledges
+that task; `run_status` and the run history determine whether the run closed.
+
+Buffered signals an embedded workflow never awaits can carry across
+continue-as-new when they target the instance. Run-targeted signals never
+move to another run. When a run closes with received signals it cannot apply,
+including failure, cancellation or timeout, those signals become `rejected`
+with `run_closed_before_signal_applied`, a closed timestamp and a linked
+`SignalRejected` event. The original admission receipt remains accepted;
+the later signal disposition is separate. `RunSignalView`, run detail and
+history expose it even when no `SignalApplied` was recorded. Continuing
+cannot recover a signal already rejected by a prior terminal close.
 
 ## Pre-existing `Contracts\*` interfaces
 
@@ -533,6 +556,7 @@ class, source file path, or stack trace to replay or handle a failure.
 | `TimerCancelled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancelled_at` | `WorkflowStepHistory`, `RunTimerView`, `ConditionWaits`, `SignalWaits`, `HistoryTimeline` |
 | `SignalReceived` | `workflow_command_id`, `signal_id`, `workflow_instance_id`, `workflow_run_id`, `signal_name`, `signal_wait_id`, `arguments`, `payload_codec` | `SignalWaits`, `RunSignalView`, public and worker history payload consumers |
 | `SignalApplied` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `sequence`, `value` | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `QueryStateReplayer` |
+| `SignalRejected` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `command_sequence`, `rejection_reason`, `terminal_reason` | `PendingSignalCloser`, `RunSignalView`, `HistoryTimeline` |
 | `SignalWaitOpened` | `signal_name`, `signal_wait_id`, `sequence`, `timeout_seconds`, `cancellation_scope_id` (candidate 1.20) | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `HistoryTimeline` |
 | `SignalWaitCancelled` (candidate 1.20) | `signal_name`, `signal_wait_id`, `sequence`, `timeout_seconds`, `timer_id`, `cancelled_at`, `cancellation_scope` | `ScopedWaitCancellation`, `SignalWaits`, `HistoryTimeline`, scope delivery and worker history consumers |
 | `UpdateAccepted` | `workflow_command_id`, `update_id`, `workflow_instance_id`, `workflow_run_id`, `update_name`, `arguments`, `ordering_state`, `queued_behind_command_id`, `queued_behind_command_sequence`, `queued_behind_command_type` | `RunUpdateView`, worker history payload consumers |

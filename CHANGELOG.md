@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.4 - 2026-10-19
+
+- Deliver eligible signals accepted during a remote workflow task before its
+  successful terminal decision. Retain original deadlines and ordered message
+  delivery through cold replay.
+- Carry received instance-scoped signals with unapplied accepted updates across
+  continue-as-new, preserving identities, payloads and command order. Run-scoped
+  signals keep their selected run.
+- Close signals a terminal run did not apply with an explicit rejected status,
+  reason, timestamp and linked history event. Keep the original durable
+  acceptance receipt unchanged.
+
 ## 2.6.3 - 2026-10-19
 
 - Exclude retention-pruned runs from missing run-summary drift and lag metrics.

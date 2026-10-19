@@ -458,6 +458,15 @@ final class HistoryEventPayloadContract
             'arguments',
             'payload_codec',
         ],
+        'SignalRejected' => [
+            'workflow_command_id',
+            'signal_id',
+            'signal_name',
+            'signal_wait_id',
+            'command_sequence',
+            'rejection_reason',
+            'terminal_reason',
+        ],
         'SignalApplied' => [
             'workflow_command_id',
             'signal_id',
