@@ -121,6 +121,28 @@ final class RetainedRunProjectionTest extends TestCase
         $this->assertSame('warning', $check['status']);
     }
 
+    public function testExplicitSelectorsCannotResurrectPrunedDetails(): void
+    {
+        $run = $this->completedRun('selected', 120);
+        WorkflowRunRetentionCleanup::pruneRun($run);
+        $marker = $run->fresh()->getRawOriginal('details_pruned_at');
+
+        foreach ([['--run-id' => [$run->id]], ['--instance-id' => $run->workflow_instance_id]] as $selector) {
+            foreach ([false, true] as $dryRun) {
+                $this->assertSame(0, Artisan::call('workflow:v2:rebuild-projections', [
+                    ...$selector, '--dry-run' => $dryRun, '--json' => true,
+                ]));
+                $report = json_decode(Artisan::output(), true, 512, JSON_THROW_ON_ERROR);
+                $this->assertSame(0, $report['runs_matched']);
+                $this->assertSame(0, $report['run_summaries_rebuilt']);
+                $this->assertSame(0, $report['run_summaries_would_rebuild']);
+            }
+        }
+
+        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $run->id]);
+        $this->assertSame($marker, $run->fresh()->getRawOriginal('details_pruned_at'));
+    }
+
     public function testUnmarkedLegacyAbsenceIsNotAssumedToBeIntentionalPruning(): void
     {
         $run = $this->completedRun('legacy', 120);

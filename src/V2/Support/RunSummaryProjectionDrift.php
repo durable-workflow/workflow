@@ -68,6 +68,7 @@ final class RunSummaryProjectionDrift
     public static function missingRunQuery(?string $namespace = null): Builder
     {
         return self::runQuery(self::normalizeNamespace($namespace))
+            ->whereNull(sprintf('%s.details_pruned_at', self::table(self::runModel())))
             ->whereNotIn('id', self::summaryQuery(self::normalizeNamespace($namespace))->select('id'));
     }
 
