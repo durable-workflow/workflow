@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
@@ -95,6 +96,7 @@ final class DelayedTaskTransportTest extends TestCase
         $this->assertSame('delayed-contract', $job->queue);
         $this->assertSame($due, $task->fresh()->getRawOriginal('available_at'));
         $this->assertSame(0, $task->fresh()->attempt_count);
+        $this->assertNull($task->fresh()->last_dispatch_error);
         $this->assertSame($history, $this->history($stub->runId()));
     }
 
@@ -107,9 +109,13 @@ final class DelayedTaskTransportTest extends TestCase
         $due = $retry->getRawOriginal('available_at');
         $history = $this->history($stub->runId());
         $deadlines = $this->deadlines($stub->runId());
+        $scheduledRetry = WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityRetryScheduled)
+            ->sole()->getRawOriginal();
         $this->assertSame(now()->addDay()->toISOString(), $retry->available_at->toISOString());
         $this->assertSame(1, LongRetryActivity::$calls);
         $this->assertSame(1, ActivityAttempt::query()->count());
+        $inheritedAttempts = $retry->attempt_count;
+        $this->assertSame(1, $inheritedAttempts);
         $this->assertCappedActivityJob();
 
         foreach ([900, 1800] as $seconds) {
@@ -118,7 +124,7 @@ final class DelayedTaskTransportTest extends TestCase
             $this->assertCappedActivityJob();
             $this->assertSame($due, $retry->fresh()->getRawOriginal('available_at'));
             $this->assertSame(TaskStatus::Ready, $retry->fresh()->status);
-            $this->assertSame(0, $retry->fresh()->attempt_count);
+            $this->assertSame($inheritedAttempts, $retry->fresh()->attempt_count);
             $this->assertSame(1, ActivityAttempt::query()->count());
             $this->assertSame(1, LongRetryActivity::$calls);
             $this->assertSame($history, $this->history($stub->runId()));
@@ -136,6 +142,8 @@ final class DelayedTaskTransportTest extends TestCase
         $this->assertSame($deadlines, $this->deadlines($stub->runId()));
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityCompleted)->count());
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::WorkflowCompleted)->count());
+        $this->assertSame($scheduledRetry, WorkflowHistoryEvent::query()->where('event_type', HistoryEventType::ActivityRetryScheduled)
+            ->sole()->getRawOriginal());
     }
 
     public function testDelayedChildWorkflowCannotExecuteOnAnEarlyTransportDelivery(): void
@@ -151,6 +159,16 @@ final class DelayedTaskTransportTest extends TestCase
         $childHistory = $this->history($childId);
         $deadlines = $this->deadlines($childId);
 
+        $queued = Bus::dispatched(RunWorkflowTask::class)->count();
+        DB::beginTransaction();
+        try {
+            $this->runWorkflow($task);
+            $this->assertSame(0, ChunkedChildWorkflow::$calls);
+            $this->assertSame($queued, Bus::dispatched(RunWorkflowTask::class)->count());
+        } finally {
+            DB::rollBack();
+        }
+        $this->assertSame($queued, Bus::dispatched(RunWorkflowTask::class)->count());
         $this->runWorkflow($task);
 
         $this->assertSame(0, ChunkedChildWorkflow::$calls);
@@ -211,6 +229,7 @@ final class DelayedTaskTransportTest extends TestCase
     {
         $job = Bus::dispatched(RunActivityTask::class)->last();
         $this->assertSame(now()->addSeconds(900)->toISOString(), $job->delay->toISOString());
+        $this->assertNull(WorkflowTask::query()->findOrFail($job->taskId)->last_dispatch_error);
     }
 }
 

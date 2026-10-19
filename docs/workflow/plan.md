@@ -314,6 +314,10 @@ with one logical `timer_id` per wait. The lifecycle is:
   transport cannot represent in one entry, but the durable timer
   row, the typed history events, and the resume value all keep one
   stable `timer_id` end-to-end.
+  The same transport cap applies to delayed activity retries and workflow
+  tasks. An early delivery queues another capped job without claiming the
+  task, consuming an execution attempt or appending history. The original
+  `available_at` remains authoritative until the task is due.
 
 Cancel and terminate commands targeting the run cancel every open
 timer, condition timeout, and signal timeout the same way: the run
