@@ -64,6 +64,10 @@ final class PendingMessageTask
             ->lockForUpdate()
             ->get();
 
+        if ($signals->isEmpty()) {
+            return null;
+        }
+
         $freshRun = $run->fresh(['historyEvents']) ?? $run;
         $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
         $advanceableSignalWaitsById = self::advanceableSignalWaitsById(
