@@ -215,7 +215,11 @@ final class TerminalSignalBoundaryTest extends TestCase
                 'status' => 'rejected',
             ])->save();
         }
-        $this->assertSame($deliverable, UnprojectedSignalDelivery::allows($run->fresh(), $signal));
+        $this->assertFalse(UnprojectedSignalDelivery::allows($run->fresh(), $signal));
+        $this->assertSame(
+            $deliverable,
+            UnprojectedSignalDelivery::allows($run->fresh(), $signal, terminalSignalDelivery: true)
+        );
         $this->assertSame(
             $case === 'empty_contract' ? 'durable_history' : 'unavailable',
             RunCommandContract::forRun($run->fresh())['source']

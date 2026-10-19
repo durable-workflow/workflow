@@ -18,8 +18,12 @@ final class UnprojectedSignalDelivery
     /**
      * @param array<string, mixed>|null $contract
      */
-    public static function allows(WorkflowRun $run, WorkflowSignal $signal, ?array $contract = null): bool
-    {
+    public static function allows(
+        WorkflowRun $run,
+        WorkflowSignal $signal,
+        ?array $contract = null,
+        bool $terminalSignalDelivery = false,
+    ): bool {
         if (WorkflowExecutionGate::blockedReason($run)
             !== WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE) {
             return false;
@@ -30,7 +34,7 @@ final class UnprojectedSignalDelivery
             return is_array($declaredSignals) && in_array($signal->signal_name, $declaredSignals, true);
         }
 
-        return self::hasAcceptedReceipt($run, $signal);
+        return $terminalSignalDelivery && self::hasAcceptedReceipt($run, $signal);
     }
 
     private static function hasAcceptedReceipt(WorkflowRun $run, WorkflowSignal $signal): bool

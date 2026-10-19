@@ -1392,13 +1392,19 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             }
 
             $terminal = $parsed['terminal'];
+            $terminalSignalDelivery = ($task->payload['terminal_signal_delivery'] ?? false) === true;
 
             // A signal may commit after the worker has read history. Give it
             // an ordered delivery turn before accepting that worker's close.
             if (in_array($terminal['type'] ?? null, ['complete_workflow', 'continue_as_new'], true)
                 && ! is_string($run->cancellation_request_command_id)
-                && PendingMessageTask::hasDeliverableSignal($run, self::workflowSignalIdForTask($task))) {
+                && PendingMessageTask::hasDeliverableSignal(
+                    $run,
+                    self::workflowSignalIdForTask($task),
+                    terminalSignalDelivery: true
+                )) {
                 $terminal = null;
+                $terminalSignalDelivery = true;
             }
 
             if ($terminal !== null) {
@@ -1416,6 +1422,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     $parsed['non_terminal'],
                     $createdTaskIds,
                     $conditionSelectionResolution,
+                    $terminalSignalDelivery,
                 );
             }
 
@@ -2002,6 +2009,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $nonTerminalCommands,
         array &$createdTaskIds,
         ?WorkflowHistoryEvent $conditionSelectionResolution = null,
+        bool $terminalSignalDelivery = false,
     ): void {
         $run->forceFill([
             'status' => RunStatus::Waiting,
@@ -2017,6 +2025,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $run,
             self::workflowSignalIdForTask($task),
             includeReceivedProjectedSignalWait: false,
+            terminalSignalDelivery: $terminalSignalDelivery,
         );
 
         if ($nextMessageTask instanceof WorkflowTask) {
@@ -2190,7 +2199,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? (int) $openedPayload['sequence']
             : null;
 
-        if ($sequence === null && ! UnprojectedSignalDelivery::allows($run, $signal)) {
+        if ($sequence === null && ! UnprojectedSignalDelivery::allows(
+            $run,
+            $signal,
+            terminalSignalDelivery: ($taskPayload['terminal_signal_delivery'] ?? false) === true,
+        )) {
             return;
         }
 
