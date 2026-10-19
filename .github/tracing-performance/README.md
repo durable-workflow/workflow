@@ -68,9 +68,12 @@ a separate Docker-hostname label. The analyzer requires that container label to
 match the measured CPU role's container-ID prefix. A same-container process restart
 still changes the process identifier and refuses the old counter proof.
 
-The prospective package baseline is published Workflow 2.6.1. The October 17
-study's 2.5.28 lock and measurements remain available at their recorded source;
-they are not measurements of this new source/baseline/Collector combination.
+The prospective package baseline is published Workflow 2.6.2. Both baseline
+and candidate include the released bounded history-payload read optimization.
+This source/baseline update precedes admission of any official-Collector
+measurement. The earlier prospective 2.6.1 preparation and the October 17
+study's 2.5.28 lock remain available at their recorded sources. Their results
+are not measurements of this new source/baseline/Collector combination.
 
 ## Fixed comparison
 
