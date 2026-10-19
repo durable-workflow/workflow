@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.6.4 - 2026-10-19
+## 2.7.0 - 2026-10-20
 
 - Deliver eligible signals accepted during a remote workflow task before its
   successful terminal decision. Retain original deadlines and ordered message
