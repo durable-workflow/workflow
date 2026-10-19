@@ -24,6 +24,7 @@
     "tests/Unit/V2/TracingQueueErrorDiagnosticsTest.php",
     "tests/Unit/V2/VersionMarkerWireFormatTest.php",
     "tests/Unit/V2/WorkflowFiberRunnerTest.php",
+    "tests/Unit/V2/WorkflowHistoryPayloadCastTest.php",
     "tests/Unit/V2/WorkflowInstanceIdTest.php",
     "tests/Unit/V2/WorkflowStepHistoryTest.php"
   ],
