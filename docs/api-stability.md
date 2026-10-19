@@ -494,6 +494,12 @@ the later signal disposition is separate. `RunSignalView`, run detail and
 history expose it even when no `SignalApplied` was recorded. Continuing
 cannot recover a signal already rejected by a prior terminal close.
 
+`SignalRejected` extends the stored history enum. Upgrade direct database
+readers, including embedded workers and Waterline installations sharing that
+database, before allowing the new runtime to record it. Older Core readers
+cannot parse this event. Drain old readers during the upgrade; mixed-version
+direct-database operation and rollback to an older reader are not qualified.
+
 ## Pre-existing `Contracts\*` interfaces
 
 Interfaces under `Workflow\V2\Contracts\*` are the preferred extension

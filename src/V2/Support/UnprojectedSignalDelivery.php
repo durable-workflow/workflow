@@ -30,6 +30,11 @@ final class UnprojectedSignalDelivery
             return is_array($declaredSignals) && in_array($signal->signal_name, $declaredSignals, true);
         }
 
+        return self::hasAcceptedReceipt($run, $signal);
+    }
+
+    private static function hasAcceptedReceipt(WorkflowRun $run, WorkflowSignal $signal): bool
+    {
         // A run may predate worker registration. Missing declarations stay
         // unknown; a prior accepted command and its history authorize only
         // delivery of this exact already-admitted signal.

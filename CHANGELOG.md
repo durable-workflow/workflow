@@ -11,6 +11,9 @@
 - Close signals a terminal run did not apply with an explicit rejected status,
   reason, timestamp and linked history event. Keep the original durable
   acceptance receipt unchanged.
+- Upgrade all direct database readers before recording `SignalRejected`.
+  Older Core history enums cannot parse the new event; drain old readers
+  during the upgrade and do not roll them back onto affected histories.
 
 ## 2.6.3 - 2026-10-19
 

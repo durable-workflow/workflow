@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "terminal-unapplied-signal-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": ["single-activity"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-19T12:00:00.000001Z"},
+    {"sequence": 2, "event_type": "SignalReceived", "payload": {
+      "workflow_command_id": "signal-command", "signal_id": "unapplied-signal",
+      "signal_name": "unused", "signal_wait_id": "signal-command:signal-command",
+      "arguments": "wwHioz3/VYAiNwIB", "payload_codec": "avro"
+    }},
+    {"sequence": 3, "event_type": "ActivityCompleted", "payload": {
+      "sequence": 1, "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+      "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=", "payload_codec": "avro"
+    }},
+    {"sequence": 4, "event_type": "SignalRejected", "payload": {
+      "workflow_command_id": "signal-command", "signal_id": "unapplied-signal",
+      "signal_name": "unused", "signal_wait_id": "signal-command:signal-command",
+      "command_sequence": 2, "rejection_reason": "run_closed_before_signal_applied",
+      "terminal_reason": "completed"
+    }}
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "stage": "completed", "name": null, "greeting": "Hello, Ada!", "approved": false,
+      "version": -1, "version_result": null, "reservation_id": null,
+      "events": ["activity:Hello, Ada!"]
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

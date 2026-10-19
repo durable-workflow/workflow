@@ -4,19 +4,47 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 
 final class ContinuedRunMessageHandoff
 {
+    public static function closePredecessor(
+        WorkflowRun $closingRun,
+        WorkflowRun $continuedRun,
+        WorkflowTask $task,
+        int $sequence,
+        string $linkId,
+        CarbonInterface $closedAt,
+    ): void {
+        self::transferInstanceScoped($closingRun, $continuedRun);
+        $closingRun->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'continued',
+            'closed_at' => $closedAt,
+            'last_progress_at' => $closedAt,
+        ])->save();
+        WorkflowHistoryEvent::record($closingRun, HistoryEventType::WorkflowContinuedAsNew, [
+            'sequence' => $sequence,
+            'continued_to_run_id' => $continuedRun->id,
+            'continued_to_run_number' => $continuedRun->run_number,
+            'workflow_link_id' => $linkId,
+            'closed_reason' => 'continued',
+        ], $task);
+        PendingUpdateCloser::closeForTerminalRun($closingRun, $task);
+    }
+
     public static function transferInstanceScoped(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
     {
         $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)

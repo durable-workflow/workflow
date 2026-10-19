@@ -5132,21 +5132,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ]);
 
-        ContinuedRunMessageHandoff::transferInstanceScoped($run, $continuedRun);
-        $run->forceFill([
-            'status' => RunStatus::Completed,
-            'closed_reason' => 'continued',
-            'closed_at' => $now,
-            'last_progress_at' => $now,
-        ])->save();
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
-            'sequence' => $sequence,
-            'continued_to_run_id' => $continuedRun->id,
-            'continued_to_run_number' => $continuedRun->run_number,
-            'workflow_link_id' => $link->id,
-            'closed_reason' => 'continued',
-        ], $task);
-        PendingUpdateCloser::closeForTerminalRun($run, $task);
+        ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
