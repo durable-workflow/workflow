@@ -43,7 +43,9 @@ final class RetainedRunProjectionTest extends TestCase
 
         $this->assertSame(1, $report['run_summary_deleted']);
         $this->assertNotNull($run->fresh()->details_pruned_at);
-        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $run->id]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
         $drift = RunSummaryProjectionDrift::metrics('retained');
         $this->assertSame(1, $drift['runs']);
         $this->assertSame(0, $drift['summaries']);
@@ -65,7 +67,9 @@ final class RetainedRunProjectionTest extends TestCase
         foreach (['missing', 'needs-rebuild', 'all'] as $mode) {
             foreach ([false, true] as $dryRun) {
                 yield $mode . ($dryRun ? '-dry' : '-write') => [
-                    $mode === 'all' ? [] : ['--' . $mode => true],
+                    $mode === 'all' ? [] : [
+                        '--' . $mode => true,
+                    ],
                     $dryRun,
                 ];
             }
@@ -81,7 +85,8 @@ final class RetainedRunProjectionTest extends TestCase
         $pruned = $this->completedRun('rebuild', 120);
         RunSummaryProjector::project($pruned);
         WorkflowRunRetentionCleanup::pruneRun($pruned);
-        $marker = $pruned->fresh()->getRawOriginal('details_pruned_at');
+        $marker = $pruned->fresh()
+            ->getRawOriginal('details_pruned_at');
         $missing = $this->completedRun('rebuild', 5);
         $foreign = $this->completedRun('other', 3);
 
@@ -97,8 +102,12 @@ final class RetainedRunProjectionTest extends TestCase
         $this->assertSame([], $report['failures']);
         $this->assertSame($dryRun ? 0 : 1, $report['run_summaries_rebuilt']);
         $this->assertSame($dryRun ? 1 : 0, $report['run_summaries_would_rebuild']);
-        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $pruned->id]);
-        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $foreign->id]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $pruned->id,
+        ]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $foreign->id,
+        ]);
         $this->assertSame(! $dryRun, WorkflowRunSummary::query()->whereKey($missing->id)->exists());
         $this->assertSame($marker, $pruned->fresh()->getRawOriginal('details_pruned_at'));
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $pruned->id)->count());
@@ -125,12 +134,19 @@ final class RetainedRunProjectionTest extends TestCase
     {
         $run = $this->completedRun('selected', 120);
         WorkflowRunRetentionCleanup::pruneRun($run);
-        $marker = $run->fresh()->getRawOriginal('details_pruned_at');
+        $marker = $run->fresh()
+            ->getRawOriginal('details_pruned_at');
 
-        foreach ([['--run-id' => [$run->id]], ['--instance-id' => $run->workflow_instance_id]] as $selector) {
+        foreach ([[
+            '--run-id' => [$run->id],
+        ], [
+            '--instance-id' => $run->workflow_instance_id,
+        ]] as $selector) {
             foreach ([false, true] as $dryRun) {
                 $this->assertSame(0, Artisan::call('workflow:v2:rebuild-projections', [
-                    ...$selector, '--dry-run' => $dryRun, '--json' => true,
+                    ...$selector,
+                    '--dry-run' => $dryRun,
+                    '--json' => true,
                 ]));
                 $report = json_decode(Artisan::output(), true, 512, JSON_THROW_ON_ERROR);
                 $this->assertSame(0, $report['runs_matched']);
@@ -139,7 +155,9 @@ final class RetainedRunProjectionTest extends TestCase
             }
         }
 
-        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $run->id]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
         $this->assertSame($marker, $run->fresh()->getRawOriginal('details_pruned_at'));
     }
 
@@ -151,11 +169,16 @@ final class RetainedRunProjectionTest extends TestCase
         $this->assertNull($run->fresh()->details_pruned_at);
         $this->assertSame(1, RunSummaryProjectionDrift::metrics('legacy')['missing']);
         $this->assertSame(0, Artisan::call('workflow:v2:rebuild-projections', [
-            '--run-id' => [$run->id], '--missing' => true, '--dry-run' => true, '--json' => true,
+            '--run-id' => [$run->id],
+            '--missing' => true,
+            '--dry-run' => true,
+            '--json' => true,
         ]));
         $report = json_decode(Artisan::output(), true, 512, JSON_THROW_ON_ERROR);
         $this->assertSame(1, $report['runs_matched']);
-        $this->assertDatabaseMissing('workflow_run_summaries', ['id' => $run->id]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
         $this->assertNull($run->fresh()->details_pruned_at);
     }
 
@@ -167,7 +190,8 @@ final class RetainedRunProjectionTest extends TestCase
             'workflow_class' => 'App\\Workflows\\RetentionProjection',
             'workflow_type' => 'retention.projection',
             'run_count' => 1,
-            'started_at' => now()->subMinutes($ageMinutes),
+            'started_at' => now()
+                ->subMinutes($ageMinutes),
         ]);
         $run = WorkflowRun::query()->create([
             'id' => (string) Str::ulid(),
@@ -178,16 +202,23 @@ final class RetainedRunProjectionTest extends TestCase
             'workflow_type' => $instance->workflow_type,
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
-            'started_at' => now()->subMinutes($ageMinutes),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes($ageMinutes),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
             'workflow_type' => $run->workflow_type,
         ]);
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
-            'output' => ['ok' => true],
+            'output' => [
+                'ok' => true,
+            ],
         ]);
 
         return $run->refresh();

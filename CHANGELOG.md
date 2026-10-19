@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.3 - 2026-10-19
+
+- Exclude retention-pruned runs from missing run-summary drift and lag metrics.
+  Retained runs still count in the drift report's total run count.
+- Skip marked pruned runs in every projection rebuild mode, including explicit
+  run and instance selection. Genuine missing projections remain eligible for
+  repair. Unmarked legacy absence is not assumed to be deliberate pruning.
+
 ## 2.6.2 - 2026-10-18
 
 - Reuse small unchanged JSON history payloads on the default Eloquent model to
