@@ -30,7 +30,7 @@ on:
         options: ['1', '8']
         default: '1'
       observers:
-        description: 'Continuation profile: optional SQL and scheduling observers'
+        description: 'Continuation profile: optional CPU, SQL and scheduling observers'
         type: choice
         options: ['on', 'off']
         default: 'on'

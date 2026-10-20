@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\TestCase;
 use Tests\Fixtures\V2\TestContinuationGrowthWorkflow;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TimerStatus;
@@ -17,7 +18,9 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\WorkflowContinuationCache;
+use Workflow\V2\Support\WorkflowExecutionProfile;
 
 /** Actual worker application; it opens the parent's existing database without migrating it. */
 final class ContinuationGrowthWorkerTest extends TestCase
@@ -39,6 +42,12 @@ final class ContinuationGrowthWorkerTest extends TestCase
         $startupCpu = ContinuationGrowthEnvironment::cpuMicroseconds();
         $maintenance = new ContinuationTaskMaintenance();
         WorkflowTask::updated($maintenance->observe(...));
+        $profile = $observers ? new WorkflowExecutionProfile() : null;
+        if ($profile !== null) {
+            $delegate = app(HistoryProjectionRole::class);
+            $this->assertInstanceOf(DefaultHistoryProjectionRole::class, $delegate);
+            $this->app->instance(HistoryProjectionRole::class, new ContinuationHistoryProfile($delegate));
+        }
         ContinuationGrowthEnvironment::writeReport($reportPath . '.ready', [
             'pid' => getmypid(),
             'startup_cpu_us' => $startupCpu,
@@ -111,7 +120,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
         TestContinuationGrowthWorkflow::$roundVisits = 0;
         $started = hrtime(true);
         $cpu = ContinuationGrowthEnvironment::cpuMicroseconds();
-        $exit = Artisan::call('queue:work', [
+        $work = static fn (): int => Artisan::call('queue:work', [
             'connection' => 'database',
             '--queue' => 'default',
             '--sleep' => 1,
@@ -120,6 +129,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
             '--tries' => 1,
             '--memory' => (int) getenv('DWF_GROWTH_MEMORY'),
         ]);
+        $exit = $profile === null ? $work() : $profile->collect($work);
         $elapsed = hrtime(true) - $started;
         $cpu = ContinuationGrowthEnvironment::cpuMicroseconds() - $cpu;
         ContinuationGrowthEnvironment::writeReport($reportPath . '.json', [
@@ -139,6 +149,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
             'round_visits' => TestContinuationGrowthWorkflow::$roundVisits,
             'cache' => app(WorkflowContinuationCache::class)->snapshot(),
             'task_maintenance' => $maintenance->snapshot(),
+            'execution_profile' => $profile?->snapshot(),
             'observed_peak_entries' => $peakEntries,
             'task_queue_delay' => $observers ? ContinuationGrowthEnvironment::distribution($claims) : null,
             'timer_lateness' => $observers ? ContinuationGrowthEnvironment::distribution($timers) : null,

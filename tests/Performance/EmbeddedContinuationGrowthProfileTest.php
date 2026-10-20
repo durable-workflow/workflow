@@ -283,6 +283,19 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         $tasks = WorkflowTask::query()->get();
         $this->assertSame(['completed'], $tasks->pluck('status')->map->value->unique()->values()->all());
         $maintenance = array_column($reports, 'task_maintenance');
+        foreach ($reports as $report) {
+            if ($observers) {
+                $this->assertTrue($report['execution_profile']['balanced']);
+                $this->assertSame(
+                    $report['entries'],
+                    $report['execution_profile']['phases']['authoring_start']['calls'] ?? 0
+                );
+                $exclusive = array_sum(array_column($report['execution_profile']['phases'], 'exclusive_cpu_us'));
+                $this->assertLessThanOrEqual($report['queue_cpu_us'], $exclusive);
+            } else {
+                $this->assertNull($report['execution_profile']);
+            }
+        }
         $redispatches = array_sum(array_column($maintenance, 'ready_redispatches'));
         $this->assertSame(0, array_sum(array_column($maintenance, 'lease_recoveries')));
         $this->assertSame(0, array_sum(array_column($maintenance, 'other_repairs')));

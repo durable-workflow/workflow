@@ -77,8 +77,39 @@ peak covers the whole fresh container and is reported separately. Retained-frame
 bytes are not isolated from the worker's other memory. Small observer-free
 comparisons are still required before attributing a production saving.
 
+With observers enabled, `execution_profile` records process CPU microseconds
+and monotonic wall nanoseconds at actual executor boundaries:
+
+- `initial_history_load`: the executor's initial relation/history load and
+  hydration, including its SQL wait; this is not every database read in a task.
+- `initialization`: definition resolution, cache validation, argument binding
+  and initial execution setup.
+- `step_validation`: operation/history compatibility and transaction-size guards.
+- `durable_call_dispatch`: recorded-outcome lookup, new durable work, completion
+  and the handlers' remaining work.
+- `authoring_start`, `authoring_resume`, `authoring_throw`: actual Fiber
+  execution between entry/resumption and suspension/return/throw. Suspended
+  queue/timer waits are outside these brackets. These include authored PHP and
+  its workflow API calls, and include forward execution as well as replayed
+  instructions; they are not an isolated completed-prefix CPU estimate.
+- `history_projection`: the existing history/projection role's project-run,
+  activity-start and repaired-task calls, including their SQL and history work.
+- `executor`: the complete embedded executor call, including the phases above.
+
+Each bucket reports calls, inclusive CPU/wall and CPU/wall excluding nested
+buckets. Sum exclusive values when reconciling phases; inclusive values overlap.
+Queue-worker CPU minus all exclusive buckets is separately unclassified worker,
+transaction, activity, transport and observer work. SQL elapsed and task/timer
+delay remain separate observations. The observer is disabled unless explicitly
+collected in that process and is never captured by a retained frame. Its clock
+calls and delegate wrappers add overhead; paired observer-on/off measurements
+are required before treating these timings as representative.
+This is process-wide attribution for the probe's ordinary sequential worker.
+It does not establish independent per-Fiber CPU accounting when unrelated
+application Fibers or callbacks overlap an observed execution.
+
 Set `DWF_GROWTH_OBSERVERS=off` for a paired control without the optional SQL,
-task-delay, timer-lateness and cache-peak listeners. Those unmeasured fields are
+task-delay, timer-lateness, executor CPU and cache-peak observers. Those unmeasured fields are
 reported as `null`. The committed-completion barrier, source/lock checks,
 authored-entry counters, process CPU/memory readings and final history/effect/
 deadline audit and constant-space task-maintenance counters remain. This is a minimally observed control, not an uninstrumented

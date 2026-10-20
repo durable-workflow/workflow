@@ -65,16 +65,12 @@ final class WorkflowExecutor
         WorkflowTask $task,
         ?WorkflowContinuationSession $continuation = null,
     ): ?WorkflowTask {
-        if ($this->timeoutIfDeadlineExpired($run, $task) || $this->cancelIfCleanupDeadlineExpired($run, $task)) {
-            return null;
+        $sample = WorkflowExecutionProfile::begin('executor');
+        try {
+            return $this->runTask($run, $task, $continuation);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
         }
-
-        $state = $this->prepareExecution($run, $task, $continuation);
-        if ($state === null) {
-            return null;
-        }
-
-        return $this->advanceExecution($state, $continuation);
     }
 
     /**
@@ -87,19 +83,24 @@ final class WorkflowExecutor
      */
     public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
     {
-        $run->load([
-            'instance',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'tasks',
-            'commands',
-            'updates',
-            'historyEvents',
-            'childLinks.childRun.instance.currentRun',
-            'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
-        ]);
+        $sample = WorkflowExecutionProfile::begin('initial_history_load');
+        try {
+            $run->load([
+                'instance',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'tasks',
+                'commands',
+                'updates',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+                'childLinks.childRun.historyEvents',
+            ]);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
 
         if (! $this->deadlineExpired($run)) {
             return false;
@@ -262,6 +263,28 @@ final class WorkflowExecutor
         );
     }
 
+    private function runTask(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?WorkflowContinuationSession $continuation,
+    ): ?WorkflowTask {
+        if ($this->timeoutIfDeadlineExpired($run, $task) || $this->cancelIfCleanupDeadlineExpired($run, $task)) {
+            return null;
+        }
+
+        $sample = WorkflowExecutionProfile::begin('initialization');
+        try {
+            $state = $this->prepareExecution($run, $task, $continuation);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
+        if ($state === null) {
+            return null;
+        }
+
+        return $this->advanceExecution($state, $continuation);
+    }
+
     private function prepareExecution(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -347,11 +370,21 @@ final class WorkflowExecutor
             }
         }
 
-        if (! $this->validateCurrentStep($state) || ! $this->guardHistoryTransaction($state)) {
-            return null;
+        $sample = WorkflowExecutionProfile::begin('step_validation');
+        try {
+            if (! $this->validateCurrentStep($state) || ! $this->guardHistoryTransaction($state)) {
+                return null;
+            }
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
         }
 
-        return $this->executeCurrentCall($state);
+        $sample = WorkflowExecutionProfile::begin('durable_call_dispatch');
+        try {
+            return $this->executeCurrentCall($state);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
     }
 
     private function validateCurrentStep(WorkflowTaskExecution $state): bool

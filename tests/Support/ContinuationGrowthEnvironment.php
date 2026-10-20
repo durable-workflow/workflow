@@ -68,6 +68,8 @@ final class ContinuationGrowthEnvironment
         $loaded = [];
         foreach ([WorkflowExecutor::class, RunWorkflowTask::class, WorkflowContinuationCache::class,
             WorkflowContinuationSession::class, WorkflowExecution::class,
+            \Workflow\V2\Support\WorkflowExecutionProfile::class, ContinuationHistoryProfile::class,
+            ContinuationTaskMaintenance::class,
             TestContinuationGrowthWorkflow::class, TestContinuationGrowthActivity::class] as $class) {
             $loaded[$class] = hash_file('sha256', (new ReflectionClass($class))->getFileName());
         }
