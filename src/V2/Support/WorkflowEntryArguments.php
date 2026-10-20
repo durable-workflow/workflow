@@ -33,10 +33,34 @@ final class WorkflowEntryArguments
             throw self::mismatch($workflow, $entry, 'recorded_argument_would_be_discarded');
         }
 
+        self::assertInvocation($workflow, $entry, $resolved);
+
         return $resolved;
     }
 
     public static function assertInvocation(Workflow $workflow, ReflectionMethod $entry, array $arguments): void
+    {
+        [$positional, $named] = self::partitionArguments($workflow, $entry, $arguments);
+
+        foreach ($entry->getParameters() as $index => $parameter) {
+            if ($parameter->isVariadic()) {
+                foreach ([...array_slice($positional, $index), ...$named] as $value) {
+                    self::assertType($workflow, $entry, $parameter, $value);
+                }
+
+                return;
+            }
+            self::assertParameter($workflow, $entry, $parameter, $index, $positional, $named);
+        }
+        if ($named !== []) {
+            throw self::mismatch($workflow, $entry, 'unknown_named_argument');
+        }
+    }
+
+    /**
+     * @return array{list<mixed>, array<string, mixed>}
+     */
+    private static function partitionArguments(Workflow $workflow, ReflectionMethod $entry, array $arguments): array
     {
         $positional = [];
         $named = [];
@@ -50,34 +74,33 @@ final class WorkflowEntryArguments
             }
         }
 
-        foreach ($entry->getParameters() as $index => $parameter) {
-            $name = $parameter->getName();
-            if ($parameter->isVariadic()) {
-                foreach ([...array_slice($positional, $index), ...$named] as $value) {
-                    self::assertType($workflow, $entry, $parameter, $value);
-                }
+        return [$positional, $named];
+    }
 
-                return;
+    private static function assertParameter(
+        Workflow $workflow,
+        ReflectionMethod $entry,
+        ReflectionParameter $parameter,
+        int $index,
+        array $positional,
+        array &$named,
+    ): void {
+        $name = $parameter->getName();
+        $hasPosition = array_key_exists($index, $positional);
+        $hasName = array_key_exists($name, $named);
+        if ($hasPosition && $hasName) {
+            throw self::mismatch($workflow, $entry, 'argument_supplied_twice', $parameter);
+        }
+        if (! $hasPosition && ! $hasName) {
+            if (! $parameter->isOptional()) {
+                throw self::mismatch($workflow, $entry, 'required_argument_missing', $parameter);
             }
-            $hasPosition = array_key_exists($index, $positional);
-            $hasName = array_key_exists($name, $named);
-            if ($hasPosition && $hasName) {
-                throw self::mismatch($workflow, $entry, 'argument_supplied_twice', $parameter);
-            }
-            if (! $hasPosition && ! $hasName) {
-                if (! $parameter->isOptional()) {
-                    throw self::mismatch($workflow, $entry, 'required_argument_missing', $parameter);
-                }
 
-                continue;
-            }
-            $value = $hasPosition ? $positional[$index] : $named[$name];
-            unset($named[$name]);
-            self::assertType($workflow, $entry, $parameter, $value);
+            return;
         }
-        if ($named !== []) {
-            throw self::mismatch($workflow, $entry, 'unknown_named_argument');
-        }
+        $value = $hasPosition ? $positional[$index] : $named[$name];
+        unset($named[$name]);
+        self::assertType($workflow, $entry, $parameter, $value);
     }
 
     private static function assertType(
@@ -94,30 +117,42 @@ final class WorkflowEntryArguments
 
     private static function matches(ReflectionType $type, ReflectionParameter $parameter, mixed $value): bool
     {
-        if ($value === null && $type->allowsNull()) {
-            return true;
-        }
-        if ($type instanceof ReflectionUnionType) {
-            foreach ($type->getTypes() as $member) {
-                if (self::matches($member, $parameter, $value)) {
-                    return true;
-                }
-            }
+        return match (true) {
+            $value === null && $type->allowsNull() => true,
+            $type instanceof ReflectionUnionType => self::matchesUnion($type, $parameter, $value),
+            $type instanceof ReflectionIntersectionType => self::matchesIntersection($type, $parameter, $value),
+            $type instanceof ReflectionNamedType => self::matchesNamed($type, $parameter, $value),
+            default => false,
+        };
+    }
 
-            return false;
-        }
-        if ($type instanceof ReflectionIntersectionType) {
-            foreach ($type->getTypes() as $member) {
-                if (! self::matches($member, $parameter, $value)) {
-                    return false;
-                }
+    private static function matchesUnion(ReflectionUnionType $type, ReflectionParameter $parameter, mixed $value): bool
+    {
+        foreach ($type->getTypes() as $member) {
+            if (self::matches($member, $parameter, $value)) {
+                return true;
             }
+        }
 
-            return true;
+        return false;
+    }
+
+    private static function matchesIntersection(
+        ReflectionIntersectionType $type,
+        ReflectionParameter $parameter,
+        mixed $value,
+    ): bool {
+        foreach ($type->getTypes() as $member) {
+            if (! self::matches($member, $parameter, $value)) {
+                return false;
+            }
         }
-        if (! $type instanceof ReflectionNamedType) {
-            return false;
-        }
+
+        return true;
+    }
+
+    private static function matchesNamed(ReflectionNamedType $type, ReflectionParameter $parameter, mixed $value): bool
+    {
         if (! $type->isBuiltin()) {
             $parent = $parameter->getDeclaringClass()?->getParentClass();
             $class = match ($type->getName()) {

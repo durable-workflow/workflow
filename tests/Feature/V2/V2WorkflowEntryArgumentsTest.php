@@ -142,6 +142,16 @@ final class V2WorkflowEntryArgumentsTest extends TestCase
         self::assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
     }
 
+    public function testAValidEntryThatThrowsTheInternalMismatchInsideItsBodyIsStillAnApplicationFailure(): void
+    {
+        [$stub, $run, $task] = $this->waitingRun([7]);
+        $this->app->bind($run->workflow_class, static fn (): Workflow => new EntryBodyMismatch());
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        self::assertTrue($stub->refresh()->failed());
+        self::assertFalse($task->fresh()->payload['replay_blocked'] ?? false);
+        self::assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
+    }
+
     private function waitingRun(array $arguments): array
     {
         self::stopWorkers();
@@ -317,5 +327,15 @@ class EntryBodyFailure extends Workflow
         return [
             'amount' => $amount,
         ];
+    }
+}
+
+class EntryBodyMismatch extends Workflow
+{
+    public function handle(int $amount): never
+    {
+        Workflow::timer('1 second');
+
+        throw new WorkflowEntryArgumentsMismatchException(self::class, 'handle', 'application_body_reason');
     }
 }

@@ -4335,11 +4335,6 @@ final class WorkflowExecutor
         string $sourceId,
         ?int $failedStepSequence = null,
     ): void {
-        if ($throwable instanceof WorkflowEntryArgumentsMismatchException) {
-            $this->blockReplayUntilCompatibleEntryArguments($run, $task, $throwable);
-
-            return;
-        }
         if ($throwable instanceof WorkflowCancellationRequestedException
             && is_string($run->cancellation_request_command_id)) {
             $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
