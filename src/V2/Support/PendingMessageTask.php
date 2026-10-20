@@ -15,6 +15,11 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class PendingMessageTask
 {
+    public static function hasDeliverableSignal(WorkflowRun $run, ?string $alreadyAttemptedSignalId = null): bool
+    {
+        return self::nextEligibleSignal($run, $alreadyAttemptedSignalId, false) instanceof WorkflowSignal;
+    }
+
     public static function createForRun(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId = null,
@@ -35,11 +40,7 @@ final class PendingMessageTask
             return self::createUpdateTask($run, $update);
         }
 
-        if ($signal instanceof WorkflowSignal) {
-            return self::createSignalTask($run, $signal);
-        }
-
-        return null;
+        return $signal instanceof WorkflowSignal ? self::createSignalTask($run, $signal) : null;
     }
 
     private static function nextEligibleSignal(
@@ -59,6 +60,10 @@ final class PendingMessageTask
             ->lockForUpdate()
             ->get();
 
+        if ($signals->isEmpty()) {
+            return null;
+        }
+
         $freshRun = $run->fresh(['historyEvents']) ?? $run;
         $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
         $advanceableSignalWaitsById = self::advanceableSignalWaitsById(
@@ -77,6 +82,7 @@ final class PendingMessageTask
 
         foreach ($signals as $signal) {
             if (! $signal instanceof WorkflowSignal || ! self::signalCanAdvanceRun(
+                $freshRun,
                 $signal,
                 $hasAdvanceableConditionWait,
                 $advanceableSignalWaitsById,
@@ -208,6 +214,7 @@ final class PendingMessageTask
     }
 
     private static function signalCanAdvanceRun(
+        WorkflowRun $run,
         WorkflowSignal $signal,
         bool $hasAdvanceableConditionWait,
         array $advanceableSignalWaitsById,
@@ -229,11 +236,7 @@ final class PendingMessageTask
             return false;
         }
 
-        $declaredSignals = $unprojectedSignalContract['signals'] ?? [];
-
-        return ($unprojectedSignalContract['source'] ?? null) === RunCommandContract::SOURCE_DURABLE_HISTORY
-            && is_array($declaredSignals)
-            && in_array($signal->signal_name, $declaredSignals, true);
+        return UnprojectedSignalDelivery::allows($run, $signal, $unprojectedSignalContract);
     }
 
     /**

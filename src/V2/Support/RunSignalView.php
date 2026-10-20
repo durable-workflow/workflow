@@ -29,6 +29,7 @@ final class RunSignalView
                     && in_array($event->event_type, [
                         HistoryEventType::SignalReceived,
                         HistoryEventType::SignalApplied,
+                        HistoryEventType::SignalRejected,
                     ], true)
             )
             ->groupBy('workflow_command_id');
@@ -125,6 +126,7 @@ final class RunSignalView
 
         $received = self::findEvent($eventList, HistoryEventType::SignalReceived);
         $applied = self::findEvent($eventList, HistoryEventType::SignalApplied);
+        $rejected = self::findEvent($eventList, HistoryEventType::SignalRejected);
 
         return [
             'id' => null,
@@ -136,18 +138,18 @@ final class RunSignalView
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
             'resolved_run_id' => $command->resolvedRunId(),
-            'status' => self::fallbackStatus($command, $applied),
-            'outcome' => $command->outcome?->value,
+            'status' => $rejected !== null ? SignalStatus::Rejected->value : self::fallbackStatus($command, $applied),
+            'outcome' => $rejected !== null ? 'rejected_not_active' : $command->outcome?->value,
             'source' => $command->source,
-            'rejection_reason' => $command->rejection_reason,
+            'rejection_reason' => $rejected?->payload['rejection_reason'] ?? $command->rejection_reason,
             'validation_errors' => self::commandValidationErrors($command),
             'payload_codec' => $command->payload_codec,
             'arguments_available' => CommandPayloadPreview::available($command->payload),
             'arguments' => self::commandArguments($command),
             'received_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
-            'rejected_at' => self::timestamp($command->rejected_at),
-            'closed_at' => self::timestamp($command->rejected_at ?? $command->applied_at),
+            'rejected_at' => self::timestamp($rejected?->recorded_at ?? $command->rejected_at),
+            'closed_at' => self::timestamp($rejected?->recorded_at ?? $command->rejected_at ?? $command->applied_at),
         ];
     }
 
