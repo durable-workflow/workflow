@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Attributes\Signal;
@@ -333,6 +334,110 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertFalse($headerOnly->retained());
         $this->assertNull($headerOnly->requestId());
         $this->assertSame(2, $this->signalReceivedCount($workflow));
+    }
+
+    #[DataProvider('runTargetCommands')]
+    public function testControlPlaneRefusesASelectedPredecessorInsteadOfDeliveringToItsSuccessor(
+        string $operation,
+        string $name,
+        array $arguments,
+    ): void {
+        $stub = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class);
+        $stub->start(0);
+        $predecessor = $stub->runId();
+        $this->runTask($stub);
+        $stub->refresh();
+        $successor = $stub->runId();
+        $this->assertNotSame($predecessor, $successor);
+        $before = WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray();
+
+        $result = app(WorkflowControlPlane::class)->{$operation}($stub->id(), $name, [
+            'run_id' => $predecessor,
+            'request_id' => 'selected-original',
+            'arguments' => $arguments,
+        ]);
+
+        $this->assertSame(409, $result['status']);
+        $this->assertSame('selected_run_not_current', $result['reason']);
+        $this->assertSame('run', $result['target_scope']);
+        $this->assertSame($predecessor, $result['run_id']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray());
+        $rows = $this->rows();
+        $retry = app(WorkflowControlPlane::class)->{$operation}($stub->id(), $name, [
+            'run_id' => $predecessor,
+            'request_id' => 'selected-original',
+            'arguments' => $arguments,
+        ]);
+        $this->assertTrue($retry['retained']);
+        $this->assertSame($result['command_id'], $retry['command_id']);
+        $this->assertSame($rows, $this->rows());
+    }
+
+    #[DataProvider('runTargetCommands')]
+    public function testControlPlaneIncludesTheSelectedRunInIntent(
+        string $operation,
+        string $name,
+        array $arguments,
+    ): void {
+        $stub = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class);
+        $stub->start(0);
+        $predecessor = $stub->runId();
+        $this->runTask($stub);
+        $stub->refresh();
+        $controlPlane = app(WorkflowControlPlane::class);
+        $options = [
+            'run_id' => $stub->runId(),
+            'request_id' => 'selected-current',
+            'arguments' => $arguments,
+        ];
+        $first = $controlPlane->{$operation}($stub->id(), $name, $options);
+        $this->assertSame(202, $first['status']);
+        $this->assertSame('run', $first['target_scope']);
+        $this->assertSame($stub->runId(), $first['run_id']);
+        $rows = $this->rows();
+        $retry = $controlPlane->{$operation}($stub->id(), $name, $options);
+        $this->assertTrue($retry['retained']);
+        $this->assertSame($first['command_id'], $retry['command_id']);
+        $this->assertSame($rows, $this->rows());
+
+        $options['run_id'] = $predecessor;
+        $conflict = $controlPlane->{$operation}($stub->id(), $name, $options);
+        $this->assertSame(409, $conflict['status']);
+        $this->assertSame('request_id_conflict', $conflict['reason']);
+        $this->assertSame(['target'], $conflict['conflict']);
+        $this->assertSame($first['command_id'], $conflict['retained_command_id']);
+    }
+
+    #[DataProvider('runTargetCommands')]
+    public function testControlPlaneMissingAndForeignRunTargetsDoNotMutateEitherWorkflow(
+        string $operation,
+        string $name,
+        array $arguments,
+    ): void {
+        $stub = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class, null, 'tenant-a');
+        $stub->start(1);
+        $foreign = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class, null, 'tenant-b');
+        $foreign->start(1);
+        $rows = $this->rows();
+
+        foreach (['missing-run', $foreign->runId()] as $runId) {
+            $result = app(WorkflowControlPlane::class)->{$operation}($stub->id(), $name, [
+                'namespace' => 'tenant-a',
+                'run_id' => $runId,
+                'request_id' => 'foreign-key',
+                'arguments' => $arguments,
+            ]);
+            $this->assertSame(404, $result['status']);
+            $this->assertSame('instance_not_found', $result['reason']);
+            $this->assertSame($rows, $this->rows());
+        }
+    }
+
+    /** @return iterable<string, array{string, string, array}> */
+    public static function runTargetCommands(): iterable
+    {
+        yield 'signal' => ['signal', 'name-provided', ['Taylor 雪']];
+        yield 'update' => ['update', 'mark-approved', [true]];
     }
 
     public function testWebhookContextsKeepTheRequestHeaderAsTheEmbeddedKey(): void
