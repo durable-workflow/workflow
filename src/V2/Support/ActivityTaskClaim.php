@@ -26,7 +26,7 @@ final class ActivityTaskClaim
 
     private ?int $lastRenewalServerTime = null;
 
-    private ?int $lastRenewalExpiry = null;
+    private ?int $knownLeaseExpiry = null;
 
     private ?int $lastRenewalRequestStartedAt = null;
 
@@ -51,6 +51,7 @@ final class ActivityTaskClaim
             ? 0
             : max(0, $now->diffInMicroseconds($task->lease_expires_at, false));
         $this->leaseAdmissionDeadline = $monotonic + (int) ($leaseRemaining * 1_000);
+        $this->knownLeaseExpiry = self::utcMicroseconds($task->lease_expires_at?->toJSON());
         $businessRemaining = null;
         foreach ([
             $execution->close_deadline_at,
@@ -94,13 +95,14 @@ final class ActivityTaskClaim
         }
 
         $window = self::renewalWindow($reply);
-        if ($window === null || $requestStartedAt + $window['remaining'] * 1_000 <= $receivedAt) {
+        if ($window === null || $requestStartedAt + $window['remaining'] * 1_000 <= $receivedAt
+            || ($this->knownLeaseExpiry !== null && $window['expires'] < $this->knownLeaseExpiry)) {
             return false;
         }
 
         if ($this->lastRenewalServerTime !== null && $window['server'] <= $this->lastRenewalServerTime) {
             return $window['server'] === $this->lastRenewalServerTime
-                && $window['expires'] === $this->lastRenewalExpiry
+                && $window['expires'] === $this->knownLeaseExpiry
                 && $requestStartedAt === $this->lastRenewalRequestStartedAt;
         }
 
@@ -109,7 +111,7 @@ final class ActivityTaskClaim
             $requestStartedAt + $window['remaining'] * 1_000,
         );
         $this->lastRenewalServerTime = $window['server'];
-        $this->lastRenewalExpiry = $window['expires'];
+        $this->knownLeaseExpiry = $window['expires'];
         $this->lastRenewalRequestStartedAt = $requestStartedAt;
 
         return true;
