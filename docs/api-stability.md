@@ -427,6 +427,38 @@ models should update app-owned projections at domain milestones and store
 `workflow_id` plus `run_id` beside those business rows. See
 [`docs/architecture/business-reporting-read-models.md`](architecture/business-reporting-read-models.md).
 
+## Update Request Identity
+
+An update caller key identifies a retained command within one logical workflow
+instance, across update names and runs. A retry returns that original lifecycle
+and does not replace its arguments. Omitted keys admit independent operations.
+Server uses the body `request_id`; proxy correlation headers remain audit data.
+Embedded webhook callers retain their existing `X-Request-Id` contract.
+
+The logical key is available through `WorkflowCommand::requestId()` and command
+context. New update rows store a bounded `update-v1:` lookup token in the
+existing `workflow_commands.request_id` column. Consumers must not interpret
+that internal indexed value as caller text. Exact logical comparison preserves
+opaque case and long Unicode keys regardless of database collation. Legacy
+Server body keys remain readable from `context.server.metadata.request_id`,
+even when the old indexed column contains a proxy header. Existing rows are
+never rewritten. The earliest retained receipt wins if old code admitted more
+than one command for a caller key.
+
+Upgrade every process that writes directly to the database together before
+admitting new updates with this storage format. Drain and restart old embedded
+workers and Server processes; do not roll back to an old writer after new
+update rows are admitted. Remote SDK clients do not write this column and do
+not need an upgrade for this change. Native takeover must qualify the new
+representation separately.
+
+Update intake limits are checked before requiring a local executable workflow
+definition. A rejected update remains inspectable with
+`structural_limit_exceeded`, `structural_limit_kind`,
+`structural_limit_value` and `structural_limit_configured`. The run stays active
+with its original deadlines. A retry using the rejected command's caller key
+returns that rejection without admitting another update.
+
 ## Durable Message Stream Contract
 
 The v2 durable message service is the stable lower-level contract backing

@@ -18,6 +18,7 @@ use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MessageStreamCursor;
+use Workflow\V2\Support\UpdateRequestIdentity;
 
 class WorkflowCommand extends Model
 {
@@ -54,23 +55,7 @@ class WorkflowCommand extends Model
      */
     public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
     {
-        $commandType = $attributes['command_type'] ?? null;
-        $usesRequestId = $commandType === CommandType::Update
-            || $commandType === CommandType::Update->value
-            || $commandType === CommandType::Redrive
-            || $commandType === CommandType::Redrive->value;
-
-        if ($usesRequestId) {
-            $request = is_array($attributes['context']['request'] ?? null)
-                ? $attributes['context']['request']
-                : [];
-
-            if (is_string($request['request_id'] ?? null) && $request['request_id'] !== '') {
-                $attributes['request_id'] ??= $request['request_id'];
-            }
-        } else {
-            unset($attributes['request_id']);
-        }
+        $attributes = self::withRequestIdentity($instance, $attributes);
 
         if ($run !== null) {
             $attributes['command_sequence'] ??= CommandSequence::reserveNext($run);
@@ -381,6 +366,10 @@ class WorkflowCommand extends Model
 
     public function requestId(): ?string
     {
+        if ($this->command_type === CommandType::Update) {
+            return UpdateRequestIdentity::fromCommand($this);
+        }
+
         if (is_string($this->request_id ?? null) && $this->request_id !== '') {
             return $this->request_id;
         }
@@ -502,6 +491,38 @@ class WorkflowCommand extends Model
         }
 
         return $values;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private static function withRequestIdentity(WorkflowInstance $instance, array $attributes): array
+    {
+        $commandType = $attributes['command_type'] ?? null;
+        $isUpdate = $commandType === CommandType::Update || $commandType === CommandType::Update->value;
+        $usesRequestId = $commandType === CommandType::Redrive
+            || $commandType === CommandType::Redrive->value;
+
+        if ($isUpdate) {
+            $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
+            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
+            $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
+            $attributes['context'] = $context;
+            $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
+        } elseif ($usesRequestId) {
+            $request = is_array($attributes['context']['request'] ?? null)
+                ? $attributes['context']['request']
+                : [];
+
+            if (is_string($request['request_id'] ?? null) && $request['request_id'] !== '') {
+                $attributes['request_id'] ??= $request['request_id'];
+            }
+        } else {
+            unset($attributes['request_id']);
+        }
+
+        return $attributes;
     }
 
     /**
