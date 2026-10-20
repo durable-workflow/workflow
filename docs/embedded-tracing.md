@@ -123,7 +123,7 @@ contract. Ordinary application HTTP instrumentation has a separate scope.
 
 | Runtime or client | Scope established by this draft | Support status |
 | --- | --- | --- |
-| Embedded Laravel | Source controls cover incoming HTTP context, separate queue workers, retries, recovery and the transitions described below. | Unreleased. Baggage, remaining full gates and overhead acceptance still block stable support. |
+| Embedded Laravel | Source controls cover incoming HTTP context, separate queue workers, retries, recovery and the transitions described below. | Unreleased. Remaining full gates and overhead acceptance still block stable support. |
 | PHP Server | This embedded draft adds no service transport contract. | Separate integration and consumer qualification required. |
 | Rust Server draft | Proposed observability columns and carriers have not been adopted by its catalog. | Unqualified for this contract. |
 | Cloud | No deployment of this draft is claimed. | Separate release and deployment qualification required. |
@@ -138,6 +138,13 @@ business outcome. Enabling this source requires review of its proposed nullable
 null metadata. Older executions use independent processing segments instead
 of borrowing an unrelated worker's parent. Canonical histories, command receipt
 comparisons, retry policies and deadlines retain their existing contracts.
+
+Run package migrations with the application's model configuration in place.
+The carrier migrations update both default tables and existing tables selected
+by `run_model`, `command_model` and `task_model` on the workflow storage
+connection. They preserve existing rows and can be reapplied. Applications that
+create replacement tables later must include these nullable JSON columns in
+their schema. This is a schema upgrade even when tracing is disabled.
 
 Worker processes can handle successive jobs, but this integration scopes
 context to the current operation. It does not keep one execution span open

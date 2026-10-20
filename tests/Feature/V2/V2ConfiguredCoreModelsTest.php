@@ -7,7 +7,9 @@ namespace Tests\Feature\V2;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestConfiguredStorageWorkflow;
 use Tests\SchemaTestCase;
 use Workflow\V2\Models\WorkflowCommand;
@@ -31,6 +33,14 @@ final class V2ConfiguredCoreModelsTest extends SchemaTestCase
             ->set('workflows.v2.run_model', ConfiguredCoreWorkflowRun::class);
         config()
             ->set('workflows.v2.task_model', ConfiguredCoreWorkflowTask::class);
+
+        foreach ([
+            '2026_10_15_000100_add_observability_context_to_workflow_runs.php',
+            '2026_10_16_000100_add_observability_context_to_workflow_tasks.php',
+        ] as $migrationFile) {
+            $migration = require __DIR__ . '/../../../src/migrations/' . $migrationFile;
+            $migration->up();
+        }
 
         WorkflowStub::fake();
 
@@ -68,6 +78,111 @@ final class V2ConfiguredCoreModelsTest extends SchemaTestCase
 
         $this->assertSame($workflow->output(), WorkflowStub::load($workflow->id())->output());
         $this->assertSame($workflow->output(), WorkflowStub::loadRun((string) $workflow->runId())->output());
+    }
+
+    public static function carrierMigrations(): iterable
+    {
+        yield 'run' => [
+            'run_model', ConfiguredCoreWorkflowRun::class,
+            '2026_10_15_000100_add_observability_context_to_workflow_runs.php',
+        ];
+        yield 'command' => [
+            'command_model', ConfiguredCoreWorkflowCommand::class,
+            '2026_10_15_000200_add_observability_context_to_workflow_commands.php',
+        ];
+        yield 'task' => [
+            'task_model', ConfiguredCoreWorkflowTask::class,
+            '2026_10_16_000100_add_observability_context_to_workflow_tasks.php',
+        ];
+    }
+
+    /**
+     * @param class-string<\Illuminate\Database\Eloquent\Model> $model
+     */
+    #[DataProvider('carrierMigrations')]
+    public function testCarrierMigrationsPreserveConfiguredTableRows(
+        string $configKey,
+        string $model,
+        string $migrationFile,
+    ): void {
+        $this->assertCarrierMigrationPreservesRows($configKey, $model, $migrationFile);
+    }
+
+    /**
+     * @param class-string<\Illuminate\Database\Eloquent\Model> $model
+     */
+    #[DataProvider('carrierMigrations')]
+    public function testCarrierMigrationsUseTheWorkflowStorageConnection(
+        string $configKey,
+        string $model,
+        string $migrationFile,
+    ): void {
+        $previous = config('workflows.storage.connection');
+        config()
+            ->set('database.connections.carrier_storage', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+            ]);
+        config()
+            ->set('workflows.storage.connection', 'carrier_storage');
+        try {
+            $this->assertCarrierMigrationPreservesRows($configKey, $model, $migrationFile);
+            foreach (['workflow_runs', 'workflow_commands', 'workflow_tasks'] as $defaultTable) {
+                self::assertTrue(Schema::hasColumn($defaultTable, 'observability_context'));
+            }
+        } finally {
+            config()->set('workflows.storage.connection', $previous);
+            DB::purge('carrier_storage');
+        }
+    }
+
+    /**
+     * @param class-string<\Illuminate\Database\Eloquent\Model> $model
+     */
+    private function assertCarrierMigrationPreservesRows(string $configKey, string $model, string $migrationFile): void
+    {
+        $connection = config('workflows.storage.connection');
+        $connection = is_string($connection) ? $connection : null;
+        $schema = Schema::connection($connection);
+        $tableName = (new $model())->getTable();
+        $schema->create($tableName, static function (Blueprint $table): void {
+            $table->string('id')
+                ->primary();
+            $table->text('marker')
+                ->nullable();
+        });
+        DB::connection($connection)->table($tableName)->insert([
+            [
+                'id' => 'legacy',
+                'marker' => 'preserved 雪',
+            ],
+            [
+                'id' => 'nullable',
+                'marker' => null,
+            ],
+        ]);
+        $rows = static fn (): array => DB::connection($connection)->table($tableName)->orderBy('id')->get()
+            ->map(static fn (object $row): array => (array) $row)
+            ->all();
+        $before = $rows();
+        config()
+            ->set('workflows.v2.' . $configKey, $model);
+        $migration = require __DIR__ . '/../../../src/migrations/' . $migrationFile;
+        $migration->up();
+        $migration->up();
+        self::assertTrue($schema->hasColumn($tableName, 'observability_context'));
+        $after = $rows();
+        foreach ($after as &$row) {
+            self::assertNull($row['observability_context']);
+            unset($row['observability_context']);
+        }
+        unset($row);
+        self::assertSame($before, $after);
+        $migration->down();
+        $migration->down();
+        self::assertFalse($schema->hasColumn($tableName, 'observability_context'));
+        self::assertSame($before, $rows());
     }
 
     private function createConfiguredInstancesTable(): void
@@ -270,4 +385,9 @@ final class ConfiguredCoreWorkflowRun extends WorkflowRun
 final class ConfiguredCoreWorkflowTask extends WorkflowTask
 {
     protected $table = 'configured_core_workflow_tasks';
+}
+
+final class ConfiguredCoreWorkflowCommand extends WorkflowCommand
+{
+    protected $table = 'configured_core_workflow_commands';
 }
