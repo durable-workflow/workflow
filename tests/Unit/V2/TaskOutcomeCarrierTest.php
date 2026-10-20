@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Database\Eloquent\Collection;
 use JsonSerializable;
 use OpenTelemetry\API\Instrumentation\Configurator;
+use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
@@ -20,6 +21,35 @@ use Workflow\V2\Support\TaskOutcomeCarrier;
 
 final class TaskOutcomeCarrierTest extends TestCase
 {
+    public function testLegacyClaimAndUnrecordedSpanNeedNoObservationBackend(): void
+    {
+        $claim = self::task();
+        $attributes = $claim->getAttributes();
+        unset($attributes['observability_context']);
+        $claim->setRawAttributes($attributes, true);
+        self::assertSame([], TaskOutcomeCarrier::forRun(new WorkflowRun(), $claim));
+        self::assertNull(TaskOutcomeCarrier::capture(Span::getInvalid()));
+        self::assertSame($attributes, $claim->getRawOriginal());
+    }
+
+    public function testOversizedAndInvalidStoredOutcomesAreIgnoredWithoutRewriting(): void
+    {
+        $oversized = str_repeat('x', 4097);
+        $task = self::task($oversized);
+        self::assertNull(TaskOutcomeCarrier::fromTask($task));
+        self::assertSame($oversized, $task->getAttributes()['observability_context']);
+        $task = self::task();
+        TaskOutcomeCarrier::append($task, [self::entry()]);
+        $invalid = TaskOutcomeCarrier::fromTask($task);
+        $invalid['outcomes'][0]['sequence'] = 0;
+        $stored = json_encode($invalid, JSON_THROW_ON_ERROR);
+        $task->setRawAttributes(array_replace($task->getAttributes(), [
+            'observability_context' => $stored,
+        ]), true);
+        self::assertNull(TaskOutcomeCarrier::fromTask($task));
+        self::assertSame($stored, $task->getRawOriginal('observability_context'));
+    }
+
     public function testDuplicateKeepsTheFirstStoredBytesAndContext(): void
     {
         $task = self::task();

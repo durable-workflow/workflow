@@ -44,6 +44,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
@@ -371,6 +372,76 @@ final class ActivityExecutionTracingTest extends TestCase
         ));
         self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
         self::assertSame(0, DB::table('failed_jobs')->count());
+    }
+
+    public function testCompletedChildOutcomeIsReadFromCommittedRowsAndNeverChangesDurableState(): void
+    {
+        config([
+            'workflows.tracing.enabled' => true,
+        ]);
+        $stub = WorkflowStub::make(ParentTracedWorkflow::class, 'child-outcome-readback', '0');
+        $stub->start();
+        for ($remaining = 12; $remaining > 0 && DB::table('jobs')->count() > 0; --$remaining) {
+            $this->workOnce();
+        }
+        $parent = WorkflowRun::query()->findOrFail($stub->runId());
+        self::assertSame('completed', $parent->status->value);
+        self::assertSame([9007199254740993, null, '雪'], $parent->workflowOutput());
+        self::assertSame(0, DB::table('jobs')->count());
+        self::assertSame(0, DB::table('failed_jobs')->count());
+        $link = WorkflowLink::query()->where('parent_workflow_run_id', $parent->id)->sole();
+        $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        self::assertSame('completed', $child->status->value);
+        $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $child->id)
+            ->where('event_type', 'WorkflowCompleted')
+            ->sole();
+        $childTask = WorkflowTask::query()->findOrFail($terminal->workflow_task_id);
+        $claim = WorkflowTask::query()->where('workflow_run_id', $parent->id)->latest('id')->firstOrFail();
+        $entry = TaskOutcomeCarrier::fromTask($childTask)['outcomes'][0];
+        $before = [];
+        foreach ([
+            WorkflowRun::class,
+            WorkflowTask::class,
+            WorkflowHistoryEvent::class,
+            WorkflowLink::class,
+        ] as $model) {
+            $before[$model] = $model::query()->orderBy('id')->get()->map(
+                static fn ($row): array => $row->getRawOriginal(),
+            )->all();
+        }
+        $outcomes = TaskOutcomeCarrier::forRun($parent, $claim);
+        self::assertSame($entry + [
+            'task_id' => $childTask->id,
+            'child_run_id' => $child->id,
+            'child_instance_id' => $child->workflow_instance_id,
+            'child_namespace' => $child->namespace,
+            'parent_run_id' => $parent->id,
+            'parent_namespace' => $parent->namespace,
+            'parent_sequence' => $link->sequence,
+            'link_id' => $link->id,
+        ], $outcomes['child:' . $child->id]);
+        self::assertSame($terminal->id, $entry['event_id']);
+        foreach ($before as $model => $rows) {
+            self::assertSame($rows, $model::query()->orderBy('id')->get()->map(
+                static fn ($row): array => $row->getRawOriginal(),
+            )->all());
+        }
+
+        // A valid carrier bound to a different physical event is not evidence of this child's outcome.
+        $wrong = TaskOutcomeCarrier::fromTask($childTask);
+        $wrong['outcomes'][0]['sequence'] = (int) $terminal->sequence + 1;
+        DB::table($childTask->getTable())->where('id', $childTask->id)->update([
+            'observability_context' => json_encode($wrong, JSON_THROW_ON_ERROR),
+        ]);
+        $withoutChild = TaskOutcomeCarrier::forRun($parent, $claim);
+        self::assertArrayNotHasKey('child:' . $child->id, $withoutChild);
+        self::assertArrayHasKey(
+            $parent->historyEvents()->where('event_type', 'WorkflowCompleted')->sole()->id,
+            $withoutChild
+        );
+        self::assertSame([9007199254740993, null, '雪'], $parent->fresh()->workflowOutput());
+        self::assertSame([9007199254740993, null, '雪'], $child->fresh()->workflowOutput());
+        self::assertSame(0, (int) WorkflowTask::query()->sum('repair_count'));
     }
 
     public function testOutcomeMetadataRollsBackWithItsEventAndDuplicateCannotReplaceIt(): void
@@ -1568,6 +1639,14 @@ final class UnreadableTraceCast implements CastsAttributes
     public function set(Model $model, string $key, mixed $value, array $attributes): mixed
     {
         return $value;
+    }
+}
+
+final class ParentTracedWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        return self::child(TracedWorkflow::class, false);
     }
 }
 
