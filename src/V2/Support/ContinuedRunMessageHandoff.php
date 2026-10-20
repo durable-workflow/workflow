@@ -54,6 +54,12 @@ final class ContinuedRunMessageHandoff
             ->whereNull('closed_at')
             ->lockForUpdate()
             ->get();
+        if ($signals->isNotEmpty()) {
+            $declaredSignals = RunCommandContract::forRun($closingRun)['signals'];
+            $signals = $signals->filter(
+                static fn (WorkflowSignal $signal): bool => in_array($signal->signal_name, $declaredSignals, true)
+            );
+        }
         $updates = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
             ->where('workflow_run_id', $closingRun->id)
             ->where('target_scope', 'instance')

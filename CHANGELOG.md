@@ -5,12 +5,14 @@
 - Deliver eligible signals accepted during a remote workflow task before its
   successful terminal decision. Retain original deadlines and ordered message
   delivery through cold replay.
-- Carry received instance-scoped signals with unapplied accepted updates across
+- Carry eligible received instance-scoped signals with unapplied accepted updates across
   continue-as-new, preserving identities, payloads and command order. Run-scoped
   signals keep their selected run.
 - Close signals a terminal run did not apply with an explicit rejected status,
   reason, timestamp and linked history event. Keep the original durable
   acceptance receipt unchanged.
+- Keep missing legacy declarations unknown. A receipt alone cannot establish a
+  handler or authorize continuation handoff; unresolved signals close explicitly.
 - Upgrade all direct database readers before recording `SignalRejected`.
   Older Core history enums cannot parse the new event; drain old readers
   during the upgrade and do not roll them back onto affected histories.

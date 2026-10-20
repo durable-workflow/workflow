@@ -15,61 +15,38 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class PendingMessageTask
 {
-    public static function hasDeliverableSignal(
-        WorkflowRun $run,
-        ?string $alreadyAttemptedSignalId = null,
-        bool $terminalSignalDelivery = false,
-    ): bool {
-        return self::nextEligibleSignal(
-            $run,
-            $alreadyAttemptedSignalId,
-            false,
-            $terminalSignalDelivery
-        ) instanceof WorkflowSignal;
+    public static function hasDeliverableSignal(WorkflowRun $run, ?string $alreadyAttemptedSignalId = null): bool
+    {
+        return self::nextEligibleSignal($run, $alreadyAttemptedSignalId, false) instanceof WorkflowSignal;
     }
 
     public static function createForRun(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId = null,
         bool $includeReceivedProjectedSignalWait = true,
-        bool $terminalSignalDelivery = false,
     ): ?WorkflowTask {
         if (self::hasOpenWorkflowTask($run->id)) {
             return null;
         }
 
-        $signal = self::nextEligibleSignal(
-            $run,
-            $alreadyAttemptedSignalId,
-            $includeReceivedProjectedSignalWait,
-            $terminalSignalDelivery
-        );
+        $signal = self::nextEligibleSignal($run, $alreadyAttemptedSignalId, $includeReceivedProjectedSignalWait);
         $update = self::nextReadyUpdate($run);
 
         if ($signal instanceof WorkflowSignal && self::signalPrecedesUpdate($signal, $update)) {
-            $task = self::createSignalTask($run, $signal);
-        } elseif ($update instanceof WorkflowUpdate) {
-            $task = self::createUpdateTask($run, $update);
-        } else {
-            $task = $signal instanceof WorkflowSignal ? self::createSignalTask($run, $signal) : null;
+            return self::createSignalTask($run, $signal);
         }
 
-        if ($task instanceof WorkflowTask && $terminalSignalDelivery) {
-            $task->forceFill([
-                'payload' => [
-                    ...$task->payload,
-                    'terminal_signal_delivery' => true,
-                ],
-            ])->save();
+        if ($update instanceof WorkflowUpdate) {
+            return self::createUpdateTask($run, $update);
         }
-        return $task;
+
+        return $signal instanceof WorkflowSignal ? self::createSignalTask($run, $signal) : null;
     }
 
     private static function nextEligibleSignal(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId,
         bool $includeReceivedProjectedSignalWait,
-        bool $terminalSignalDelivery,
     ): ?WorkflowSignal {
         $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
             ->where('workflow_run_id', $run->id)
@@ -110,7 +87,6 @@ final class PendingMessageTask
                 $hasAdvanceableConditionWait,
                 $advanceableSignalWaitsById,
                 $unprojectedSignalContract,
-                $terminalSignalDelivery,
             )) {
                 continue;
             }
@@ -243,7 +219,6 @@ final class PendingMessageTask
         bool $hasAdvanceableConditionWait,
         array $advanceableSignalWaitsById,
         ?array $unprojectedSignalContract,
-        bool $terminalSignalDelivery,
     ): bool {
         if ($hasAdvanceableConditionWait) {
             return true;
@@ -261,7 +236,7 @@ final class PendingMessageTask
             return false;
         }
 
-        return UnprojectedSignalDelivery::allows($run, $signal, $unprojectedSignalContract, $terminalSignalDelivery);
+        return UnprojectedSignalDelivery::allows($run, $signal, $unprojectedSignalContract);
     }
 
     /**

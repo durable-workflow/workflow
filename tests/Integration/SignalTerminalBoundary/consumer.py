@@ -29,11 +29,11 @@ class BoundaryWorkflow:
         return self.seen
 
 
-async def case(mode: str) -> None:
+async def case(mode: str, contract: str) -> None:
     CALLS.clear()
     entered, release = asyncio.Event(), asyncio.Event()
     receipts: list[dict[str, Any]] = []
-    identity = f"signal-terminal-{mode}-{uuid4().hex}"
+    identity = f"signal-terminal-{mode}-{contract}-{uuid4().hex}"
     url, token = os.environ["SERVER_URL"], os.environ["AUTH_TOKEN"]
 
     async def hold_first_terminal(request: Any) -> None:
@@ -53,44 +53,63 @@ async def case(mode: str) -> None:
 
     async with asyncio.timeout(30), Client(url, token=token, namespace=os.environ.get("NAMESPACE", "default")) as client:
         client._http.event_hooks = {"request": [hold_first_terminal], "response": [capture]}
+        worker = Worker(client, task_queue=identity, workflows=[BoundaryWorkflow], activities=[],
+                        poll_timeout=0.2, shutdown_timeout=5)
+        running = None
+        if contract == "declared":
+            running = asyncio.create_task(worker.run())
+            await asyncio.wait_for(worker._registration_done.wait(), timeout=10)
+            if running.done():
+                await running
         handle = await client.start_workflow(
             workflow_type="qualification.signal-terminal-boundary", workflow_id=identity,
             task_queue=identity, input=[mode], execution_timeout_seconds=120, run_timeout_seconds=60,
         )
-        worker = Worker(client, task_queue=identity, workflows=[BoundaryWorkflow], activities=[],
-                        poll_timeout=0.2, shutdown_timeout=5)
-        running = asyncio.create_task(worker.run_until(workflow_id=identity, timeout=20, poll_interval=0.1))
+        if running is None:
+            running = asyncio.create_task(worker.run())
         try:
             await asyncio.wait_for(entered.wait(), timeout=10)
             # The original worker has read history and constructed its terminal command.
-            await handle.signal("message", [{"integer": 9223372036854775807, "null": None, "text": "accepted 雪"}])
+            signal_name = "not-declared" if contract == "legacy-unknown" else "message"
+            await handle.signal(signal_name, [{"integer": 9223372036854775807, "null": None, "text": "accepted 雪"}])
             release.set()
-            await running
+            async with asyncio.timeout(20):
+                while (await handle.describe()).status != "completed":
+                    if running.done():
+                        await running
+                    await asyncio.sleep(0.1)
             expected = {"integer": 9223372036854775807, "null": None, "text": "accepted 雪"}
-            print(json.dumps({"mode": mode, "workflow_id": identity, "initial_run_id": handle.run_id,
+            print(json.dumps({"mode": mode, "contract": contract, "workflow_id": identity, "initial_run_id": handle.run_id,
                               "callback_values": CALLS, "receipts": receipts}, ensure_ascii=False), flush=True)
-            assert expected in CALLS, (mode, "acknowledged signal never reached workflow code")
+            assert CALLS == ([expected] if contract == "declared" else []), (mode, contract, CALLS)
             if mode == "complete":
-                assert await handle.result(timeout=3) == [expected]
-            history = await handle.get_history()
-            applied = [event for event in history["events"] if event["event_type"] == "SignalApplied"]
-            assert len(applied) == 1, (mode, "expected one durable signal application")
+                assert await handle.result(timeout=3) == ([expected] if contract == "declared" else [])
             runs = await handle.list_runs()
             assert runs.run_count == (2 if mode == "continue" else 1)
-            print(json.dumps({"mode": mode, "namespace": client.namespace,
+            events = []
+            for run in runs.runs:
+                events.extend((await client.get_history(identity, run.run_id))["events"])
+            applied = [event for event in events if event["event_type"] == "SignalApplied"]
+            rejected = [event for event in events if event["event_type"] == "SignalRejected"]
+            assert len(applied) == (1 if contract == "declared" else 0)
+            assert len(rejected) == (0 if contract == "declared" else 1)
+            if rejected:
+                assert rejected[0]["payload"]["rejection_reason"] == "run_closed_before_signal_applied"
+            print(json.dumps({"mode": mode, "contract": contract, "namespace": client.namespace,
                               "workflow_id": identity, "initial_run_id": handle.run_id,
-                              "run_count": runs.run_count, "callback_observed": True,
-                              "signal_applied_count": len(applied), "receipts": receipts}, ensure_ascii=False), flush=True)
+                              "run_count": runs.run_count, "callback_observed": bool(CALLS),
+                              "signal_applied_count": len(applied), "signal_rejected_count": len(rejected),
+                              "receipts": receipts}, ensure_ascii=False), flush=True)
         finally:
             release.set()
-            if not running.done():
-                await worker.stop()
-                await running
+            await worker.stop()
+            await running
 
 
 async def main() -> None:
     for mode in ("complete", "continue"):
-        await case(mode)
+        for contract in ("declared", "legacy-known", "legacy-unknown"):
+            await case(mode, contract)
 
 
 asyncio.run(main())

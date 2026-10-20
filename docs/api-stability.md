@@ -483,13 +483,16 @@ its task completes, and the existing ordered message-task path delivers the
 signal before the workflow makes a fresh terminal decision. The original
 execution deadline stays unchanged. A task-completion receipt acknowledges
 that task; `run_status` and the run history determine whether the run closed.
-For legacy runs without a declaration snapshot, the original accepted command
-and linked `SignalReceived` authorize only this terminal-drain delivery chain.
-Ordinary waiting still requires its existing delivery contract. An explicit
-empty declaration never grants signal delivery authority.
+An acceptance receipt alone does not establish a signal handler. Missing legacy
+declarations remain unknown and an explicit empty declaration remains empty;
+neither grants delivery or application authority. Signals that cannot be applied
+retain the terminal disposition below. Ordinary waiting keeps its existing
+delivery contract.
 
 Buffered signals an embedded workflow never awaits can carry across
-continue-as-new when they target the instance. Run-targeted signals never
+continue-as-new when they target the instance and the original command contract
+declares their handler. Unknown legacy declarations do not authorize that
+handoff; those signals close explicitly on the predecessor. Run-targeted signals never
 move to another run. When a run closes with received signals it cannot apply,
 including failure, cancellation or timeout, those signals become `rejected`
 with `run_closed_before_signal_applied`, a closed timestamp and a linked

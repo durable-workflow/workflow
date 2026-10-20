@@ -174,14 +174,14 @@ final class TerminalSignalBoundaryTest extends TestCase
 
     public static function legacyReceipts(): iterable
     {
-        yield 'accepted command and event' => ['valid', true];
-        yield 'missing event' => ['missing_event', false];
-        yield 'rejected command' => ['rejected_command', false];
-        yield 'explicit empty declaration' => ['empty_contract', false];
+        yield 'accepted command and event' => ['valid'];
+        yield 'missing event' => ['missing_event'];
+        yield 'rejected command' => ['rejected_command'];
+        yield 'explicit empty declaration' => ['empty_contract'];
     }
 
     #[DataProvider('legacyReceipts')]
-    public function testUnavailableDeclarationsRequireTheOriginalSignalReceipt(string $case, bool $deliverable): void
+    public function testUnavailableDeclarationsCannotInventSignalApplication(string $case): void
     {
         [$stub, $run, $task] = $this->externalRun('tenant-a');
         $bridge = app(DefaultWorkflowTaskBridge::class);
@@ -217,10 +217,6 @@ final class TerminalSignalBoundaryTest extends TestCase
         }
         $this->assertFalse(UnprojectedSignalDelivery::allows($run->fresh(), $signal));
         $this->assertSame(
-            $deliverable,
-            UnprojectedSignalDelivery::allows($run->fresh(), $signal, terminalSignalDelivery: true)
-        );
-        $this->assertSame(
             $case === 'empty_contract' ? 'durable_history' : 'unavailable',
             RunCommandContract::forRun($run->fresh())['source']
         );
@@ -228,16 +224,41 @@ final class TerminalSignalBoundaryTest extends TestCase
             'type' => 'complete_workflow',
         ]]);
         $this->assertTrue($completion['completed']);
-        $this->assertSame(! $deliverable, $run->fresh()->status->isTerminal());
-        if ($deliverable) {
-            $resume = WorkflowTask::query()->findOrFail($completion['created_task_ids'][0]);
-            $this->assertTrue($bridge->claimStatus($resume->id, 'cold')['claimed']);
-            $this->assertTrue($bridge->complete($resume->id, [[
+        $this->assertTrue($run->fresh()->status->isTerminal());
+        $this->assertSame([], $completion['created_task_ids']);
+        $this->assertSame(SignalStatus::Rejected, $signal->fresh()->status);
+        $this->assertSame('run_closed_before_signal_applied', $signal->fresh()->rejection_reason);
+    }
+
+    #[DataProvider('terminalCommands')]
+    public function testLegacyUnknownSignalEndsRejectedWithoutClaimingApplication(string $namespace, string $type): void
+    {
+        [$stub, $run, $task] = $this->externalRun($namespace, false);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertTrue($bridge->claimStatus($task->id, 'original-worker')['claimed']);
+        $accepted = $stub->signal('not-declared');
+        $this->assertTrue($accepted->accepted());
+        $signal = WorkflowSignal::query()->where('workflow_run_id', $run->id)->sole();
+        $result = $bridge->complete($task->id, [[
+            'type' => $type,
+        ]]);
+        $this->assertTrue($result['completed']);
+        if ($type === 'continue_as_new') {
+            $next = WorkflowTask::query()->findOrFail($result['created_task_ids'][0]);
+            $this->assertSame($run->id, $signal->fresh()->workflow_run_id);
+            $this->assertSame(SignalStatus::Rejected, $signal->fresh()->status);
+            $this->assertTrue($bridge->claimStatus($next->id, 'cold-worker')['claimed']);
+            $this->assertTrue($bridge->complete($next->id, [[
                 'type' => 'complete_workflow',
             ]])['completed']);
-            $this->assertSame(SignalStatus::Applied, $signal->fresh()->status);
-            $this->assertSame('unavailable', RunCommandContract::forRun($run->fresh())['source']);
         }
+        $this->assertSame(SignalStatus::Rejected, $signal->fresh()->status);
+        $this->assertSame('run_closed_before_signal_applied', $signal->fresh()->rejection_reason);
+        $this->assertNull($signal->fresh()->applied_at);
+        $this->assertNotNull($signal->fresh()->closed_at);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'SignalApplied')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'SignalRejected')->count());
+        $this->assertSame('accepted', WorkflowCommand::query()->findOrFail($accepted->commandId())->status->value);
     }
 
     #[DataProvider('messageOrders')]
@@ -418,7 +439,7 @@ final class TerminalSignalBoundaryTest extends TestCase
     /**
      * @return array{WorkflowStub, WorkflowRun, WorkflowTask}
      */
-    private function externalRun(string $namespace): array
+    private function externalRun(string $namespace, bool $declareSignals = true): array
     {
         $class = 'Remote\\TerminalSignalWorkflow';
         $instance = WorkflowInstance::query()->create([
@@ -448,7 +469,7 @@ final class TerminalSignalBoundaryTest extends TestCase
         $instance->forceFill([
             'current_run_id' => $run->id,
         ])->save();
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+        $startedPayload = [
             'workflow_class' => $class,
             'workflow_type' => $class,
             'workflow_instance_id' => $instance->id,
@@ -465,7 +486,15 @@ final class TerminalSignalBoundaryTest extends TestCase
             'declared_entry_method' => 'handle',
             'declared_entry_mode' => 'canonical',
             'declared_entry_declaring_class' => $class,
-        ]);
+        ];
+        if (! $declareSignals) {
+            foreach (array_keys($startedPayload) as $field) {
+                if (str_starts_with($field, 'declared_')) {
+                    unset($startedPayload[$field]);
+                }
+            }
+        }
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, $startedPayload);
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'namespace' => $namespace,
