@@ -126,5 +126,9 @@ of the actual application workload and its supported lifetime constraints.
 The [1,000-event comparison](../../tests/Performance/results/issue-748-20261020/GROWTH-1000.md)
 passes three single-worker pairs but fails all six four-worker originals in its
 one-CPU / 1 GiB shared-SQLite configuration, with unfinished work, SQLite lock
-errors and container or worker memory exits in both modes. Retention does not
-establish a larger safe operating envelope. Those failures remain under review.
+errors and container or worker memory exits in both modes. Its eight-run large
+pilots also miss their original observation deadlines in both modes; remaining
+large concurrent repetitions were not admitted. Retention does not establish a
+larger safe operating envelope. Those failures remain under review.
+The [later small and concurrent comparisons](../../tests/Performance/results/issue-748-20261020/CURRENT-SOURCE.md)
+report actual cache misses and workload-specific CPU results.

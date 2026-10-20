@@ -37,4 +37,33 @@ Replay enters authored PHP 400 times / 40,198 round visits per cohort. Retained 
 
 Failures occurred before the original observation deadline. Each container exits 1 with zero restarts. The failure path retained counts, bounded worker-log tails and OOM flags, but did not publish final worker CPU/RSS JSON. Those values are unavailable; no successful-subset speedup or full semantic pass is inferred. A subsequent diagnostic-only change publishes any already available final worker reports and current process exit states before cleanup; it cannot recover or replace these observations.
 
-The eight-run pilots and final-source qualification are separate from these results. Earlier failed one-hour and zero-repair audit originals remain failed. No full history/database archive is exported.
+## Eight-run admission pilots
+
+Both pilots use source `9ee8d64115f62e8a6ea0ba1fa9b94021bcc4f89d`, the same original limits and repetition 1. [One worker / eight runs](https://github.com/durable-workflow/workflow/actions/runs/39463831372) and [four workers / eight runs](https://github.com/durable-workflow/workflow/actions/runs/39463834650) each fail both independent modes at the original observation deadline. All eight workflows remain unfinished in every cohort; no complete semantic or drain audit follows.
+
+| Workers / mode | Elapsed seconds | Events / effects | Completed / total tasks | Tasks with positive repair count | Failed jobs |
+|---|---:|---:|---:|---:|---:|
+| 1 / replay | 3599.893 | 5123 / 1022 | 4085 / 4093 | 0 | 0 |
+| 1 / retained | 3599.851 | 5151 / 1027 | 4108 / 4116 | 0 | 0 |
+| 4 / replay | 3599.773 | 3767 / 751 | 3000 / 3008 | 7 | 57 |
+| 4 / retained | 3599.816 | 3822 / 762 | 3044 / 3052 | 11 | 62 |
+
+All four containers exit 1 without OOM or restart. The four-worker samples include SQLite lock exceptions; retained execution also samples `MaxAttemptsExceededException`. The positive repair counts are not classified as healthy pre-claim redispatch or lease recovery without corresponding evidence. Final worker CPU/RSS reports were not published by this older failure path and remain unavailable. Partial progress is not throughput acceptance or evidence of equivalent completed results.
+
+The one-worker host is AMD EPYC 9V45, built image `sha256:d36b47b1bf5f13ffd5dd3a0fbd5703db9d5b81303d5a7641ec7dc9a6e71e1a8f`. The four-worker host is AMD EPYC 7763, image `sha256:fa52f1c48e248c04c0ff6630a153cdc9ac394c07f236f1622ff650f4aac941f0`.
+
+The predeclared admission rule requires pilot review before the remaining large concurrent repetitions. These failed pilots do not justify admitting those repetitions. They remain unrun; this report does not claim a completed 72-original grid. The completed three-pair smaller and single-run comparisons support an opt-in, workload-specific feature with explicit capacity limits. They do not establish a safe concurrent SQLite envelope, and retention is not a remedy for the failed capacity cells.
+
+## CPU interpretation and product decision
+
+The successful single-worker study separates actual Fiber execution from history/projection and repeated durable dispatch. Exclusive CPU seconds (nested buckets excluded) are:
+
+| Repetition | History/projection replay / retained | Durable dispatch replay / retained | Step validation replay / retained | Authored PHP replay / retained |
+|---|---:|---:|---:|---:|
+| 1 | 603.216 / 546.736 | 694.478 / 71.487 | 25.759 / 2.581 | 3.005 / 0.182 |
+| 2 | 1103.905 / 1090.913 | 1263.542 / 203.501 | 47.015 / 7.469 | 3.789 / 0.527 |
+| 3 | 1153.902 / 1155.735 | 1344.703 / 218.270 | 50.882 / 8.121 | 5.252 / 0.723 |
+
+Repeated durable dispatch and validation dominate the observed saving, rather than authored PHP itself. Dispatch/validation calls decrease from 80,200 to 7,419 / 11,133 / 11,307; history/projection role calls remain 2,396 in each mode. These phases include forward execution, and the process-wide observer adds work. They do not isolate completed-prefix CPU or establish a general production correction factor. The [same-host observer/drift study](EXECUTOR-CPU.md) preserves that uncertainty.
+
+The selected product remains bounded, explicitly enabled continuation for eligible sequential workflows. History/projection stays authoritative; unsupported features and missing or invalid local frames use ordinary replay. Operators must qualify their own history size, database and concurrency, retain normal worker supervision, and account for both additional history reads and cache misses. Earlier failed one-hour and zero-repair audit originals remain failed. Later source qualification is separately attributed. No full history/database archive is exported.

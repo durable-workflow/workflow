@@ -145,10 +145,16 @@ It separates actual authoring, initial loading, validation, dispatch and the
 history/projection role, with per-host overhead and repeated-setting drift.
 
 The [1,000-event original studies](results/issue-748-20261020/GROWTH-1000.md)
-record three passing single-worker pairs and six failed four-worker originals.
-The latter preserve their OOM/worker-memory exits, SQLite errors and unfinished
-work; their missing final worker telemetry is explicit. They do not qualify a
-concurrent SQLite capacity envelope or the later release source.
+record three passing single-worker pairs, six failed four-worker originals and
+four failed eight-run admission pilots. They preserve OOM/worker-memory exits,
+SQLite errors, original deadline failures and unfinished work; missing final
+worker telemetry is explicit. Failed pilots do not admit the remaining large
+concurrent repetitions. They do not qualify a concurrent SQLite capacity
+envelope or the later release source.
+
+The [later source comparisons](results/issue-748-20261020/CURRENT-SOURCE.md)
+separately record fresh small and concurrent originals and their exact source,
+with actual cache misses and no universal worker-CPU saving.
 
 
 With observers enabled, `history_selects` counts SELECT statements mentioning
