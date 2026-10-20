@@ -16,12 +16,16 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskOutcomeCarrier;
+use Workflow\V2\Support\TaskTraceTimings;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -36,6 +40,9 @@ final class RunWorkflowTask implements ShouldQueue
 
     public int $tries = 1;
 
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
+
     public function __construct(
         public readonly string $taskId,
     ) {
@@ -49,7 +56,7 @@ final class RunWorkflowTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        [$claimed, $deferredTask, $claimedAttempt] = $this->claimTask();
+        [$task, $deferredTask, $claimedAttempt] = $this->claimTask();
 
         if ($deferredTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($deferredTask);
@@ -57,10 +64,42 @@ final class RunWorkflowTask implements ShouldQueue
             return;
         }
 
-        if (! $claimed) {
+        if ($task === null) {
             return;
         }
 
+        if (! ExecutionTracing::enabled()) {
+            $this->executeClaim($executor, $claimedAttempt);
+
+            return;
+        }
+
+        /** @var WorkflowRun $run */
+        $run = $task->getRelation('run');
+        $allowlist = ExecutionTracing::baggageAllowlist();
+        $storedContext = TraceCarrier::fromRun($run, $diagnostic);
+        // Activate and end the segment outside the execution transaction.
+        ExecutionTracing::workflow(
+            [
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'task_id' => $task->id,
+                'durable.trace_context.disposition' => $diagnostic,
+                ...TaskTraceTimings::forTask($task),
+            ],
+            $storedContext,
+            fn () => $this->executeClaim($executor, $claimedAttempt),
+            $allowlist,
+            true,
+            $this->dispatchObservabilityContext,
+            static fn (): array => TaskOutcomeCarrier::forRun($run, $task),
+        );
+    }
+
+    private function executeClaim(WorkflowExecutor $executor, int $claimedAttempt): void
+    {
         $nextTask = null;
         $continuation = config('workflows.v2.live_execution.workflows', []) === []
             ? null : app(WorkflowContinuationCache::class)->session($this->job, $claimedAttempt);
@@ -81,16 +120,7 @@ final class RunWorkflowTask implements ShouldQueue
                     ->findOrFail($task->workflow_run_id);
 
                 if (in_array($run->status->value, ['completed', 'failed', 'cancelled', 'terminated'], true)) {
-                    $task->forceFill([
-                        'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : (
-                            $run->status->value === 'failed' ? TaskStatus::Failed : TaskStatus::Completed
-                        ),
-                        'lease_expires_at' => null,
-                    ])->save();
-
-                    $this->projectRun(
-                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-                    );
+                    $this->settleTerminalTask($task, $run);
 
                     return null;
                 }
@@ -138,8 +168,20 @@ final class RunWorkflowTask implements ShouldQueue
         }
     }
 
+    private function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void
+    {
+        $task->forceFill([
+            'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : (
+                $run->status->value === 'failed' ? TaskStatus::Failed : TaskStatus::Completed
+            ),
+            'lease_expires_at' => null,
+        ])->save();
+
+        $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+    }
+
     /**
-     * @return array{0: bool, 1: WorkflowTask|null, 2: int}
+     * @return array{0: WorkflowTask|null, 1: WorkflowTask|null, 2: int}
      */
     private function claimTask(): array
     {
@@ -150,11 +192,11 @@ final class RunWorkflowTask implements ShouldQueue
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Ready) {
-                return [false, null, 0];
+                return [null, null, 0];
             }
 
             if ($task->available_at !== null && $task->available_at->isFuture()) {
-                return [false, $task, 0];
+                return [null, $task, 0];
             }
 
             /** @var WorkflowRun $run */
@@ -165,13 +207,13 @@ final class RunWorkflowTask implements ShouldQueue
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return [false, null, 0];
+                return [null, null, 0];
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return [false, null, 0];
+                return [null, null, 0];
             }
 
             // The logical task ID is reused as owner; the attempt fences this claim.
@@ -191,7 +233,7 @@ final class RunWorkflowTask implements ShouldQueue
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return [true, null, $claimedAttempt];
+            return [$task->setRelation('run', $run), null, $claimedAttempt];
         });
     }
 

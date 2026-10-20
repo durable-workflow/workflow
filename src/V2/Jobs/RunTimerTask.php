@@ -19,12 +19,15 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TimerRecovery;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowTaskLease;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -66,6 +69,9 @@ final class RunTimerTask implements ShouldQueue
 
     public int $tries = 5;
 
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
+
     public function __construct(
         public readonly string $taskId,
     ) {
@@ -79,7 +85,7 @@ final class RunTimerTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        [$timerId, $releaseIn] = $this->claimTask();
+        [$claimedTask, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
             // Relay capped/early wakeups without spending the queue job's failure budget.
@@ -92,10 +98,42 @@ final class RunTimerTask implements ShouldQueue
             return;
         }
 
-        if ($timerId === null) {
+        if ($claimedTask === null) {
             return;
         }
 
+        /** @var WorkflowTimer $timer */
+        $timer = $claimedTask->getRelation('timer');
+        if (! ExecutionTracing::enabled()) {
+            $this->executeClaim($timer->id);
+
+            return;
+        }
+        /** @var WorkflowRun $run */
+        $run = $claimedTask->getRelation('run');
+        $allowlist = ExecutionTracing::baggageAllowlist();
+        $storedContext = TraceCarrier::fromRun($run, $diagnostic);
+        ExecutionTracing::timer(
+            [
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'task_id' => $claimedTask->id,
+                'timer_id' => $timer->id,
+                'durable.trace_context.disposition' => $diagnostic,
+                ...TaskTraceTimings::forTask($claimedTask, $timer),
+            ],
+            $storedContext,
+            fn () => $this->executeClaim($timer->id),
+            $allowlist,
+            true,
+            $this->dispatchObservabilityContext,
+        );
+    }
+
+    private function executeClaim(string $timerId): void
+    {
         $resumeTask = SqliteTransaction::forTask($this->taskId, function () use ($timerId): ?WorkflowTask {
             /** @var WorkflowTask $task */
             $task = WorkflowTask::query()
@@ -124,45 +162,7 @@ final class RunTimerTask implements ShouldQueue
                 return null;
             }
 
-            $cancelledInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
-                $event->event_type === HistoryEventType::TimerCancelled
-                && ($event->payload['timer_id'] ?? null) === $timerId);
-            $firedInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
-                $event->event_type === HistoryEventType::TimerFired
-                && ($event->payload['timer_id'] ?? null) === $timerId);
-            if (
-                in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
-                || $timer->status === TimerStatus::Cancelled
-                || $cancelledInHistory
-            ) {
-                $task->forceFill([
-                    'status' => $task->status === TaskStatus::Cancelled || $cancelledInHistory
-                        ? TaskStatus::Cancelled : TaskStatus::Completed,
-                    'lease_owner' => null,
-                    'lease_expires_at' => null,
-                ])->save();
-
-                if ($timer->status !== TimerStatus::Cancelled) {
-                    $timer->forceFill([
-                        'status' => TimerStatus::Cancelled,
-                    ])->save();
-                }
-
-                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
-
-                return null;
-            }
-
-            if ($firedInHistory) {
-                $task->forceFill([
-                    'status' => TaskStatus::Completed,
-                    'lease_owner' => null,
-                    'lease_expires_at' => null,
-                ])->save();
-                $timer->forceFill([
-                    'status' => TimerStatus::Fired,
-                ])->save();
-                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            if ($this->finishClosedTimer($run, $task, $timer, $timerId)) {
                 return null;
             }
 
@@ -170,29 +170,7 @@ final class RunTimerTask implements ShouldQueue
                 'status' => TimerStatus::Fired,
                 'fired_at' => now(),
             ])->save();
-            $conditionWaitId = is_string($task->payload['condition_wait_id'] ?? null)
-                ? $task->payload['condition_wait_id']
-                : null;
-            $conditionWaitOccurrenceId = is_string($task->payload['condition_wait_occurrence_id'] ?? null)
-                ? $task->payload['condition_wait_occurrence_id']
-                : null;
-            $conditionKey = is_string($task->payload['condition_key'] ?? null)
-                ? $task->payload['condition_key']
-                : null;
-            $conditionDefinitionFingerprint = is_string($task->payload['condition_definition_fingerprint'] ?? null)
-                ? $task->payload['condition_definition_fingerprint']
-                : null;
-            $signalWaitId = is_string($task->payload['signal_wait_id'] ?? null)
-                ? $task->payload['signal_wait_id']
-                : null;
-            $signalName = is_string($task->payload['signal_name'] ?? null)
-                ? $task->payload['signal_name']
-                : null;
-            $timerKind = match (true) {
-                $conditionWaitId !== null => 'condition_timeout',
-                $signalWaitId !== null => 'signal_timeout',
-                default => null,
-            };
+            $waitMetadata = self::timerWaitMetadata($task);
             $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload($task->payload);
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
@@ -202,13 +180,7 @@ final class RunTimerTask implements ShouldQueue
                 'delay_seconds' => $timer->delay_seconds,
                 'fire_at' => $timer->fire_at?->toJSON(),
                 'fired_at' => $timer->fired_at?->toJSON(),
-                'timer_kind' => $timerKind,
-                'condition_wait_id' => $conditionWaitId,
-                'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
-                'condition_key' => $conditionKey,
-                'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
-                'signal_wait_id' => $signalWaitId,
-                'signal_name' => $signalName,
+                ...$waitMetadata,
                 ...$parallelMetadata,
             ], static fn (mixed $value): bool => $value !== null), $task);
 
@@ -218,8 +190,8 @@ final class RunTimerTask implements ShouldQueue
             ])->save();
 
             $operationKind = match (true) {
-                $conditionWaitId !== null => 'condition',
-                $signalWaitId !== null => 'signal',
+                $waitMetadata['condition_wait_id'] !== null => 'condition',
+                $waitMetadata['signal_wait_id'] !== null => 'signal',
                 default => 'timer',
             };
             if ($parallelMetadataPath !== []) {
@@ -263,8 +235,101 @@ final class RunTimerTask implements ShouldQueue
         }
     }
 
+    private function finishClosedTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowTimer $timer,
+        string $timerId,
+    ): bool {
+        $cancelledInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::TimerCancelled
+            && ($event->payload['timer_id'] ?? null) === $timerId);
+        $firedInHistory = $run->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::TimerFired
+            && ($event->payload['timer_id'] ?? null) === $timerId);
+        if (
+            in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
+            || $timer->status === TimerStatus::Cancelled
+            || $cancelledInHistory
+        ) {
+            $task->forceFill([
+                'status' => $task->status === TaskStatus::Cancelled || $cancelledInHistory
+                    ? TaskStatus::Cancelled : TaskStatus::Completed,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+            ])->save();
+
+            if ($timer->status !== TimerStatus::Cancelled) {
+                $timer->forceFill([
+                    'status' => TimerStatus::Cancelled,
+                ])->save();
+            }
+
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return true;
+        }
+
+        if ($firedInHistory) {
+            $task->forceFill([
+                'status' => TaskStatus::Completed,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+            ])->save();
+            $timer->forceFill([
+                'status' => TimerStatus::Fired,
+            ])->save();
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            return true;
+        }
+
+        return false;
+    }
+
     /**
-     * @return array{0: ?string, 1: ?int}
+     * @return array{timer_kind: string|null, condition_wait_id: string|null,
+     *     condition_wait_occurrence_id: string|null, condition_key: string|null,
+     *     condition_definition_fingerprint: string|null, signal_wait_id: string|null, signal_name: string|null}
+     */
+    private static function timerWaitMetadata(WorkflowTask $task): array
+    {
+        $conditionWaitId = is_string($task->payload['condition_wait_id'] ?? null)
+            ? $task->payload['condition_wait_id']
+            : null;
+        $conditionWaitOccurrenceId = is_string($task->payload['condition_wait_occurrence_id'] ?? null)
+            ? $task->payload['condition_wait_occurrence_id']
+            : null;
+        $conditionKey = is_string($task->payload['condition_key'] ?? null)
+            ? $task->payload['condition_key']
+            : null;
+        $conditionDefinitionFingerprint = is_string($task->payload['condition_definition_fingerprint'] ?? null)
+            ? $task->payload['condition_definition_fingerprint']
+            : null;
+        $signalWaitId = is_string($task->payload['signal_wait_id'] ?? null)
+            ? $task->payload['signal_wait_id']
+            : null;
+        $signalName = is_string($task->payload['signal_name'] ?? null)
+            ? $task->payload['signal_name']
+            : null;
+
+        return [
+            'timer_kind' => match (true) {
+                $conditionWaitId !== null => 'condition_timeout',
+                $signalWaitId !== null => 'signal_timeout',
+                default => null,
+            },
+            'condition_wait_id' => $conditionWaitId,
+            'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            'signal_wait_id' => $signalWaitId,
+            'signal_name' => $signalName,
+        ];
+    }
+
+    /**
+     * @return array{0: WorkflowTask|null, 1: int|null}
      */
     private function claimTask(): array
     {
@@ -334,7 +399,7 @@ final class RunTimerTask implements ShouldQueue
 
             $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return [$timerId, null];
+            return [$task->setRelation('run', $run)->setRelation('timer', $timer), null];
         });
     }
 

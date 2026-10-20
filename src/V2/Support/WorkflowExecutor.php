@@ -2756,6 +2756,7 @@ final class WorkflowExecutor
         $childRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
+            'observability_context' => TraceCarrier::fromRun($run),
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
             'namespace' => $run->namespace,
@@ -3228,7 +3229,7 @@ final class WorkflowExecutor
             is_string($run->namespace) ? $run->namespace : null,
         );
 
-        return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
             'workflow_command_id' => $command->id,
             'signal_id' => $signal?->id,
             'signal_name' => $signalCall->name,
@@ -3237,6 +3238,11 @@ final class WorkflowExecutor
             'value' => ExternalPayloads::historyValue($storedValue, $run->payload_codec, $run->namespace),
             ...($parallelMetadata ?? []),
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
+        if (ExecutionTracing::enabled()) {
+            ExecutionTracing::linkSignal($run, $command);
+        }
+
+        return $event;
     }
 
     private function recordSignalWait(
@@ -3698,6 +3704,7 @@ final class WorkflowExecutor
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
             'run_number' => $run->run_number + 1,
+            'observability_context' => TraceCarrier::fromRun($run),
             'workflow_class' => $workflowClass,
             'workflow_type' => $run->workflow_type,
             'namespace' => $run->namespace,
@@ -4339,6 +4346,10 @@ final class WorkflowExecutor
             throw $throwable;
         }
 
+        if (ExecutionTracing::enabled()) {
+            ExecutionTracing::recordFailure($throwable);
+        }
+
         if ($throwable instanceof UnresolvedWorkflowFailureException) {
             $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
 
@@ -4346,20 +4357,7 @@ final class WorkflowExecutor
         }
 
         if ($throwable instanceof ActivityRetryPolicyMismatchException) {
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $payload['replay_blocked'] = true;
-            $payload['replay_blocked_reason'] = 'activity_retry_policy_mismatch';
-            $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
-            $payload['replay_blocked_policy_field'] = $throwable->policyField;
-            $task->forceFill([
-                'status' => TaskStatus::Failed,
-                'payload' => $payload,
-                'last_error' => $throwable->getMessage(),
-                'lease_expires_at' => null,
-            ])->save();
-            $this->projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-            );
+            $this->blockReplayUntilCompatibleActivityRetryPolicy($run, $task, $throwable);
 
             return;
         }
@@ -4517,6 +4515,27 @@ final class WorkflowExecutor
 
             return false;
         }
+    }
+
+    private function blockReplayUntilCompatibleActivityRetryPolicy(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityRetryPolicyMismatchException $throwable,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'activity_retry_policy_mismatch';
+        $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+        $payload['replay_blocked_policy_field'] = $throwable->policyField;
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
     }
 
     private function blockReplayUntilCompatibleVersionRange(
@@ -4854,6 +4873,7 @@ final class WorkflowExecutor
         $retryRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $failedChildRun->workflow_instance_id,
             'run_number' => $nextRunNumber,
+            'observability_context' => TraceCarrier::fromRun($failedChildRun),
             'workflow_class' => $failedChildRun->workflow_class,
             'workflow_type' => $failedChildRun->workflow_type,
             'namespace' => $failedChildRun->namespace,
@@ -5258,6 +5278,7 @@ final class WorkflowExecutor
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
+        ExecutionTracing::linkOutcome($run, $event);
         $serialized = ExternalPayloads::payloadBlob(
             $event->payload['result'] ?? null,
             $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue(
@@ -5330,6 +5351,8 @@ final class WorkflowExecutor
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        ExecutionTracing::linkOutcome($run, $event);
 
         return $event;
     }
@@ -5743,6 +5766,9 @@ final class WorkflowExecutor
             $operationSequence,
             $operationSequenceSpan,
         );
+        if (ExecutionTracing::enabled()) {
+            ExecutionTracing::linkCancellation($run);
+        }
 
         return CancellationDeliveryState::Delivered;
     }
@@ -5827,6 +5853,8 @@ final class WorkflowExecutor
                 && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        ExecutionTracing::linkOutcome($run, $event);
 
         return $event;
     }
@@ -6461,6 +6489,9 @@ final class WorkflowExecutor
                     ]),
                     new ReflectionMethod($workflow, $resolvedTarget['method']),
                 );
+                if ($command instanceof WorkflowCommand && ExecutionTracing::enabled()) {
+                    ExecutionTracing::linkUpdate($run, $command);
+                }
                 $result = $workflow->{$resolvedTarget['method']}(...$parameters);
 
                 $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [

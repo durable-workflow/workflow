@@ -36,6 +36,8 @@ class WorkflowCommand extends Model
 
     protected $keyType = 'string';
 
+    protected $hidden = ['observability_context'];
+
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
@@ -45,6 +47,7 @@ class WorkflowCommand extends Model
         'command_sequence' => 'integer',
         'message_sequence' => 'integer',
         'context' => 'array',
+        'observability_context' => 'array',
         'accepted_at' => 'datetime',
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',

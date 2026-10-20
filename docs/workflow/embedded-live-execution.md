@@ -63,10 +63,11 @@ The initial retained profile requires declared scalar or array entry-parameter
 types. Untyped, union/intersection, object, mixed, callable and iterable
 parameters select cold replay, including when their current argument is null.
 
-Tracing integration is still an explicit qualification gate: a retained Fiber
-must never carry an ended processing span or a previous job's task context.
-The tracing-enabled cold fallback and context-toggle controls must pass before
-the integrated feature is released.
+Enabling execution tracing selects ordinary cold replay and clears retained
+frames. Each workflow task starts a fresh Fiber with its current task context;
+no retained Fiber carries an ended processing span. Turning tracing off allows
+new frames to be retained after their next committed task. A frame cannot be
+published if tracing becomes enabled before publication.
 
 ## Bounds and recovery
 

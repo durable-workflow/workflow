@@ -45,7 +45,13 @@ final class WorkflowContinuationCache
 
     public function session(?object $job, int $claimedAttempt): ?WorkflowContinuationSession
     {
-        if (! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
+        // Retained Fibers keep their entry context. Traced tasks need a fresh
+        // Fiber until restoring the new task context on each resume is qualified.
+        $tracing = ExecutionTracing::enabled();
+        if ($tracing) {
+            $this->clear('evict_tracing');
+        }
+        if ($tracing || ! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
             || config('workflows.v2.live_execution.workflows', []) === []) {
             return null;
         }
@@ -97,6 +103,10 @@ final class WorkflowContinuationCache
 
     public function publish(string $key, int $generation, WorkflowContinuation $entry): void
     {
+        if (ExecutionTracing::enabled()) {
+            $this->clear('evict_tracing');
+            return;
+        }
         $this->trim();
         $now = hrtime(true);
         if ($entry->retainedAt !== 0 && $now - $entry->retainedAt >= 30_000_000_000) {

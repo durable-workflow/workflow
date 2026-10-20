@@ -13,6 +13,12 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery;
+use OpenTelemetry\API\Instrumentation\Configurator;
+use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\Context\Context;
+use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
+use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
+use OpenTelemetry\SDK\Trace\TracerProvider;
 use Orchestra\Testbench\TestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -42,6 +48,7 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -84,6 +91,172 @@ final class EmbeddedContinuationTest extends TestCase
                 unlink($this->path . $suffix);
             }
         }
+    }
+
+    public static function tracingProfiles(): array
+    {
+        return [
+            'always traced' => [[true, true, true], 3],
+            'off on off' => [[false, true, false], 3],
+            'on off off' => [[true, false, false], 2],
+            'off off on' => [[false, false, true], 2],
+        ];
+    }
+
+    #[DataProvider('tracingProfiles')]
+    public function testTracingUsesFreshTaskContextsAcrossRetainedFrameToggles(array $tracing, int $entries): void
+    {
+        $exporter = new InMemoryExporter();
+        $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+        $configuration = Configurator::create()->withTracerProvider($provider)->activate();
+        $caller = $provider->getTracer('application')
+            ->spanBuilder('queue-caller')
+            ->startSpan();
+        $callerScope = $caller->activate();
+        $callerContext = Context::getCurrent();
+        TracingContinuationWorkflow::$observations = [];
+        TracingContinuationWorkflow::$entries = 0;
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => [TracingContinuationWorkflow::class],
+                'build' => 'tracing-continuation-build',
+            ]);
+        config()
+            ->set('workflows.tracing.enabled', $tracing[0]);
+        try {
+            $stub = WorkflowStub::make(TracingContinuationWorkflow::class, 'tracing-toggle', 'continuation-test');
+            $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+            foreach ($tracing as $step => $enabled) {
+                config()->set('workflows.tracing.enabled', $enabled);
+                $ready = WorkflowTask::query()->where('workflow_run_id', $run->id)
+                    ->where('task_type', 'workflow')
+                    ->where('status', 'ready')
+                    ->get();
+                $this->assertCount(1, $ready, json_encode([
+                    'step' => $step,
+                    'tasks' => $run->tasks()
+                        ->get()
+                        ->map->only(['task_type', 'status', 'last_error'])->all(),
+                    'failures' => $run->failures()
+                        ->get()
+                        ->toArray(),
+                ], JSON_THROW_ON_ERROR));
+                $task = $ready->sole();
+                $before = count(TracingContinuationWorkflow::$observations);
+                $this->workOnce();
+                $this->assertSame($callerContext, Context::getCurrent());
+                $this->assertSame([], ExecutionTracing::current());
+                foreach (array_slice(TracingContinuationWorkflow::$observations, $before) as $observation) {
+                    if ($enabled) {
+                        $this->assertSame($task->id, $observation['fields']['task_id']);
+                        $this->assertSame($run->id, $observation['fields']['workflow_run_id']);
+                        $this->assertSame('continuation-test', $observation['fields']['namespace']);
+                        $this->assertSame($observation['fields']['span_id'], $observation['parent']);
+                        $this->assertNotSame($caller->getContext()->getSpanId(), $observation['parent']);
+                    } else {
+                        $this->assertSame([], $observation['fields']);
+                    }
+                }
+                if ($enabled) {
+                    $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+                }
+                if ($step < 2) {
+                    if ($step === 1) {
+                        Carbon::setTestNow(now()->addSeconds(2));
+                    }
+                    $this->workOnce(); // actual activity or timer delivery
+                    $this->assertSame($callerContext, Context::getCurrent());
+                }
+            }
+            $this->assertSame('completed', $stub->refresh()->status());
+            $this->assertSame($entries, TracingContinuationWorkflow::$entries);
+            $this->assertSame(1, ContinuationActivity::$calls);
+            $fresh = $run->fresh();
+            $this->assertSame(
+                $deadlines,
+                [$fresh->getRawOriginal('execution_deadline_at'), $fresh->getRawOriginal('run_deadline_at')]
+            );
+            $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+            $spans = array_filter(
+                $exporter->getSpans(),
+                static fn ($span): bool => $span->getName() === 'durable.workflow.task'
+            );
+            $this->assertCount(count(array_filter($tracing)), $spans);
+            $spanIds = array_map(static fn ($span): string => $span->getContext()->getSpanId(), $spans);
+            $this->assertSameSize($spanIds, array_unique($spanIds));
+        } finally {
+            $callerScope->detach();
+            $caller->end();
+            $configuration->detach();
+            $provider->shutdown();
+        }
+    }
+
+    public function testTracingEnabledAtCommitCannotPublishThePreviouslyUntracedFrame(): void
+    {
+        $this->enable();
+        $toggle = true;
+        WorkflowTask::updated(static function (WorkflowTask $task) use (&$toggle): void {
+            if ($toggle && $task->task_type->value === 'workflow' && $task->status->value === 'completed') {
+                $toggle = false;
+                DB::afterCommit(static fn () => config()->set('workflows.tracing.enabled', true));
+            }
+        });
+        $stub = WorkflowStub::make(ContinuationWorkflow::class, 'commit-toggle', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertFalse($toggle);
+        $this->assertTrue(ExecutionTracing::enabled());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        config()
+            ->set('workflows.tracing.enabled', false);
+        $this->workOnce();
+        $this->workOnce();
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame(2, ContinuationWorkflow::$entries);
+        $this->assertSame(1, ContinuationActivity::$calls);
+    }
+
+    public function testTracingEnabledAfterSessionCreationStillStartsCold(): void
+    {
+        $this->enable();
+        $armed = false;
+        $toggle = true;
+        WorkflowTask::updated(static function (WorkflowTask $task) use (&$armed, &$toggle): void {
+            if (! $armed && $task->status->value === 'leased') {
+                $armed = true;
+                DB::afterCommit(static function () use (&$toggle): void {
+                    WorkflowRun::retrieved(static function () use (&$toggle): void {
+                        if ($toggle) {
+                            $toggle = false;
+                            config()
+                                ->set('workflows.tracing.enabled', true);
+                        }
+                    });
+                });
+            }
+        });
+        $stub = WorkflowStub::make(ContinuationWorkflow::class, 'entry-toggle', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertFalse($toggle);
+        $this->assertTrue(ExecutionTracing::enabled());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        config()
+            ->set('workflows.tracing.enabled', false);
+        $this->workOnce();
+        $this->workOnce();
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame(2, ContinuationWorkflow::$entries);
+        $this->assertSame(1, ContinuationActivity::$calls);
     }
 
     public static function profiles(): array
@@ -1199,6 +1372,34 @@ final class EmbeddedContinuationTest extends TestCase
             });
         $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($control));
         return $run;
+    }
+}
+
+#[Type('tracing-continuation-workflow')]
+final class TracingContinuationWorkflow extends Workflow
+{
+    public static array $observations = [];
+
+    public static int $entries = 0;
+
+    public function handle(): array
+    {
+        ++self::$entries;
+        self::observe();
+        $value = Workflow::activity(ContinuationActivity::class);
+        self::observe();
+        Workflow::timer(1);
+        self::observe();
+        return $value;
+    }
+
+    private static function observe(): void
+    {
+        $fields = ExecutionTracing::current();
+        self::$observations[] = [
+            'fields' => $fields,
+            'parent' => $fields === [] ? null : Span::getCurrent()->getContext()->getSpanId(),
+        ];
     }
 }
 
