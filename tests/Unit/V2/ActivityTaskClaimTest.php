@@ -64,6 +64,10 @@ final class ActivityTaskClaimTest extends TestCase
             'unbounded acknowledgement' => [[
                 'lease_expires_at' => '2099-10-20T22:00:00.000000Z',
             ]],
+            'predates the original lease' => [[
+                'server_time' => '2026-10-20T21:59:00.000000Z',
+                'lease_expires_at' => '2026-10-20T21:59:30.000000Z',
+            ]],
         ];
     }
 
