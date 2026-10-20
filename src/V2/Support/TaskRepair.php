@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -71,6 +72,13 @@ final class TaskRepair
         if ($task->status === TaskStatus::Leased) {
             if (! TaskRepairPolicy::leaseExpired($task)) {
                 return null;
+            }
+
+            $execution = $task->task_type === TaskType::Activity ? self::activityExecutionForTask($task) : null;
+            if ($execution instanceof ActivityExecution && $execution->status === ActivityStatus::Running) {
+                // Loss of an activity lease consumes its recorded retry policy.
+                // It is not permission to silently redispatch the same attempt.
+                return ActivityTimeoutEnforcer::enforceLeaseExpiry($task->id)['next_task'];
             }
 
             self::closeExpiredActivityAttempt($task);
