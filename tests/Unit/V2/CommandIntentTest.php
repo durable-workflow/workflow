@@ -46,15 +46,9 @@ final class CommandIntentTest extends TestCase
                 'x' => 2,
             ]]]];
         yield 'int64 edge' => [[CommandType::Signal, 'n', [PHP_INT_MAX]],
-            [CommandType::Signal,
-            'n',
-            [PHP_INT_MAX - 1],
-        ]];
+            [CommandType::Signal, 'n', [PHP_INT_MAX - 1]]];
         yield 'bytes vs string' => [[CommandType::Signal, 'n', [AvroBinaryValue::fromBytes('ab')]],
-            [CommandType::Signal,
-            'n',
-            ['ab'],
-        ]];
+            [CommandType::Signal, 'n', ['ab']]];
         yield 'run target' => [[CommandType::Signal, 'n', [1], 'instance', null],
             [CommandType::Signal, 'n', [1], 'run', 'run-a'],
         ];
@@ -96,11 +90,11 @@ final class CommandIntentTest extends TestCase
         $this->assertSame($plain, $wrapped);
     }
 
-    public function testFloatsKeepTheirShortestRoundTripForm(): void
+    public function testFloatsKeepTheirExactBigEndianRepresentation(): void
     {
-        $this->assertSame('d0.1', CommandIntent::canonical(0.1));
-        $this->assertSame('d1.0', CommandIntent::canonical(1.0));
-        $this->assertSame('d-0.0', CommandIntent::canonical(-0.0));
+        $this->assertSame('d0x3fb999999999999a', CommandIntent::canonical(0.1));
+        $this->assertSame('d0x3ff0000000000000', CommandIntent::canonical(1.0));
+        $this->assertSame('d0x8000000000000000', CommandIntent::canonical(-0.0));
         $this->assertSame('dnan', CommandIntent::canonical(NAN));
         $this->assertSame('d-inf', CommandIntent::canonical(-INF));
         $this->assertSame('i' . PHP_INT_MIN, CommandIntent::canonical(PHP_INT_MIN));

@@ -165,7 +165,8 @@ final class CommandIntent
             return $value > 0 ? 'inf' : '-inf';
         }
 
-        // var_export renders the shortest round-trip form, independent of locale.
-        return var_export($value, true);
+        // Fixed-endian IEEE 754 bytes preserve every finite value without
+        // depending on the process's locale or serialize_precision setting.
+        return '0x' . bin2hex(pack('E', $value));
     }
 }
