@@ -69,11 +69,11 @@ a separate Docker-hostname label. The analyzer requires that container label to
 match the measured CPU role's container-ID prefix. A same-container process restart
 still changes the process identifier and refuses the old counter proof.
 
-The prospective package baseline is published Workflow 2.7.0 with OpenTelemetry
+The prospective package baseline is published Workflow 2.7.3 with OpenTelemetry
 API 1.10.1. Both baseline
 and candidate include the released bounded history-payload read optimization.
 This source/baseline update precedes admission of any official-Collector
-measurement. The earlier prospective 2.6.1 and 2.6.2 preparations and the October 17
+measurement. The earlier prospective 2.6.1, 2.6.2 and 2.7.0 preparations and the October 17
 study's 2.5.28 lock remain available at their recorded sources. Their results
 are not measurements of this new source/baseline/Collector combination.
 

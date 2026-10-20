@@ -7,7 +7,7 @@
         "php": "^8.3",
         "ext-pdo_mysql": "*",
         "ext-redis": "*",
-        "durable-workflow/workflow": "2.7.0",
+        "durable-workflow/workflow": "2.7.3",
         "guzzlehttp/guzzle": "8.2.0",
         "laravel/framework": "13.37.0",
         "open-telemetry/api": "1.10.1",
