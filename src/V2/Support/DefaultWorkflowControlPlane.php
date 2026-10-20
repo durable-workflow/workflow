@@ -834,7 +834,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ? UpdateWaitPolicy::requestedWaitFor($options['wait_for'])
             : UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
 
-        $stub = $stub->withCommandContext($this->commandContext($options));
+        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
 
         if (($options['wait_timeout_seconds'] ?? null) !== null && $waitFor !== UpdateWaitPolicy::WAIT_FOR_ACCEPTED) {
             $stub = $stub->withUpdateWaitTimeout(
@@ -1139,7 +1139,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         }
 
         $arguments = $this->commandArguments($options);
-        $stub = $stub->withCommandContext($this->commandContext($options));
+        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
         $result = $runtimeReserved
             ? $stub->attemptRuntimeSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob)
             : $stub->attemptSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob);
@@ -1149,7 +1149,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             [
                 'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => $result->commandId(),
+                'workflow_command_id' => $result->requestIdConflict() ? null : $result->commandId(),
                 'signal_name' => $name,
                 'command_reason' => $result->reason(),
                 'reason' => $result->rejected() ? $result->rejectionReason() : null,
@@ -1262,6 +1262,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
     private function loadControlPlaneWorkflow(string $instanceId, array $options): array
     {
         $namespace = $this->namespaceOption($options);
+        $runId = $options['run_id'] ?? null;
 
         try {
             $query = $this->instanceQuery();
@@ -1272,6 +1273,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             /** @var WorkflowInstance $instance */
             $instance = $query->findOrFail($instanceId);
+            $workflow = WorkflowStub::loadSelection($instanceId, is_string($runId) ? $runId : null, $namespace);
         } catch (ModelNotFoundException) {
             return [
                 'workflow' => null,
@@ -1306,7 +1308,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         }
 
         return [
-            'workflow' => WorkflowStub::load($instanceId, $namespace),
+            'workflow' => $workflow,
             'error' => null,
         ];
     }
@@ -1320,6 +1322,21 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $arguments = $options['arguments'] ?? [];
 
         return is_array($arguments) ? $arguments : [];
+    }
+
+    /**
+     * An explicit request_id option is the caller's command key and takes
+     * precedence over any key already carried by the command context.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function withRequestIdOption(WorkflowStub $stub, array $options): WorkflowStub
+    {
+        $requestId = $options['request_id'] ?? null;
+
+        return is_string($requestId) && $requestId !== ''
+            ? $stub->withRequestId($requestId)
+            : $stub;
     }
 
     /**

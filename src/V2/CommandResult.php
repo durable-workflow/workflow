@@ -7,14 +7,94 @@ namespace Workflow\V2;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Support\CommandRequestIdentity;
 
 class CommandResult
 {
+    protected bool $retained = false;
+
+    protected bool $retainedIntentVerified = true;
+
     public function __construct(
         protected readonly WorkflowCommand $command,
     ) {
     }
 
+    /**
+     * The caller's command key for keyed signals and updates.
+     *
+     * @api Stable v2 command result identity API.
+     */
+    public function requestId(): ?string
+    {
+        return $this->command->requestId();
+    }
+
+    /**
+     * Whether this result replays a receipt retained from an earlier admission
+     * with the same caller key, rather than a new admission.
+     */
+    public function retained(): bool
+    {
+        return $this->retained;
+    }
+
+    /**
+     * False only for a retained legacy receipt whose intent could not be
+     * compared because its arguments are no longer decodable.
+     */
+    public function intentVerified(): bool
+    {
+        return ! $this->retained || $this->retainedIntentVerified;
+    }
+
+    public function requestIdConflict(): bool
+    {
+        return $this->command->rejection_reason === CommandRequestIdentity::CONFLICT_REASON;
+    }
+
+    /**
+     * @return array{retained_command_id: string|null, retained_command_type: string|null, retained_outcome: string|null, conflict: list<string>}|null
+     */
+    public function conflict(): ?array
+    {
+        if (! $this->requestIdConflict()) {
+            return null;
+        }
+
+        $values = $this->command->payloadValues([
+            'retained_command_id',
+            'retained_command_type',
+            'retained_outcome',
+            'conflict',
+        ]);
+        $parts = $values['conflict'] ?? [];
+
+        return [
+            'retained_command_id' => is_string(
+                $values['retained_command_id'] ?? null
+            ) ? $values['retained_command_id'] : null,
+            'retained_command_type' => is_string(
+                $values['retained_command_type'] ?? null
+            ) ? $values['retained_command_type'] : null,
+            'retained_outcome' => is_string($values['retained_outcome'] ?? null) ? $values['retained_outcome'] : null,
+            'conflict' => is_array($parts) ? array_values(array_filter($parts, 'is_string')) : [],
+        ];
+    }
+
+    public function asRetainedReceipt(bool $intentVerified): static
+    {
+        $clone = clone $this;
+        $clone->retained = true;
+        $clone->retainedIntentVerified = $intentVerified;
+
+        return $clone;
+    }
+
+    /**
+     * For a request-key conflict this identifies the retained command that
+     * refused the new intent; no new command is recorded for that response.
+     */
     public function commandId(): string
     {
         return $this->command->id;
