@@ -20,14 +20,14 @@ docker image inspect "$DWF_PROFILE_IMAGE" --format '{{.Id}}'
 
 container=''
 cleanup() {
-    if test -n "$container"; then docker container rm --force "$container" >/dev/null; fi
+    if [[ -n "$container" ]]; then docker container rm --force "$container" >/dev/null; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 outcome=0
 modes='replay retained'
-if test "$repetition" = 2; then modes='retained replay'; fi
+if [[ "$repetition" == 2 ]]; then modes='retained replay'; fi
 for mode in $modes; do
     container="dw-continuation-${GITHUB_RUN_ID:-local}-${repetition}-${mode}-$$"
     filter="${events}-events_${workers}-workers_${runs}-runs_${mode}_repeat-${repetition}"

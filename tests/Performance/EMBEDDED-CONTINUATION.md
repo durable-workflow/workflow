@@ -74,6 +74,11 @@ deadline audit remain. This is a minimally observed control, not an uninstrument
 production benchmark. Use the same observer setting for both replay modes and
 report it alongside their results.
 
+The [current-main small growth comparison](results/issue-748-20261020/GROWTH.md)
+covers twelve fresh 10/100-event originals after the released payload-read and
+entry-binding changes. It records per-pair host/image identities and preserves
+the distinction between whole-worker CPU and isolated replay attribution.
+
 The [October 18 observer comparison](results/issue-748-20261018/OBSERVER-OVERHEAD.md)
 contains thirteen fresh 100-event cells on current prepared source, including
 three pairs per execution mode and a final drift control. All originals pass.
@@ -159,8 +164,10 @@ gh workflow run embedded-replay-profile.yml --ref YOUR_CANDIDATE_REF \
   -f execution=continuation -f events=10 -f workers=1 -f runs=1 -f observers=on
 ```
 
-Three hosted jobs each run one replay/retained pair, alternating pair order for
-repetition two. Each original gets a fresh constrained container and database.
+By default, three hosted jobs each run one replay/retained pair, alternating pair
+order for repetition two. Use `-f repetitions=1` for one bounded pilot before
+admitting all three repetitions. A single pilot does not complete comparative
+acceptance. Each original gets a fresh constrained container and database.
 The two modes within a pair share the same host, source, image and input lock.
 Read and compare the recorded host/dependency identities across repetitions;
 hosted hardware may vary. Do not treat incomparable hosts as matched measurements.

@@ -33,6 +33,11 @@ on:
         type: choice
         options: ['on', 'off']
         default: 'on'
+      repetitions:
+        description: 'Continuation profile: one bounded pilot or all three measured repetitions'
+        type: choice
+        options: ['all', '1']
+        default: 'all'
 
 permissions:
   contents: read
@@ -181,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        repetition: [1, 2, 3]
+        repetition: ${{ fromJSON(inputs.repetitions == '1' && '[1]' || '[1,2,3]') }}
     env:
       DWF_PROFILE_IMAGE: dw-continuation-profile:qualification
       DWF_GROWTH_OBSERVERS: ${{ inputs.observers }}
@@ -227,4 +232,4 @@ jobs:
             echo 'A failed or unfinished original is not acceptance. No database/history archive is uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
           if test -d vendor; then rm -r -- vendor; fi
-          rm -f -- composer.lock
+          if test -f composer.lock; then rm -- composer.lock; fi
