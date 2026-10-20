@@ -91,6 +91,19 @@ foreach (array_slice($argv, 4) as $autoload) {
     require_once $autoload;
 }
 
+function recordTracingProbeStage(string $stage): void
+{
+    $path = getenv('DW_TEST_TRACING_PROGRESS_FILE');
+    if (! is_string($path) || $path === '') {
+        return;
+    }
+    file_put_contents($path, json_encode([
+        'stage' => $stage,
+    ], JSON_THROW_ON_ERROR) . PHP_EOL, FILE_APPEND);
+}
+
+recordTracingProbeStage('autoloaded');
+
 final class TracingProcessWorkflow extends Workflow
 {
     public function __construct(TracingProcessWorkflowDependency $dependency)
@@ -408,17 +421,20 @@ final class TracingProcessApplication extends Application
 
 function prepareTracingSchema(): void
 {
+    recordTracingProbeStage('migrations-started');
     if (Artisan::call('migrate', [
         '--force' => true,
     ]) !== 0) {
         throw new \RuntimeException(Artisan::output());
     }
+    recordTracingProbeStage('migrations-ready');
     DB::statement('CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL,
     payload TEXT NOT NULL, attempts INTEGER NOT NULL, reserved_at INTEGER,
     available_at INTEGER NOT NULL, created_at INTEGER NOT NULL)');
     DB::statement('CREATE TABLE failed_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
     connection TEXT NOT NULL, queue TEXT NOT NULL, payload TEXT NOT NULL, exception TEXT NOT NULL,
     failed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+    recordTracingProbeStage('schema-ready');
 }
 
 $directory = $argv[1];
@@ -431,6 +447,7 @@ foreach (['bootstrap/cache', 'storage/logs', 'storage/framework/views', 'config'
 if (! is_file($directory . '/database.sqlite')) {
     touch($directory . '/database.sqlite');
 }
+recordTracingProbeStage('application-started');
 $app = TracingProcessApplication::create(
     basePath: $directory,
     options: [
@@ -440,6 +457,7 @@ $app = TracingProcessApplication::create(
         ],
     ],
 );
+recordTracingProbeStage('application-ready');
 if ($mode === 'prepare-http') {
     prepareTracingSchema();
     echo json_encode([
@@ -729,7 +747,7 @@ try {
     $childOutcomeControl = null;
     try {
         if ($mode === 'admit') {
-            if (! $incomingHttp) {
+            if (! $incomingHttp && getenv('DW_TEST_TRACING_SCHEMA_PREPARED') !== 'true') {
                 prepareTracingSchema();
             }
             if ($request !== null) {

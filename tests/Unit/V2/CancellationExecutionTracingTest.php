@@ -50,17 +50,40 @@ final class CancellationExecutionTracingTest extends TestCase
                 'DW_TEST_TRACING_CANCELLATION' => $command,
                 'DW_TEST_TRACING_ENABLED' => ($mode === 'admit' ? $admissionEnabled : $enabled) ? 'true' : 'false',
                 'DW_TEST_TRACING_CANCEL_DUPLICATE' => $duplicate ? 'true' : 'false',
+                'DW_TEST_TRACING_PROGRESS_FILE' => $directory . '/progress.jsonl',
+                'DW_TEST_TRACING_SCHEMA_PREPARED' => $mode === 'prepare-http' ? 'false' : 'true',
             ]);
-            $process->setTimeout(15);
-            $process->mustRun();
+            $process->setTimeout($mode === 'prepare-http' ? 45 : 15);
+            try {
+                $process->mustRun();
+            } catch (\Throwable $error) {
+                $progress = is_file($directory . '/progress.jsonl')
+                    ? substr((string) file_get_contents($directory . '/progress.jsonl'), -2048) : '';
+                throw new \RuntimeException(
+                    'Tracing phase ' . $mode . ' failed; stages: ' . $progress,
+                    previous: $error
+                );
+            }
             self::assertSame('', $process->getErrorOutput());
             $result = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+            if ($mode === 'prepare-http') {
+                self::assertSame([
+                    'workflow_runs' => 0,
+                    'commands' => 0,
+                    'history_events' => 0,
+                    'tasks' => 0,
+                    'jobs' => 0,
+                ], $result);
+
+                return $result;
+            }
             self::assertSame([], $result['outside_context']);
             self::assertTrue($result['scope_restored']);
 
             return $result;
         };
         try {
+            $worker('prepare-http');
             $admitted = $worker('admit');
             self::assertSame($admissionEnabled, $admitted['carrier'] !== null);
             $waiting = $worker('work');

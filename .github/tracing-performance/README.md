@@ -2,9 +2,10 @@
 
 This is the qualification recipe for draft Workflow #788. The
 [October 17 measurement](RESULTS-2026-10-17.md) completed, but did not qualify
-any of the four CPU budgets. The encoded-baggage regression and the other acceptance
-requirements of [#773](https://github.com/durable-workflow/workflow/issues/773)
-remain separate release gates.
+any of the four CPU budgets. The current prospective recipe uses the stable
+OpenTelemetry API baggage fix. The remaining acceptance requirements of
+[#773](https://github.com/durable-workflow/workflow/issues/773) are separate
+release gates.
 
 ## Prospective official Collector profile
 
@@ -68,10 +69,11 @@ a separate Docker-hostname label. The analyzer requires that container label to
 match the measured CPU role's container-ID prefix. A same-container process restart
 still changes the process identifier and refuses the old counter proof.
 
-The prospective package baseline is published Workflow 2.6.2. Both baseline
+The prospective package baseline is published Workflow 2.7.0 with OpenTelemetry
+API 1.10.1. Both baseline
 and candidate include the released bounded history-payload read optimization.
 This source/baseline update precedes admission of any official-Collector
-measurement. The earlier prospective 2.6.1 preparation and the October 17
+measurement. The earlier prospective 2.6.1 and 2.6.2 preparations and the October 17
 study's 2.5.28 lock remain available at their recorded sources. Their results
 are not measurements of this new source/baseline/Collector combination.
 

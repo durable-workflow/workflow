@@ -2,9 +2,10 @@
 
 This document describes the optional embedded tracing implementation being
 qualified in the [tracing proposal](https://github.com/durable-workflow/workflow/issues/773).
-It is not a published-package support claim. The released OpenTelemetry baggage
-parser still fails the encoded-value regression. Full qualification and a
-compatible stable release are required before enabling this in production.
+It is not a published-package support claim. OpenTelemetry API 1.10.1 fixes the
+encoded-value baggage regression and is the minimum supported API version.
+Full qualification and a compatible Durable Workflow release are required
+before enabling this in production.
 
 The application owns its OpenTelemetry providers, instrumentation, sampling,
 exporters and process shutdown. Durable Workflow uses those providers when
@@ -32,8 +33,10 @@ application's environment, then configure the existing `tracing` section of
 
 The empty allowlist propagates no baggage. Add only the application-approved
 keys that must cross durable boundaries. The application's installed
-propagator must support those fields. The encoded-baggage regression remains
-a release blocker even when this example uses an empty allowlist.
+propagator must support those fields. Install OpenTelemetry API `^1.10.1` when
+using tracing. Older APIs have an incompatible baggage parser, so Composer
+rejects those versions. Applications without OpenTelemetry do not gain a new
+required dependency.
 The package reads the configured boolean; the environment mapping above is
 part of the application example.
 
