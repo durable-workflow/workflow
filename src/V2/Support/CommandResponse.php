@@ -40,6 +40,9 @@ final class CommandResponse
                 'command_contract_backfill_available',
                 'declared_signals',
                 'signal_admission',
+                'structural_limit_kind',
+                'structural_limit_value',
+                'structural_limit_configured',
             ]
             : [];
         $payloadValues = $payloadFields === [] ? [] : $result->payloadValues($payloadFields);

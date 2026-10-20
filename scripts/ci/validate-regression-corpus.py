@@ -161,6 +161,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestConstructorInjectionWorkflow.php",
         "tests/Fixtures/V2/TestTracingReplayActivity.php",
         "tests/Fixtures/V2/TestTracingReplayWorkflow.php",
+        "tests/Fixtures/V2/TestEntryArgumentsMismatchWorkflow.php",
         "tests/Fixtures/V2/TestPortableLocalActivityIdentityWorkflow.php",
         "tests/Fixtures/V2/TestParallelChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestSequentialChildReplayWorkflow.php",
@@ -1284,6 +1285,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
         VERSION_MARKER_INCOMPATIBLE_RANGE,
         VERSION_MARKER_HISTORY_RANGE_INVALID,
         "activity_retry_policy_mismatch",
+        "workflow_entry_arguments_mismatch",
         UNSUPPORTED_PAYLOAD_CODEC,
     }:
         raise CorpusError(f"{context}.type is unsupported")

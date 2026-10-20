@@ -83,6 +83,7 @@ use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
+use Workflow\V2\Support\UpdateRequestIdentity;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\UpsertMemosCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -2550,22 +2551,6 @@ final class WorkflowStub
             }
 
             $arguments = $validatedArguments['arguments'];
-            $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
-
-            if ($workflowExecutionBlockedReason !== null) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    $workflowExecutionBlockedReason,
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
             try {
                 StructuralLimits::guardPendingUpdates($run);
             } catch (StructuralLimitExceededException $e) {
@@ -2573,10 +2558,17 @@ final class WorkflowStub
                     $instance,
                     $run,
                     $updateName,
-                    $arguments,
+                    [],
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $updateCommandAttributes,
+                    $this->structuralLimitExceededCommandPayloadAttributes(
+                        $updateName,
+                        $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                        $e,
+                    ),
+                    [
+                        'arguments' => [$e->getMessage()],
+                    ],
                 );
 
                 return;
@@ -2605,10 +2597,26 @@ final class WorkflowStub
                     [],
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->payloadLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e),
+                    $this->structuralLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e),
                     [
                         'arguments' => [$e->getMessage()],
                     ],
+                );
+
+                return;
+            }
+
+            $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
+
+            if ($workflowExecutionBlockedReason !== null) {
+                [$command, $update] = $this->rejectUpdateCommand(
+                    $instance,
+                    $run,
+                    $updateName,
+                    $arguments,
+                    $workflowExecutionBlockedReason,
+                    $this->commandTargetScope(),
+                    $updateCommandAttributes,
                 );
 
                 return;
@@ -2693,24 +2701,7 @@ final class WorkflowStub
     {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'] ?? [];
-        $request = is_array($context['request'] ?? null) ? $context['request'] : [];
-        $requestId = is_string($request['request_id'] ?? null) && $request['request_id'] !== ''
-            ? $request['request_id']
-            : null;
-
-        if ($requestId === null) {
-            return [null, null];
-        }
-
-        /** @var WorkflowCommand|null $command */
-        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
-            ->where('workflow_instance_id', $instance->id)
-            ->where('command_type', CommandType::Update->value)
-            ->where('request_id', $requestId)
-            ->orderBy('created_at')
-            ->orderBy('id')
-            ->lockForUpdate()
-            ->first();
+        $command = UpdateRequestIdentity::find($instance, $context);
 
         if (! $command instanceof WorkflowCommand) {
             return [null, null];
@@ -3199,7 +3190,7 @@ final class WorkflowStub
                 CommandType::Signal,
                 'structural_limit_exceeded',
                 $this->commandTargetScope(),
-                $this->payloadLimitExceededCommandPayloadAttributes($name, $signalCodec, $e),
+                $this->structuralLimitExceededCommandPayloadAttributes($name, $signalCodec, $e),
             );
             $this->recordRejectedSignal($command, $name, [], [
                 'arguments' => [$e->getMessage()],
@@ -4325,7 +4316,7 @@ final class WorkflowStub
     /**
      * @return array<string, mixed>
      */
-    private function payloadLimitExceededCommandPayloadAttributes(
+    private function structuralLimitExceededCommandPayloadAttributes(
         string $name,
         string $codec,
         StructuralLimitExceededException $exception,
