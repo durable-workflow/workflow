@@ -116,6 +116,15 @@ deadline audit and constant-space task-maintenance counters remain. This is a mi
 production benchmark. Use the same observer setting for both replay modes and
 report it alongside their results.
 
+For the current observer's overhead, select `observers=compare` with 100 events,
+one worker and one run. Each hosted repetition keeps the same host, built image
+and dependency lock for three observer blocks: on/off/on, reversed to off/on/off
+for repetition two. Each block still runs both replay modes in fresh containers.
+The repeated setting provides a drift control; compare CPU within the same
+host and replay mode. Separately dispatched observer-on/off jobs on different
+hosts do not establish observer overhead. Every original retains its normal
+budget and audit, and a failed block does not suppress later originals.
+
 The [current-main small growth comparison](results/issue-748-20261020/GROWTH.md)
 covers twelve fresh 10/100-event originals after the released payload-read and
 entry-binding changes. It records per-pair host/image identities and preserves

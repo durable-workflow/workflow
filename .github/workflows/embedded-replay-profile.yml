@@ -1,5 +1,5 @@
 name: Published embedded replay profile
-run-name: ${{ inputs.execution == 'continuation' && format('Embedded continuation {0} events / {1} workers / {2} runs', inputs.events, inputs.workers, inputs.runs) || 'Published embedded replay profile' }}
+run-name: ${{ inputs.execution == 'continuation' && format('Embedded continuation {0} events / {1} workers / {2} runs / observers {3}', inputs.events, inputs.workers, inputs.runs, inputs.observers) || 'Published embedded replay profile' }}
 
 on:
   workflow_dispatch:
@@ -30,9 +30,9 @@ on:
         options: ['1', '8']
         default: '1'
       observers:
-        description: 'Continuation profile: optional CPU, SQL and scheduling observers'
+        description: 'CPU/SQL/scheduling observers; compare uses 100 events, 1 worker/run with drift controls'
         type: choice
-        options: ['on', 'off']
+        options: ['on', 'off', 'compare']
         default: 'on'
       repetitions:
         description: 'Continuation profile: one bounded pilot or all three measured repetitions'
@@ -216,6 +216,25 @@ jobs:
 
       - name: Compare fresh replay and retained originals
         run: |
+          if [[ "$DWF_GROWTH_OBSERVERS" == compare ]]; then
+            [[ "$PROFILE_EVENTS/$PROFILE_WORKERS/$PROFILE_RUNS" == 100/1/1 ]]
+            observer_order='on off on'
+            if [[ "$PROFILE_REPETITION" == 2 ]]; then observer_order='off on off'; fi
+            observer_block=0
+            observer_outcome=0
+            for observer_setting in $observer_order; do
+              observer_block=$((observer_block + 1))
+              echo "CONTINUATION_OBSERVER_BLOCK=$observer_block setting=$observer_setting"
+              if DWF_GROWTH_OBSERVERS="$observer_setting" \
+                bash scripts/profile-embedded-continuation.sh \
+                  "$PROFILE_EVENTS" "$PROFILE_WORKERS" "$PROFILE_RUNS" "$PROFILE_REPETITION"; then
+                :
+              else
+                observer_outcome=1
+              fi
+            done
+            exit "$observer_outcome"
+          fi
           bash scripts/profile-embedded-continuation.sh \
             "$PROFILE_EVENTS" "$PROFILE_WORKERS" "$PROFILE_RUNS" "$PROFILE_REPETITION"
 
