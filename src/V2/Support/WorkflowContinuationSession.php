@@ -54,7 +54,8 @@ final class WorkflowContinuationSession
             return null;
         }
         $this->key = hash('sha256', serialize([
-            $this->scope, $run::class, $class, WorkflowDefinition::fingerprint($class),
+            $this->scope, $this->cache->backendIdentity($this->database),
+            $run::class, $class, WorkflowDefinition::fingerprint($class),
             $build, config('workflows.v2.compatibility.current'), PHP_VERSION,
         ]));
         $entry = $this->cache->take($this->key, $this->scope);
@@ -212,7 +213,8 @@ final class WorkflowContinuationSession
         if ($this->scope === null) {
             $this->scope = hash('sha256', serialize([
                 spl_object_id(app()), $this->database->getName(), $this->database->getDriverName(),
-                $this->database->getDatabaseName(), $run->getTable(), $run->namespace,
+                $this->database->getDatabaseName(), $this->database->getTablePrefix(),
+                $this->database->getConfig('search_path'), $run->getTable(), $run->namespace,
                 $run->workflow_instance_id, $run->id,
             ]));
             $this->generation = $this->cache->observe($this->scope);

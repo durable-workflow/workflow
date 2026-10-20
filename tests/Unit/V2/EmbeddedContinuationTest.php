@@ -40,7 +40,9 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkflowContinuationCache;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -87,6 +89,7 @@ final class EmbeddedContinuationTest extends TestCase
             'retained jobs' => [true, 1, 1, 'none'],
             'lost process-local state' => [true, 2, 1, 'evict'],
             'new application build' => [true, 2, 1, 'build'],
+            'reconnected database session' => [true, 2, 1, 'reconnect'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
             'worker stop' => [true, 2, 1, 'stop'],
             'container binding stays cold' => [true, 3, 2, 'binding'],
@@ -134,6 +137,8 @@ final class EmbeddedContinuationTest extends TestCase
         } elseif ($change === 'stop') {
             $this->app->make('queue.worker')
                 ->stop();
+        } elseif ($change === 'reconnect') {
+            DB::disconnect('continuation');
         }
         $this->workOnce(); // workflow resumes, then parks on its timer
         Carbon::setTestNow(now()->addSeconds(2));
@@ -324,6 +329,8 @@ final class EmbeddedContinuationTest extends TestCase
         $this->enable();
         $stub = WorkflowStub::make(ContinuationWorkflow::class, 'failed-original', 'continuation-test');
         $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90));
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
         $this->workOnce();
         $this->workOnce();
         $inject = true;
@@ -344,12 +351,58 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame(1, ContinuationWorkflow::$entries);
         $this->assertSame(1, ContinuationWorkflow::$afterActivity);
         $this->assertSame(1, ContinuationActivity::$calls);
-        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->get();
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->orderBy('sequence')->get();
         $this->assertCount($phase === 'ack' ? 1 : 0, $events->where('event_type', HistoryEventType::TimerScheduled));
         $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
         $this->assertCount(0, $events->where('event_type', HistoryEventType::WorkflowCompleted));
         $failed = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where('status', 'failed')->sole();
         $this->assertSame('controlled-' . $phase, $failed->last_error);
+        $failedState = $failed->getRawOriginal();
+        $prefix = $events->map->getRawOriginal()
+            ->all();
+        $failedJobs = DB::table('failed_jobs')->count();
+
+        $this->assertTrue($stub->refresh()->attemptRepair()->accepted());
+        $this->workOnce();
+        // A lost acknowledgement can precede the timer's transport dispatch.
+        // Preserve the ordinary stale-dispatch policy before asking the watchdog.
+        Carbon::setTestNow(now()->addSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 2));
+        $repair = TaskWatchdog::runPass(runIds: [$run->id]);
+        for ($delivery = 0; $delivery < 10 && DB::table('jobs')->exists(); ++$delivery) {
+            $this->workOnce();
+        }
+
+        $this->assertTrue($stub->refresh()->completed(), json_encode([
+            'repair' => $repair,
+            'status' => $run->fresh()
+->status->value,
+            'now' => now()
+                ->toJSON(),
+            'tasks' => $run->tasks()
+                ->get()
+                ->map(static fn ($task): array => $task->only([
+                    'id', 'task_type', 'status', 'available_at', 'last_dispatched_at', 'last_error', 'repair_count',
+                ]))->all(),
+            'queued' => DB::table('jobs')->count(),
+        ], JSON_THROW_ON_ERROR));
+        $this->assertSame($failedState, $failed->fresh()->getRawOriginal());
+        $this->assertSame(1, ContinuationActivity::$calls);
+        // RepairRequested keeps recovery cold. Rollback also needs a workflow
+        // task to reschedule the timer that never committed.
+        $this->assertSame($phase === 'rollback' ? 3 : 2, ContinuationWorkflow::$entries);
+        $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+            $run->fresh()
+                ->getRawOriginal('run_deadline_at')]);
+        $events = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::RepairRequested));
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::TimerScheduled));
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::WorkflowCompleted));
+        $this->assertSame($failedJobs, DB::table('failed_jobs')->count());
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
     }
 
     public static function modelProfiles(): array

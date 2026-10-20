@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Connection;
 use Illuminate\Queue\Jobs\DatabaseJob;
 use Illuminate\Support\Facades\DB;
+use PDO;
+use WeakMap;
 use Workflow\V2\WorkflowStub;
 
 /** @internal Experimental process-local storage. No queue affinity or task authority. */
@@ -28,6 +31,18 @@ final class WorkflowContinuationCache
 
     private int $generation = 0;
 
+    /**
+     * @var WeakMap<PDO, int>
+     */
+    private WeakMap $backends;
+
+    private int $backendGeneration = 0;
+
+    public function __construct()
+    {
+        $this->backends = new WeakMap();
+    }
+
     public function session(?object $job): ?WorkflowContinuationSession
     {
         if (! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
@@ -41,6 +56,15 @@ final class WorkflowContinuationCache
         }
 
         return new WorkflowContinuationSession($this, $database);
+    }
+
+    public function backendIdentity(Connection $database): int
+    {
+        // A reconnect must miss even when connection names and persisted rows match.
+        // Weak keys do not keep disconnected sessions alive or reuse object IDs.
+        $pdo = $database->getPdo();
+
+        return $this->backends[$pdo] ??= ++$this->backendGeneration;
     }
 
     public function observe(string $key): int
