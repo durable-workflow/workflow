@@ -262,7 +262,11 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                 ->all(), $effects->pluck('activity_id')
                 ->all());
             $this->assertSame(4 * $rounds + 3, $run->tasks()->where('status', 'completed')->count());
-            $this->assertSame([0], $run->tasks()->pluck('repair_count')->unique()->values()->all());
+            $this->assertSame([1], $run->tasks()->pluck('attempt_count')->map(
+                static fn ($attempt): int => (int) $attempt
+            )->unique()
+                ->values()
+                ->all());
             $this->assertSame([1], ActivityExecution::query()->where('workflow_run_id', $run->id)
                 ->pluck('attempt_count')
                 ->unique()
@@ -278,6 +282,11 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
         }
         $tasks = WorkflowTask::query()->get();
         $this->assertSame(['completed'], $tasks->pluck('status')->map->value->unique()->values()->all());
+        $maintenance = array_column($reports, 'task_maintenance');
+        $redispatches = array_sum(array_column($maintenance, 'ready_redispatches'));
+        $this->assertSame(0, array_sum(array_column($maintenance, 'lease_recoveries')));
+        $this->assertSame(0, array_sum(array_column($maintenance, 'other_repairs')));
+        $this->assertSame((int) $tasks->sum('repair_count'), $redispatches);
         if ($observers) {
             $this->assertGreaterThan(0, array_sum(array_column($reports, 'history_selects')));
             $this->assertSame(
@@ -314,6 +323,7 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
             'cgroup_peak_memory_bytes' => $peakMemory === false ? null : (int) trim($peakMemory),
             'worker_reports' => $reports,
             'audit' => $audit,
+            'ready_task_redispatches' => $redispatches,
             'errors' => 0,
             'unfinished' => 0,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . PHP_EOL;

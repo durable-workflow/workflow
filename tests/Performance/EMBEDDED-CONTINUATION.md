@@ -27,7 +27,18 @@ round executes one typed activity and one timer; a final timer gives exactly
 `5 * rounds + 5` events: 10, 100 or 1,000 for 1, 19 or 199 rounds. The activity
 records every invocation in an isolated effect table. The audit requires one
 effect per round, exact bigint/null/Unicode values, contiguous history, preserved
-admission prefix, original deadlines, completed tasks and zero repairs/errors.
+admission prefix, original deadlines, completed first-attempt tasks and no
+lease recovery or error repair. Every increment of persisted task `repair_count`
+must reconcile with an observed healthy Ready-to-Ready transport redispatch
+before that task's first claim. These redispatches are reported separately;
+they are possible when a broker delivery is reserved before its logical task
+is claimed. They do not permit a repeated activity invocation, new task attempt,
+expired lease, changed deadline or unfinished delivery.
+
+The observer's classifications have controls using a real held database-queue
+reservation, entry-argument repair and SIGKILL followed by expired-lease recovery.
+The earlier four-worker/eight-run 100-event original that failed its zero-repair
+gate remains failed; the revised audit applies only to fresh observations.
 
 Workflow time begins at the persisted run's `started_at`, as required by the
 existing executor, then advances to recorded activity completions and timer
@@ -70,7 +81,7 @@ Set `DWF_GROWTH_OBSERVERS=off` for a paired control without the optional SQL,
 task-delay, timer-lateness and cache-peak listeners. Those unmeasured fields are
 reported as `null`. The committed-completion barrier, source/lock checks,
 authored-entry counters, process CPU/memory readings and final history/effect/
-deadline audit remain. This is a minimally observed control, not an uninstrumented
+deadline audit and constant-space task-maintenance counters remain. This is a minimally observed control, not an uninstrumented
 production benchmark. Use the same observer setting for both replay modes and
 report it alongside their results.
 
@@ -107,7 +118,9 @@ PROFILE_EMBEDDED_CONTINUATION=setup \
 `measure` selects all three history sizes, worker/run combinations, both modes
 and three fresh repetitions. Each original has a 3,600-second run/execution and
 observation budget. Startup has its own 30-second bound and graceful drain has
-15 seconds. No failed original is resumed, repaired or rebudgeted by this probe.
+15 seconds. No failed original is resumed or rebudgeted by this probe.
+Ordinary transport redispatch is observed within the original budget; a lease
+recovery or error repair still fails the audit.
 Failure remains a failure, with unfinished work and bounded diagnostic tails.
 
 Run **one selected cell per fresh container** on an isolated machine. Otherwise

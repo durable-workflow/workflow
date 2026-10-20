@@ -5,9 +5,9 @@ database-queue jobs. An eligible continuation skips its completed instruction
 prefix while accepting the same committed durable outcomes. The database
 remains authoritative. Ordinary cold replay is the default.
 
-This feature is under qualification in [#748](https://github.com/durable-workflow/workflow/issues/748).
+This feature is under [qualification](https://github.com/durable-workflow/workflow/issues/748).
 The current draft does not authorize a production performance or capacity claim.
-Service-mode warm execution is tracked separately in [PHP SDK #113](https://github.com/durable-workflow/sdk-php/issues/113).
+Service-mode warm execution has a separate [PHP SDK implementation](https://github.com/durable-workflow/sdk-php/issues/113).
 
 ## Enable a selected workflow
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Queue\Jobs\DatabaseJob;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -17,6 +18,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use RuntimeException;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
+use Tests\Support\ContinuationTaskMaintenance;
 use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Providers\WorkflowServiceProvider;
@@ -90,6 +92,7 @@ final class EmbeddedContinuationTest extends TestCase
             'lost process-local state' => [true, 2, 1, 'evict'],
             'new application build' => [true, 2, 1, 'build'],
             'reconnected database session' => [true, 2, 1, 'reconnect'],
+            'ready task transport redispatch' => [true, 1, 1, 'redispatch'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
             'worker stop' => [true, 2, 1, 'stop'],
             'container binding stays cold' => [true, 3, 2, 'binding'],
@@ -103,10 +106,14 @@ final class EmbeddedContinuationTest extends TestCase
         int $afterActivity,
         string $change,
     ): void {
-        config()->set('workflows.v2.live_execution', [
-            'workflows' => $enabled ? [ContinuationWorkflow::class] : [],
-            'build' => 'continuation-test-build',
-        ]);
+        $maintenance = new ContinuationTaskMaintenance();
+        WorkflowTask::updated($maintenance->observe(...));
+        $heldDelivery = null;
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => $enabled ? [ContinuationWorkflow::class] : [],
+                'build' => 'continuation-test-build',
+            ]);
         if ($change === 'binding') {
             $this->app->bind(ContinuationWorkflow::class, static fn () => new ContinuationWorkflow());
         }
@@ -139,8 +146,33 @@ final class EmbeddedContinuationTest extends TestCase
                 ->stop();
         } elseif ($change === 'reconnect') {
             DB::disconnect('continuation');
+        } elseif ($change === 'redispatch') {
+            // Reserve through the real broker, then leave the logical task unclaimed.
+            $heldDelivery = Queue::connection('database')->pop('default');
+            $this->assertInstanceOf(DatabaseJob::class, $heldDelivery);
+            Carbon::setTestNow(now()->addSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 1));
+            $repair = TaskWatchdog::runPass(runIds: [$run->id]);
+            $this->assertSame(1, $repair['repaired_existing_tasks'], json_encode([
+                'repair' => $repair,
+                'now' => now()
+                    ->toJSON(),
+                'tasks' => $run->tasks()
+                    ->get()
+                    ->map(static fn ($task): array => [
+                        ...$task->only(['task_type', 'status', 'available_at', 'created_at', 'last_dispatched_at']),
+                        'needs_redispatch' => TaskRepairPolicy::readyTaskNeedsRedispatch($task),
+                    ])->all(),
+            ], JSON_THROW_ON_ERROR));
         }
         $this->workOnce(); // workflow resumes, then parks on its timer
+        if ($heldDelivery instanceof DatabaseJob) {
+            $this->app->make('queue.worker')
+                ->process(
+                    'database',
+                    $heldDelivery,
+                    new WorkerOptions(sleep: 0, timeout: 30),
+                ); // The held obsolete delivery observes the completed logical task.
+        }
         Carbon::setTestNow(now()->addSeconds(2));
         $this->workOnce(); // durable timer fires through the ordinary queue
         $this->workOnce(); // final workflow continuation
@@ -172,6 +204,11 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame([1], $tasks->pluck('attempt_count')->unique()->values()->all());
         $this->assertSame(0, DB::table('failed_jobs')->count());
         $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame([
+            'ready_redispatches' => $change === 'redispatch' ? 1 : 0,
+            'lease_recoveries' => 0,
+            'other_repairs' => 0,
+        ], $maintenance->snapshot());
         $counts = app(WorkflowContinuationCache::class)->snapshot()['counts'];
         if ($enabled) {
             $this->assertSame($entries, $counts['cold_entry']);
@@ -448,10 +485,13 @@ final class EmbeddedContinuationTest extends TestCase
     #[DataProvider('modelProfiles')]
     public function testIncompatibleEntryAfterSuspensionPreservesTheOriginalForRepair(bool $enabled): void
     {
-        config()->set('workflows.v2.live_execution', [
-            'workflows' => $enabled ? [ContinuationEntryWorkflow::class] : [],
-            'build' => 'entry-binding',
-        ]);
+        $maintenance = new ContinuationTaskMaintenance();
+        WorkflowTask::updated($maintenance->observe(...));
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => $enabled ? [ContinuationEntryWorkflow::class] : [],
+                'build' => 'entry-binding',
+            ]);
         $stub = WorkflowStub::make(ContinuationEntryWorkflow::class, 'entry-binding', 'continuation-test');
         $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), 7);
         $this->workOnce();
@@ -497,6 +537,11 @@ final class EmbeddedContinuationTest extends TestCase
             ->all());
         $this->assertSame(1, $run->historyEvents()->where('event_type', 'TimerScheduled')->count());
         $this->assertSame(0, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
+        $this->assertSame([
+            'ready_redispatches' => 0,
+            'lease_recoveries' => 0,
+            'other_repairs' => 1,
+        ], $maintenance->snapshot());
     }
 
     public static function bodyFailures(): iterable

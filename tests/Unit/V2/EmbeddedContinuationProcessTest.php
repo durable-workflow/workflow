@@ -13,6 +13,7 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestContinuationProcessWorkflow;
 use Tests\Support\ContinuationProcessEnvironment;
+use Tests\Support\ContinuationTaskMaintenance;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -80,6 +81,8 @@ final class EmbeddedContinuationProcessTest extends TestCase
             $this->markTestSkipped('This process-loss control requires Linux SIGKILL.');
         }
         ContinuationProcessEnvironment::configure($this->app, $this->directory . '/database.sqlite', $enabled);
+        $maintenance = new ContinuationTaskMaintenance();
+        WorkflowTask::updated($maintenance->observe(...));
         $this->deadline = hrtime(true) + 30_000_000_000;
         $stub = WorkflowStub::make(TestContinuationProcessWorkflow::class, 'process-loss', 'process-loss');
         $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), $this->directory);
@@ -145,6 +148,11 @@ final class EmbeddedContinuationProcessTest extends TestCase
                 'available_at' => $job->available_at,
             ])->all(),
         ], JSON_THROW_ON_ERROR));
+        $this->assertSame([
+            'ready_redispatches' => 0,
+            'lease_recoveries' => 1,
+            'other_repairs' => 0,
+        ], $maintenance->snapshot());
         $this->assertSame(1, $task->fresh()->repair_count);
         $successor = $this->worker($enabled, '', 2);
         $successor->wait();

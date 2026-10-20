@@ -37,6 +37,8 @@ final class ContinuationGrowthWorkerTest extends TestCase
             $this->assertTrue($async, 'Qualified measurements require the actual worker timeout/signal path.');
         }
         $startupCpu = ContinuationGrowthEnvironment::cpuMicroseconds();
+        $maintenance = new ContinuationTaskMaintenance();
+        WorkflowTask::updated($maintenance->observe(...));
         ContinuationGrowthEnvironment::writeReport($reportPath . '.ready', [
             'pid' => getmypid(),
             'startup_cpu_us' => $startupCpu,
@@ -136,6 +138,7 @@ final class ContinuationGrowthWorkerTest extends TestCase
             'entries' => TestContinuationGrowthWorkflow::$entries,
             'round_visits' => TestContinuationGrowthWorkflow::$roundVisits,
             'cache' => app(WorkflowContinuationCache::class)->snapshot(),
+            'task_maintenance' => $maintenance->snapshot(),
             'observed_peak_entries' => $peakEntries,
             'task_queue_delay' => $observers ? ContinuationGrowthEnvironment::distribution($claims) : null,
             'timer_lateness' => $observers ? ContinuationGrowthEnvironment::distribution($timers) : null,
