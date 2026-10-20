@@ -166,9 +166,7 @@ final class TaskDispatcher
             // Queue backends store second-resolution deadlines. Never round a wakeup down.
             $availableAt = $task->available_at->copy()
                 ->ceilSecond();
-            $effectiveDelay = $task->task_type === TaskType::Timer
-                ? TimerTransportChunker::cappedDispatchDelay($availableAt, $task->connection)
-                : $availableAt;
+            $effectiveDelay = TimerTransportChunker::cappedDispatchDelay($availableAt, $task->connection);
 
             $job->delay($effectiveDelay);
         }

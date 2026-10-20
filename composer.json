@@ -66,6 +66,7 @@
         "symfony/yaml": "^6.0|^7.0|^8.0"
     },
     "require-dev": {
+        "aws/aws-sdk-php": "^3.0",
         "doctrine/dbal": "^3.7",
         "open-telemetry/api": "^1.10.1",
         "open-telemetry/exporter-otlp": "^1.4",

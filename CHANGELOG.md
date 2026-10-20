@@ -11,6 +11,16 @@
 - Require OpenTelemetry API 1.10.1 or later in the 1.x line when that optional
   API is installed, excluding the older incompatible baggage parser.
 
+## 2.7.1 - 2026-10-20
+
+- Chunk long activity retry and workflow-task delays to the queue driver's
+  dispatch ceiling, using the existing timer transport mechanism. SQS receives
+  a delay of at most 900 seconds per wakeup.
+- Defer early workflow-task deliveries without taking a lease, running user
+  code, consuming execution attempts or appending history. Preserve original
+  task availability, retry history and workflow deadlines. Queue drivers without
+  a delay cap retain their exact delays.
+
 ## 2.7.0 - 2026-10-20
 
 - Deliver eligible signals accepted during a remote workflow task before its
