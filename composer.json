@@ -66,6 +66,7 @@
         "symfony/yaml": "^6.0|^7.0|^8.0"
     },
     "require-dev": {
+        "aws/aws-sdk-php": "^3.0",
         "doctrine/dbal": "^3.7",
         "orchestra/testbench": "^8.0|^11.0",
         "phpstan/phpstan": "^2.0",
@@ -79,7 +80,7 @@
             "dev-main": "2.0.x-dev"
         },
         "durable-workflow": {
-            "product-train": "2.7.0",
+            "product-train": "2.7.1",
             "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
             "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
         },

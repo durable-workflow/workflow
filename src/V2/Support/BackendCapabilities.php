@@ -255,7 +255,7 @@ final class BackendCapabilities
                 'info',
                 'queue_max_delay_constraint',
                 sprintf(
-                    'The [%s] queue driver limits delayed dispatch to %d seconds; timers exceeding this are chunked by the transport layer.',
+                    'The [%s] queue driver limits delayed dispatch to %d seconds; longer task delays are chunked by the transport layer.',
                     $queueDriver ?? 'unknown',
                     $maxQueueDelay,
                 ),
