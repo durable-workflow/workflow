@@ -8,6 +8,34 @@ OpenTelemetry API baggage fix. The remaining acceptance requirements of
 [#773](https://github.com/durable-workflow/workflow/issues/773) are separate
 release gates.
 
+## Prospective corrected-source method
+
+The [prospective decision](https://github.com/durable-workflow/workflow/issues/773#issuecomment-6296360973)
+defines `embedded-300s-5pairs-v2`: five fixed matched repetitions, 300-second
+offer windows, **5% disabled / 15% enabled** CPU budgets, and a final baseline
+drift check for each workload. These agent-selected limits acknowledge the
+observed cost and the uncertainty of the shorter studies. They do not relabel
+either failed historical study or supply a new-source result.
+
+Record `outcome.study_method` with that exact identifier in every new cell,
+plus exact 40-character `candidate` and `baseline` references. All 32 cells
+must use one method, source pair and official Collector image. The fixed order
+is base/off/on; on/base/off; off/on/base; base/on/off; off/base/on, then baseline
+drift, separately for ordinary and fan-out. Keep all rates, 64-member fan-out,
+sampling, original business deadlines, warmup, resource caps and drain gates
+below. Set the measured probe's `DURATION_SECONDS=300`: ordinary offers 300
+workflows and fan-out five. Warmup remains 30 ordinary workflows or one fan-out.
+Do not select extra repetitions after results.
+
+The new interval uses n=5, df=4 and critical value 2.7764451052. Its upper
+endpoint and absolute final baseline drift must both meet the applicable
+budget. Unknown/mixed methods, missing or mixed source identities, partial
+batches and legacy Collector data refuse this method. Absent `study_method`
+retains the original `embedded-120s-3pairs-v1` reader with 20 cells, n=3, df=2
+and unchanged 1%/5% budgets. `workloads.json` preserves those original defaults;
+longer measured windows must be explicit. No sampling reduction or shorter
+fan-out is part of the prospective method.
+
 ## Prospective official Collector profile
 
 `compose.collector.yaml` selects a separately labelled official Collector profile.
@@ -103,10 +131,10 @@ Its exact dependency constraints are deliberate experiment inputs. CI validates
 the manifest and lock with Composer's strict validation, excluding generic
 warnings about overly strict version constraints and package publication.
 
-The previously declared acceptance targets remain at most **1% additional CPU
-per completed workflow when disabled** and **5% when enabled**. Measure at least
-three independent matched repetitions and repeat the published baseline to
-check drift. If noise cannot resolve a target, its acceptance remains unproven.
+The original method retains **1% additional CPU per completed workflow when
+disabled** and **5% when enabled**, three matched pairs and baseline drift.
+The prospective corrected-source method uses the explicitly named 5%/15%,
+five-pair profile above. If noise cannot resolve a target, acceptance remains unproven.
 Do not infer overhead from functional test duration or compare old measurements
 with a changed machine or workload.
 
@@ -129,10 +157,10 @@ prefix and trace-parent seed, so keep it identical across matched cells. Its
 defaults are `ordinary` and `fanout`. Give warmup a separate `warmup-*` workload
 name to keep its original runs distinct from the measured offers.
 
-| Workload | Members per workflow | Offered workflows/second | Offer window |
-| --- | ---: | ---: | ---: |
-| Ordinary activity | 1 | 1 | 120 seconds |
-| Large fan-out | 64 | 1/60 | 120 seconds |
+| Workload | Members per workflow | Offered workflows/second | Original window | Prospective v2 window |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary activity | 1 | 1 | 120 seconds | 300 seconds |
+| Large fan-out | 64 | 1/60 | 120 seconds | 300 seconds |
 
 Defaults live in `workloads.json`. These rates are chosen prospectively after
 the guest functional controls, before matched overhead windows. They seek a
@@ -304,7 +332,8 @@ missing samples, nonzero child exit, OOM/restart, unfinished business work or
 span loss. It normalizes CPU by measured completions, excluding warmup counts.
 Metadata, span and audit totals explicitly include warmup.
 
-The declared offer window remains 120 seconds. Node timers use integer-delay
+The declared offer window is 120 seconds for the original method and 300 for
+the prospective v2 method. Node timers use integer-delay
 precision, so the probe's actual elapsed value can be fractionally below its
 nominal window. The reader preserves that value and requires every cgroup's
 counter interval to cover the full declared window, as well as all offers and
@@ -315,9 +344,10 @@ inside the working directory. Each data file must resolve inside the selected
 experiment root, including symbolic links. This keeps input selection scoped
 to the data mounted for analysis.
 
-The fixed statistical method uses paired relative differences and a
-conventional two-sided 95% paired-t interval with three pairs, two degrees of
-freedom and critical value 4.3026527299. This small sample relies on the usual
+Both fixed methods use paired relative differences and a conventional two-sided
+95% paired-t interval: the original three pairs use two degrees of freedom and
+critical value 4.3026527299; v2's five pairs use four degrees of freedom and
+2.7764451052. These small samples rely on the usual
 t-interval assumptions. A target passes only when both its interval upper
 bound and absolute final baseline drift meet the previously declared limit.
 Do not select extra repetitions after inspecting the result.

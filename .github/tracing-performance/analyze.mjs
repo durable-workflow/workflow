@@ -6,8 +6,18 @@ import {pathToFileURL} from 'node:url';
 
 const roles = {app: [1, 50000, 512], worker: [4, 100000, 384], mysql: [1, 100000, 2048],
     redis: [1, 10000, 128], collector: [1, 20000, 256], probe: [1, 20000, 256]};
-const repetitions = ['1', '2', '3'];
-const critical = 4.3026527299;
+const legacyMethod = 'embedded-120s-3pairs-v1';
+const methods = {
+    [legacyMethod]: {repetitions: ['1', '2', '3'], seconds: 120, critical: 4.3026527299,
+        targets: {off: 0.01, on: 0.05}, label: 'paired-t-95-n3-df2; targets and drift frozen before admission'},
+    'embedded-300s-5pairs-v2': {repetitions: ['1', '2', '3', '4', '5'], seconds: 300, critical: 2.7764451052,
+        targets: {off: 0.05, on: 0.15}, label: 'paired-t-95-n5-df4; prospective 5%/15% targets and drift'},
+};
+
+function studyMethod(id = legacyMethod) {
+    assert.ok(Object.hasOwn(methods, id), 'Unknown study method');
+    return methods[id];
+}
 
 function counters(text) {
     return Object.fromEntries(text.trim().split('\n').map(line => {
@@ -47,12 +57,18 @@ function snapshot(rows) {
 
 function validateBusiness(data) {
     const {outcome, measure, warmup, audit} = data;
+    const method = studyMethod(outcome.study_method);
     assert.equal(outcome.result, 0, 'An unsuccessful original is not a CPU sample');
     assert.equal(outcome.stage, 'complete');
     assert.ok(['base', 'off', 'on'].includes(outcome.cell));
     assert.ok(['ordinary', 'fanout'].includes(outcome.workload));
     const ordinary = outcome.workload === 'ordinary';
-    const expected = ordinary ? 120 : 2;
+    assert.ok(method.repetitions.includes(outcome.repeat) || (outcome.repeat === 'drift' && outcome.cell === 'base'),
+        'Unexpected repetition');
+    if (outcome.study_method === 'embedded-300s-5pairs-v2') {
+        assert.equal(outcome.collector, 'otelcol', 'The new method requires the official Collector');
+    }
+    const expected = ordinary ? method.seconds : method.seconds / 60;
     const members = ordinary ? 1 : 64;
     for (const [probe, count] of [[measure, expected], [warmup, ordinary ? 30 : 1]]) {
         assert.equal(probe.offered_target, count);
@@ -66,7 +82,7 @@ function validateBusiness(data) {
         assert.equal(probe.queue_driver, 'database');
         assert.equal(probe.diagnostic_only, false);
     }
-    assert.equal(measure.duration_seconds, 120);
+    assert.equal(measure.duration_seconds, method.seconds);
     assert.equal(measure.rate, ordinary ? 1 : 1 / 60);
     const lastOfferSeconds = (expected - 1) / measure.rate;
     assert.ok(Number.isFinite(measure.elapsed_seconds) && measure.elapsed_seconds >= lastOfferSeconds);
@@ -172,22 +188,35 @@ export function summarizeCell(data) {
     assert.ok(cpuSeconds > 0);
     return {...outcome, cpu_seconds: cpuSeconds, cpu_seconds_per_workflow: cpuSeconds / expected,
         php_cpu_seconds: components.app.cpu_seconds + components.worker.cpu_seconds, components,
-        completed_per_offer_second: expected / 120, completed_per_observed_second: expected / measure.elapsed_seconds,
+        completed_per_offer_second: expected / measure.duration_seconds,
+        completed_per_observed_second: expected / measure.elapsed_seconds,
         measured: measure, audit_including_warmup: audit, spans_including_warmup: telemetry,
         sample_interval_ms: {min: Math.min(...observedIntervals), max: Math.max(...observedIntervals),
             mean: observedIntervals.reduce((sum, value) => sum + value, 0) / observedIntervals.length}};
 }
 
-function interval(values) {
-    assert.equal(values.length, 3);
-    const mean = values.reduce((sum, value) => sum + value, 0) / 3;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 2;
-    const margin = critical * Math.sqrt(variance / 3);
+function interval(values, method) {
+    const count = method.repetitions.length;
+    assert.equal(values.length, count);
+    const mean = values.reduce((sum, value) => sum + value, 0) / count;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (count - 1);
+    const margin = method.critical * Math.sqrt(variance / count);
     return {mean, lower: mean - margin, upper: mean + margin};
 }
 
 export function compare(cells) {
-    assert.equal(cells.length, 20, 'All twenty declared cells are required');
+    const methodId = cells[0]?.study_method ?? legacyMethod;
+    const method = studyMethod(methodId);
+    for (const cell of cells) assert.equal(cell.study_method ?? legacyMethod, methodId, 'Mixed study methods');
+    assert.equal(cells.length, 2 * (3 * method.repetitions.length + 1),
+        methodId === legacyMethod ? 'All twenty declared cells are required' : 'All thirty-two declared cells are required');
+    if (methodId !== legacyMethod) {
+        assert.equal(cells[0].collector, 'otelcol', 'The new method requires the official Collector');
+        for (const key of ['candidate', 'baseline']) {
+            assert.match(cells[0][key] ?? '', /^[a-f0-9]{40}$/, 'Missing exact source identity');
+            for (const cell of cells) assert.equal(cell[key], cells[0][key], 'Mixed source identities');
+        }
+    }
     const collectors = new Set(cells.map(cell => cell.collector ?? 'legacy-php'));
     assert.equal(collectors.size, 1, 'Collector profiles cannot be mixed');
     assert.ok(['legacy-php', 'otelcol'].includes([...collectors][0]), 'Unknown collector profile');
@@ -202,13 +231,13 @@ export function compare(cells) {
             assert.ok(Number.isFinite(matches[0].cpu_seconds_per_workflow) && matches[0].cpu_seconds_per_workflow > 0);
             return matches[0].cpu_seconds_per_workflow;
         };
-        const baseline = repetitions.map(repeat => select('base', repeat));
-        const meanBase = baseline.reduce((sum, value) => sum + value, 0) / 3;
+        const baseline = method.repetitions.map(repeat => select('base', repeat));
+        const meanBase = baseline.reduce((sum, value) => sum + value, 0) / baseline.length;
         const drift = select('base', 'drift') / meanBase - 1;
         result[workload] = {baseline_cpu_seconds_per_workflow: baseline, baseline_drift_ratio: drift};
-        for (const [cell, target] of [['off', 0.01], ['on', 0.05]]) {
-            const paired = repetitions.map((repeat, index) => select(cell, repeat) / baseline[index] - 1);
-            const confidence = interval(paired);
+        for (const [cell, target] of Object.entries(method.targets)) {
+            const paired = method.repetitions.map((repeat, index) => select(cell, repeat) / baseline[index] - 1);
+            const confidence = interval(paired, method);
             result[workload][cell] = {paired_ratios: paired, confidence_95: confidence, target,
                 qualified: confidence.upper <= target && Math.abs(drift) <= target};
         }
@@ -238,7 +267,7 @@ const jsonLines = async (root, file) => (await readFile(await dataPath(root, fil
 
 export async function loadCell(root, name) {
     root = await experimentRoot(root);
-    assert.match(name, /^tracing-measure-(base|off|on)-(ordinary|fanout)-(1|2|3|drift)$/);
+    assert.match(name, /^tracing-measure-(base|off|on)-(ordinary|fanout)-(1|2|3|4|5|drift)$/);
     const proof = await dataPath(root, path.join(root, 'proof', name));
     const state = await dataPath(root, path.join(root, 'state', name));
     const exitCodes = async directory => {
@@ -249,12 +278,15 @@ export async function loadCell(root, name) {
             return Number(value);
         }));
     };
-    return summarizeCell({outcome: await json(root, path.join(proof, 'outcome.json')),
+    const summary = summarizeCell({outcome: await json(root, path.join(proof, 'outcome.json')),
         measure: await json(root, path.join(proof, 'measure-result.json')), warmup: await json(root, path.join(proof, 'warmup-result.json')),
         audit: await json(root, path.join(proof, 'audit.json')), telemetry: await json(root, path.join(proof, 'telemetry.json')),
         before: await jsonLines(root, path.join(proof, 'before.jsonl')), after: await jsonLines(root, path.join(proof, 'after.jsonl')),
         samples: await jsonLines(root, path.join(proof, 'samples.jsonl')), exits: await jsonLines(root, path.join(proof, 'exits.jsonl')),
         workerExits: await exitCodes(path.join(state, 'runtime')), probeExits: await exitCodes(path.join(state, 'results'))});
+    assert.equal(name, `tracing-measure-${summary.cell}-${summary.workload}-${summary.repeat}`,
+        'Cell name and declared identity differ');
+    return summary;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -264,6 +296,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const names = (await readdir(await dataPath(root, path.join(root, 'proof'))))
         .filter(name => name.startsWith('tracing-measure-'));
     const cells = await Promise.all(names.map(name => loadCell(root, name)));
-    console.log(JSON.stringify({method: 'paired-t-95-n3-df2; targets and drift frozen before admission',
+    console.log(JSON.stringify({method: studyMethod(cells[0]?.study_method).label,
         comparison: compare(cells), cells}, null, 2));
 }

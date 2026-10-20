@@ -18,6 +18,60 @@ function pairData() {
     return cells;
 }
 
+function longPairData() {
+    const cells = pairData();
+    for (const workload of ['ordinary', 'fanout']) {
+        for (const repeat of ['4', '5']) {
+            for (const cell of ['base', 'off', 'on']) {
+                cells.push({workload, repeat, cell, cpu_seconds_per_workflow: 10});
+            }
+        }
+    }
+    return cells.map(cell => ({...cell, study_method: 'embedded-300s-5pairs-v2', collector: 'otelcol',
+        collector_image: COLLECTOR_IMAGE, candidate: 'a'.repeat(40), baseline: 'b'.repeat(40),
+        cpu_seconds_per_workflow: cell.cell === 'off' ? 10.2 : cell.cell === 'on' ? 11 : 10}));
+}
+
+test('the prospective method requires all five pairs and uses its declared interval and targets', () => {
+    const cells = longPairData();
+    const values = [10.8, 10.9, 11, 11.1, 11.2];
+    for (const [index, repeat] of ['1', '2', '3', '4', '5'].entries()) {
+        cells.find(row => row.workload === 'ordinary' && row.cell === 'on' && row.repeat === repeat)
+            .cpu_seconds_per_workflow = values[index];
+    }
+    const result = compare(cells).ordinary;
+    assert.equal(result.off.target, 0.05);
+    assert.equal(result.on.target, 0.15);
+    assert.ok(Math.abs(result.on.confidence_95.mean - 0.1) < 1e-12);
+    assert.ok(Math.abs(result.on.confidence_95.upper - (0.1 + 2.7764451052 * Math.sqrt(0.00025 / 5))) < 1e-12);
+    assert.equal(result.off.qualified, true);
+    assert.equal(result.on.qualified, true);
+    assert.throws(() => compare(cells.slice(1)), /thirty-two/);
+});
+
+for (const [name, mutate] of [
+    ['mixed methods', rows => { delete rows[0].study_method; }],
+    ['unknown method', rows => { rows[0].study_method = 'invented'; }],
+    ['mixed candidate', rows => { rows[0].candidate = 'c'.repeat(40); }],
+    ['mixed baseline', rows => { rows[0].baseline = 'c'.repeat(40); }],
+    ['missing source', rows => { delete rows[0].candidate; }],
+    ['legacy Collector', rows => { delete rows[0].collector; }],
+    ['duplicate cell', rows => { rows[0] = {...rows[1]}; }],
+]) {
+    test(`the prospective comparison refuses ${name}`, () => {
+        const rows = longPairData();
+        mutate(rows);
+        assert.throws(() => compare(rows));
+    });
+}
+
+test('the new limits do not relabel the historical comparison', () => {
+    const cells = pairData().map(cell => ({...cell,
+        cpu_seconds_per_workflow: cell.cell === 'off' ? 10.2 : cell.cell === 'on' ? 11 : 10}));
+    assert.equal(compare(cells).ordinary.off.qualified, false);
+    assert.equal(compare(cells).ordinary.on.qualified, false);
+});
+
 function cellData() {
     const roles = [['app', 50000, 512], ...Array.from({length: 4}, () => ['worker', 100000, 384]),
         ['mysql', 100000, 2048], ['redis', 10000, 128], ['collector', 20000, 256], ['probe', 20000, 256]];
@@ -66,6 +120,55 @@ function officialCollectorData() {
     data.telemetry.collector = {before: initial, after: {...initial, uptime_seconds: 2}};
     data.exits[7].exit = 0;
     return data;
+}
+
+function longCellData() {
+    const data = officialCollectorData();
+    data.outcome.study_method = 'embedded-300s-5pairs-v2';
+    Object.assign(data.measure, {offered_target: 300, offered: 300, accepted: 300, completed: 300,
+        duration_seconds: 300, elapsed_seconds: 300});
+    Object.assign(data.audit, {runs: 330, activities: 330, callbacks: 330, tasks: 990});
+    for (const key of Object.keys(data.audit.history_types)) data.audit.history_types[key] = 330;
+    for (const row of data.after) row.sampled_at = '2026-01-01T00:05:00.000Z';
+    return data;
+}
+
+test('the longer profile validates 300 measured runs and retains the original warmup and deadline', () => {
+    const result = summarizeCell(longCellData());
+    assert.equal(result.measured.completed, 300);
+    assert.equal(result.audit_including_warmup.runs, 330);
+    assert.equal(result.completed_per_offer_second, 1);
+    assert.equal(result.measured.observer_seconds, 90);
+});
+
+test('the longer fan-out profile requires five measured 64-member workflows', () => {
+    const data = longCellData();
+    data.outcome.workload = 'fanout';
+    for (const [probe, count] of [[data.measure, 5], [data.warmup, 1]]) {
+        Object.assign(probe, {members: 64, rate: 1 / 60, offered_target: count,
+            offered: count, accepted: count, completed: count});
+    }
+    Object.assign(data.audit, {runs: 6, activities: 384, callbacks: 384, tasks: 396});
+    data.audit.history_types = {StartAccepted: 6, WorkflowStarted: 6, ActivityScheduled: 384,
+        ActivityStarted: 384, ActivityCompleted: 384, WorkflowCompleted: 6};
+    assert.equal(summarizeCell(data).completed_per_offer_second, 1 / 60);
+    data.measure.members = 32;
+    assert.throws(() => summarizeCell(data));
+});
+
+for (const [name, mutate] of [
+    ['old window', data => { data.measure.duration_seconds = 120; }],
+    ['old counts', data => { data.measure.offered = 120; }],
+    ['extended observer', data => { data.measure.observer_seconds = 300; }],
+    ['missing pair marker', data => { delete data.outcome.study_method; }],
+    ['extra repetition', data => { data.outcome.repeat = '6'; }],
+    ['legacy fourth repetition', data => { delete data.outcome.study_method; data.outcome.repeat = '4'; }],
+]) {
+    test(`the longer profile refuses ${name}`, () => {
+        const data = longCellData();
+        mutate(data);
+        assert.throws(() => summarizeCell(data));
+    });
 }
 
 test('an initialized official collector can prove zero new spans without inventing missing metrics', () => {
