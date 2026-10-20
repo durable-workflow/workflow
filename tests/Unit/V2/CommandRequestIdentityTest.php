@@ -17,6 +17,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -85,6 +86,7 @@ final class CommandRequestIdentityTest extends TestCase
         $workflow = $this->waitingWorkflow();
         $first = $workflow->withRequestId('caller-key')
             ->signal('changed', 1);
+        $before = $this->rows();
 
         $conflict = $workflow->withRequestId('caller-key')
             ->attemptSignal('changed', 2);
@@ -101,14 +103,17 @@ final class CommandRequestIdentityTest extends TestCase
             'conflict' => ['arguments'],
         ], $conflict->conflict());
         $this->assertSame(1, $this->signalReceivedCount($workflow));
-        $rejected = WorkflowSignal::query()->where('workflow_command_id', $conflict->commandId())->sole();
-        $this->assertSame(SignalStatus::Rejected, $rejected->status);
-        $this->assertSame(2, WorkflowCommand::query()->where('command_type', 'signal')->count());
+        $this->assertSame($before, $this->rows());
+        $this->assertSame($first->commandId(), $conflict->commandId());
+        $this->assertNull($conflict->commandSequence());
+        $this->assertSame(SignalStatus::Received, WorkflowSignal::query()->sole()->status);
+        $this->assertSame(1, WorkflowCommand::query()->where('command_type', 'signal')->count());
 
         $renamed = $workflow->withRequestId('caller-key')
             ->attemptSignal('other', 1);
         $this->assertTrue($renamed->requestIdConflict());
         $this->assertSame(['name'], $renamed->conflict()['conflict']);
+        $this->assertSame($before, $this->rows());
 
         $retry = $workflow->withRequestId('caller-key')
             ->signal('changed', 1);
@@ -262,6 +267,7 @@ final class CommandRequestIdentityTest extends TestCase
             ->attemptSignalWithStart('changed', [2]);
         $this->assertTrue($conflict->requestIdConflict());
         $this->assertNull($conflict->startCommandId());
+        $this->assertSame($before, $this->rows());
         $this->assertSame(1, $this->signalReceivedCount($stub));
     }
 
@@ -274,6 +280,7 @@ final class CommandRequestIdentityTest extends TestCase
             'arguments' => [1],
             'request_id' => 'plane-key',
         ]);
+        $rows = $this->rows();
         $retry = $controlPlane->signal($workflow->workflowId(), 'changed', [
             'arguments' => [1],
             'request_id' => 'plane-key',
@@ -293,6 +300,7 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertSame(409, $conflict['status']);
         $this->assertSame('request_id_conflict', $conflict['reason']);
         $this->assertSame($first['command_id'], $conflict['retained_command_id']);
+        $this->assertSame($rows, $this->rows());
         $this->assertSame(['arguments'], $conflict['conflict']);
 
         $update = $controlPlane->update($workflow->workflowId(), 'rename', [
@@ -409,6 +417,7 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertSame('request_id_conflict', $conflict['reason']);
         $this->assertSame(['target'], $conflict['conflict']);
         $this->assertSame($first['command_id'], $conflict['retained_command_id']);
+        $this->assertSame($rows, $this->rows());
     }
 
     #[DataProvider('runTargetCommands')]
@@ -518,6 +527,8 @@ final class CommandRequestIdentityTest extends TestCase
     {
         $rows = [];
         foreach ([
+            WorkflowInstance::class,
+            WorkflowRun::class,
             WorkflowCommand::class,
             WorkflowSignal::class,
             WorkflowUpdate::class,

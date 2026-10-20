@@ -75,6 +75,7 @@ final class UpdateRequestIdentityTest extends TestCase
         $workflow = $this->waitingWorkflow();
         $first = $workflow->withCommandContext($this->context('caller', 'proxy-a'))
             ->submitUpdate('change', 'original');
+        $before = $this->rows();
         $accepted = WorkflowHistoryEvent::query()->where('event_type', 'UpdateAccepted')->count();
 
         $conflict = $workflow->withCommandContext($this->context('caller', 'proxy-b'))
@@ -86,7 +87,9 @@ final class UpdateRequestIdentityTest extends TestCase
         $this->assertSame('request_id_conflict', $conflict->rejectionReason());
         $this->assertSame(CommandOutcome::RejectedRequestIdConflict->value, $conflict->outcome());
         $this->assertSame('caller', $conflict->requestId());
-        $this->assertNotSame($first->commandId(), $conflict->commandId());
+        $this->assertSame($before, $this->rows());
+        $this->assertSame($first->commandId(), $conflict->commandId());
+        $this->assertNull($conflict->commandSequence());
         $this->assertSame([
             'retained_command_id' => $first->commandId(),
             'retained_command_type' => 'update',
@@ -94,7 +97,7 @@ final class UpdateRequestIdentityTest extends TestCase
             'conflict' => ['arguments'],
         ], $conflict->conflict());
         $this->assertSame($accepted, WorkflowHistoryEvent::query()->where('event_type', 'UpdateAccepted')->count());
-        $this->assertSame('rejected', WorkflowUpdate::query()->findOrFail($conflict->updateId())->status->value);
+        $this->assertNull($conflict->updateId());
 
         $retry = $workflow->withCommandContext($this->context('caller', 'proxy-c'))
             ->submitUpdate('change', 'original');
@@ -105,6 +108,7 @@ final class UpdateRequestIdentityTest extends TestCase
             ->submitUpdate('rename', 'original');
         $this->assertTrue($renamed->requestIdConflict());
         $this->assertSame(['name'], $renamed->conflict()['conflict']);
+        $this->assertSame($before, $this->rows());
     }
 
     public function testTypedArgumentsAndNamedFormsCompareByValue(): void
