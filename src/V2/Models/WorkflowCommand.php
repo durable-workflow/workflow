@@ -88,38 +88,6 @@ class WorkflowCommand extends Model
         return $command;
     }
 
-    /**
-     * @param array<string, mixed> $attributes
-     * @return array<string, mixed>
-     */
-    private static function withRequestIdentity(WorkflowInstance $instance, array $attributes): array
-    {
-        $commandType = $attributes['command_type'] ?? null;
-        $isUpdate = $commandType === CommandType::Update || $commandType === CommandType::Update->value;
-        $usesRequestId = $commandType === CommandType::Redrive
-            || $commandType === CommandType::Redrive->value;
-
-        if ($isUpdate) {
-            $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
-            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
-            $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
-            $attributes['context'] = $context;
-            $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
-        } elseif ($usesRequestId) {
-            $request = is_array($attributes['context']['request'] ?? null)
-                ? $attributes['context']['request']
-                : [];
-
-            if (is_string($request['request_id'] ?? null) && $request['request_id'] !== '') {
-                $attributes['request_id'] ??= $request['request_id'];
-            }
-        } else {
-            unset($attributes['request_id']);
-        }
-
-        return $attributes;
-    }
-
     public function instance(): BelongsTo
     {
         return $this->belongsTo(
@@ -523,6 +491,38 @@ class WorkflowCommand extends Model
         }
 
         return $values;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private static function withRequestIdentity(WorkflowInstance $instance, array $attributes): array
+    {
+        $commandType = $attributes['command_type'] ?? null;
+        $isUpdate = $commandType === CommandType::Update || $commandType === CommandType::Update->value;
+        $usesRequestId = $commandType === CommandType::Redrive
+            || $commandType === CommandType::Redrive->value;
+
+        if ($isUpdate) {
+            $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
+            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
+            $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
+            $attributes['context'] = $context;
+            $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
+        } elseif ($usesRequestId) {
+            $request = is_array($attributes['context']['request'] ?? null)
+                ? $attributes['context']['request']
+                : [];
+
+            if (is_string($request['request_id'] ?? null) && $request['request_id'] !== '') {
+                $attributes['request_id'] ??= $request['request_id'];
+            }
+        } else {
+            unset($attributes['request_id']);
+        }
+
+        return $attributes;
     }
 
     /**

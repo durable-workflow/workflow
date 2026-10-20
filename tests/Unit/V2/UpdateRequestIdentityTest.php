@@ -197,6 +197,7 @@ final class UpdateRequestIdentityTest extends TestCase
 
     private function waitingWorkflow(): WorkflowStub
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
         $workflow = WorkflowStub::make(UpdateRequestIdentityWorkflow::class, 'update-request-key');
         $workflow->start();
