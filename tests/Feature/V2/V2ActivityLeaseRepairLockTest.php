@@ -37,16 +37,25 @@ final class V2ActivityLeaseRepairLockTest extends TestCase
             ->where('task_type', TaskType::Activity->value)->sole();
         [$claim] = ActivityTaskClaimer::claim($task->id, 'lease-original');
         $this->assertNotNull($claim);
-        $task->forceFill(['lease_expires_at' => now()->subSecond()])->save();
-        $claim->attempt->forceFill(['lease_expires_at' => $task->lease_expires_at])->save();
+        $task->forceFill([
+            'lease_expires_at' => now()->subSecond(),
+        ])->save();
+        $claim->attempt->forceFill([
+            'lease_expires_at' => $task->lease_expires_at,
+        ])->save();
         $before = [$task->fresh()->getAttributes(), $claim->execution->fresh()->getAttributes()];
         $historyCount = WorkflowHistoryEvent::query()->count();
 
-        config(['database.connections.lease_blocker' => DB::connection()->getConfig()]);
+        config([
+            'database.connections.lease_blocker' => DB::connection()->getConfig(),
+        ]);
         $blocker = DB::connection('lease_blocker');
         $blocker->beginTransaction();
         try {
-            $blocker->table($claim->attempt->getTable())->where('id', $claim->attemptId())->lockForUpdate()->first();
+            $blocker->table($claim->attempt->getTable())
+                ->where('id', $claim->attemptId())
+                ->lockForUpdate()
+                ->first();
             if ($driver === 'pgsql') {
                 DB::selectOne("select set_config('lock_timeout', '5s', false)");
             } else {
@@ -64,7 +73,11 @@ final class V2ActivityLeaseRepairLockTest extends TestCase
             }
             $elapsed = (hrtime(true) - $started) / 1e9;
             $this->assertInstanceOf(QueryException::class, $failure);
-            $this->assertLessThan(2.0, $elapsed, 'Repair must refuse contention rather than wait while retaining the run lock.');
+            $this->assertLessThan(
+                2.0,
+                $elapsed,
+                'Repair must refuse contention rather than wait while retaining the run lock.'
+            );
         } finally {
             $blocker->rollBack();
             DB::purge('lease_blocker');

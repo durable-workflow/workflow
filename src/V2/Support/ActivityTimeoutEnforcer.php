@@ -126,7 +126,12 @@ final class ActivityTimeoutEnforcer
     {
         try {
             return DB::transaction(static function () use ($executionId, $expiredTaskId): array {
-                $lockedRows = ActivityRowLockOrder::lockForExecution($executionId);
+                // Repair can already retain the run/task. Refuse contested
+                // attempt rows rather than wait against a worker needing that run.
+                $lockedRows = ActivityRowLockOrder::lockForExecution(
+                    $executionId,
+                    waitForLocks: $expiredTaskId === null
+                );
                 $attempt = $lockedRows['attempt'];
                 $execution = $lockedRows['execution'];
                 $snapshotAttemptId = $lockedRows['snapshot_attempt_id'];
