@@ -111,6 +111,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
+        $this->registerContinuationCache();
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);
@@ -219,6 +220,26 @@ final class WorkflowServiceProvider extends ServiceProvider
                 app(MatchingRole::class)->wake($event->connectionName, $event->queue);
             }
         });
+    }
+
+    private function registerContinuationCache(): void
+    {
+        $this->app->singleton(\Workflow\V2\Support\WorkflowContinuationCache::class);
+        $this->app['events']->listen(\Illuminate\Queue\Events\Looping::class, function (): void {
+            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
+            }
+        });
+        foreach ([
+            \Illuminate\Queue\Events\WorkerStopping::class => 'evict_clear',
+            \Illuminate\Queue\Events\JobExceptionOccurred::class => 'evict_job_exception',
+        ] as $event => $reason) {
+            $this->app['events']->listen($event, function () use ($reason): void {
+                if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                    $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear($reason);
+                }
+            });
+        }
     }
 
     /**

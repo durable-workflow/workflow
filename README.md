@@ -121,6 +121,7 @@ Server or Cloud does not reinterpret existing embedded history.
 
 - [Embedded installation](https://durable-workflow.com/docs/2.0/installation/)
 - [Embedded feature guides](https://durable-workflow.com/docs/2.0/category/embedded/)
+- [Embedded live execution](docs/workflow/embedded-live-execution.md)
 - [Configuration reference](https://durable-workflow.com/docs/2.0/configuration/options/)
 - [Deployment modes](https://durable-workflow.com/docs/2.0/polyglot/deployment-modes/)
 - [Monitoring with Waterline](https://durable-workflow.com/docs/2.0/monitoring/)

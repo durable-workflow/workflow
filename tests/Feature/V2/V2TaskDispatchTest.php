@@ -190,8 +190,9 @@ final class V2TaskDispatchTest extends TestCase
         $workflowClaim = new ReflectionMethod(RunWorkflowTask::class, 'claimTask');
         $workflowClaim->setAccessible(true);
 
-        [$claimed, $deferred] = $workflowClaim->invoke(new RunWorkflowTask($workflowTask->id));
+        [$claimed, $deferred, $claimedAttempt] = $workflowClaim->invoke(new RunWorkflowTask($workflowTask->id));
         $this->assertNull($deferred);
+        $this->assertSame(1, $claimedAttempt);
         $this->assertInstanceOf(WorkflowTask::class, $claimed);
         $this->assertSame($workflowTask->id, $claimed->id);
         $this->assertSame(TaskStatus::Leased, $workflowTask->fresh()->status);

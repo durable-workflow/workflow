@@ -436,7 +436,10 @@ final class ActivityExecutionTracingTest extends TestCase
         $withoutChild = TaskOutcomeCarrier::forRun($parent, $claim);
         self::assertArrayNotHasKey('child:' . $child->id, $withoutChild);
         self::assertArrayHasKey(
-            $parent->historyEvents()->where('event_type', 'WorkflowCompleted')->sole()->id,
+            $parent->historyEvents()
+                ->where('event_type', 'WorkflowCompleted')
+                ->sole()
+->id,
             $withoutChild
         );
         self::assertSame([9007199254740993, null, '雪'], $parent->fresh()->workflowOutput());
