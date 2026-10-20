@@ -19,7 +19,8 @@ final class TaskTraceCarrier
         if (! self::validTaskId($taskId)) {
             return null;
         }
-        $context = TraceCarrier::capture();
+        $context = TraceCarrier::capture(diagnostic: $diagnostic);
+        ExecutionTracing::recordCarrierDiagnostic($diagnostic);
         if ($context === null) {
             return null;
         }
@@ -40,8 +41,9 @@ final class TaskTraceCarrier
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function fromJob(mixed $value, string $taskId): ?array
+    public static function fromJob(mixed $value, string $taskId, ?string &$diagnostic = null): ?array
     {
+        $diagnostic = $value === null ? null : 'discarded';
         if (! self::validTaskId($taskId) || ! is_array($value) || ($value['schema'] ?? null) !== self::SCHEMA
             || ($value['version'] ?? null) !== 1 || ($value['task_id'] ?? null) !== $taskId
             || array_diff(array_keys($value), ['schema', 'version', 'task_id', 'context']) !== []
@@ -49,13 +51,18 @@ final class TaskTraceCarrier
             || array_diff(array_keys($value['context']['carrier']), ['traceparent', 'tracestate']) !== []) {
             return null;
         }
-        $context = TraceCarrier::normalize($value['context']);
+        $context = TraceCarrier::normalize($value['context'], diagnostic: $contextDiagnostic);
         if ($context === null) {
             return null;
         }
 
         try {
-            return strlen(json_encode($value, JSON_THROW_ON_ERROR)) <= 4096 ? $context : null;
+            if (strlen(json_encode($value, JSON_THROW_ON_ERROR)) > 4096) {
+                return null;
+            }
+            $diagnostic = $contextDiagnostic;
+
+            return $context;
         } catch (Throwable) {
             return null;
         }

@@ -183,7 +183,25 @@ final class TraceCarrierTest extends TestCase
     #[DataProvider('invalidCarriers')]
     public function testInvalidTelemetryIsDiscarded(mixed $input): void
     {
-        $this->assertNull(TraceCarrier::normalize($input, ['approved']));
+        $diagnostic = 'stale';
+        $this->assertNull(TraceCarrier::normalize($input, ['approved'], $diagnostic));
+        $this->assertSame($input === null ? null : 'discarded', $diagnostic);
+    }
+
+    public function testFilteringReportsOnlyAFixedDiagnosticAndKeepsTheCarrierSchemaUnchanged(): void
+    {
+        $input = self::envelope([
+            'traceparent' => self::PARENT,
+            'baggage' => 'approved=value,private=secret',
+        ]);
+        $normalized = TraceCarrier::normalize($input, ['approved'], $diagnostic);
+        self::assertSame('filtered', $diagnostic);
+        self::assertSame(self::envelope([
+            'traceparent' => self::PARENT,
+            'baggage' => 'approved=value',
+        ]), $normalized);
+        self::assertSame($normalized, TraceCarrier::normalize($normalized, ['approved'], $diagnostic));
+        self::assertNull($diagnostic);
     }
 
     public static function invalidCarriers(): array

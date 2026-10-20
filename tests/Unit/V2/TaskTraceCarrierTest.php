@@ -96,7 +96,9 @@ final class TaskTraceCarrierTest extends TestCase
     #[DataProvider('invalidCarriers')]
     public function testInvalidMetadataSuppliesNoContext(mixed $value, string $taskId): void
     {
-        self::assertNull(TaskTraceCarrier::fromJob($value, $taskId));
+        $diagnostic = 'stale';
+        self::assertNull(TaskTraceCarrier::fromJob($value, $taskId, $diagnostic));
+        self::assertSame($value === null ? null : 'discarded', $diagnostic);
     }
 
     public function testMetadataInspectionDoesNotExecuteUserObjectSerialization(): void

@@ -76,7 +76,7 @@ final class RunActivityTask implements ShouldQueue
         }
 
         $allowlist = ExecutionTracing::baggageAllowlist();
-        $storedContext = TraceCarrier::fromRun($claim->run);
+        $storedContext = TraceCarrier::fromRun($claim->run, $diagnostic);
         ExecutionTracing::activity(
             [
                 'workflow_instance_id' => $claim->run->workflow_instance_id,
@@ -88,6 +88,7 @@ final class RunActivityTask implements ShouldQueue
                 'activity_type' => $claim->execution->activity_type,
                 'activity_attempt_id' => $claim->attemptId(),
                 'activity_attempt_number' => $claim->attemptNumber(),
+                'durable.trace_context.disposition' => $diagnostic,
                 ...TaskTraceTimings::forTask($claim->task),
             ],
             $storedContext,

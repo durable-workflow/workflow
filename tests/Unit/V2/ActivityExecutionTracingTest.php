@@ -12,11 +12,18 @@ use Illuminate\Database\QueryException;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use OpenTelemetry\API\Baggage\Baggage;
+use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
+use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ContextInterface;
+use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
+use OpenTelemetry\Context\Propagation\PropagationGetterInterface;
+use OpenTelemetry\Context\Propagation\PropagationSetterInterface;
+use OpenTelemetry\Context\Propagation\TextMapPropagatorInterface;
 use OpenTelemetry\Context\ScopeInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;
 use OpenTelemetry\SDK\Trace\ReadWriteSpanInterface;
@@ -38,6 +45,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
@@ -45,6 +53,7 @@ use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\TaskOutcomeCarrier;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -91,6 +100,133 @@ final class ActivityExecutionTracingTest extends TestCase
             'enabled legacy run' => [true, false],
             'enabled retry' => [true, true],
         ];
+    }
+
+    #[DataProvider('dispatchFailures')]
+    public function testPreparedScheduleFilteringUsesBoundedSpanAttributesWithoutChangingBusinessWork(
+        bool $enabled,
+    ): void {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $propagator = Configurator::create()->withPropagator(new MultiTextMapPropagator([
+            TraceContextPropagator::getInstance(), BaggagePropagator::getInstance(),
+        ]))->activate();
+        $caller = $this->provider->getTracer('application')
+            ->spanBuilder('request')
+            ->startSpan();
+        $scope = Baggage::getBuilder()->set('private', 'secret')->build()
+            ->storeInContext($caller->storeInContext(Context::getCurrent()))->activate();
+        $schedule = new WorkflowSchedule();
+        $schedule->setRawAttributes([
+            'schedule_id' => 'bounded-diagnostic',
+            'namespace' => '0',
+        ]);
+        try {
+            self::assertSame(7, ExecutionTracing::scheduleAdmission($schedule, static function () use ($enabled): int {
+                $carrier = TraceCarrier::admissionParent();
+                if ($enabled) {
+                    self::assertNotNull($carrier);
+                    self::assertArrayNotHasKey('baggage', $carrier['carrier']);
+                } else {
+                    self::assertNull($carrier);
+                    ExecutionTracing::recordCarrierDiagnostic('discarded');
+                }
+                ExecutionTracing::recordCarrierDiagnostic('private=secret');
+
+                return 7;
+            }, 'scheduled'));
+        } finally {
+            $scope->detach();
+            $caller->end();
+            $propagator->detach();
+        }
+        $spans = $this->exporter->getSpans();
+        self::assertCount($enabled ? 2 : 1, $spans);
+        foreach ($spans as $span) {
+            self::assertSame($enabled ? 'filtered' : null, $span->getAttributes()
+                ->get('durable.trace_context.disposition'));
+            self::assertSame([], $span->getEvents());
+            self::assertNotSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+            self::assertStringNotContainsString('secret', json_encode(
+                $span->getAttributes()
+                    ->toArray(),
+                JSON_THROW_ON_ERROR
+            ));
+        }
+        self::assertSame(0, WorkflowRun::query()->count());
+        self::assertSame(0, DB::table('jobs')->count());
+    }
+
+    #[DataProvider('dispatchFailures')]
+    public function testInvalidCapturedParentIsDiagnosedOnAdmissionWithoutAnApplicationSpan(bool $enabled): void
+    {
+        config([
+            'workflows.tracing.enabled' => $enabled,
+        ]);
+        $propagator = new class() implements TextMapPropagatorInterface {
+            public int $injections = 0;
+
+            public function fields(): array
+            {
+                return ['traceparent'];
+            }
+
+            public function inject(
+                mixed &$carrier,
+                ?PropagationSetterInterface $setter = null,
+                ?ContextInterface $context = null,
+            ): void {
+                ++$this->injections;
+                $carrier['traceparent'] = 'private-invalid-header';
+            }
+
+            public function extract(
+                $carrier,
+                ?PropagationGetterInterface $getter = null,
+                ?ContextInterface $context = null,
+            ): ContextInterface {
+                return $context ?? Context::getCurrent();
+            }
+        };
+        $scope = Configurator::create()->withPropagator($propagator)->activate();
+        try {
+            $stub = WorkflowStub::make(TracedWorkflow::class, 'invalid-admission-parent', '0');
+            $stub->start(false);
+            for ($remaining = 4; $remaining > 0 && DB::table('jobs')->count() > 0; --$remaining) {
+                $this->workOnce();
+            }
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            self::assertSame('completed', $run->status->value);
+            self::assertSame([9007199254740993, null, '雪'], $run->workflowOutput());
+            self::assertNull($run->observability_context);
+            self::assertSame(0, DB::table('jobs')->count());
+            self::assertSame(0, DB::table('failed_jobs')->count());
+            if ($enabled) {
+                self::assertGreaterThan(0, $propagator->injections);
+            } else {
+                self::assertSame(0, $propagator->injections);
+            }
+            $admissions = array_values(array_filter(
+                $this->exporter->getSpans(),
+                static fn ($span): bool => $span->getName() === 'durable.workflow.admission'
+            ));
+            self::assertCount($enabled ? 1 : 0, $admissions);
+            if ($enabled) {
+                self::assertSame('discarded', $admissions[0]->getAttributes()
+                    ->get('durable.trace_context.disposition'));
+                self::assertNotSame(StatusCode::STATUS_ERROR, $admissions[0]->getStatus()->getCode());
+                self::assertStringNotContainsString('private-invalid-header', json_encode(
+                    $admissions[0]->getAttributes()
+                        ->toArray(),
+                    JSON_THROW_ON_ERROR
+                ));
+            } else {
+                self::assertSame([], $this->exporter->getSpans());
+            }
+        } finally {
+            $scope->detach();
+        }
     }
 
     public static function nonQueueModes(): array
@@ -300,6 +436,23 @@ final class ActivityExecutionTracingTest extends TestCase
         $history = WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
             static fn ($row): array => $row->getRawOriginal(),
         )->all();
+        $workflowTask = WorkflowTask::query()->where('workflow_run_id', $claim->run->id)
+            ->where('task_type', 'workflow')
+            ->latest('id')
+            ->firstOrFail();
+        $runAttributes = $claim->run->fresh()
+            ->getRawOriginal();
+        $taskAttributes = $storedTask->getRawOriginal();
+        self::assertSame([
+            $event->id => $contexts['outcomes'][0] + [
+                'task_id' => $storedTask->id,
+            ],
+        ], TaskOutcomeCarrier::forRun($claim->run, $workflowTask));
+        self::assertSame($taskAttributes, $storedTask->fresh()->getRawOriginal());
+        self::assertSame($runAttributes, $claim->run->fresh()->getRawOriginal());
+        self::assertSame($history, WorkflowHistoryEvent::query()->orderBy('sequence')->get()->map(
+            static fn ($row): array => $row->getRawOriginal(),
+        )->all());
         self::assertSame([
             'recorded' => false,
             'reason' => 'stale_attempt',
@@ -462,6 +615,16 @@ final class ActivityExecutionTracingTest extends TestCase
         foreach ($processing as $index => $span) {
             self::assertSame($run->id, $span->getAttributes()->get('workflow_run_id'));
             self::assertSame($phase === 'activity' && $index === 0, $span->getParentContext()->isValid());
+            self::assertSame(
+                $phase === 'activity' && $index === 0 ? null : 'discarded',
+                $span->getAttributes()
+                    ->get('durable.trace_context.disposition')
+            );
+            self::assertNotSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+            self::assertStringNotContainsString(
+                'optional telemetry cast failed',
+                json_encode($span->getAttributes()->toArray(), JSON_THROW_ON_ERROR)
+            );
         }
         self::assertCount(
             1,

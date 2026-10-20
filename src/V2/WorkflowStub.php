@@ -947,9 +947,10 @@ final class WorkflowStub
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         // Capture outside the storage transaction and preserve it across its retries.
         $observabilityContext = null;
+        $diagnostic = null;
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $observabilityContext = TraceCarrier::admissionParent();
+            $observabilityContext = TraceCarrier::admissionParent($diagnostic);
         }
         if (! $tracing) {
             return $this->admitStart($metadata, $startOptions, $observabilityContext);
@@ -958,7 +959,8 @@ final class WorkflowStub
         return ExecutionTracing::admission(
             $this->instance,
             fn () => $this->admitStart($metadata, $startOptions, $observabilityContext),
-            enabled: true
+            enabled: true,
+            diagnostic: $diagnostic
         );
     }
 
@@ -3221,9 +3223,10 @@ final class WorkflowStub
         $intakeGroupId = (string) Str::ulid();
         // Capture before locking. An existing run retains its original admission carrier.
         $observabilityContext = null;
+        $diagnostic = null;
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
-            $observabilityContext = TraceCarrier::admissionParent();
+            $observabilityContext = TraceCarrier::admissionParent($diagnostic);
         }
         $operation = fn (): SignalWithStartResult => $this->admitSignalWithStart(
             $name,
@@ -3237,7 +3240,7 @@ final class WorkflowStub
             return $operation();
         }
 
-        return ExecutionTracing::admission($this->instance, $operation, enabled: true);
+        return ExecutionTracing::admission($this->instance, $operation, enabled: true, diagnostic: $diagnostic);
     }
 
     private function admitSignalWithStart(

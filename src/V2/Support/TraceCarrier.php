@@ -44,8 +44,10 @@ final class TraceCarrier
         $fiber = Fiber::getCurrent();
         try {
             self::$admissionKey ??= Context::createKey('durable-workflow.schedule-admission');
+            $carrier = self::captureConfigured($diagnostic);
             $scope = Context::getCurrent()->with(self::$admissionKey, [
-                'carrier' => self::captureConfigured(),
+                'carrier' => $carrier,
+                'diagnostic' => $diagnostic,
                 'fiber' => $fiber,
             ])->activate();
             if ($fiber !== null) {
@@ -81,27 +83,43 @@ final class TraceCarrier
         return self::preparedAdmission() !== null;
     }
 
-    /**
-     * @return array{schema: string, version: int, carrier: array<string, string>}|null
-     */
-    public static function admissionParent(): ?array
+    public static function preparedAdmissionDiagnostic(): ?string
     {
-        $prepared = self::preparedAdmission();
-
-        return $prepared !== null ? $prepared['carrier'] : self::captureConfigured();
+        return self::preparedAdmission()['diagnostic'] ?? null;
     }
 
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function captureConfigured(): ?array
+    public static function admissionParent(?string &$diagnostic = null): ?array
     {
+        $prepared = self::preparedAdmission();
+        if ($prepared !== null) {
+            $diagnostic = $prepared['diagnostic'];
+
+            return $prepared['carrier'];
+        }
+
+        return self::captureConfigured($diagnostic);
+    }
+
+    /**
+     * @return array{schema: string, version: int, carrier: array<string, string>}|null
+     */
+    public static function captureConfigured(?string &$diagnostic = null): ?array
+    {
+        $diagnostic = null;
         try {
             if (! ExecutionTracing::enabled()) {
                 return null;
             }
-            return self::capture(ExecutionTracing::baggageAllowlist());
+            $carrier = self::capture(ExecutionTracing::baggageAllowlist(), $diagnostic);
+            ExecutionTracing::recordCarrierDiagnostic($diagnostic);
+
+            return $carrier;
         } catch (Throwable) {
+            $diagnostic = 'discarded';
+
             return null;
         }
     }
@@ -109,15 +127,18 @@ final class TraceCarrier
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function fromCommand(WorkflowCommand $command): ?array
+    public static function fromCommand(WorkflowCommand $command, ?string &$diagnostic = null): ?array
     {
+        $diagnostic = null;
         try {
             $stored = array_key_exists('observability_context', $command->getAttributes())
                 ? $command->getAttribute('observability_context') : null;
 
             // A link never imports the triggering caller's baggage into execution.
-            return self::normalize($stored);
+            return self::normalize($stored, diagnostic: $diagnostic);
         } catch (Throwable) {
+            $diagnostic = 'discarded';
+
             return null;
         }
     }
@@ -125,18 +146,21 @@ final class TraceCarrier
     /**
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function fromRun(WorkflowRun $run): ?array
+    public static function fromRun(WorkflowRun $run, ?string &$diagnostic = null): ?array
     {
+        $diagnostic = null;
         try {
             // Emission can be disabled without erasing a previously captured admission parent.
             $stored = array_key_exists('observability_context', $run->getAttributes())
                 ? $run->getAttribute('observability_context') : null;
-            if (! is_array($stored)) {
+            if ($stored === null) {
                 return null;
             }
-            return self::normalize($stored, ExecutionTracing::baggageAllowlist());
+            return self::normalize($stored, ExecutionTracing::baggageAllowlist(), $diagnostic);
         } catch (Throwable) {
             // Optional telemetry metadata must not interrupt child admission or retries.
+            $diagnostic = 'discarded';
+
             return null;
         }
     }
@@ -145,8 +169,9 @@ final class TraceCarrier
      * @param list<string> $baggageAllowlist
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function capture(array $baggageAllowlist = []): ?array
+    public static function capture(array $baggageAllowlist = [], ?string &$diagnostic = null): ?array
     {
+        $diagnostic = null;
         if (! class_exists(Globals::class)) {
             return null;
         }
@@ -157,13 +182,18 @@ final class TraceCarrier
 
             // Applications may also inject unrelated propagation formats.
             $carrier = array_intersect_key($carrier, self::LIMITS);
+            if ($carrier === []) {
+                return null;
+            }
 
             return self::normalize([
                 'schema' => self::SCHEMA,
                 'version' => 1,
                 'carrier' => $carrier,
-            ], $baggageAllowlist);
+            ], $baggageAllowlist, $diagnostic);
         } catch (Throwable) {
+            $diagnostic = 'discarded';
+
             return null;
         }
     }
@@ -172,8 +202,12 @@ final class TraceCarrier
      * @param list<string> $baggageAllowlist
      * @return array{schema: string, version: int, carrier: array<string, string>}|null
      */
-    public static function normalize(mixed $value, array $baggageAllowlist = []): ?array
-    {
+    public static function normalize(
+        mixed $value,
+        array $baggageAllowlist = [],
+        ?string &$diagnostic = null,
+    ): ?array {
+        $diagnostic = $value === null ? null : 'discarded';
         if (! is_array($value) || ($value['schema'] ?? null) !== self::SCHEMA
             || ($value['version'] ?? null) !== 1 || ! is_array($value['carrier'] ?? null)
             || array_diff(array_keys($value), ['schema', 'version', 'carrier']) !== []
@@ -219,7 +253,12 @@ final class TraceCarrier
                 'carrier' => $normalized,
             ];
 
-            return strlen(json_encode($result, JSON_THROW_ON_ERROR)) <= 4096 ? $result : null;
+            if (strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) {
+                return null;
+            }
+            $diagnostic = $normalized === $carrier ? null : 'filtered';
+
+            return $result;
         } catch (Throwable) {
             return null;
         }

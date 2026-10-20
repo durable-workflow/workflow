@@ -76,7 +76,7 @@ final class RunWorkflowTask implements ShouldQueue
         /** @var WorkflowRun $run */
         $run = $task->getRelation('run');
         $allowlist = ExecutionTracing::baggageAllowlist();
-        $storedContext = TraceCarrier::fromRun($run);
+        $storedContext = TraceCarrier::fromRun($run, $diagnostic);
         // Activate and end the segment outside the execution transaction.
         ExecutionTracing::workflow(
             [
@@ -85,6 +85,7 @@ final class RunWorkflowTask implements ShouldQueue
                 'workflow_type' => $run->workflow_type,
                 'namespace' => $run->namespace,
                 'task_id' => $task->id,
+                'durable.trace_context.disposition' => $diagnostic,
                 ...TaskTraceTimings::forTask($task),
             ],
             $storedContext,

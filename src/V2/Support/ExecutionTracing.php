@@ -390,14 +390,20 @@ final class ExecutionTracing
         return $fields;
     }
 
-    public static function admission(WorkflowInstance $instance, callable $operation, bool $enabled = false): mixed
-    {
+    public static function admission(
+        WorkflowInstance $instance,
+        callable $operation,
+        bool $enabled = false,
+        ?string $diagnostic = null,
+    ): mixed {
         if (! $enabled || ! class_exists(Globals::class)) {
             return $operation();
         }
-        $attributes = [];
+        $attributes = [
+            'durable.trace_context.disposition' => $diagnostic,
+        ];
         try {
-            $attributes = [
+            $attributes += [
                 'workflow_instance_id' => $instance->getRawOriginal('id'),
                 'workflow_type' => $instance->getRawOriginal('workflow_type'),
                 'namespace' => $instance->getRawOriginal('namespace'),
@@ -446,6 +452,21 @@ final class ExecutionTracing
         }
     }
 
+    public static function recordCarrierDiagnostic(?string $diagnostic): void
+    {
+        if (! in_array($diagnostic, ['discarded', 'filtered'], true) || ! self::enabled()) {
+            return;
+        }
+        try {
+            $span = Span::getCurrent();
+            if ($span->isRecording()) {
+                $span->setAttribute('durable.trace_context.disposition', $diagnostic);
+            }
+        } catch (Throwable) {
+            // Diagnostics cannot replace the business result or export independently.
+        }
+    }
+
     public static function linkSignal(WorkflowRun $run, WorkflowCommand $command): void
     {
         self::linkCommand($run, $command, CommandType::Signal);
@@ -471,7 +492,8 @@ final class ExecutionTracing
             if (! $state instanceof TraceLinkState || ! $state->isRecording()) {
                 return;
             }
-            $carrier = TraceCarrier::normalize($stored);
+            $carrier = TraceCarrier::normalize($stored, diagnostic: $diagnostic);
+            self::recordCarrierDiagnostic($diagnostic);
             if ($carrier !== null) {
                 self::linkCarrier($state, $carrier, [
                     'durable.link.type' => 'buffered_schedule',
@@ -561,7 +583,8 @@ final class ExecutionTracing
             if (! $state instanceof TraceLinkState || ! $state->isRecording()) {
                 return;
             }
-            $carrier = TraceCarrier::fromCommand($command);
+            $carrier = TraceCarrier::fromCommand($command, $diagnostic);
+            self::recordCarrierDiagnostic($diagnostic);
             if ($carrier === null) {
                 return;
             }
@@ -630,7 +653,9 @@ final class ExecutionTracing
         $scope = null;
         try {
             $fields = self::fields($attributes);
-            $parent = self::parentContext($name, $persistedContext, $baggageAllowlist, $fields);
+            $parent = self::parentContext($name, $persistedContext, $baggageAllowlist, $fields, $diagnostic);
+            $attributes['durable.trace_context.disposition'] ??= $diagnostic
+                ?? ($name === 'durable.schedule.trigger' ? TraceCarrier::preparedAdmissionDiagnostic() : null);
             $spanAttributes = self::spanAttributes($name, $attributes, $fields);
             $version = InstalledVersions::isInstalled(self::PACKAGE_NAME)
                 ? InstalledVersions::getPrettyVersion(self::PACKAGE_NAME)
@@ -646,7 +671,10 @@ final class ExecutionTracing
                 ->setParent($parent)
                 ->setAttributes($spanAttributes);
             if ($dispatchContext !== null) {
-                $dispatch = TaskTraceCarrier::fromJob($dispatchContext, $fields['task_id'] ?? '');
+                $dispatch = TaskTraceCarrier::fromJob($dispatchContext, $fields['task_id'] ?? '', $dispatchDiagnostic);
+                if ($dispatchDiagnostic !== null) {
+                    $builder->setAttribute('durable.queue_context.disposition', $dispatchDiagnostic);
+                }
                 if ($dispatch !== null) {
                     $linked = TraceContextPropagator::getInstance()->extract(
                         $dispatch['carrier'],
@@ -733,13 +761,15 @@ final class ExecutionTracing
         mixed $persistedContext,
         array $baggageAllowlist,
         array $fields,
+        ?string &$diagnostic,
     ): ContextInterface {
         // Local callbacks may share their hosting task. Other worker segments recover the stored parent.
         $localParent = in_array($name, ['durable.workflow.admission', 'durable.schedule.trigger'], true)
             || ($name === 'durable.task.dispatch' && self::current() !== []);
         $hostingTask = $name === 'durable.local_activity.attempt' && self::matchesHostingTask($fields);
         $parent = $localParent || $hostingTask ? Context::getCurrent() : Context::getRoot();
-        $carrier = $hostingTask ? null : TraceCarrier::normalize($persistedContext, $baggageAllowlist);
+        $diagnostic = null;
+        $carrier = $hostingTask ? null : TraceCarrier::normalize($persistedContext, $baggageAllowlist, $diagnostic);
         if ($carrier !== null) {
             $parent = TraceContextPropagator::getInstance()->extract($carrier['carrier'], context: $parent);
             $parent = BaggagePropagator::getInstance()->extract($carrier['carrier'], context: $parent);
@@ -778,6 +808,9 @@ final class ExecutionTracing
     private static function spanAttributes(string $name, array $attributes, array $fields): array
     {
         $spanAttributes = $fields;
+        if (in_array($attributes['durable.trace_context.disposition'] ?? null, ['discarded', 'filtered'], true)) {
+            $spanAttributes['durable.trace_context.disposition'] = $attributes['durable.trace_context.disposition'];
+        }
         foreach (self::TIMINGS as $key) {
             $value = $attributes[$key] ?? null;
             if ((is_int($value) || is_float($value)) && is_finite((float) $value) && $value >= 0) {

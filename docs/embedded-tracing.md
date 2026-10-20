@@ -17,6 +17,21 @@ operation. An unavailable or non-array baggage allowlist permits no baggage;
 only string entries are used. Neither optional setting can prevent admission,
 timer or activity execution, or replace the workflow's own failure.
 
+Malformed, oversized, unsupported or unreadable carrier metadata is discarded.
+Recording processing/admission spans report only the bounded attribute
+`durable.trace_context.disposition=discarded`. When normalization retains a valid
+parent but filters or canonicalizes its propagation headers, the value is
+`filtered`. Ordinary absent legacy metadata has no diagnostic. Captured caller
+and signal/update-link diagnostics can also annotate the current recording
+application span. These attributes contain no header values, baggage keys or
+values, payloads or exception messages, and do not mark business work as failed.
+They add no durable field, history event, independent export or logging call.
+Sampling and application SDK limits still apply: no diagnostic is guaranteed
+when no span records, and disabled instrumentation emits none.
+Invalid queue-dispatch link metadata uses the separate bounded attribute
+`durable.queue_context.disposition`; dropping that link never replaces the
+run's durable parent or task authority.
+
 ## Configure the source integration
 
 In a qualification application, use one application-owned environment flag for

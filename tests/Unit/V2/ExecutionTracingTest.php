@@ -25,6 +25,7 @@ use OpenTelemetry\SDK\Trace\SamplingResult;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -126,6 +127,64 @@ final class ExecutionTracingTest extends TestCase
         self::assertSame(self::PARENT_ID, $spans[1]->getParentContext()->getSpanId());
         self::assertSame('origin-request', $spans[1]->getAttributes()->get('request_id'));
         self::assertNull($spans[1]->getAttributes()->get('arguments'));
+    }
+
+    public static function diagnosticCarriers(): iterable
+    {
+        foreach (TraceCarrierTest::invalidCarriers() as $name => [$carrier]) {
+            yield $name => [$carrier, $carrier === null ? null : 'discarded', false];
+        }
+        yield 'valid' => [self::carrier(), null, true];
+        $filtered = self::carrier();
+        $filtered['carrier']['baggage'] = 'private=secret';
+        yield 'filtered' => [$filtered, 'filtered', true];
+    }
+
+    #[DataProvider('diagnosticCarriers')]
+    public function testCarrierDiagnosticsAreBoundedAndDoNotTurnSuccessfulWorkIntoErrors(
+        mixed $carrier,
+        ?string $diagnostic,
+        bool $parentValid,
+    ): void {
+        self::assertSame(7, ExecutionTracing::activity(
+            self::fields(),
+            $carrier,
+            static fn (): int => 7,
+            enabled: true
+        ));
+        $spans = $this->exporter->getSpans();
+        self::assertCount(1, $spans);
+        $span = $spans[0];
+        self::assertSame($diagnostic, $span->getAttributes()->get('durable.trace_context.disposition'));
+        self::assertSame($parentValid, $span->getParentContext()->isValid());
+        self::assertNotSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+        self::assertSame([], $span->getEvents());
+        $attributes = json_encode($span->getAttributes()->toArray(), JSON_THROW_ON_ERROR);
+        foreach (['secret', 'private', 'traceparent', 'baggage', 'must not be captured'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $attributes);
+        }
+    }
+
+    public function testDiscardedQueueLinkPreservesTheRunParentAndOriginalBusinessResult(): void
+    {
+        self::assertSame(7, ExecutionTracing::activity(
+            self::fields(),
+            self::carrier(),
+            static fn (): int => 7,
+            enabled: true,
+            dispatchContext: 'private-invalid-queue-context'
+        ));
+        $span = $this->exporter->getSpans()[0];
+        self::assertSame('discarded', $span->getAttributes()->get('durable.queue_context.disposition'));
+        self::assertSame(self::PARENT_ID, $span->getParentContext()->getSpanId());
+        self::assertSame([], $span->getLinks());
+        self::assertSame([], $span->getEvents());
+        self::assertNotSame(StatusCode::STATUS_ERROR, $span->getStatus()->getCode());
+        self::assertStringNotContainsString('private-invalid-queue-context', json_encode(
+            $span->getAttributes()
+                ->toArray(),
+            JSON_THROW_ON_ERROR
+        ));
     }
 
     public function testAttemptsHaveDistinctSpansAndNestedScopesRestoreTheirCaller(): void

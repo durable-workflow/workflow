@@ -112,6 +112,7 @@ final class RunTimerTask implements ShouldQueue
         /** @var WorkflowRun $run */
         $run = $claimedTask->getRelation('run');
         $allowlist = ExecutionTracing::baggageAllowlist();
+        $storedContext = TraceCarrier::fromRun($run, $diagnostic);
         ExecutionTracing::timer(
             [
                 'workflow_instance_id' => $run->workflow_instance_id,
@@ -120,9 +121,10 @@ final class RunTimerTask implements ShouldQueue
                 'namespace' => $run->namespace,
                 'task_id' => $claimedTask->id,
                 'timer_id' => $timer->id,
+                'durable.trace_context.disposition' => $diagnostic,
                 ...TaskTraceTimings::forTask($claimedTask, $timer),
             ],
-            TraceCarrier::fromRun($run),
+            $storedContext,
             fn () => $this->executeClaim($timer->id),
             $allowlist,
             true,

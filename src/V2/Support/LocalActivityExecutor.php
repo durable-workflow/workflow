@@ -272,6 +272,7 @@ final class LocalActivityExecutor
 
         $operation = fn (): array => $this->invokeCallback($run, $task, $execution);
         if (ExecutionTracing::enabled() && ! WorkflowStub::hasMock($execution->activity_class)) {
+            $storedContext = TraceCarrier::fromRun($run, $diagnostic);
             [$result, $throwable] = ExecutionTracing::localActivity(
                 [
                     'workflow_instance_id' => $run->workflow_instance_id,
@@ -283,8 +284,9 @@ final class LocalActivityExecutor
                     'activity_type' => $execution->activity_type,
                     'activity_attempt_id' => $attempt->id,
                     'activity_attempt_number' => $attempt->attempt_number,
+                    'durable.trace_context.disposition' => $diagnostic,
                 ],
-                TraceCarrier::fromRun($run),
+                $storedContext,
                 static function () use ($operation): array {
                     [$result, $throwable] = $operation();
                     if ($throwable !== null) {

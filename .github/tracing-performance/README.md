@@ -1,8 +1,9 @@
 # Embedded tracing overhead workload
 
 This is the qualification recipe for draft Workflow #788. The
-[October 17 measurement](RESULTS-2026-10-17.md) completed, but did not qualify
-any of the four CPU budgets. The current prospective recipe uses the stable
+[October 17 measurement](RESULTS-2026-10-17.md) and
+[October 20 official-Collector measurement](RESULTS-2026-10-20.md) completed;
+neither qualified any of its four CPU budgets. The current recipe uses the stable
 OpenTelemetry API baggage fix. The remaining acceptance requirements of
 [#773](https://github.com/durable-workflow/workflow/issues/773) are separate
 release gates.
