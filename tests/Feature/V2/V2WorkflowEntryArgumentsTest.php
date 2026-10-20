@@ -15,6 +15,7 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StartOptions;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
@@ -147,8 +148,12 @@ final class V2WorkflowEntryArgumentsTest extends TestCase
         Queue::fake();
         $class = count($arguments) === 1 ? EntryOne::class : EntryTwo::class;
         $stub = WorkflowStub::make($class, 'entry-' . bin2hex(random_bytes(6)));
-        $stub->start(...$arguments);
+        $stub->start(new StartOptions(executionTimeoutSeconds: 60, runTimeoutSeconds: 30), ...$arguments);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
+        self::assertNotNull($run->execution_deadline_at);
+        self::assertNotNull($run->run_deadline_at);
+        self::assertTrue($run->execution_deadline_at->equalTo($run->started_at->copy()->addSeconds(60)));
+        self::assertTrue($run->run_deadline_at->equalTo($run->started_at->copy()->addSeconds(30)));
         $first = WorkflowTask::query()->where('workflow_run_id', $run->id)->where(
             'task_type',
             TaskType::Workflow->value
