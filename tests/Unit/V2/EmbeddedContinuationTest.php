@@ -222,6 +222,43 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame(1, ContinuationActivity::$calls);
     }
 
+    public function testTracingEnabledAfterSessionCreationStillStartsCold(): void
+    {
+        $this->enable();
+        $armed = false;
+        $toggle = true;
+        WorkflowTask::updated(static function (WorkflowTask $task) use (&$armed, &$toggle): void {
+            if (! $armed && $task->status->value === 'leased') {
+                $armed = true;
+                DB::afterCommit(static function () use (&$toggle): void {
+                    WorkflowRun::retrieved(static function () use (&$toggle): void {
+                        if ($toggle) {
+                            $toggle = false;
+                            config()
+                                ->set('workflows.tracing.enabled', true);
+                        }
+                    });
+                });
+            }
+        });
+        $stub = WorkflowStub::make(ContinuationWorkflow::class, 'entry-toggle', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertFalse($toggle);
+        $this->assertTrue(ExecutionTracing::enabled());
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        config()
+            ->set('workflows.tracing.enabled', false);
+        $this->workOnce();
+        $this->workOnce();
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame(2, ContinuationWorkflow::$entries);
+        $this->assertSame(1, ContinuationActivity::$calls);
+    }
+
     public static function profiles(): array
     {
         return [

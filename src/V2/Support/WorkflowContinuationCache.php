@@ -47,11 +47,11 @@ final class WorkflowContinuationCache
     {
         // Retained Fibers keep their entry context. Traced tasks need a fresh
         // Fiber until restoring the new task context on each resume is qualified.
-        if (ExecutionTracing::enabled()) {
+        $tracing = ExecutionTracing::enabled();
+        if ($tracing) {
             $this->clear('evict_tracing');
-            return null;
         }
-        if (! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
+        if ($tracing || ! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
             || config('workflows.v2.live_execution.workflows', []) === []) {
             return null;
         }

@@ -45,18 +45,21 @@ final class WorkflowContinuationSession
     public function begin(WorkflowRun $run, WorkflowTask $task, string $class): ?WorkflowContinuation
     {
         $this->observe($run);
-        if (ExecutionTracing::enabled()) {
+        $tracing = ExecutionTracing::enabled();
+        if ($tracing) {
             $this->cache->clear('evict_tracing');
-            $this->disable('cold_tracing');
-            return null;
         }
         $build = config('workflows.v2.live_execution.build');
-        $eligible = is_string($build) && $build !== '' && $this->eligibleClass($class)
+        $eligible = ! $tracing && is_string($build) && $build !== '' && $this->eligibleClass($class)
             && $this->database === $run->getConnection() && $this->database->transactionLevel() === 1
             && $this->hasAuthority($run, $task) && $this->safeHistory($run);
         $prefix = $eligible ? $this->prefix($run) : null;
         if ($prefix === null) {
-            $this->disable($eligible ? 'cold_history_cursor' : 'cold_profile');
+            $this->disable(match (true) {
+                $tracing => 'cold_tracing',
+                $eligible => 'cold_history_cursor',
+                default => 'cold_profile',
+            });
             return null;
         }
         $this->cache->count('validated_history_events', count($prefix));

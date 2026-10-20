@@ -161,9 +161,16 @@ final class CancellationExecutionTracingTest extends TestCase
                 $requested['cancellation']['request_carrier'],
                 $finished['cancellation']['request_carrier']
             );
+            $terminal = end($finished['cancellation']['history_payloads']);
             self::assertSame($cooperative ? [
                 'cleanup' => [9007199254740993, null, '雪'],
-            ] : [], $finished['cancellation']['memo']);
+            ] : [], $finished['cancellation']['memo'], json_encode([
+                'cleanup_deadline' => $finished['cancellation']['deadline'],
+                'terminal' => is_array($terminal) ? array_intersect_key($terminal, [
+                    'reason' => true,
+                    'cancellation_cleanup' => true,
+                ]) : null,
+            ], JSON_THROW_ON_ERROR));
             self::assertCount($cooperative ? 1 : 0, $finished['cancellation']['activities']);
             if ($cooperative) {
                 self::assertSame('completed', $finished['cancellation']['activities'][0]['status']);

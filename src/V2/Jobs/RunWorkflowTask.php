@@ -120,16 +120,7 @@ final class RunWorkflowTask implements ShouldQueue
                     ->findOrFail($task->workflow_run_id);
 
                 if (in_array($run->status->value, ['completed', 'failed', 'cancelled', 'terminated'], true)) {
-                    $task->forceFill([
-                        'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : (
-                            $run->status->value === 'failed' ? TaskStatus::Failed : TaskStatus::Completed
-                        ),
-                        'lease_expires_at' => null,
-                    ])->save();
-
-                    $this->projectRun(
-                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-                    );
+                    $this->settleTerminalTask($task, $run);
 
                     return null;
                 }
@@ -175,6 +166,18 @@ final class RunWorkflowTask implements ShouldQueue
         if ($nextTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($nextTask);
         }
+    }
+
+    private function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void
+    {
+        $task->forceFill([
+            'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : (
+                $run->status->value === 'failed' ? TaskStatus::Failed : TaskStatus::Completed
+            ),
+            'lease_expires_at' => null,
+        ])->save();
+
+        $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
     }
 
     /**
