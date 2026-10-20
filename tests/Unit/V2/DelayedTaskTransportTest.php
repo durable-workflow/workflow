@@ -78,7 +78,8 @@ final class DelayedTaskTransportTest extends TestCase
         }
         $task = $this->readyTask($stub->runId(), $type);
         $task->forceFill([
-            'available_at' => now()->addDay(),
+            'available_at' => now()
+                ->addDay(),
         ])->save();
         $due = $task->getRawOriginal('available_at');
         $history = $this->history($stub->runId());
@@ -169,7 +170,8 @@ final class DelayedTaskTransportTest extends TestCase
         $childId = $call->resolved_child_run_id;
         $task = $this->readyTask($childId, TaskType::Workflow);
         $task->forceFill([
-            'available_at' => now()->addHour(),
+            'available_at' => now()
+                ->addHour(),
         ])->save();
         $due = $task->getRawOriginal('available_at');
         $parentHistory = $this->history($parent->runId());
@@ -197,7 +199,9 @@ final class DelayedTaskTransportTest extends TestCase
         $this->assertSame($childHistory, $this->history($childId));
         $this->assertSame($deadlines, $this->deadlines($childId));
         $this->assertSame(
-            now()->addSeconds(900)->toISOString(),
+            now()
+                ->addSeconds(900)
+                ->toISOString(),
             Bus::dispatched(RunWorkflowTask::class)->last()->delay->toISOString()
         );
 
