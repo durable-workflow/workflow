@@ -190,15 +190,16 @@ final class WorkflowContinuationSession
             $reflection->getMethods(),
             static fn ($method): bool => $method->getAttributes() !== []
         );
-        $injectedParameters = array_filter(
+        $unsupportedParameters = array_filter(
             EntryMethod::forWorkflow($class)->getParameters(),
             static fn ($parameter): bool => ! $parameter->getType() instanceof ReflectionNamedType
-                || ! $parameter->getType()
-                    ->isBuiltin()
+                || ! in_array($parameter->getType()->getName(), [
+                    'int', 'float', 'string', 'bool', 'array', 'null', 'true', 'false',
+                ], true)
         );
 
         return $reflection->getConstructor() === null && $unsupportedAttributes === []
-            && $decoratedMethods === [] && $injectedParameters === [];
+            && $decoratedMethods === [] && $unsupportedParameters === [];
     }
 
     private function safeHistory(WorkflowRun $run): bool

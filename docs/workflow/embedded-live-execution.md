@@ -58,8 +58,9 @@ version markers, side effects and other excluded operations retain their cold
 contract. An excluded operation encountered after a retained prefix triggers
 cold replay before its durable handler. Repair/redrive history can also select
 cold replay. Recorded successful business effects are not repeated.
-The initial retained profile requires declared builtin entry-parameter types;
-untyped, union/intersection and object parameters select cold replay.
+The initial retained profile requires declared scalar or array entry-parameter
+types. Untyped, union/intersection, object, mixed, callable and iterable
+parameters select cold replay, including when their current argument is null.
 
 Tracing integration is still an explicit qualification gate: a retained Fiber
 must never carry an ended processing span or a previous job's task context.

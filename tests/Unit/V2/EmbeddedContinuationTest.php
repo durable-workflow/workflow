@@ -942,6 +942,42 @@ final class EmbeddedContinuationTest extends TestCase
         }
     }
 
+    public static function broadEntryTypes(): array
+    {
+        return [
+            'object' => [ContinuationObjectEntryWorkflow::class],
+            'mixed' => [ContinuationMixedEntryWorkflow::class],
+            'iterable' => [ContinuationIterableEntryWorkflow::class],
+            'callable' => [ContinuationCallableEntryWorkflow::class],
+        ];
+    }
+
+    /**
+     * @param class-string<ContinuationBroadEntryWorkflow> $class
+     */
+    #[DataProvider('broadEntryTypes')]
+    public function testObjectCapableBuiltinEntryTypesKeepTheColdLifetime(string $class): void
+    {
+        ContinuationBroadEntryWorkflow::$entries = [];
+        config()
+            ->set('workflows.v2.live_execution', [
+                'workflows' => [$class],
+                'build' => 'object-capable-entry',
+            ]);
+        $stub = WorkflowStub::make($class, 'broad-entry', 'continuation-test');
+        $stub->start();
+        $this->workOnce();
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $this->workOnce();
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertTrue($stub->output());
+        $this->assertSame(2, ContinuationBroadEntryWorkflow::$entries[$class]);
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+        $this->assertSame(0, DB::table('jobs')->count());
+    }
+
     /**
      * @param class-string<Workflow> $class
      */
@@ -1181,6 +1217,51 @@ final class ContinuationWorkflow extends Workflow
         Workflow::timer(1);
 
         return $value;
+    }
+}
+
+abstract class ContinuationBroadEntryWorkflow extends Workflow
+{
+    public static array $entries = [];
+
+    protected function park(mixed $context): bool
+    {
+        self::$entries[static::class] = (self::$entries[static::class] ?? 0) + 1;
+        Workflow::timer(1);
+
+        return $context === null;
+    }
+}
+
+final class ContinuationObjectEntryWorkflow extends ContinuationBroadEntryWorkflow
+{
+    public function handle(?object $context = null): bool
+    {
+        return $this->park($context);
+    }
+}
+
+final class ContinuationMixedEntryWorkflow extends ContinuationBroadEntryWorkflow
+{
+    public function handle(mixed $context = null): bool
+    {
+        return $this->park($context);
+    }
+}
+
+final class ContinuationIterableEntryWorkflow extends ContinuationBroadEntryWorkflow
+{
+    public function handle(?iterable $context = null): bool
+    {
+        return $this->park($context);
+    }
+}
+
+final class ContinuationCallableEntryWorkflow extends ContinuationBroadEntryWorkflow
+{
+    public function handle(?callable $context = null): bool
+    {
+        return $this->park($context);
     }
 }
 
