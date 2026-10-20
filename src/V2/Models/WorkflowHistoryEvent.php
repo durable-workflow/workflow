@@ -19,6 +19,7 @@ use Workflow\V2\Support\HistoryPayloadJson;
 use Workflow\V2\Support\HistoryRecordedAt;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\PendingSignalCloser;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 
 class WorkflowHistoryEvent extends Model
@@ -135,9 +136,11 @@ class WorkflowHistoryEvent extends Model
                     'last_progress_at' => $now,
                 ])->save();
 
+                PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
+
                 $run->forceFill([
-                    'last_history_sequence' => $sequence,
-                    'last_progress_at' => $now,
+                    'last_history_sequence' => $lockedRun->last_history_sequence,
+                    'last_progress_at' => $lockedRun->last_progress_at,
                 ]);
                 $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
 

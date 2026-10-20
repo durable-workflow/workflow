@@ -3746,7 +3746,6 @@ final class WorkflowExecutor
             $now,
             $childCallId,
         );
-        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
@@ -3843,23 +3842,6 @@ final class WorkflowExecutor
             ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
-        $run->forceFill([
-            'status' => RunStatus::Completed,
-            'closed_reason' => 'continued',
-            'closed_at' => $now,
-            'last_progress_at' => $now,
-        ])->save();
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
-            'sequence' => $sequence,
-            'continued_to_run_id' => $continuedRun->id,
-            'continued_to_run_number' => $continuedRun->run_number,
-            'workflow_link_id' => $link->id,
-            'closed_reason' => 'continued',
-        ], $task);
-
-        PendingUpdateCloser::closeForTerminalRun($run, $task);
-
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
         $continuedMemo = AvroValueJsonProjection::project($continuedRun->typedMemos());
@@ -3905,6 +3887,8 @@ final class WorkflowExecutor
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ], null, $startCommand);
+
+        ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
