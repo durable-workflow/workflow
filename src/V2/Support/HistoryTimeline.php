@@ -375,6 +375,7 @@ final class HistoryTimeline
             HistoryEventType::ArchiveRequested => 'command',
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalWaitCancelled,
+            HistoryEventType::SignalRejected,
             HistoryEventType::SignalApplied => 'signal',
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
@@ -529,6 +530,9 @@ final class HistoryTimeline
             HistoryEventType::SignalApplied => $signalName === null
                 ? 'Signal applied.'
                 : sprintf('Applied signal %s.', $signalName),
+            HistoryEventType::SignalRejected => $signalName === null
+                ? 'Signal closed without application.'
+                : sprintf('Signal %s closed without application: %s.', $signalName, $rejectionReason ?? 'run closed'),
             HistoryEventType::UpdateAccepted => $updateName === null
                 ? 'Update accepted.'
                 : sprintf('Accepted update %s.', $updateName),
@@ -1193,6 +1197,7 @@ final class HistoryTimeline
             HistoryEventType::StartAccepted,
             HistoryEventType::StartRejected,
             HistoryEventType::SignalReceived,
+            HistoryEventType::SignalRejected,
             HistoryEventType::UpdateAccepted,
             HistoryEventType::UpdateRejected,
             HistoryEventType::UpdateApplied,

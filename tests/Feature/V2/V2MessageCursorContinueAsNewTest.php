@@ -106,8 +106,9 @@ final class V2MessageCursorContinueAsNewTest extends TestCase
     {
         Queue::fake();
 
-        // Use the signal-with-start pattern: send signal at start, then continue-as-new
-        // discards the signal (since run 1 doesn't await it), and run 2 picks up a fresh signal.
+        // The initial run continues before these two signals are submitted.
+        // The successor consumes the first and closes with an explicit
+        // disposition for the second signal it did not await.
         $workflow = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class, 'cursor-continue-2');
         $workflow->start(0);
 

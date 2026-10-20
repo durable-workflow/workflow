@@ -30,36 +30,41 @@ final class ContinuedRunUpdateHandoff
                 continue;
             }
 
-            /** @var WorkflowCommand|null $command */
-            $command = $update->workflow_command_id === null
-                ? null
-                : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
-                    ->lockForUpdate()
-                    ->find($update->workflow_command_id);
+            self::transfer($update, $continuedRun);
+        }
+    }
 
-            $update->forceFill([
+    public static function transfer(WorkflowUpdate $update, WorkflowRun $continuedRun): void
+    {
+        /** @var WorkflowCommand|null $command */
+        $command = $update->workflow_command_id === null
+            ? null
+            : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->lockForUpdate()
+                ->find($update->workflow_command_id);
+
+        $update->forceFill([
+            'workflow_run_id' => $continuedRun->id,
+            'resolved_workflow_run_id' => $continuedRun->id,
+        ])->save();
+
+        if ($command instanceof WorkflowCommand
+            && $command->command_type === CommandType::Update
+            && $command->status === CommandStatus::Accepted
+        ) {
+            $command->forceFill([
                 'workflow_run_id' => $continuedRun->id,
                 'resolved_workflow_run_id' => $continuedRun->id,
             ])->save();
-
-            if ($command instanceof WorkflowCommand
-                && $command->command_type === CommandType::Update
-                && $command->status === CommandStatus::Accepted
-            ) {
-                $command->forceFill([
-                    'workflow_run_id' => $continuedRun->id,
-                    'resolved_workflow_run_id' => $continuedRun->id,
-                ])->save();
-            }
-
-            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::UpdateAccepted, [
-                'workflow_command_id' => $command?->id,
-                'update_id' => $update->id,
-                'workflow_instance_id' => $continuedRun->workflow_instance_id,
-                'workflow_run_id' => $continuedRun->id,
-                'update_name' => $update->update_name,
-                'arguments' => $update->arguments,
-            ], null, $command);
         }
+
+        WorkflowHistoryEvent::record($continuedRun, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $command?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'workflow_run_id' => $continuedRun->id,
+            'update_name' => $update->update_name,
+            'arguments' => $update->arguments,
+        ], null, $command);
     }
 }
