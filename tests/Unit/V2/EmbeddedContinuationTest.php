@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Jobs\DatabaseJob;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -97,6 +99,7 @@ final class EmbeddedContinuationTest extends TestCase
             'changed timer model' => [true, 2, 1, 'timer_model'],
             'changed task model' => [true, 2, 1, 'task_model'],
             'ready task transport redispatch' => [true, 1, 1, 'redispatch'],
+            'uncertain broker acknowledgement' => [true, 2, 2, 'broker_ack'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
             'worker stop' => [true, 2, 1, 'stop'],
             'container binding stays cold' => [true, 3, 2, 'binding'],
@@ -113,6 +116,9 @@ final class EmbeddedContinuationTest extends TestCase
         $maintenance = new ContinuationTaskMaintenance();
         WorkflowTask::updated($maintenance->observe(...));
         $heldDelivery = null;
+        $brokerFault = false;
+        $entriesAtBrokerFault = null;
+        $brokerFailures = [];
         config()
             ->set('workflows.v2.live_execution', [
                 'workflows' => $enabled ? [ContinuationWorkflow::class] : [],
@@ -163,6 +169,26 @@ final class EmbeddedContinuationTest extends TestCase
             };
             config()
                 ->set('workflows.v2.' . $change, $model);
+        } elseif ($change === 'broker_ack') {
+            $deliveryId = DB::table('jobs')->sole()->id;
+            $brokerFault = true;
+            $this->app['events']->listen(JobFailed::class, static function (JobFailed $event) use (
+                &$brokerFailures
+            ): void {
+                $brokerFailures[] = [(string) $event->job->getJobId(), $event->exception::class];
+            });
+            DB::connection()->beforeExecuting(static function (string $sql, array $bindings) use (
+                $deliveryId,
+                &$brokerFault,
+                &$entriesAtBrokerFault
+            ): void {
+                if ($brokerFault && str_starts_with($sql, 'delete from "jobs"')
+                    && (string) ($bindings[0] ?? '') === (string) $deliveryId) {
+                    $brokerFault = false;
+                    $entriesAtBrokerFault = app(WorkflowContinuationCache::class)->snapshot()['entries'];
+                    throw new RuntimeException('controlled-broker-ack');
+                }
+            });
         } elseif ($change === 'redispatch') {
             // Reserve through the real broker, then leave the logical task unclaimed.
             $heldDelivery = Queue::connection('database')->pop('default');
@@ -182,6 +208,12 @@ final class EmbeddedContinuationTest extends TestCase
             ], JSON_THROW_ON_ERROR));
         }
         $this->workOnce(); // workflow resumes, then parks on its timer
+        if ($change === 'broker_ack') {
+            $this->assertFalse($brokerFault);
+            $this->assertSame(1, $entriesAtBrokerFault);
+            $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+            $this->assertSame(1, app(WorkflowContinuationCache::class)->snapshot()['counts']['evict_job_exception']);
+        }
         if ($heldDelivery instanceof DatabaseJob) {
             $this->app->make('queue.worker')
                 ->process(
@@ -193,6 +225,22 @@ final class EmbeddedContinuationTest extends TestCase
         Carbon::setTestNow(now()->addSeconds(2));
         $this->workOnce(); // durable timer fires through the ordinary queue
         $this->workOnce(); // final workflow continuation
+        if ($change === 'broker_ack') {
+            // The failed delete marked only the in-memory delivery deleted. Let
+            // the broker expire its real reservation after the workflow finishes.
+            $this->assertSame('completed', $stub->refresh()->status());
+            $terminalHistory = $run->historyEvents()
+                ->get()
+                ->map->getRawOriginal()
+                ->all();
+            $obsolete = DB::table('jobs')->sole();
+            $this->assertSame($deliveryId, $obsolete->id);
+            $this->assertNotNull($obsolete->reserved_at);
+            Carbon::setTestNow(now()->addSeconds((int) config('queue.connections.database.retry_after') + 1));
+            $this->workOnce(); // Its original tries=1 rejects the obsolete broker retry.
+            $this->assertSame($terminalHistory, $run->historyEvents()->get()->map->getRawOriginal()->all());
+            $this->assertSame([[(string) $deliveryId, MaxAttemptsExceededException::class]], $brokerFailures);
+        }
         $this->assertSame('completed', $stub->refresh()->status(), Artisan::output());
         $this->assertSame([
             'integer' => 9007199254740993,

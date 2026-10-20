@@ -144,30 +144,6 @@ records eighteen new same-host originals for the current clock/listener observer
 It separates actual authoring, initial loading, validation, dispatch and the
 history/projection role, with per-host overhead and repeated-setting drift.
 
-## Installed-package acceptance
-
-After publication, repeat the continuation, cache, process-loss and execution
-profile controls in a fresh Composer project requiring the exact released
-Workflow tag. Use the Testbench/PHPUnit versions from the declared input lock.
-Copy the runner's `tests/Fixtures`, `tests/Support`, `tests/bootstrap.php`,
-`tests/TestSuiteSubscriber.php`, `phpunit.xml` and these four test files into
-that project, preserving their relative paths:
-
-```text
-tests/Unit/V2/EmbeddedContinuationTest.php
-tests/Unit/V2/EmbeddedContinuationProcessTest.php
-tests/Unit/V2/WorkflowContinuationCacheTest.php
-tests/Unit/V2/WorkflowExecutionProfileTest.php
-```
-
-The consumer autoload maps `Tests` only to its copied fixtures; all `Workflow`
-classes and functions must load from its normally installed package. Check
-the installed version/reference and every `src`/`resources` byte against the
-immutable release before running `vendor/bin/phpunit` on those four files.
-The process-loss fixtures launch children from that same consumer directory.
-Retain the actual consumer lock, PHP/framework/tool versions, loaded-file
-provenance and outcomes in the owning release record. A mirrored source package
-can check the runner before publication but is not published-package evidence.
 
 With observers enabled, `history_selects` counts SELECT statements mentioning
 the actual history table, and `history_select_elapsed_ms` sums their reported SQL
@@ -268,3 +244,28 @@ all twelve size/topology combinations produces the declared 72 originals.
 Scalar results remain in ordinary Actions logs; disposable dependencies are
 removed and no history/database archive is uploaded. Source comparison does not
 replace published-package or affected-consumer qualification.
+
+## Installed-package acceptance
+
+After publication, repeat the continuation, cache, process-loss and execution
+profile controls in a fresh Composer project requiring the exact released
+Workflow tag. Use the Testbench/PHPUnit versions from the declared input lock.
+Copy the runner's `tests/Fixtures`, `tests/Support`, `tests/bootstrap.php`,
+`tests/TestSuiteSubscriber.php`, `phpunit.xml` and these four test files into
+that project, preserving their relative paths:
+
+```text
+tests/Unit/V2/EmbeddedContinuationTest.php
+tests/Unit/V2/EmbeddedContinuationProcessTest.php
+tests/Unit/V2/WorkflowContinuationCacheTest.php
+tests/Unit/V2/WorkflowExecutionProfileTest.php
+```
+
+The consumer autoload maps `Tests` only to its copied fixtures; all `Workflow`
+classes and functions must load from its normally installed package. Check
+the installed version/reference and every `src`/`resources` byte against the
+immutable release before running `vendor/bin/phpunit` on those four files.
+The process-loss fixtures launch children from that same consumer directory.
+Retain the actual consumer lock, PHP/framework/tool versions, loaded-file
+provenance and outcomes in the owning release record. A mirrored source package
+can check the runner before publication but is not published-package evidence.

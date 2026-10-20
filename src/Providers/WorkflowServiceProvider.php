@@ -115,11 +115,16 @@ final class WorkflowServiceProvider extends ServiceProvider
                 $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
             }
         });
-        $this->app['events']->listen(\Illuminate\Queue\Events\WorkerStopping::class, function (): void {
-            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
-                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear();
-            }
-        });
+        foreach ([
+            \Illuminate\Queue\Events\WorkerStopping::class => 'evict_clear',
+            \Illuminate\Queue\Events\JobExceptionOccurred::class => 'evict_job_exception',
+        ] as $event => $reason) {
+            $this->app['events']->listen($event, function () use ($reason): void {
+                if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                    $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear($reason);
+                }
+            });
+        }
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);

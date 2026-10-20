@@ -76,7 +76,9 @@ committed history prefix. Reconnects, changed identities, eviction, expiry,
 memory pressure and worker loss select authoritative replay.
 
 An advanced frame becomes reusable only after root commit. Rollback, failed
-execution or uncertain acknowledgement discards it. The ordinary repair and
+execution or uncertain acknowledgement discards it. A worker job exception also
+clears retained state, including a broker acknowledgement failure after commit.
+The ordinary repair and
 watchdog paths recover durable work with the original deadlines. Failed task
 records remain available for diagnosis. A lost timer transport delivery still
 uses the existing stale-dispatch interval; retention does not shorten it.
@@ -100,6 +102,7 @@ reasons. `cold_entry` counts fresh authoring starts within the observed profile.
 Eviction counters count removed entries; `evict_clear` covers explicit clears
 and normal worker shutdown. A repeated pressure check on an empty cache is not
 another eviction.
+`evict_job_exception` counts entries cleared after a worker job exception.
 `reused_committed_operations` counts completed durable operations before the
 retained suspension point, and `validated_history_events` counts the fresh
 history prefixes checked before reuse. These counts are not PHP instruction

@@ -150,10 +150,10 @@ final class WorkflowContinuationCache
         ];
     }
 
-    public function clear(): void
+    public function clear(string $reason = 'evict_clear'): void
     {
         if ($this->entries !== []) {
-            $this->count('evict_clear', count($this->entries));
+            $this->count($reason, count($this->entries));
         }
         $this->entries = [];
         $this->generations = [];
