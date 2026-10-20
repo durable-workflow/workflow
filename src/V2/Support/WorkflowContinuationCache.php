@@ -152,6 +152,9 @@ final class WorkflowContinuationCache
 
     public function clear(): void
     {
+        if ($this->entries !== []) {
+            $this->count('evict_clear', count($this->entries));
+        }
         $this->entries = [];
         $this->generations = [];
     }
@@ -159,7 +162,9 @@ final class WorkflowContinuationCache
     private function trim(): void
     {
         if (! $this->memoryAvailable()) {
-            $this->count('evict_memory');
+            if ($this->entries !== []) {
+                $this->count('evict_memory', count($this->entries));
+            }
             $this->entries = [];
             return;
         }

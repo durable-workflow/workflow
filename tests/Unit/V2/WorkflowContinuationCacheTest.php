@@ -103,6 +103,7 @@ final class WorkflowContinuationCacheTest extends TestCase
         $this->assertSame(0, $cache->snapshot()['entries']);
         $cache->publish('two', $cache->observe('two'), $this->entry());
         $this->assertSame(0, $cache->snapshot()['entries']);
+        $this->assertSame(1, $cache->snapshot()['counts']['evict_memory']);
         $this->assertSame(140 * 1024 * 1024, strlen($pressure));
     }
 
@@ -128,6 +129,7 @@ final class WorkflowContinuationCacheTest extends TestCase
         gc_collect_cycles();
         $this->assertSame(['entered'], $observed);
         $this->assertSame(0, $cache->snapshot()['entries']);
+        $this->assertSame(1, $cache->snapshot()['counts']['evict_clear']);
     }
 
     private function entry(): WorkflowContinuation
