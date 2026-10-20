@@ -190,7 +190,7 @@ final class V2TaskDispatchTest extends TestCase
         $workflowClaim = new ReflectionMethod(RunWorkflowTask::class, 'claimTask');
         $workflowClaim->setAccessible(true);
 
-        $this->assertTrue($workflowClaim->invoke(new RunWorkflowTask($workflowTask->id)));
+        $this->assertSame([true, null], $workflowClaim->invoke(new RunWorkflowTask($workflowTask->id)));
         $this->assertTrue($workflowTask->fresh()->lease_expires_at->equalTo($now->copy()->addSeconds(8)));
 
         $timerRun = $this->createWaitingRun('01J00000000000000000TIMER');

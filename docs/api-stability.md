@@ -176,6 +176,16 @@ authoritative marker for those records. Consumers should use this field to
 label retained-detail state while preserving the run's original terminal
 status; they must not treat retained row counts as lifetime counts.
 
+Run-summary drift and missing-summary age exclude runs with a non-null
+`details_pruned_at`; the retained run still contributes to the total run count.
+`workflow:v2:rebuild-projections` skips these runs in every mode, including
+explicit run or instance selection, so maintenance does not recreate their
+deleted projections. An unmarked legacy run is still checked for missing
+summaries: empty detail tables alone do not establish intentional pruning.
+Confirm older cleanup from an authoritative retention record before choosing
+remediation. Do not use a projection rebuild to recover deleted history; restore
+an appropriate backup if that history is required.
+
 The package migration adds the nullable column to `workflow_runs`. Hosts that
 replace the configured run model's table must add the same column in their
 own migration before invoking retention cleanup. The run and its configured
@@ -417,6 +427,38 @@ models should update app-owned projections at domain milestones and store
 `workflow_id` plus `run_id` beside those business rows. See
 [`docs/architecture/business-reporting-read-models.md`](architecture/business-reporting-read-models.md).
 
+## Update Request Identity
+
+An update caller key identifies a retained command within one logical workflow
+instance, across update names and runs. A retry returns that original lifecycle
+and does not replace its arguments. Omitted keys admit independent operations.
+Server uses the body `request_id`; proxy correlation headers remain audit data.
+Embedded webhook callers retain their existing `X-Request-Id` contract.
+
+The logical key is available through `WorkflowCommand::requestId()` and command
+context. New update rows store a bounded `update-v1:` lookup token in the
+existing `workflow_commands.request_id` column. Consumers must not interpret
+that internal indexed value as caller text. Exact logical comparison preserves
+opaque case and long Unicode keys regardless of database collation. Legacy
+Server body keys remain readable from `context.server.metadata.request_id`,
+even when the old indexed column contains a proxy header. Existing rows are
+never rewritten. The earliest retained receipt wins if old code admitted more
+than one command for a caller key.
+
+Upgrade every process that writes directly to the database together before
+admitting new updates with this storage format. Drain and restart old embedded
+workers and Server processes; do not roll back to an old writer after new
+update rows are admitted. Remote SDK clients do not write this column and do
+not need an upgrade for this change. Native takeover must qualify the new
+representation separately.
+
+Update intake limits are checked before requiring a local executable workflow
+definition. A rejected update remains inspectable with
+`structural_limit_exceeded`, `structural_limit_kind`,
+`structural_limit_value` and `structural_limit_configured`. The run stays active
+with its original deadlines. A retry using the rejected command's caller key
+returns that rejection without admitting another update.
+
 ## Durable Message Stream Contract
 
 The v2 durable message service is the stable lower-level contract backing
@@ -444,7 +486,10 @@ their ordering and lifecycle across that boundary:
 
 - Signals are ordered by the instance message stream. A signal accepted
   before the continue-as-new transition commits remains pending until the
-  continued run consumes it. Cursor transfer is durable and monotonic.
+  current or continued run consumes it. Received instance-scoped signals
+  transfer with accepted updates in command order, retaining their signal
+  and command IDs, arguments and receipt time. The successor records its
+  start before these messages. Cursor transfer is durable and monotonic.
 - Instance-scoped updates accepted before the transition but not yet
   applied are carried to the continued run. The update id remains stable,
   `inspectUpdate()` follows the same lifecycle row, and the continued run
@@ -460,6 +505,39 @@ their ordering and lifecycle across that boundary:
 This contract is intentionally instance-first so external server, CLI,
 and SDK callers can reason about a stable logical workflow id without
 having to retry around the brief run handoff window.
+
+### Signals at terminal task boundaries
+
+`signal_received` acknowledges durable admission, not business processing.
+A successful remote workflow task cannot close or continue the run while an
+eligible signal delivery remains pending. Its nonterminal commands commit,
+its task completes, and the existing ordered message-task path delivers the
+signal before the workflow makes a fresh terminal decision. The original
+execution deadline stays unchanged. A task-completion receipt acknowledges
+that task; `run_status` and the run history determine whether the run closed.
+An acceptance receipt alone does not establish a signal handler. Missing legacy
+declarations remain unknown and an explicit empty declaration remains empty;
+neither grants delivery or application authority. Signals that cannot be applied
+retain the terminal disposition below. Ordinary waiting keeps its existing
+delivery contract.
+
+Buffered signals an embedded workflow never awaits can carry across
+continue-as-new when they target the instance and the original command contract
+declares their handler. Unknown legacy declarations do not authorize that
+handoff; those signals close explicitly on the predecessor. Run-targeted signals never
+move to another run. When a run closes with received signals it cannot apply,
+including failure, cancellation or timeout, those signals become `rejected`
+with `run_closed_before_signal_applied`, a closed timestamp and a linked
+`SignalRejected` event. The original admission receipt remains accepted;
+the later signal disposition is separate. `RunSignalView`, run detail and
+history expose it even when no `SignalApplied` was recorded. Continuing
+cannot recover a signal already rejected by a prior terminal close.
+
+`SignalRejected` extends the stored history enum. Upgrade direct database
+readers, including embedded workers and Waterline installations sharing that
+database, before allowing the new runtime to record it. Older Core readers
+cannot parse this event. Drain old readers during the upgrade; mixed-version
+direct-database operation and rollback to an older reader are not qualified.
 
 ## Pre-existing `Contracts\*` interfaces
 
@@ -523,6 +601,7 @@ class, source file path, or stack trace to replay or handle a failure.
 | `TimerCancelled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancelled_at` | `WorkflowStepHistory`, `RunTimerView`, `ConditionWaits`, `SignalWaits`, `HistoryTimeline` |
 | `SignalReceived` | `workflow_command_id`, `signal_id`, `workflow_instance_id`, `workflow_run_id`, `signal_name`, `signal_wait_id`, `arguments`, `payload_codec` | `SignalWaits`, `RunSignalView`, public and worker history payload consumers |
 | `SignalApplied` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `sequence`, `value` | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `QueryStateReplayer` |
+| `SignalRejected` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `command_sequence`, `rejection_reason`, `terminal_reason` | `PendingSignalCloser`, `RunSignalView`, `HistoryTimeline` |
 | `SignalWaitOpened` | `signal_name`, `signal_wait_id`, `sequence`, `timeout_seconds`, `cancellation_scope_id` (candidate 1.20) | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `HistoryTimeline` |
 | `SignalWaitCancelled` (candidate 1.20) | `signal_name`, `signal_wait_id`, `sequence`, `timeout_seconds`, `timer_id`, `cancelled_at`, `cancellation_scope` | `ScopedWaitCancellation`, `SignalWaits`, `HistoryTimeline`, scope delivery and worker history consumers |
 | `UpdateAccepted` | `workflow_command_id`, `update_id`, `workflow_instance_id`, `workflow_run_id`, `update_name`, `arguments`, `ordering_state`, `queued_behind_command_id`, `queued_behind_command_sequence`, `queued_behind_command_type` | `RunUpdateView`, worker history payload consumers |

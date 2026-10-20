@@ -49,7 +49,15 @@ final class RunWorkflowTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        if (! $this->claimTask()) {
+        [$claimed, $deferredTask] = $this->claimTask();
+
+        if ($deferredTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($deferredTask);
+
+            return;
+        }
+
+        if (! $claimed) {
             return;
         }
 
@@ -130,16 +138,23 @@ final class RunWorkflowTask implements ShouldQueue
         }
     }
 
-    private function claimTask(): bool
+    /**
+     * @return array{0: bool, 1: WorkflowTask|null}
+     */
+    private function claimTask(): array
     {
-        return SqliteTransaction::forTask($this->taskId, function (): bool {
+        return SqliteTransaction::forTask($this->taskId, function (): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Ready) {
-                return false;
+                return [false, null];
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                return [false, $task];
             }
 
             /** @var WorkflowRun $run */
@@ -150,13 +165,13 @@ final class RunWorkflowTask implements ShouldQueue
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return false;
+                return [false, null];
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
                 $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return false;
+                return [false, null];
             }
 
             $task->forceFill([
@@ -174,7 +189,7 @@ final class RunWorkflowTask implements ShouldQueue
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return true;
+            return [true, null];
         });
     }
 

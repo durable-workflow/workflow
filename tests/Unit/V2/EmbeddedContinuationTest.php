@@ -26,6 +26,7 @@ use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -357,6 +358,98 @@ final class EmbeddedContinuationTest extends TestCase
             'ordinary cold' => [false],
             'retained' => [true],
         ];
+    }
+
+    #[DataProvider('modelProfiles')]
+    public function testIncompatibleEntryAfterSuspensionPreservesTheOriginalForRepair(bool $enabled): void
+    {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => $enabled ? [ContinuationEntryWorkflow::class] : [],
+            'build' => 'entry-binding',
+        ]);
+        $stub = WorkflowStub::make(ContinuationEntryWorkflow::class, 'entry-binding', 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), 7);
+        $this->workOnce();
+        $cache = app(WorkflowContinuationCache::class);
+        $this->assertSame($enabled ? 1 : 0, $cache->snapshot()['entries']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $original = array_intersect_key($run->getRawOriginal(), array_flip([
+            'id', 'workflow_instance_id', 'workflow_class', 'workflow_type', 'arguments', 'payload_codec',
+            'started_at', 'execution_deadline_at', 'run_deadline_at',
+        ]));
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $task = $run->tasks()
+            ->where('task_type', 'workflow')
+            ->where('status', 'ready')
+            ->sole();
+        $this->app->bind(ContinuationEntryWorkflow::class, static fn () => new ContinuationIncompatibleEntry());
+        $this->workOnce();
+
+        $this->assertFalse($run->fresh()->status->isTerminal());
+        $this->assertSame($original, array_intersect_key($run->fresh()->getRawOriginal(), $original));
+        $this->assertSame($prefix, $run->historyEvents()->orderBy('sequence')->get()->map->getRawOriginal()->all());
+        $this->assertSame('failed', $task->fresh()->status->value);
+        $this->assertSame('workflow_entry_arguments_mismatch', $task->fresh()->payload['replay_blocked_reason']);
+        $this->assertSame(0, $cache->snapshot()['entries']);
+        $this->assertSame(0, ContinuationIncompatibleEntry::$entries);
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+
+        $this->app->offsetUnset(ContinuationEntryWorkflow::class);
+        $this->assertTrue($stub->refresh()->attemptRepair()->accepted());
+        $this->workOnce();
+        $this->assertTrue($stub->refresh()->completed(), Artisan::output());
+        $this->assertSame(7, $stub->output());
+        $this->assertSame('completed', $task->fresh()->status->value);
+        $this->assertSame($original, array_intersect_key($run->fresh()->getRawOriginal(), $original));
+        $this->assertSame($prefix, $run->historyEvents()->orderBy('sequence')->get()->take(count($prefix))
+            ->map->getRawOriginal()
+            ->all());
+        $this->assertSame(1, $run->historyEvents()->where('event_type', 'TimerScheduled')->count());
+        $this->assertSame(0, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
+    }
+
+    public static function bodyFailures(): iterable
+    {
+        foreach ([false, true] as $enabled) {
+            foreach (['type-error', 'internal-mismatch'] as $failure) {
+                yield ($enabled ? 'retained-' : 'cold-') . $failure => [$enabled, $failure];
+            }
+        }
+    }
+
+    #[DataProvider('bodyFailures')]
+    public function testAValidEntryBodyFailureAfterSuspensionRemainsAnApplicationFailure(
+        bool $enabled,
+        string $failure,
+    ): void {
+        config()->set('workflows.v2.live_execution', [
+            'workflows' => $enabled ? [ContinuationEntryBodyFailure::class] : [],
+            'build' => 'entry-body-failure',
+        ]);
+        ContinuationEntryBodyFailure::$entries = 0;
+        $stub = WorkflowStub::make(ContinuationEntryBodyFailure::class, 'entry-body', 'continuation-test');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), $failure);
+        $this->workOnce();
+        $this->assertSame($enabled ? 1 : 0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        Carbon::setTestNow(now()->addSeconds(2));
+        $this->workOnce();
+        $this->workOnce();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $this->assertTrue($stub->refresh()->failed(), Artisan::output());
+        $this->assertSame($enabled ? 1 : 2, ContinuationEntryBodyFailure::$entries);
+        $this->assertSame(1, $run->historyEvents()->where('event_type', 'WorkflowFailed')->count());
+        foreach ($run->tasks()->get() as $task) {
+            $this->assertFalse($task->payload['replay_blocked'] ?? false);
+        }
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        $this->assertSame(0, DB::table('failed_jobs')->count());
     }
 
     #[DataProvider('modelProfiles')]
@@ -910,6 +1003,46 @@ final class ContinuationActivity extends Activity
             'optional' => null,
             'unicode' => 'λ',
         ];
+    }
+}
+
+final class ContinuationEntryWorkflow extends Workflow
+{
+    public function handle(int $amount): int
+    {
+        Workflow::timer(1);
+
+        return $amount;
+    }
+}
+
+final class ContinuationIncompatibleEntry extends Workflow
+{
+    public static int $entries = 0;
+
+    public function handle(string $amount): string
+    {
+        ++self::$entries;
+        Workflow::timer(1);
+
+        return $amount;
+    }
+}
+
+final class ContinuationEntryBodyFailure extends Workflow
+{
+    public static int $entries = 0;
+
+    public function handle(string $failure): never
+    {
+        ++self::$entries;
+        Workflow::timer(1);
+
+        if ($failure === 'internal-mismatch') {
+            throw new WorkflowEntryArgumentsMismatchException(self::class, 'handle', 'application_body_reason');
+        }
+
+        throw new \TypeError('Application body failure.');
     }
 }
 

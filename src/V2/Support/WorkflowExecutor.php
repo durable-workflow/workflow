@@ -41,6 +41,7 @@ use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -273,7 +274,14 @@ final class WorkflowExecutor
         $arguments = [];
         if ($frame === null) {
             $entryMethod = EntryMethod::forWorkflow($workflow);
-            $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
+            try {
+                $arguments = WorkflowEntryArguments::resolve($workflow, $run->workflowArguments(), $entryMethod);
+            } catch (WorkflowEntryArgumentsMismatchException $exception) {
+                $continuation?->disable('entry_arguments_mismatch');
+                $this->blockReplayUntilCompatibleEntryArguments($run, $task, $exception);
+
+                return null;
+            }
         }
 
         try {
@@ -3692,7 +3700,6 @@ final class WorkflowExecutor
             $now,
             $childCallId,
         );
-        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
@@ -3789,23 +3796,6 @@ final class WorkflowExecutor
             ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
-        $run->forceFill([
-            'status' => RunStatus::Completed,
-            'closed_reason' => 'continued',
-            'closed_at' => $now,
-            'last_progress_at' => $now,
-        ])->save();
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
-            'sequence' => $sequence,
-            'continued_to_run_id' => $continuedRun->id,
-            'continued_to_run_number' => $continuedRun->run_number,
-            'workflow_link_id' => $link->id,
-            'closed_reason' => 'continued',
-        ], $task);
-
-        PendingUpdateCloser::closeForTerminalRun($run, $task);
-
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
         $continuedMemo = AvroValueJsonProjection::project($continuedRun->typedMemos());
@@ -3851,6 +3841,8 @@ final class WorkflowExecutor
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ], null, $startCommand);
+
+        ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
@@ -4566,6 +4558,31 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    private function blockReplayUntilCompatibleEntryArguments(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowEntryArgumentsMismatchException $exception,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'workflow_entry_arguments_mismatch';
+        $payload['replay_blocked_workflow_type'] = $exception->workflowType;
+        $payload['replay_blocked_entry_method'] = $exception->entryMethod;
+        $payload['replay_blocked_binding_reason'] = $exception->bindingReason;
+        $payload['replay_blocked_parameter_name'] = $exception->parameterName;
+        $payload['replay_blocked_expected_type'] = $exception->expectedType;
+        $payload['replay_blocked_actual_type'] = $exception->actualType;
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $exception->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
         $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );

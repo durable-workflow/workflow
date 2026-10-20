@@ -1637,10 +1637,9 @@ final class V2WebhookWorkflowTest extends TestCase
             ->where('workflow_instance_id', 'order-update-webhook-idempotent-queued')
             ->where('command_type', 'update')
             ->count());
-        $this->assertDatabaseHas('workflow_commands', [
-            'id' => $first->json('command_id'),
-            'request_id' => 'queued-update-request-1',
-        ]);
+        $this->assertSame('queued-update-request-1', WorkflowCommand::query()
+            ->findOrFail($first->json('command_id'))
+            ->requestId());
         $this->assertSame(1, WorkflowUpdate::query()
             ->where('workflow_instance_id', 'order-update-webhook-idempotent-queued')
             ->count());

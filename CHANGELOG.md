@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.7.1 - 2026-10-20
+
+- Chunk long activity retry and workflow-task delays to the queue driver's
+  dispatch ceiling, using the existing timer transport mechanism. SQS receives
+  a delay of at most 900 seconds per wakeup.
+- Defer early workflow-task deliveries without taking a lease, running user
+  code, consuming execution attempts or appending history. Preserve original
+  task availability, retry history and workflow deadlines. Queue drivers without
+  a delay cap retain their exact delays.
+
+## 2.7.0 - 2026-10-20
+
+- Deliver eligible signals accepted during a remote workflow task before its
+  successful terminal decision. Retain original deadlines and ordered message
+  delivery through cold replay.
+- Carry eligible received instance-scoped signals with unapplied accepted updates across
+  continue-as-new, preserving identities, payloads and command order. Run-scoped
+  signals keep their selected run.
+- Close signals a terminal run did not apply with an explicit rejected status,
+  reason, timestamp and linked history event. Keep the original durable
+  acceptance receipt unchanged.
+- Keep missing legacy declarations unknown. A receipt alone cannot establish a
+  handler or authorize continuation handoff; unresolved signals close explicitly.
+- Upgrade all direct database readers before recording `SignalRejected`.
+  Older Core history enums cannot parse the new event; drain old readers
+  during the upgrade and do not roll them back onto affected histories.
+
+## 2.6.3 - 2026-10-19
+
+- Exclude retention-pruned runs from missing run-summary drift and lag metrics.
+  Retained runs still count in the drift report's total run count.
+- Skip marked pruned runs in every projection rebuild mode, including explicit
+  run and instance selection. Genuine missing projections remain eligible for
+  repair. Unmarked legacy absence is not assumed to be deliberate pruning.
+
+## 2.6.2 - 2026-10-18
+
+- Reuse small unchanged JSON history payloads on the default Eloquent model to
+  avoid decoding them again on each read. Cached entries are limited to 4 KiB
+  of JSON and 128 recursive values. Larger payloads use the ordinary cast,
+  without a new workflow data or admission limit.
+- Preserve configured models, custom casts and JSON decoders, payload mutation,
+  raw stored bytes and model serialization. This change does not enable retained
+  workflow execution or establish a production performance gain.
+
 ## 2.6.0 - 2026-10-18
 
 - Deliver cooperative cancellation to a caller waiting for an owned Nexus

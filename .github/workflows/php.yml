@@ -555,6 +555,17 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
+    - name: Run delayed task and real SQS adapter controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/DelayedTaskTransportTest.php
+        tests/Unit/V2/SqsDelayAdapterTest.php
+        --testsuite unit
+        --fail-on-warning --log-junit build/test-results/pr-sqs-delay-adapter.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Run scoped Activity fencing and original stop receipt cases
       run: >-
         vendor/bin/phpunit tests/Feature/V2/V2ScopedActivityCancellationTest.php

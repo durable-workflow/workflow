@@ -1393,6 +1393,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
             $terminal = $parsed['terminal'];
 
+            // A signal may commit after the worker has read history. Give it
+            // an ordered delivery turn before accepting that worker's close.
+            if (in_array($terminal['type'] ?? null, ['complete_workflow', 'continue_as_new'], true)
+                && ! is_string($run->cancellation_request_command_id)
+                && PendingMessageTask::hasDeliverableSignal($run, self::workflowSignalIdForTask($task))) {
+                $terminal = null;
+            }
+
             if ($terminal !== null) {
                 if ($terminal['type'] === 'continue_as_new') {
                     $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);
@@ -2182,7 +2190,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? (int) $openedPayload['sequence']
             : null;
 
-        if ($sequence === null && ! self::canApplyUnprojectedExternalSignal($run, $signal)) {
+        if ($sequence === null && ! UnprojectedSignalDelivery::allows($run, $signal)) {
             return;
         }
 
@@ -2253,22 +2261,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ...$parallelMetadata,
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
         ParallelChildGroup::claimSelectionWinner($run, $parallelPath, 'signal', $appliedEvent);
-    }
-
-    private static function canApplyUnprojectedExternalSignal(WorkflowRun $run, WorkflowSignal $signal): bool
-    {
-        if (WorkflowExecutionGate::blockedReason($run)
-            !== WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE
-        ) {
-            return false;
-        }
-
-        $contract = RunCommandContract::forRun($run);
-        $declaredSignals = $contract['signals'] ?? [];
-
-        return ($contract['source'] ?? null) === RunCommandContract::SOURCE_DURABLE_HISTORY
-            && is_array($declaredSignals)
-            && in_array($signal->signal_name, $declaredSignals, true);
     }
 
     /**
@@ -5125,24 +5117,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
         }
 
-        $run->forceFill([
-            'status' => RunStatus::Completed,
-            'closed_reason' => 'continued',
-            'closed_at' => $now,
-            'last_progress_at' => $now,
-        ])->save();
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
-            'sequence' => $sequence,
-            'continued_to_run_id' => $continuedRun->id,
-            'continued_to_run_number' => $continuedRun->run_number,
-            'workflow_link_id' => $link->id,
-            'closed_reason' => 'continued',
-        ], $task);
-
-        ContinuedRunUpdateHandoff::transferInstanceScoped($run, $continuedRun);
-        PendingUpdateCloser::closeForTerminalRun($run, $task);
-
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
@@ -5157,6 +5131,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ]);
+
+        ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([

@@ -7,13 +7,13 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 
 /**
- * Caps timer task delays to fit within queue driver constraints.
+ * Caps durable task delays to fit within queue driver constraints.
  *
  * SQS limits initial DelaySeconds to 900. Other drivers may impose similar
- * ceilings. When a timer's fire_at exceeds the queue's max delay, the
- * transport dispatches the task with a capped delay. RunTimerTask detects
- * the early arrival (available_at still in the future) and dispatches a fresh
- * job with a capped delay, repeating until the real fire_at is reached.
+ * ceilings. When a task's available_at exceeds the queue's max delay, the
+ * transport dispatches the task with a capped delay. Workflow, activity and
+ * timer jobs detect early arrival and dispatch a fresh capped job, repeating
+ * until the original available_at is reached.
  * Each wakeup has its own bounded transport failure budget.
  *
  * Release-delay helpers remain available for adapters using
@@ -61,7 +61,7 @@ final class TimerTransportChunker
     }
 
     /**
-     * Determine the effective delay for dispatching a timer task.
+     * Determine the effective delay for dispatching a durable task.
      *
      * Returns the available_at as-is when it fits within the queue cap,
      * or a capped Carbon instance when chunking is required.
