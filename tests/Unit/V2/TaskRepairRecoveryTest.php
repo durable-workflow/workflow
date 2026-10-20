@@ -504,7 +504,7 @@ final class TaskRepairRecoveryTest extends TestCase
                 ->getAttributes(),
         ];
         DB::connection()->beforeExecuting(static function (string $sql): void {
-            if (str_starts_with($sql, 'insert into "workflow_history_events"')) {
+            if (str_starts_with($sql, 'insert into ') && str_contains($sql, 'workflow_history_events')) {
                 throw new RuntimeException('lease expiry history unavailable');
             }
         });
