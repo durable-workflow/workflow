@@ -41,6 +41,7 @@ use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -72,7 +73,13 @@ final class WorkflowExecutor
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $workflow = RuntimeObjectFactory::workflow($workflowClass, $run);
         $entryMethod = EntryMethod::forWorkflow($workflow);
-        $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
+        try {
+            $arguments = WorkflowEntryArguments::resolve($workflow, $run->workflowArguments(), $entryMethod);
+        } catch (WorkflowEntryArgumentsMismatchException $exception) {
+            $this->blockReplayUntilCompatibleEntryArguments($run, $task, $exception);
+
+            return null;
+        }
 
         try {
             $versionDecisions = new VersionDecisions($run);
@@ -4328,6 +4335,11 @@ final class WorkflowExecutor
         string $sourceId,
         ?int $failedStepSequence = null,
     ): void {
+        if ($throwable instanceof WorkflowEntryArgumentsMismatchException) {
+            $this->blockReplayUntilCompatibleEntryArguments($run, $task, $throwable);
+
+            return;
+        }
         if ($throwable instanceof WorkflowCancellationRequestedException
             && is_string($run->cancellation_request_command_id)) {
             $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
@@ -4597,6 +4609,31 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    private function blockReplayUntilCompatibleEntryArguments(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowEntryArgumentsMismatchException $exception,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'workflow_entry_arguments_mismatch';
+        $payload['replay_blocked_workflow_type'] = $exception->workflowType;
+        $payload['replay_blocked_entry_method'] = $exception->entryMethod;
+        $payload['replay_blocked_binding_reason'] = $exception->bindingReason;
+        $payload['replay_blocked_parameter_name'] = $exception->parameterName;
+        $payload['replay_blocked_expected_type'] = $exception->expectedType;
+        $payload['replay_blocked_actual_type'] = $exception->actualType;
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $exception->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
         $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );

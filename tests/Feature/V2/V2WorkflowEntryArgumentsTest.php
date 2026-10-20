@@ -10,19 +10,25 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowEntryArgumentsTest extends TestCase
 {
     #[DataProvider('incompatibleEntries')]
-    public function testChangedEntryBlocksReplayWithoutClosingOrReplacingTheOriginal(string $replacement, array $arguments): void
-    {
+    public function testChangedEntryBlocksReplayWithoutClosingOrReplacingTheOriginal(
+        string $replacement,
+        array $arguments
+    ): void {
         [$stub, $run, $task, $prefix, $original] = $this->waitingRun($arguments);
         // Replace only the container's loaded implementation. This models an
         // entry signature changing while the recorded class/type stay fixed.
@@ -30,13 +36,22 @@ final class V2WorkflowEntryArgumentsTest extends TestCase
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
 
         self::assertFalse($run->fresh()->status->isTerminal(), json_encode([
-            'status' => $run->fresh()->status->value,
-            'output' => $stub->refresh()->output(),
+            'status' => $run->fresh()
+->status->value,
+            'output' => $stub->refresh()
+                ->output(),
         ], JSON_THROW_ON_ERROR));
         self::assertNull($run->fresh()->closed_at);
-        self::assertSame(0, $run->historyEvents()->whereIn('event_type', ['WorkflowFailed', 'WorkflowCompleted'])->count());
+        self::assertSame(
+            0,
+            $run->historyEvents()
+                ->whereIn('event_type', ['WorkflowFailed', 'WorkflowCompleted'])->count()
+        );
         self::assertSame($original, $this->originalState($run->fresh()));
-        self::assertSame($prefix, array_slice($run->historyEvents()->orderBy('sequence')->get()->toArray(), 0, count($prefix)));
+        self::assertSame(
+            $prefix,
+            array_slice($run->historyEvents()->orderBy('sequence')->get()->toArray(), 0, count($prefix))
+        );
         self::assertSame(TaskStatus::Failed, $task->fresh()->status);
         self::assertTrue($task->fresh()->payload['replay_blocked'] ?? false);
         self::assertSame('workflow_entry_arguments_mismatch', $task->fresh()->payload['replay_blocked_reason'] ?? null);
@@ -61,6 +76,43 @@ final class V2WorkflowEntryArgumentsTest extends TestCase
         yield 'scalar type changed' => [EntryScalarChanged::class, [7]];
         yield 'scalar replaced by defaulted DTO' => [EntryDefaultedDto::class, [7]];
         yield 'scalar replaced by required DTO' => [EntryRequiredDto::class, [7]];
+    }
+
+    #[DataProvider('incompatibleEntries')]
+    public function testReadOnlyQueryAndColdFiberRefuseIncompatibleEntryWithoutMutatingTheOriginal(
+        string $replacement,
+        array $arguments,
+    ): void {
+        [, $run, $task, $prefix, $original] = $this->waitingRun($arguments);
+        $taskState = $task->getRawOriginal();
+        $this->app->bind($run->workflow_class, static fn (): Workflow => new $replacement());
+
+        try {
+            (new QueryStateReplayer())->replayState($run->fresh());
+            self::fail('Query replay entered incompatible workflow code.');
+        } catch (WorkflowEntryArgumentsMismatchException $exception) {
+            self::assertSame($run->workflow_type, $exception->workflowType);
+        }
+
+        $runner = WorkflowFiberRunner::forClass(
+            $run->workflow_class,
+            $run->workflow_instance_id,
+            $run->id,
+            $arguments,
+            $run->payload_codec,
+            HistoryExport::forRun($run->fresh())['history_events'],
+        );
+        try {
+            $runner->step();
+            self::fail('Cold Fiber entered incompatible workflow code.');
+        } catch (WorkflowEntryArgumentsMismatchException $exception) {
+            self::assertSame($run->workflow_type, $exception->workflowType);
+        }
+
+        self::assertSame($original, $this->originalState($run->fresh()));
+        self::assertSame($taskState, $task->fresh()->getRawOriginal());
+        self::assertSame($prefix, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        self::assertFalse($run->fresh()->status->isTerminal());
     }
 
     #[DataProvider('compatibleEntries')]
@@ -97,16 +149,31 @@ final class V2WorkflowEntryArgumentsTest extends TestCase
         $stub = WorkflowStub::make($class, 'entry-' . bin2hex(random_bytes(6)));
         $stub->start(...$arguments);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
-        $first = WorkflowTask::query()->where('workflow_run_id', $run->id)->where('task_type', TaskType::Workflow->value)->sole();
+        $first = WorkflowTask::query()->where('workflow_run_id', $run->id)->where(
+            'task_type',
+            TaskType::Workflow->value
+        )->sole();
         $this->app->call([new RunWorkflowTask($first->id), 'handle']);
         self::assertFalse($run->fresh()->status->isTerminal());
         Carbon::setTestNow(now()->addSeconds(2));
-        $timer = WorkflowTask::query()->where('workflow_run_id', $run->id)->where('task_type', TaskType::Timer->value)->sole();
+        $timer = WorkflowTask::query()->where('workflow_run_id', $run->id)->where(
+            'task_type',
+            TaskType::Timer->value
+        )->sole();
         $this->app->call([new RunTimerTask($timer->id), 'handle']);
         $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)->sole();
 
-        return [$stub, $run->fresh(), $task, $run->historyEvents()->orderBy('sequence')->get()->toArray(), $this->originalState($run->fresh())];
+        return [
+            $stub,
+            $run->fresh(),
+            $task,
+            $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->toArray(),
+            $this->originalState($run->fresh()),
+        ];
     }
 
     private function originalState(WorkflowRun $run): array
@@ -124,7 +191,9 @@ class EntryOne extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $amount];
+        return [
+            'amount' => $amount,
+        ];
     }
 }
 
@@ -134,7 +203,10 @@ class EntryTwo extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $amount, 'label' => $label];
+        return [
+            'amount' => $amount,
+            'label' => $label,
+        ];
     }
 }
 
@@ -144,7 +216,11 @@ class EntryRequiredAdded extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $amount, 'label' => $label, 'required' => $required];
+        return [
+            'amount' => $amount,
+            'label' => $label,
+            'required' => $required,
+        ];
     }
 }
 
@@ -154,7 +230,9 @@ class EntryLeadingRemoved extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['label' => $label];
+        return [
+            'label' => $label,
+        ];
     }
 }
 
@@ -164,18 +242,26 @@ class EntryScalarChanged extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $amount];
+        return [
+            'amount' => $amount,
+        ];
     }
 }
 
 class DefaultEntryData
 {
-    public function __construct(public int $amount = 99) {}
+    public function __construct(
+        public int $amount = 99
+    ) {
+    }
 }
 
 class RequiredEntryData
 {
-    public function __construct(public int $amount) {}
+    public function __construct(
+        public int $amount
+    ) {
+    }
 }
 
 class EntryDefaultedDto extends Workflow
@@ -184,7 +270,9 @@ class EntryDefaultedDto extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $data->amount];
+        return [
+            'amount' => $data->amount,
+        ];
     }
 }
 
@@ -194,7 +282,9 @@ class EntryRequiredDto extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $data->amount];
+        return [
+            'amount' => $data->amount,
+        ];
     }
 }
 
@@ -204,7 +294,10 @@ class EntryOptionalAdded extends Workflow
     {
         Workflow::timer('1 second');
 
-        return ['amount' => $amount, 'label' => $label];
+        return [
+            'amount' => $amount,
+            'label' => $label,
+        ];
     }
 }
 
@@ -216,6 +309,8 @@ class EntryBodyFailure extends Workflow
         $value = [];
         strlen($value);
 
-        return ['amount' => $amount];
+        return [
+            'amount' => $amount,
+        ];
     }
 }

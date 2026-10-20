@@ -29,6 +29,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -266,6 +267,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     ActivityRetryPolicyMismatchException::class => 'activity_retry_policy_mismatch',
                     HistoryEventShapeMismatchException::class => 'history_shape_mismatch',
                     VersionRangeMismatchException::class => 'version_marker_incompatible_range',
+                    WorkflowEntryArgumentsMismatchException::class => 'workflow_entry_arguments_mismatch',
                     default => null,
                 };
                 $expectedReplayBlock = $expectedReplayBlockReason !== null

@@ -27,6 +27,7 @@ final class WorkflowExecution
     public static function start(Workflow $workflow, array $arguments, ?CarbonInterface $eventTime = null): self
     {
         $entryMethod = EntryMethod::forWorkflow($workflow);
+        WorkflowEntryArguments::assertInvocation($workflow, $entryMethod, $arguments);
 
         return self::startCallback(
             static fn (): mixed => $workflow->{$entryMethod->getName()}(...$arguments),
