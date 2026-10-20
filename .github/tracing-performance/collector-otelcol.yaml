@@ -12,7 +12,8 @@ exporters:
 service:
   telemetry:
     resource:
-      qualification.container_id_prefix: ${env:HOSTNAME}
+      # A hexadecimal container ID may look numeric to the environment provider.
+      qualification.container_id_prefix: container-${env:HOSTNAME}
     logs:
       level: error
     metrics:

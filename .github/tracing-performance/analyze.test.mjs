@@ -233,6 +233,14 @@ test('reads initialized official metrics and preserves an unavailable failure se
     assert.equal(collectorDelta({before: parsed, after: {...parsed, uptime_seconds: 2, accepted: 4, sent: 4}}), 3);
 });
 
+test('Collector string-prefixed numeric container identity retains exact CPU-role binding', () => {
+    const identity = '5439113202e9';
+    const previous = officialCollectorData().telemetry.collector.before.container_prefix;
+    const text = collectorText().replaceAll(previous, `container-${identity}`);
+    assert.equal(parseCollectorMetrics(text).container_prefix, identity);
+    assert.throws(() => parseCollectorMetrics(text.replaceAll(`container-${identity}`, 'container-invalid')));
+});
+
 test('Collector numeric samples retain decimal and exponent forms', () => {
     for (const value of ['1.', '+1', '+1.0e0', '1E0']) {
         const text = collectorText().replaceAll('} 1', '} ' + value);

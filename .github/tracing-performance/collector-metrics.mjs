@@ -73,7 +73,8 @@ export function parseCollectorMetrics(text) {
         assert.ok(!seen.has(sample.field), 'Duplicate Collector counter series');
         seen.add(sample.field);
         const {service_instance_id: instance, service_version: version} = sample.attributes;
-        const container = sample.attributes.qualification_container_id_prefix;
+        const containerLabel = sample.attributes.qualification_container_id_prefix;
+        const container = containerLabel?.startsWith('container-') ? containerLabel.slice(10) : containerLabel;
         assert.match(instance, /^[a-zA-Z0-9._-]{1,128}$/, 'Missing series instance');
         assert.equal(version, COLLECTOR_VERSION, 'Missing/wrong series version');
         assert.match(container, /^[a-f0-9]{12}$/, 'Missing series container identity');
