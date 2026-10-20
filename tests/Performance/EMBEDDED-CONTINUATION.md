@@ -144,6 +144,12 @@ records eighteen new same-host originals for the current clock/listener observer
 It separates actual authoring, initial loading, validation, dispatch and the
 history/projection role, with per-host overhead and repeated-setting drift.
 
+The [1,000-event original studies](results/issue-748-20261020/GROWTH-1000.md)
+record three passing single-worker pairs and six failed four-worker originals.
+The latter preserve their OOM/worker-memory exits, SQLite errors and unfinished
+work; their missing final worker telemetry is explicit. They do not qualify a
+concurrent SQLite capacity envelope or the later release source.
+
 
 With observers enabled, `history_selects` counts SELECT statements mentioning
 the actual history table, and `history_select_elapsed_ms` sums their reported SQL
@@ -168,6 +174,9 @@ observation budget. Startup has its own 30-second bound and graceful drain has
 Ordinary transport redispatch is observed within the original budget; a lease
 recovery or error repair still fails the audit.
 Failure remains a failure, with unfinished work and bounded diagnostic tails.
+For future failures, any existing final worker reports and process exit states
+are published before cleanup. A missing report stays null; partial worker CPU
+is not substituted for a complete cohort measurement.
 
 Run **one selected cell per fresh container** on an isolated machine. Otherwise
 the cgroup memory peak can include an earlier cell. Use the same prepared PHP image

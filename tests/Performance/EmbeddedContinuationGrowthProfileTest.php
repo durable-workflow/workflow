@@ -198,6 +198,9 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
                 'completed_markers' => count(glob($this->directory . '/completed-*')),
                 'unfinished' => $concurrent - count(glob($this->directory . '/completed-*')),
                 'elapsed_ns' => hrtime(true) - $started,
+                'workers_before_cleanup' => $this->failedWorkerReports(),
+                'cgroup_workload_cpu_us' => $this->cgroupCpu() - $cgroupCpu,
+                'cgroup_peak_memory_bytes' => trim((string) @file_get_contents('/sys/fs/cgroup/memory.peak')),
                 'message' => $failure->getMessage(),
             ], JSON_THROW_ON_ERROR) . PHP_EOL;
             throw $failure;
@@ -385,6 +388,23 @@ final class EmbeddedContinuationGrowthProfileTest extends TestCase
     private function diagnostic(Process $worker): string
     {
         return substr($worker->getOutput(), -4096) . substr($worker->getErrorOutput(), -4096);
+    }
+
+    private function failedWorkerReports(): array
+    {
+        $reports = [];
+        foreach ($this->workers as $index => $worker) {
+            $path = $this->directory . '/worker-' . $index . '.json';
+            $reports[] = [
+                'index' => $index,
+                'running' => $worker->isRunning(),
+                'exit_code' => $worker->getExitCode(),
+                // A missing report is not zero CPU/RSS and is not a successful drain.
+                'final_report' => is_file($path) ? json_decode((string) file_get_contents($path), true) : null,
+            ];
+        }
+
+        return $reports;
     }
 
     private function reportFailedState(): void

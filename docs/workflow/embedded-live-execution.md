@@ -118,3 +118,8 @@ separates cold test-worker startup, full replay and retained execution. Its
 reports state actual cache hits/misses, queue/timer delay, CPU, SQL, memory,
 sample counts, failures and unfinished work. Choose retention from measurements
 of the actual application workload and its supported lifetime constraints.
+The [1,000-event comparison](../../tests/Performance/results/issue-748-20261020/GROWTH-1000.md)
+passes three single-worker pairs but fails all six four-worker originals in its
+one-CPU / 1 GiB shared-SQLite configuration, with unfinished work, SQLite lock
+errors and container or worker memory exits in both modes. Retention does not
+establish a larger safe operating envelope. Those failures remain under review.
