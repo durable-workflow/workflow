@@ -43,7 +43,7 @@ final class WorkflowContinuationCache
         $this->backends = new WeakMap();
     }
 
-    public function session(?object $job): ?WorkflowContinuationSession
+    public function session(?object $job, int $claimedAttempt): ?WorkflowContinuationSession
     {
         if (! $job instanceof DatabaseJob || PHP_SAPI !== 'cli' || WorkflowStub::faked()
             || config('workflows.v2.live_execution.workflows', []) === []) {
@@ -55,7 +55,7 @@ final class WorkflowContinuationCache
             return null;
         }
 
-        return new WorkflowContinuationSession($this, $database);
+        return new WorkflowContinuationSession($this, $database, $claimedAttempt);
     }
 
     public function backendIdentity(Connection $database): int

@@ -35,6 +35,7 @@ final class WorkflowContinuationSession
     public function __construct(
         private readonly WorkflowContinuationCache $cache,
         private readonly Connection $database,
+        private readonly int $claimedAttempt,
     ) {
     }
 
@@ -83,7 +84,8 @@ final class WorkflowContinuationSession
         $this->observe($run);
         return $task->workflow_run_id === $run->id && $task->namespace === $run->namespace
             && $task->status === TaskStatus::Leased && $task->lease_owner === $task->id
-            && $task->attempt_count > 0 && $task->lease_expires_at !== null
+            && $this->claimedAttempt > 0 && (int) $task->attempt_count === $this->claimedAttempt
+            && $task->lease_expires_at !== null
             && $task->lease_expires_at->isFuture();
     }
 

@@ -185,7 +185,16 @@ final class EmbeddedContinuationTest extends TestCase
         }
     }
 
-    public function testFreshLeaseOwnerIsCheckedBeforeAnyRetainedPrefixCanResume(): void
+    public static function replacedClaims(): array
+    {
+        return [
+            'different owner' => [false],
+            'same owner advanced attempt' => [true],
+        ];
+    }
+
+    #[DataProvider('replacedClaims')]
+    public function testFreshLeaseOwnerIsCheckedBeforeAnyRetainedPrefixCanResume(bool $advancedAttempt): void
     {
         $this->enable();
         $stub = WorkflowStub::make(ContinuationWorkflow::class, 'lease-original', 'continuation-test');
@@ -197,11 +206,20 @@ final class EmbeddedContinuationTest extends TestCase
             ->where('status', 'ready')
             ->sole();
         $writer = new PDO('sqlite:' . $this->path);
+        $expectedOwner = $advancedAttempt ? $task->id : 'replacement-owner';
         $admissions = 0;
-        DB::connection()->beforeExecuting(static function (string $sql) use ($writer, $task, &$admissions): void {
+        DB::connection()->beforeExecuting(static function (string $sql) use (
+            $writer,
+            $task,
+            $advancedAttempt,
+            $expectedOwner,
+            &$admissions
+        ): void {
             if (str_starts_with($sql, 'update "workflow_tasks" set "id" =') && ++$admissions === 2) {
-                $statement = $writer->prepare('UPDATE workflow_tasks SET lease_owner = ? WHERE id = ?');
-                $statement->execute(['replacement-owner', $task->id]);
+                $statement = $writer->prepare($advancedAttempt
+                    ? 'UPDATE workflow_tasks SET attempt_count = attempt_count + 1, lease_owner = ? WHERE id = ?'
+                    : 'UPDATE workflow_tasks SET lease_owner = ? WHERE id = ?');
+                $statement->execute([$expectedOwner, $task->id]);
             }
         });
         $prefix = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
@@ -211,10 +229,12 @@ final class EmbeddedContinuationTest extends TestCase
             ->all();
         $this->workOnce();
         $this->assertSame(2, $admissions);
-        $this->assertSame('replacement-owner', $task->fresh()->lease_owner);
+        $this->assertSame($expectedOwner, $task->fresh()->lease_owner);
+        $this->assertSame($advancedAttempt ? 2 : 1, (int) $task->fresh()->attempt_count);
         $this->assertSame('leased', $task->fresh()->status->value);
         $this->assertSame(1, ContinuationWorkflow::$entries);
         $this->assertSame(0, ContinuationWorkflow::$afterActivity);
+        $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
         $this->assertSame($prefix, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
             ->orderBy('sequence')
             ->get()
