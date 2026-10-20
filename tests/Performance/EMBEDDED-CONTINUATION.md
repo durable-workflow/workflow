@@ -121,8 +121,10 @@ that lock and vendor tree unchanged across the comparison:
 ```sh
 docker build --tag dw-continuation-profile:local tests/Performance/continuation
 export DWF_PROFILE_IMAGE=dw-continuation-profile:local
+cp tests/Performance/continuation/COMPOSER-INPUT.lock composer.lock
+export COMPOSER_ROOT_VERSION=$(jq -r '.extra["durable-workflow"]["product-train"]' composer.json)
 docker run --rm --user "$(id -u):$(id -g)" \
-  --env COMPOSER_HOME=/tmp/composer \
+  --env COMPOSER_HOME=/tmp/composer --env COMPOSER_ROOT_VERSION \
   --volume "$PWD:/app" --workdir /app "$DWF_PROFILE_IMAGE" \
   composer install --prefer-dist --no-interaction --no-progress
 ```
@@ -145,3 +147,34 @@ before small-cell cost/runtime observations justify its bounded admission. Revie
 the `CONTINUATION_GROWTH_REPORT` JSON records, publish a compact outcome table and
 remove disposable databases, dependencies, samples and transport afterward. Full
 histories and effect rows are validated in place, not exported as bulk archives.
+
+## Hosted candidate comparison
+
+The existing `embedded-replay-profile.yml` workflow also accepts
+`execution=continuation`. Its default remains the separately locked published
+cold-bridge probe. Select one history size and worker/run topology per dispatch:
+
+```sh
+gh workflow run embedded-replay-profile.yml --ref YOUR_CANDIDATE_REF \
+  -f execution=continuation -f events=10 -f workers=1 -f runs=1 -f observers=on
+```
+
+Three hosted jobs each run one replay/retained pair, alternating pair order for
+repetition two. Each original gets a fresh constrained container and database.
+The two modes within a pair share the same host, source, image and input lock.
+Read and compare the recorded host/dependency identities across repetitions;
+hosted hardware may vary. Do not treat incomparable hosts as matched measurements.
+
+`scripts/profile-embedded-continuation.sh EVENTS WORKERS RUNS REPETITION` runs
+that same pair locally after the preparation above. It verifies clean tracked
+source and the exact input lock, records each container's exit/OOM/restart state,
+and removes only its own containers. It preserves a failed first mode while
+running the second independent original. The outer transport timeout does not
+change either original's 3,600-second workflow/observation bounds.
+
+Complete the small functional/source controls before admitting a 10-event pair,
+then assess its runtime and cost before larger or concurrent cells. Dispatching
+all twelve size/topology combinations produces the declared 72 originals.
+Scalar results remain in ordinary Actions logs; disposable dependencies are
+removed and no history/database archive is uploaded. Source comparison does not
+replace published-package or affected-consumer qualification.
