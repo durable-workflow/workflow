@@ -172,6 +172,17 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame([1], $tasks->pluck('attempt_count')->unique()->values()->all());
         $this->assertSame(0, DB::table('failed_jobs')->count());
         $this->assertSame(0, DB::table('jobs')->count());
+        $counts = app(WorkflowContinuationCache::class)->snapshot()['counts'];
+        if ($enabled) {
+            $this->assertSame($entries, $counts['cold_entry']);
+            if ($change === 'binding') {
+                $this->assertSame(0, $counts['validated_history_events'] ?? 0);
+            } else {
+                $this->assertGreaterThan(0, $counts['validated_history_events'] ?? 0);
+            }
+        } else {
+            $this->assertArrayNotHasKey('cold_entry', $counts);
+        }
     }
 
     public function testFreshLeaseOwnerIsCheckedBeforeAnyRetainedPrefixCanResume(): void
@@ -266,6 +277,7 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertSame('completed', $stub->refresh()->status());
         $this->assertSame([2], $atWrite);
         $this->assertSame(1, ContinuationActivity::$calls);
+        $this->assertSame(2, app(WorkflowContinuationCache::class)->snapshot()['counts']['cold_entry']);
         $this->assertSame(0, $this->app->make(WorkflowContinuationCache::class)->snapshot()['entries']);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
             ->where('event_type', HistoryEventType::MemoUpserted)->count());

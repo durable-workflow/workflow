@@ -121,9 +121,9 @@ final class WorkflowContinuationCache
         $this->count('retained');
     }
 
-    public function count(string $reason): void
+    public function count(string $reason, int $amount = 1): void
     {
-        $this->counts[$reason] = ($this->counts[$reason] ?? 0) + 1;
+        $this->counts[$reason] = ($this->counts[$reason] ?? 0) + $amount;
     }
 
     public function invalidate(string $scope): void

@@ -53,6 +53,7 @@ final class WorkflowContinuationSession
             $this->disable($eligible ? 'cold_history_cursor' : 'cold_profile');
             return null;
         }
+        $this->cache->count('validated_history_events', count($prefix));
         $this->key = hash('sha256', serialize([
             $this->scope, $this->cache->backendIdentity($this->database),
             $run::class, $class, WorkflowDefinition::fingerprint($class),
@@ -71,6 +72,7 @@ final class WorkflowContinuationSession
             $bound->setRelations($run->getRelations());
             $this->resumed = true;
             $this->cache->count('hit');
+            $this->cache->count('reused_committed_operations', max(0, $entry->sequence - 1));
         }
 
         return $entry;
@@ -93,6 +95,11 @@ final class WorkflowContinuationSession
     public function resumed(): bool
     {
         return $this->resumed;
+    }
+
+    public function recordColdEntry(): void
+    {
+        $this->cache->count('cold_entry');
     }
 
     public function disable(string $reason = 'discard'): void

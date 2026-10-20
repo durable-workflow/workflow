@@ -287,6 +287,7 @@ final class WorkflowExecutor
         try {
             $versionDecisions = new VersionDecisions($run);
             if ($frame === null) {
+                $continuation?->recordColdEntry();
                 $execution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
                 $frame = new WorkflowContinuation($workflow, $execution, $execution->current());
             }
@@ -337,6 +338,9 @@ final class WorkflowExecutor
         if ($continuation !== null && $frame->execution->valid() && ! $continuation->accepts($frame->current)) {
             $resumed = $continuation->resumed();
             $continuation->disable('cold_unsupported_operation');
+            if ($resumed) {
+                $continuation->recordColdEntry();
+            }
             $continuation = null;
             if ($resumed) {
                 return $this->run($state->run, $state->task);
