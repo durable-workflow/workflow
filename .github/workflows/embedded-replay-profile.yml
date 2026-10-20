@@ -1,4 +1,5 @@
 name: Published embedded replay profile
+run-name: ${{ inputs.execution == 'continuation' && format('Embedded continuation {0} events / {1} workers / {2} runs', inputs.events, inputs.workers, inputs.runs) || 'Published embedded replay profile' }}
 
 on:
   workflow_dispatch:
