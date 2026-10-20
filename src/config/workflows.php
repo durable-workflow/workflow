@@ -287,6 +287,14 @@ return [
             Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
         ),
 
+        // Runtime ownership, not an activity execution timeout. Valid values
+        // are 1..86400 seconds; invalid values resolve to the 300-second default.
+        // A live runtime renews the same attempt without inventing user progress.
+        'activity_task_lease_seconds' => env(
+            'DW_V2_ACTIVITY_TASK_LEASE_SECONDS',
+            Workflow\V2\Support\ActivityLease::DURATION_SECONDS,
+        ),
+
         // Matching role configuration. The matching role is defined by
         // docs/architecture/task-matching.md. By default every Laravel queue
         // worker also runs the repair / broad-poll pass on every Looping

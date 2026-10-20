@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\ActivityLeaseRenewal;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -22,7 +23,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
-final class DefaultActivityTaskBridge implements ActivityTaskBridge
+final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLeaseRenewal
 {
     /**
      * Relations the history-projection role consumes for an activity-bridge
@@ -263,6 +264,17 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         return $this->observeAttempt($attemptId, true, HeartbeatProgress::normalizeForWrite($progress));
     }
 
+    public function renewLease(string $attemptId, string $leaseOwner): array
+    {
+        $status = $this->observeAttempt($attemptId, true, null, $leaseOwner);
+
+        return array_merge($status, [
+            'lease_renewed' => $status['can_continue'],
+            'server_time' => now()
+                ->toJSON(),
+        ]);
+    }
+
     /**
      * @return array{
      *     can_continue: bool,
@@ -286,9 +298,13 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
      *     last_heartbeat_at: string|null,
      * }
      */
-    private function observeAttempt(string $attemptId, bool $renewLease, ?array $progress = null): array
-    {
-        return DB::transaction(static function () use ($attemptId, $renewLease, $progress): array {
+    private function observeAttempt(
+        string $attemptId,
+        bool $renewLease,
+        ?array $progress = null,
+        ?string $leaseOwner = null
+    ): array {
+        return DB::transaction(static function () use ($attemptId, $renewLease, $progress, $leaseOwner): array {
             $lockedRows = ActivityRowLockOrder::lockForAttempt($attemptId);
             $attempt = $lockedRows['attempt'];
 
@@ -326,6 +342,21 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                     ->find($attempt->workflow_task_id);
             }
 
+            if ($leaseOwner !== null && (self::nonEmptyString($leaseOwner) === null
+                || $attempt->lease_owner !== $leaseOwner || $task?->lease_owner !== $leaseOwner)) {
+                return self::attemptStatus(
+                    $attemptId,
+                    $attempt,
+                    $execution,
+                    $run,
+                    $task,
+                    false,
+                    false,
+                    'lease_owner_mismatch',
+                    false
+                );
+            }
+
             [$canContinue, $cancelRequested, $reason] = self::attemptContinuationState(
                 $attempt,
                 $execution,
@@ -337,6 +368,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 ! $canContinue
                 && $cancelRequested
                 && $renewLease
+                && $leaseOwner === null
                 && $run instanceof WorkflowRun
                 && $execution instanceof ActivityExecution
             ) {
@@ -388,6 +420,22 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
             $heartbeatAt = now();
             $leaseExpiresAt = ActivityLease::expiresAt();
+            if ($task->lease_expires_at !== null && $task->lease_expires_at->gt($leaseExpiresAt)) {
+                $leaseExpiresAt = $task->lease_expires_at->copy();
+            }
+
+            if ($leaseOwner !== null) {
+                // Runtime presence never acknowledges user heartbeat progress,
+                // extends its deadline, or creates a durable history event.
+                $attempt->forceFill([
+                    'lease_expires_at' => $leaseExpiresAt,
+                ])->save();
+                $task->forceFill([
+                    'lease_expires_at' => $leaseExpiresAt,
+                ])->save();
+
+                return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, false);
+            }
             $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
             $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
                 && $retryPolicy['heartbeat_timeout'] > 0

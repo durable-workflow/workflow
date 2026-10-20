@@ -261,6 +261,32 @@ application heartbeat. Application heartbeat records progress and updates
 only its heartbeat timeout. Neither can move the original total or cleanup
 deadline, revive expired authority or establish physical callback stop.
 
+## Activity lease renewal
+
+`Workflow\V2\Contracts\ActivityLeaseRenewal` is an optional runtime integration
+role. Check the actual bound activity bridge before using `renewLease()`;
+existing custom `ActivityTaskBridge` implementations gain no required method.
+The caller must supply the original attempt ID and lease owner. Successful
+receipts preserve those identities and include `lease_renewed`, `server_time`
+and the current `lease_expires_at`. A refusal does not renew ownership, restore
+an expired attempt, or acknowledge that its callback stopped.
+
+Runtime renewal changes only the original attempt and task lease expiry. It
+does not add history, update application heartbeat progress, or advance the
+authored heartbeat, start-to-close or schedule-to-close deadlines. Read-only
+status remains read-only. Adapters must preserve their original run, namespace,
+task, owner and attempt-generation authority checks before invoking the role.
+This Core role alone does not advertise a service-worker capability.
+
+`ActivityLease::seconds()` resolves `workflows.v2.activity_task_lease_seconds`,
+published as `DW_V2_ACTIVITY_TASK_LEASE_SECONDS` for embedded applications.
+Integer values from 1 through 86400 seconds are accepted; invalid, fractional,
+boolean and out-of-range values fall back to the existing 300-second default.
+The matching-role snapshot reports the effective value. Runtime renewal allows
+a longer activity to retain a short worker-loss recovery interval without
+requiring business progress heartbeats. Actual worker integration is required
+before an adapter can claim automatic renewal.
+
 ## Workflow service operation caller API
 
 PHP workflow code can initiate a durable Nexus service operation from inside

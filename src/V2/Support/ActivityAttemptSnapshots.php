@@ -61,6 +61,22 @@ final class ActivityAttemptSnapshots
                 $states[$execution->id][$attempt->id] = isset($states[$execution->id][$attempt->id])
                     ? self::mergeMissing($states[$execution->id][$attempt->id], $snapshot)
                     : $snapshot;
+
+                $state = $states[$execution->id][$attempt->id];
+                if ($execution->status === \Workflow\V2\Enums\ActivityStatus::Running
+                    && $execution->current_attempt_id === $attempt->id
+                    && $attempt->status === ActivityAttemptStatus::Running
+                    && ($state['status'] ?? null) === ActivityAttemptStatus::Running->value
+                    && ($state['workflow_task_id'] ?? null) === $attempt->workflow_task_id
+                    && ($state['attempt_number'] ?? null) === $attempt->attempt_number
+                    && ($state['lease_owner'] ?? null) === $attempt->lease_owner) {
+                    // Lease liveness can change without a business history event.
+                    // Only the same still-open original attempt may supply it;
+                    // durable terminal outcomes retain their history authority.
+                    $states[$execution->id][$attempt->id]['lease_expires_at'] = self::timestamp(
+                        $attempt->lease_expires_at
+                    );
+                }
             }
         }
 
