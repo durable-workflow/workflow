@@ -12,12 +12,14 @@ use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -353,6 +355,53 @@ final class TaskRepairRecoveryTest extends TestCase
             ],
             'unstarted activity has no attempt to close' => [ActivityStatus::Pending, null, null],
         ];
+    }
+
+    public function testExpiredActivityLeaseRespectsTheRecordedRetryBackoffAndRecordsItsOriginalAttempt(): void
+    {
+        $run = $this->createRun();
+        $task = $this->task($run, [
+            'task_type' => TaskType::Activity, 'status' => TaskStatus::Leased, 'attempt_count' => 1,
+        ]);
+        [$execution, $attempt] = $this->activity($run, $task, ActivityStatus::Running, ActivityAttemptStatus::Running);
+        $execution->forceFill(['retry_policy' => [
+            'snapshot_version' => 1, 'max_attempts' => 2, 'backoff_seconds' => [17],
+        ]])->save();
+        $this->assertNotNull($attempt);
+        $at = now()->copy();
+
+        TaskRepair::recoverExistingTask($task->fresh(), $run->fresh());
+
+        $this->assertSame(ActivityStatus::Pending, $execution->fresh()->status);
+        $this->assertNotSame(TaskStatus::Ready, $task->fresh()->status);
+        $retry = WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)->where('id', '!=', $task->id)->sole();
+        $this->assertTrue($retry->available_at->equalTo($at->addSeconds(17)));
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)->sole();
+        $this->assertSame($attempt->id, $event->payload['activity_attempt_id']);
+        $this->assertSame(1, $execution->fresh()->attempt_count);
+    }
+
+    public function testExpiredActivityLeaseCannotSilentlyRedispatchAfterTheRetryBudgetIsExhausted(): void
+    {
+        $run = $this->createRun();
+        $task = $this->task($run, [
+            'task_type' => TaskType::Activity, 'status' => TaskStatus::Leased, 'attempt_count' => 1,
+        ]);
+        [$execution, $attempt] = $this->activity($run, $task, ActivityStatus::Running, ActivityAttemptStatus::Running);
+        $execution->forceFill(['retry_policy' => [
+            'snapshot_version' => 1, 'max_attempts' => 1, 'backoff_seconds' => [17],
+        ]])->save();
+
+        TaskRepair::recoverExistingTask($task->fresh(), $run->fresh());
+
+        $this->assertSame(ActivityStatus::Failed, $execution->fresh()->status);
+        $this->assertNotSame(TaskStatus::Ready, $task->fresh()->status);
+        $this->assertSame(1, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)->sole();
+        $this->assertSame($attempt?->id, $event->payload['activity_attempt_id']);
     }
 
     #[DataProvider('terminalActivityRuns')]
