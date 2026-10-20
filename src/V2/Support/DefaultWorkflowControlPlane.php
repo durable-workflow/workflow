@@ -834,7 +834,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ? UpdateWaitPolicy::requestedWaitFor($options['wait_for'])
             : UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
 
-        $stub = $stub->withCommandContext($this->commandContext($options));
+        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
 
         if (($options['wait_timeout_seconds'] ?? null) !== null && $waitFor !== UpdateWaitPolicy::WAIT_FOR_ACCEPTED) {
             $stub = $stub->withUpdateWaitTimeout(
@@ -1139,7 +1139,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         }
 
         $arguments = $this->commandArguments($options);
-        $stub = $stub->withCommandContext($this->commandContext($options));
+        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
         $result = $runtimeReserved
             ? $stub->attemptRuntimeSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob)
             : $stub->attemptSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob);
@@ -1320,6 +1320,21 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $arguments = $options['arguments'] ?? [];
 
         return is_array($arguments) ? $arguments : [];
+    }
+
+    /**
+     * An explicit request_id option is the caller's command key and takes
+     * precedence over any key already carried by the command context.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function withRequestIdOption(WorkflowStub $stub, array $options): WorkflowStub
+    {
+        $requestId = $options['request_id'] ?? null;
+
+        return is_string($requestId) && $requestId !== ''
+            ? $stub->withRequestId($requestId)
+            : $stub;
     }
 
     /**

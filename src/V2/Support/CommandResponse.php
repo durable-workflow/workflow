@@ -59,6 +59,18 @@ final class CommandResponse
             }
         }
 
+        if (CommandRequestIdentity::supports($result->type())) {
+            $payload['request_id'] = $result->requestId();
+            $payload['retained'] = $result->retained();
+            $payload['intent_verified'] = $result->intentVerified();
+
+            $conflict = $result->conflict();
+
+            if ($conflict !== null) {
+                $payload = array_merge($payload, $conflict);
+            }
+        }
+
         if ($result instanceof SignalWithStartResult) {
             $payload['start_command_id'] = $result->startCommandId();
             $payload['start_command_sequence'] = $result->startCommandSequence();

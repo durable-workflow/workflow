@@ -55,6 +55,8 @@ use Workflow\V2\Support\CancellationScopeDescendants;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ChildRunHistory;
+use Workflow\V2\Support\CommandIntent;
+use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExternalPayloads;
@@ -80,7 +82,6 @@ use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
-use Workflow\V2\Support\UpdateRequestIdentity;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\UpsertMemosCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -905,6 +906,36 @@ final class WorkflowStub
         return $clone;
     }
 
+    /**
+     * Attach the caller's command key for the next signal or update.
+     *
+     * A retry with the same key and the same command returns the retained
+     * admission instead of recording another command; reuse of the key with a
+     * different command name, arguments or run target is refused.
+     *
+     * @api Stable v2 command identity API.
+     */
+    public function withRequestId(?string $requestId): self
+    {
+        $context = $this->resolvedCommandContext();
+        $attributes = $context->attributes()['context'];
+        $patch = [
+            'request' => [
+                'request_id' => $requestId,
+            ],
+        ];
+
+        if (is_array($attributes['server'] ?? null) && isset($attributes['server']['command'])) {
+            $patch['server'] = [
+                'metadata' => [
+                    'request_id' => $requestId,
+                ],
+            ];
+        }
+
+        return $this->withCommandContext($context->with($patch));
+    }
+
     public function withUpdateWaitTimeout(?int $seconds): self
     {
         if ($seconds !== null && $seconds < 1) {
@@ -1397,7 +1428,7 @@ final class WorkflowStub
      */
     public function submitUpdateWithArguments(string $method, array $arguments): UpdateResult
     {
-        [$command, $update, $resumeTask] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
+        [$command, $update, $resumeTask, $retained] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
 
         $this->refresh();
 
@@ -1410,6 +1441,11 @@ final class WorkflowStub
                 'Workflow instance [%s] failed to record an update command.',
                 $this->instance->id,
             ));
+        }
+
+        if ($retained !== null) {
+            return UpdateResult::fromCommand($command, null, null, $update, 'accepted')
+                ->asRetainedReceipt($retained['verified']);
         }
 
         if ($command->status !== CommandStatus::Rejected) {
@@ -1424,7 +1460,7 @@ final class WorkflowStub
      */
     public function attemptUpdateWithArguments(string $method, array $arguments): UpdateResult
     {
-        [$command, $update, $resumeTask] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
+        [$command, $update, $resumeTask, $retained] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
 
         $this->refresh();
 
@@ -1439,12 +1475,12 @@ final class WorkflowStub
             ));
         }
 
-        if ($command->status !== CommandStatus::Rejected) {
+        if ($retained === null && $command->status !== CommandStatus::Rejected) {
             self::recordUpdateSent($this->instance->id, $method, $arguments);
         }
 
         if (! $update instanceof WorkflowUpdate || $command->status === CommandStatus::Rejected) {
-            return UpdateResult::fromCommand(
+            $result = UpdateResult::fromCommand(
                 $command,
                 null,
                 null,
@@ -1453,6 +1489,8 @@ final class WorkflowStub
                 false,
                 $this->updateWaitTimeoutSeconds(),
             );
+
+            return $retained === null ? $result : $result->asRetainedReceipt($retained['verified']);
         }
 
         if ($this->shouldInlineAcceptedUpdateCompletion($update)) {
@@ -1461,13 +1499,15 @@ final class WorkflowStub
 
         $waitTimedOut = $this->waitForAcceptedUpdateToClose($update->id, $this->updateWaitTimeoutSeconds());
 
-        return $this->freshUpdateResult(
+        $result = $this->freshUpdateResult(
             $command->id,
             $update->id,
             'completed',
             $waitTimedOut,
             $this->updateWaitTimeoutSeconds(),
         );
+
+        return $retained === null ? $result : $result->asRetainedReceipt($retained['verified']);
     }
 
     public function repair(): CommandResult
@@ -2296,18 +2336,55 @@ final class WorkflowStub
         $update = null;
         /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
+        /** @var array{verified: bool}|null $retained */
+        $retained = null;
 
-        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask): void {
+        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask, &$retained): void {
+            $retained = null;
+
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            [$existingCommand, $existingUpdate] = $this->existingUpdateForRequest($instance);
+            // A keyed retry is answered from its retained receipt before any run
+            // resolution, so closure or continuation never admits it again.
+            $retainedReceipt = $this->retainedCommandForRequest(
+                $instance,
+                CommandType::Update,
+                fn (?WorkflowRun $retainedRun): string => $this->updateIntentDigest($retainedRun, $method, $arguments),
+            );
 
-            if ($existingCommand instanceof WorkflowCommand) {
-                $command = $existingCommand;
-                $update = $existingUpdate;
+            if ($retainedReceipt !== null) {
+                if ($retainedReceipt['intent'] !== CommandRequestIdentity::INTENT_DIFFERENT) {
+                    $command = $retainedReceipt['command'];
+                    $update = $this->updateForCommand($command);
+                    $retained = [
+                        'verified' => $retainedReceipt['intent'] === CommandRequestIdentity::INTENT_SAME,
+                    ];
+
+                    return;
+                }
+
+                [$command, $update] = $this->rejectUpdateCommand(
+                    $instance,
+                    $retainedReceipt['run'],
+                    $method,
+                    $arguments,
+                    CommandRequestIdentity::CONFLICT_REASON,
+                    $this->commandTargetScope(),
+                    array_merge(
+                        $this->updateCommandPayloadAttributes(
+                            $method,
+                            $arguments,
+                            [],
+                            $this->requestIdConflictPayload($retainedReceipt['command'], $method),
+                        ),
+                        [
+                            'intent_digest' => $retainedReceipt['digest'],
+                        ],
+                    ),
+                );
 
                 return;
             }
@@ -2321,7 +2398,9 @@ final class WorkflowStub
                     CommandType::Update,
                     'instance_not_started',
                     $this->commandTargetScope(),
-                    $this->updateCommandPayloadAttributes($method, $arguments),
+                    array_merge($this->updateCommandPayloadAttributes($method, $arguments), [
+                        'intent_digest' => $this->updateIntentDigest(null, $method, $arguments),
+                    ]),
                 );
 
                 $update = $this->recordRejectedUpdate($command, $method, $arguments);
@@ -2336,6 +2415,7 @@ final class WorkflowStub
                     ->findOrFail($this->selectedRunId);
                 $updateName = $method;
                 $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
+                $updateCommandAttributes['intent_digest'] = $this->updateIntentDigest($run, $updateName, $arguments);
 
                 if ($run->id !== $currentRun->id) {
                     [$command, $update] = $this->rejectUpdateCommand(
@@ -2356,6 +2436,7 @@ final class WorkflowStub
                 $run = $currentRun;
                 $updateName = $method;
                 $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
+                $updateCommandAttributes['intent_digest'] = $this->updateIntentDigest($run, $updateName, $arguments);
             }
 
             if (in_array($run->status, [
@@ -2401,6 +2482,10 @@ final class WorkflowStub
                     $arguments,
                     $validatedArguments['validation_errors'],
                 );
+                $updateCommandAttributes['intent_digest'] = $this->updateIntentDigestFromArguments(
+                    $updateName,
+                    $arguments
+                );
 
                 [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
@@ -2427,10 +2512,15 @@ final class WorkflowStub
                     [],
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->structuralLimitExceededCommandPayloadAttributes(
-                        $updateName,
-                        $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                        $e,
+                    array_merge(
+                        $this->structuralLimitExceededCommandPayloadAttributes(
+                            $updateName,
+                            $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                            $e,
+                        ),
+                        [
+                            'intent_digest' => $updateCommandAttributes['intent_digest'] ?? null,
+                        ],
                     ),
                     [
                         'arguments' => [$e->getMessage()],
@@ -2463,7 +2553,9 @@ final class WorkflowStub
                     [],
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->structuralLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e),
+                    array_merge($this->structuralLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e), [
+                        'intent_digest' => $updateCommandAttributes['intent_digest'] ?? null,
+                    ]),
                     [
                         'arguments' => [$e->getMessage()],
                     ],
@@ -2543,7 +2635,7 @@ final class WorkflowStub
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
-        return [$command, $update, $resumeTask];
+        return [$command, $update, $resumeTask, $retained];
     }
 
     private function shouldInlineAcceptedUpdateCompletion(WorkflowUpdate $update): bool
@@ -2559,26 +2651,15 @@ final class WorkflowStub
             || ! (UpdateCommandGate::blockingSignal($run, $update->command_sequence) instanceof WorkflowCommand);
     }
 
-    /**
-     * @return array{0: WorkflowCommand|null, 1: WorkflowUpdate|null}
-     */
-    private function existingUpdateForRequest(WorkflowInstance $instance): array
+    private function updateForCommand(WorkflowCommand $command): ?WorkflowUpdate
     {
-        $context = $this->resolvedCommandContext()
-            ->attributes()['context'] ?? [];
-        $command = UpdateRequestIdentity::find($instance, $context);
-
-        if (! $command instanceof WorkflowCommand) {
-            return [null, null];
-        }
-
         /** @var WorkflowUpdate|null $update */
         $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
             ->where('workflow_command_id', $command->id)
             ->lockForUpdate()
             ->first();
 
-        return [$command, $update];
+        return $update;
     }
 
     private function processAcceptedUpdateInline(?string $runId, string $updateId): void
@@ -2723,6 +2804,8 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
+        /** @var array{verified: bool}|null $retained */
+        $retained = null;
 
         SqliteTransaction::run(function () use (
             $name,
@@ -2731,15 +2814,64 @@ final class WorkflowStub
             $payloadBlob,
             $runtimeReserved,
             &$command,
-            &$task
+            &$task,
+            &$retained
         ): void {
             $command = null;
             $task = null;
+            $retained = null;
 
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
+
+            // A keyed retry is answered from its retained receipt before any run
+            // resolution, so closure or continuation never admits it again.
+            $retainedReceipt = $this->retainedCommandForRequest(
+                $instance,
+                CommandType::Signal,
+                fn (?WorkflowRun $retainedRun): string => $this->signalIntentDigest(
+                    $retainedRun,
+                    $name,
+                    $arguments,
+                    $runtimeReserved
+                ),
+            );
+
+            if ($retainedReceipt !== null) {
+                if ($retainedReceipt['intent'] !== CommandRequestIdentity::INTENT_DIFFERENT) {
+                    $command = $retainedReceipt['command'];
+                    $retained = [
+                        'verified' => $retainedReceipt['intent'] === CommandRequestIdentity::INTENT_SAME,
+                    ];
+
+                    return;
+                }
+
+                $command = $this->rejectCommand(
+                    $instance,
+                    $retainedReceipt['run'],
+                    CommandType::Signal,
+                    CommandRequestIdentity::CONFLICT_REASON,
+                    $this->commandTargetScope(),
+                    array_merge(
+                        $this->signalCommandPayloadAttributes(
+                            $name,
+                            $arguments,
+                            [],
+                            $payloadCodec,
+                            $this->requestIdConflictPayload($retainedReceipt['command'], $name),
+                        ),
+                        [
+                            'intent_digest' => $retainedReceipt['digest'],
+                        ],
+                    ),
+                );
+                $this->recordRejectedSignal($command, $name, $arguments);
+
+                return;
+            }
 
             $currentRun = $this->currentRunForInstance($instance, true);
 
@@ -2750,7 +2882,9 @@ final class WorkflowStub
                     CommandType::Signal,
                     'instance_not_started',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
+                        'intent_digest' => $this->signalIntentDigest(null, $name, $arguments, $runtimeReserved),
+                    ]),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2772,6 +2906,7 @@ final class WorkflowStub
                         $this->commandTargetScope(),
                         array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
                             'resolved_workflow_run_id' => $currentRun->id,
+                            'intent_digest' => $this->signalIntentDigest($run, $name, $arguments, $runtimeReserved),
                         ]),
                     );
                     $this->recordRejectedSignal($command, $name, $arguments);
@@ -2794,7 +2929,9 @@ final class WorkflowStub
                     CommandType::Signal,
                     'run_not_active',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
+                        'intent_digest' => $this->signalIntentDigest($run, $name, $arguments, $runtimeReserved),
+                    ]),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2831,12 +2968,17 @@ final class WorkflowStub
                         CommandType::Signal,
                         'unknown_signal',
                         $this->commandTargetScope(),
-                        $this->signalCommandPayloadAttributes(
-                            $name,
-                            $arguments,
-                            [],
-                            $payloadCodec,
-                            $signalAdmission['payload'] ?? [],
+                        array_merge(
+                            $this->signalCommandPayloadAttributes(
+                                $name,
+                                $arguments,
+                                [],
+                                $payloadCodec,
+                                $signalAdmission['payload'] ?? [],
+                            ),
+                            [
+                                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
+                            ],
                         ),
                     );
                     $this->recordRejectedSignal($command, $name, $arguments);
@@ -2853,11 +2995,16 @@ final class WorkflowStub
                         CommandType::Signal,
                         'invalid_signal_arguments',
                         $this->commandTargetScope(),
-                        $this->signalCommandPayloadAttributes(
-                            $name,
-                            $arguments,
-                            $validatedArguments['validation_errors'],
-                            $payloadCodec,
+                        array_merge(
+                            $this->signalCommandPayloadAttributes(
+                                $name,
+                                $arguments,
+                                $validatedArguments['validation_errors'],
+                                $payloadCodec,
+                            ),
+                            [
+                                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
+                            ],
                         ),
                     );
                     $this->recordRejectedSignal($command, $name, $arguments, $validatedArguments['validation_errors']);
@@ -2877,7 +3024,9 @@ final class WorkflowStub
                     CommandType::Signal,
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
+                        'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
+                    ]),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2908,7 +3057,9 @@ final class WorkflowStub
                     CommandType::Signal,
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->structuralLimitExceededCommandPayloadAttributes($name, $signalCodec, $e),
+                    array_merge($this->structuralLimitExceededCommandPayloadAttributes($name, $signalCodec, $e), [
+                        'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
+                    ]),
                 );
                 $this->recordRejectedSignal($command, $name, [], [
                     'arguments' => [$e->getMessage()],
@@ -2923,6 +3074,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::SignalReceived->value,
+                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
                 ...($storedExternally
                     ? [
                         'payload_codec' => $signalCodec,
@@ -3007,6 +3159,10 @@ final class WorkflowStub
 
         $result = new CommandResult($command);
 
+        if ($retained !== null) {
+            return $result->asRetainedReceipt($retained['verified']);
+        }
+
         if ($result->accepted()) {
             self::recordSignalSent($this->instance->id, $name, $arguments);
         }
@@ -3037,6 +3193,8 @@ final class WorkflowStub
         $task = null;
         $startedRun = null;
         $intakeGroupId = (string) Str::ulid();
+        /** @var array{verified: bool}|null $retained */
+        $retained = null;
 
         DB::transaction(function () use (
             $name,
@@ -3048,11 +3206,13 @@ final class WorkflowStub
             &$signalCommand,
             &$task,
             &$startedRun,
+            &$retained,
         ): void {
             $task = null;
             $startCommand = null;
             $signalCommand = null;
             $startedRun = null;
+            $retained = null;
 
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
@@ -3060,6 +3220,45 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $commandContext = $this->signalWithStartCommandContext($intakeGroupId);
+
+            // A keyed retry returns the original intake instead of recording a
+            // second start/signal pair under a new intake group.
+            $retainedReceipt = $this->retainedCommandForRequest(
+                $instance,
+                CommandType::Signal,
+                fn (?WorkflowRun $retainedRun): string => $this->signalIntentDigest(
+                    $retainedRun,
+                    $name,
+                    $signalArguments
+                ),
+            );
+
+            if ($retainedReceipt !== null) {
+                if ($retainedReceipt['intent'] !== CommandRequestIdentity::INTENT_DIFFERENT) {
+                    $signalCommand = $retainedReceipt['command'];
+                    $startCommand = $this->intakeStartCommand($signalCommand);
+                    $retained = [
+                        'verified' => $retainedReceipt['intent'] === CommandRequestIdentity::INTENT_SAME,
+                    ];
+
+                    return;
+                }
+
+                $signalCommand = $this->rejectSignalCommandForContext(
+                    $commandContext,
+                    $instance,
+                    $retainedReceipt['run'],
+                    $name,
+                    $signalArguments,
+                    CommandRequestIdentity::CONFLICT_REASON,
+                    [],
+                    null,
+                    $this->requestIdConflictPayload($retainedReceipt['command'], $name),
+                );
+
+                return;
+            }
+
             $currentRun = $this->currentRunForInstance($instance, true);
 
             if ($currentRun instanceof WorkflowRun && $this->runIsActive($currentRun)) {
@@ -3159,6 +3358,7 @@ final class WorkflowStub
                         'status' => CommandStatus::Accepted->value,
                         'outcome' => CommandOutcome::SignalReceived->value,
                         ...$this->signalCommandPayloadAttributes($name, $signalArguments),
+                        'intent_digest' => CommandIntent::digest(CommandType::Signal, $name, $signalArguments),
                         'accepted_at' => now(),
                     ],
                 ));
@@ -3419,6 +3619,7 @@ final class WorkflowStub
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::SignalReceived->value,
                     ...$this->signalCommandPayloadAttributes($name, $signalArguments),
+                    'intent_digest' => CommandIntent::digest(CommandType::Signal, $name, $signalArguments),
                     'accepted_at' => now(),
                 ],
             ));
@@ -3468,6 +3669,11 @@ final class WorkflowStub
                 'Workflow instance [%s] failed to record a signal-with-start command.',
                 $this->instance->id,
             ));
+        }
+
+        if ($retained !== null) {
+            return SignalWithStartResult::fromCommands($signalCommand, $startCommand, $signalCommand->intakeGroupId())
+                ->asRetainedReceipt($retained['verified']);
         }
 
         $signalWithStartResult = SignalWithStartResult::fromCommands($signalCommand, $startCommand, $intakeGroupId);
@@ -3992,6 +4198,7 @@ final class WorkflowStub
             'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
             'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
             'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
+            CommandRequestIdentity::CONFLICT_REASON => CommandOutcome::RejectedRequestIdConflict->value,
             WorkflowStartGate::BLOCKED_COMPATIBILITY => CommandOutcome::RejectedCompatibilityBlocked->value,
             WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
             default => null,
@@ -4024,6 +4231,7 @@ final class WorkflowStub
                 'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
                 'rejection_reason' => $reason,
                 'rejected_at' => now(),
+                'intent_digest' => CommandIntent::digest(CommandType::Signal, $name, $arguments),
                 ...$this->signalCommandPayloadAttributes(
                     $name,
                     $arguments,
@@ -4048,10 +4256,156 @@ final class WorkflowStub
     }
 
     /**
-     * @param array<int|string, mixed> $arguments
-     * @param array<string, list<string>> $validationErrors
      * @return array<string, mixed>
      */
+    /**
+     * Find the receipt retained for the caller's command key, if any, and
+     * compare the retry's intent against it. Called under the instance lock.
+     *
+     * @param callable(WorkflowRun|null): string $digestForRun
+     * @return array{command: WorkflowCommand, run: WorkflowRun|null, intent: string, digest: string}|null
+     */
+    private function retainedCommandForRequest(
+        WorkflowInstance $instance,
+        CommandType $type,
+        callable $digestForRun,
+    ): ?array {
+        $context = $this->resolvedCommandContext()
+            ->attributes()['context'];
+        $retained = CommandRequestIdentity::find($instance, $type, $context);
+
+        if (! $retained instanceof WorkflowCommand) {
+            return null;
+        }
+
+        $run = is_string($retained->workflow_run_id)
+            ? self::runQuery()->find($retained->workflow_run_id)
+            : null;
+        $run = $run instanceof WorkflowRun ? $run : null;
+        $digest = $digestForRun($run);
+
+        return [
+            'command' => $retained,
+            'run' => $run,
+            'intent' => CommandRequestIdentity::compareIntent($retained, $digest),
+            'digest' => $digest,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function requestIdConflictPayload(WorkflowCommand $retained, string $name): array
+    {
+        return [
+            'retained_command_id' => $retained->id,
+            'retained_command_type' => $retained->command_type?->value,
+            'retained_outcome' => $retained->outcome?->value ?? $retained->rejection_reason,
+            'conflict' => CommandRequestIdentity::conflictingParts(
+                $retained,
+                $name,
+                $this->commandTargetScope(),
+                $this->runTargeted ? $this->selectedRunId : null,
+            ),
+        ];
+    }
+
+    /**
+     * Intent of a signal as it would be admitted against the given run: the
+     * validated arguments when the signal is declared and valid, otherwise the
+     * arguments as submitted. The admission paths record the same digest.
+     *
+     * @param array<int|string, mixed> $arguments
+     */
+    private function signalIntentDigest(
+        ?WorkflowRun $run,
+        string $name,
+        array $arguments,
+        bool $runtimeReserved = false,
+    ): string {
+        $normalized = $arguments;
+
+        if ($run instanceof WorkflowRun && ! $runtimeReserved) {
+            $admission = $this->signalAdmissionForRun($run, $name);
+
+            if (($admission['allowed'] ?? false) === true) {
+                $validated = $this->validatedSignalArgumentsForRun($run, $name, $arguments);
+
+                if ($validated['validation_errors'] === []) {
+                    $normalized = $validated['arguments'];
+                }
+            }
+        }
+
+        return $this->signalIntentDigestFromArguments($name, $normalized);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    private function signalIntentDigestFromArguments(string $name, array $arguments): string
+    {
+        return CommandIntent::digest(
+            CommandType::Signal,
+            $name,
+            $arguments,
+            $this->commandTargetScope(),
+            $this->runTargeted ? $this->selectedRunId : null,
+        );
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    private function updateIntentDigest(?WorkflowRun $run, string $updateName, array $arguments): string
+    {
+        $normalized = $arguments;
+
+        if ($run instanceof WorkflowRun && RunCommandContract::hasUpdateMethod($run, $updateName)) {
+            $validated = $this->validatedUpdateArgumentsForRun($run, $updateName, $arguments);
+
+            if ($validated['validation_errors'] === []) {
+                $normalized = $validated['arguments'];
+            }
+        }
+
+        return $this->updateIntentDigestFromArguments($updateName, $normalized);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    private function updateIntentDigestFromArguments(string $updateName, array $arguments): string
+    {
+        return CommandIntent::digest(
+            CommandType::Update,
+            $updateName,
+            $arguments,
+            $this->commandTargetScope(),
+            $this->runTargeted ? $this->selectedRunId : null,
+        );
+    }
+
+    private function intakeStartCommand(WorkflowCommand $signalCommand): ?WorkflowCommand
+    {
+        $groupId = $signalCommand->intakeGroupId();
+
+        if ($groupId === null) {
+            return null;
+        }
+
+        /** @var WorkflowCommand|null $start */
+        $start = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->where('workflow_instance_id', $signalCommand->workflow_instance_id)
+            ->where('command_type', CommandType::Start->value)
+            ->where('context->intake->group_id', $groupId)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->first();
+
+        return $start;
+    }
+
     private function signalCommandPayloadAttributes(
         string $name,
         array $arguments,
@@ -4108,14 +4462,15 @@ final class WorkflowStub
         string $method,
         array $arguments,
         array $validationErrors = [],
+        array $extraPayload = [],
     ): array {
         return [
             'payload_codec' => CodecRegistry::defaultCodec(),
-            'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+            'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), array_merge([
                 'name' => $method,
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
-            ]),
+            ], $extraPayload)),
         ];
     }
 
