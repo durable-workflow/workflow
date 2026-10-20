@@ -82,7 +82,6 @@ class CommandResult
         ];
     }
 
-
     public function asRetainedReceipt(bool $intentVerified): static
     {
         $clone = clone $this;
@@ -92,6 +91,10 @@ class CommandResult
         return $clone;
     }
 
+    /**
+     * For a request-key conflict this identifies the retained command that
+     * refused the new intent; no new command is recorded for that response.
+     */
     public function commandId(): string
     {
         return $this->command->id;

@@ -1149,7 +1149,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             [
                 'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => $result->commandId(),
+                'workflow_command_id' => $result->requestIdConflict() ? null : $result->commandId(),
                 'signal_name' => $name,
                 'command_reason' => $result->reason(),
                 'reason' => $result->rejected() ? $result->rejectionReason() : null,

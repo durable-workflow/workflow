@@ -21,7 +21,7 @@ final class CommandResponse
             'run_id' => $result->runId(),
             'requested_run_id' => $result->requestedRunId(),
             'resolved_run_id' => $result->resolvedRunId(),
-            'command_id' => $result->commandId(),
+            'command_id' => $result->requestIdConflict() ? null : $result->commandId(),
             'command_sequence' => $result->commandSequence(),
             'target_scope' => $result->targetScope(),
             'workflow_type' => $workflowType ?? $result->workflowType(),

@@ -2366,25 +2366,7 @@ final class WorkflowStub
                     return;
                 }
 
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $retainedReceipt['run'],
-                    $method,
-                    $arguments,
-                    CommandRequestIdentity::CONFLICT_REASON,
-                    $this->commandTargetScope(),
-                    array_merge(
-                        $this->updateCommandPayloadAttributes(
-                            $method,
-                            $arguments,
-                            [],
-                            $this->requestIdConflictPayload($retainedReceipt['command'], $method),
-                        ),
-                        [
-                            'intent_digest' => $retainedReceipt['digest'],
-                        ],
-                    ),
-                );
+                $command = $this->requestIdConflictSnapshot($instance, $retainedReceipt['command'], $method);
 
                 return;
             }
@@ -2849,26 +2831,7 @@ final class WorkflowStub
                     return;
                 }
 
-                $command = $this->rejectCommand(
-                    $instance,
-                    $retainedReceipt['run'],
-                    CommandType::Signal,
-                    CommandRequestIdentity::CONFLICT_REASON,
-                    $this->commandTargetScope(),
-                    array_merge(
-                        $this->signalCommandPayloadAttributes(
-                            $name,
-                            $arguments,
-                            [],
-                            $payloadCodec,
-                            $this->requestIdConflictPayload($retainedReceipt['command'], $name),
-                        ),
-                        [
-                            'intent_digest' => $retainedReceipt['digest'],
-                        ],
-                    ),
-                );
-                $this->recordRejectedSignal($command, $name, $arguments);
+                $command = $this->requestIdConflictSnapshot($instance, $retainedReceipt['command'], $name);
 
                 return;
             }
@@ -3244,17 +3207,7 @@ final class WorkflowStub
                     return;
                 }
 
-                $signalCommand = $this->rejectSignalCommandForContext(
-                    $commandContext,
-                    $instance,
-                    $retainedReceipt['run'],
-                    $name,
-                    $signalArguments,
-                    CommandRequestIdentity::CONFLICT_REASON,
-                    [],
-                    null,
-                    $this->requestIdConflictPayload($retainedReceipt['command'], $name),
-                );
+                $signalCommand = $this->requestIdConflictSnapshot($instance, $retainedReceipt['command'], $name);
 
                 return;
             }
@@ -3676,7 +3629,11 @@ final class WorkflowStub
                 ->asRetainedReceipt($retained['verified']);
         }
 
-        $signalWithStartResult = SignalWithStartResult::fromCommands($signalCommand, $startCommand, $intakeGroupId);
+        $signalWithStartResult = SignalWithStartResult::fromCommands(
+            $signalCommand,
+            $startCommand,
+            $signalCommand->rejection_reason === CommandRequestIdentity::CONFLICT_REASON ? null : $intakeGroupId,
+        );
 
         if ($signalWithStartResult->accepted()) {
             self::recordSignalSent($this->instance->id, $name, $signalArguments);
@@ -4308,6 +4265,37 @@ final class WorkflowStub
                 $this->runTargeted ? $this->selectedRunId : null,
             ),
         ];
+    }
+
+    /**
+     * A conflict is a response associated with the retained command, never a
+     * new durable command. The snapshot keeps that ID for the embedded result
+     * API but has no new sequence, update/signal record or admission timestamp.
+     * CommandResponse exposes the retained ID in its explicit conflict field.
+     */
+    private function requestIdConflictSnapshot(
+        WorkflowInstance $instance,
+        WorkflowCommand $retained,
+        string $name,
+    ): WorkflowCommand {
+        return $retained->newInstance($this->commandAttributes(array_merge([
+            'id' => $retained->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $retained->workflow_run_id,
+            'workflow_type' => $retained->workflow_type,
+            'workflow_class' => $retained->workflow_class,
+            'command_type' => $retained->command_type,
+            'target_scope' => $this->commandTargetScope(),
+            'requested_workflow_run_id' => $this->runTargeted ? $this->selectedRunId : null,
+            'resolved_workflow_run_id' => $instance->current_run_id,
+            'status' => CommandStatus::Rejected,
+            'outcome' => CommandOutcome::RejectedRequestIdConflict,
+            'rejection_reason' => CommandRequestIdentity::CONFLICT_REASON,
+        ], $this->signalCommandPayloadAttributes(
+            $name,
+            [],
+            extraPayload: $this->requestIdConflictPayload($retained, $name),
+        ))));
     }
 
     /**

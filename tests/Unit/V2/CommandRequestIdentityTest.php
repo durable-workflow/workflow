@@ -267,6 +267,7 @@ final class CommandRequestIdentityTest extends TestCase
             ->attemptSignalWithStart('changed', [2]);
         $this->assertTrue($conflict->requestIdConflict());
         $this->assertNull($conflict->startCommandId());
+        $this->assertNull($conflict->intakeGroupId());
         $this->assertSame($before, $this->rows());
         $this->assertSame(1, $this->signalReceivedCount($stub));
     }
@@ -300,6 +301,9 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertSame(409, $conflict['status']);
         $this->assertSame('request_id_conflict', $conflict['reason']);
         $this->assertSame($first['command_id'], $conflict['retained_command_id']);
+        $this->assertNull($conflict['command_id']);
+        $this->assertNull($conflict['command_sequence']);
+        $this->assertNull($conflict['workflow_command_id']);
         $this->assertSame($rows, $this->rows());
         $this->assertSame(['arguments'], $conflict['conflict']);
 
