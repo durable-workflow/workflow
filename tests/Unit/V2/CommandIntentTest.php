@@ -128,4 +128,31 @@ final class CommandIntentTest extends TestCase
             ]),
         );
     }
+
+    public function testFloatIntentDoesNotDependOnPhpSerializationPrecision(): void
+    {
+        $original = ini_get('serialize_precision');
+        try {
+            ini_set('serialize_precision', '-1');
+            $expected = CommandIntent::digest(CommandType::Signal, 'changed', [0.1234567890123456]);
+            ini_set('serialize_precision', '6');
+            $this->assertSame($expected, CommandIntent::digest(CommandType::Signal, 'changed', [0.1234567890123456]));
+        } finally {
+            ini_set('serialize_precision', $original);
+        }
+    }
+
+    public function testLowSerializationPrecisionCannotMergeDifferentFloatIntents(): void
+    {
+        $original = ini_get('serialize_precision');
+        try {
+            ini_set('serialize_precision', '6');
+            $this->assertNotSame(
+                CommandIntent::digest(CommandType::Signal, 'changed', [0.1234567890123456]),
+                CommandIntent::digest(CommandType::Signal, 'changed', [0.1234567890123457]),
+            );
+        } finally {
+            ini_set('serialize_precision', $original);
+        }
+    }
 }
