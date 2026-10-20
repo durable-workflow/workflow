@@ -71,7 +71,7 @@ measurement or an OS memory limit. Missing resident-memory observations select
 cold replay. Use the normal worker/process supervisor limits as well.
 
 Before a resume, the worker verifies the backend/session, namespace/run/model,
-definition/build, fresh lease, original run fields and complete contiguous
+configured model classes, definition/build, fresh lease, original run fields and complete contiguous
 committed history prefix. Reconnects, changed identities, eviction, expiry,
 memory pressure and worker loss select authoritative replay.
 

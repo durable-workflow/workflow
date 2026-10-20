@@ -92,6 +92,10 @@ final class EmbeddedContinuationTest extends TestCase
             'lost process-local state' => [true, 2, 1, 'evict'],
             'new application build' => [true, 2, 1, 'build'],
             'reconnected database session' => [true, 2, 1, 'reconnect'],
+            'changed history model' => [true, 2, 1, 'history_event_model'],
+            'changed activity model' => [true, 2, 1, 'activity_execution_model'],
+            'changed timer model' => [true, 2, 1, 'timer_model'],
+            'changed task model' => [true, 2, 1, 'task_model'],
             'ready task transport redispatch' => [true, 1, 1, 'redispatch'],
             'duplicate completed delivery' => [true, 1, 1, 'duplicate'],
             'worker stop' => [true, 2, 1, 'stop'],
@@ -146,6 +150,19 @@ final class EmbeddedContinuationTest extends TestCase
                 ->stop();
         } elseif ($change === 'reconnect') {
             DB::disconnect('continuation');
+        } elseif (in_array(
+            $change,
+            ['history_event_model', 'activity_execution_model', 'timer_model', 'task_model'],
+            true
+        )) {
+            $model = match ($change) {
+                'history_event_model' => ContinuationConfiguredHistory::class,
+                'activity_execution_model' => ContinuationConfiguredActivity::class,
+                'timer_model' => ContinuationConfiguredTimer::class,
+                'task_model' => ContinuationConfiguredTask::class,
+            };
+            config()
+                ->set('workflows.v2.' . $change, $model);
         } elseif ($change === 'redispatch') {
             // Reserve through the real broker, then leave the logical task unclaimed.
             $heldDelivery = Queue::connection('database')->pop('default');
@@ -1373,4 +1390,20 @@ final class ScopedContinuationWorkflow extends Workflow
             'clocks' => $clocks,
         ];
     }
+}
+
+final class ContinuationConfiguredHistory extends WorkflowHistoryEvent
+{
+}
+
+final class ContinuationConfiguredActivity extends \Workflow\V2\Models\ActivityExecution
+{
+}
+
+final class ContinuationConfiguredTimer extends \Workflow\V2\Models\WorkflowTimer
+{
+}
+
+final class ContinuationConfiguredTask extends WorkflowTask
+{
 }

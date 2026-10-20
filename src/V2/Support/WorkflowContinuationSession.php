@@ -57,7 +57,7 @@ final class WorkflowContinuationSession
         $this->cache->count('validated_history_events', count($prefix));
         $this->key = hash('sha256', serialize([
             $this->scope, $this->cache->backendIdentity($this->database),
-            $run::class, $class, WorkflowDefinition::fingerprint($class),
+            $run::class, $this->configuredModels(), $class, WorkflowDefinition::fingerprint($class),
             $build, config('workflows.v2.compatibility.current'), PHP_VERSION,
         ]));
         $entry = $this->cache->take($this->key, $this->scope);
@@ -152,6 +152,24 @@ final class WorkflowContinuationSession
             return;
         }
         $this->cache->publish($this->key, $this->generation, $pending);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function configuredModels(): array
+    {
+        $models = [];
+        $configuration = config('workflows.v2', []);
+        foreach (is_array($configuration) ? $configuration : [] as $key => $value) {
+            if (is_string($key) && str_ends_with($key, '_model')) {
+                // Invalid non-string settings already resolve to the ordinary model.
+                $models[$key] = is_string($value) ? $value : get_debug_type($value);
+            }
+        }
+        ksort($models);
+
+        return $models;
     }
 
     /**
