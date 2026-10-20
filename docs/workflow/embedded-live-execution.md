@@ -5,8 +5,9 @@ database-queue jobs. An eligible continuation skips its completed instruction
 prefix while accepting the same committed durable outcomes. The database
 remains authoritative. Ordinary cold replay is the default.
 
-This feature is under [qualification](https://github.com/durable-workflow/workflow/issues/748).
-The current draft does not authorize a production performance or capacity claim.
+The [qualification record](https://github.com/durable-workflow/workflow/issues/748)
+describes the measured workloads, failed capacity cells and operating limits.
+These observations do not establish general production performance or capacity.
 Service-mode warm execution has a separate [PHP SDK implementation](https://github.com/durable-workflow/sdk-php/issues/113).
 
 ## Enable a selected workflow
@@ -95,7 +96,7 @@ commands and are checked before resuming any frame.
 
 ## Worker diagnostics
 
-The prototype exposes a process-local diagnostic snapshot from the worker:
+The worker exposes a process-local diagnostic snapshot:
 
 ```php
 $snapshot = app(Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
@@ -111,8 +112,7 @@ another eviction.
 `reused_committed_operations` counts completed durable operations before the
 retained suspension point, and `validated_history_events` counts the fresh
 history prefixes checked before reuse. These counts are not PHP instruction
-counts or CPU-saving estimates. The diagnostic class is internal while
-qualification is pending.
+counts or CPU-saving estimates. The diagnostic class is internal.
 Collect it through the application's existing worker metrics mechanism.
 A web request or separate Artisan process cannot observe another worker's
 cache. Counters are sparse and reset when that process exits; resident bytes
