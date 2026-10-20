@@ -349,6 +349,32 @@ jobs:
           tests/Unit/V2/ProjectionSqliteContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
 
+    - name: Run retained execution authority and process-loss controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/EmbeddedContinuationTest.php
+        tests/Unit/V2/WorkflowContinuationCacheTest.php
+        tests/Unit/V2/EmbeddedContinuationProcessTest.php
+        --testdox --fail-on-warning
+        --log-junit build/test-results/pr-retained-execution.xml
+
+    - name: Run growing continuation worker setup controls
+      env:
+        PROFILE_EMBEDDED_CONTINUATION: setup
+      run: >-
+        vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php
+        --testdox --fail-on-warning --display-phpunit-deprecations
+        --log-junit build/test-results/pr-continuation-growth.xml
+
+    - name: Run minimally observed continuation setup controls
+      env:
+        PROFILE_EMBEDDED_CONTINUATION: setup
+        DWF_GROWTH_OBSERVERS: 'off'
+      run: >-
+        vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php
+        --filter '10-events_(1-workers_1-runs|4-workers_8-runs)_(replay|retained)_repeat-1'
+        --testdox --fail-on-warning --fail-on-empty-test-suite
+        --log-junit build/test-results/pr-continuation-minimal-observers.xml
+
     - name: Resolve bounded pull-request test selection
       run: >-
         php scripts/ci/select-pr-tests.php

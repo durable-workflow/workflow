@@ -305,6 +305,13 @@ return [
             ),
         ],
 
+        // Optional process-local continuation for persistent embedded workers.
+        // An empty allowlist or missing immutable build identity keeps cold replay.
+        'live_execution' => [
+            'workflows' => [],
+            'build' => null,
+        ],
+
         // Sticky execution is a replay performance feature. A worker may keep
         // a process-local cache for a run it just executed, and matching may
         // prefer that worker for follow-up workflow tasks until the affinity

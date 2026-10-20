@@ -1,19 +1,51 @@
 name: Published embedded replay profile
+run-name: ${{ inputs.execution == 'continuation' && format('Embedded continuation {0} events / {1} workers / {2} runs / observers {3}', inputs.events, inputs.workers, inputs.runs, inputs.observers) || 'Published embedded replay profile' }}
 
 on:
   workflow_dispatch:
     inputs:
+      execution:
+        description: 'Published cold bridge or candidate real-queue continuation comparison'
+        type: choice
+        options: [published, continuation]
+        default: published
       history_sizes:
         description: 'Event targets: all (10/100/1000), small (10/100), or large (1000)'
         type: choice
         options: [all, small, large]
         default: all
+      events:
+        description: 'Continuation profile: events per original'
+        type: choice
+        options: ['10', '100', '1000']
+        default: '10'
+      workers:
+        description: 'Continuation profile: persistent workers within 1 GiB'
+        type: choice
+        options: ['1', '4']
+        default: '1'
+      runs:
+        description: 'Continuation profile: concurrent original workflows'
+        type: choice
+        options: ['1', '8']
+        default: '1'
+      observers:
+        description: 'CPU/SQL/scheduling observers; compare uses 100 events, 1 worker/run with drift controls'
+        type: choice
+        options: ['on', 'off', 'compare']
+        default: 'on'
+      repetitions:
+        description: 'Continuation profile: one bounded pilot or all three measured repetitions'
+        type: choice
+        options: ['all', '1']
+        default: 'all'
 
 permissions:
   contents: read
 
 jobs:
   profile:
+    if: ${{ inputs.execution != 'continuation' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -147,3 +179,77 @@ jobs:
           if test -d benchmarks/embedded-replay/vendor; then
             rm -r -- benchmarks/embedded-replay/vendor
           fi
+
+  continuation:
+    if: ${{ inputs.execution == 'continuation' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+    strategy:
+      fail-fast: false
+      matrix:
+        repetition: ${{ fromJSON(inputs.repetitions == '1' && '[1]' || '[1,2,3]') }}
+    env:
+      DWF_PROFILE_IMAGE: dw-continuation-profile:qualification
+      DWF_GROWTH_OBSERVERS: ${{ inputs.observers }}
+      PROFILE_EVENTS: ${{ inputs.events }}
+      PROFILE_WORKERS: ${{ inputs.workers }}
+      PROFILE_RUNS: ${{ inputs.runs }}
+      PROFILE_REPETITION: ${{ matrix.repetition }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Record host conditions and prepare the locked source consumer
+        timeout-minutes: 8
+        run: |
+          uname -srmo
+          lscpu | grep -E 'Architecture:|Model name:|CPU\(s\):'
+          docker ps --format '{{.Names}} {{.Image}}'
+          docker build --tag "$DWF_PROFILE_IMAGE" tests/Performance/continuation
+          cp tests/Performance/continuation/COMPOSER-INPUT.lock composer.lock
+          root_version=$(jq -r '.extra["durable-workflow"]["product-train"]' composer.json)
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/app" --workdir /app \
+            --env COMPOSER_HOME=/tmp/composer --env "COMPOSER_ROOT_VERSION=$root_version" \
+            "$DWF_PROFILE_IMAGE" composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Compare fresh replay and retained originals
+        run: |
+          if [[ "$DWF_GROWTH_OBSERVERS" == compare ]]; then
+            [[ "$PROFILE_EVENTS/$PROFILE_WORKERS/$PROFILE_RUNS" == 100/1/1 ]]
+            observer_order='on off on'
+            if [[ "$PROFILE_REPETITION" == 2 ]]; then observer_order='off on off'; fi
+            observer_block=0
+            observer_outcome=0
+            for observer_setting in $observer_order; do
+              observer_block=$((observer_block + 1))
+              echo "CONTINUATION_OBSERVER_BLOCK=$observer_block setting=$observer_setting"
+              if DWF_GROWTH_OBSERVERS="$observer_setting" \
+                bash scripts/profile-embedded-continuation.sh \
+                  "$PROFILE_EVENTS" "$PROFILE_WORKERS" "$PROFILE_RUNS" "$PROFILE_REPETITION"; then
+                :
+              else
+                observer_outcome=1
+              fi
+            done
+            exit "$observer_outcome"
+          fi
+          bash scripts/profile-embedded-continuation.sh \
+            "$PROFILE_EVENTS" "$PROFILE_WORKERS" "$PROFILE_RUNS" "$PROFILE_REPETITION"
+
+      - name: Record the scope and remove disposable installations
+        if: always()
+        run: |
+          {
+            echo '## Embedded continuation source comparison'
+            echo "Source: $GITHUB_SHA"
+            echo "Events: $PROFILE_EVENTS; workers: $PROFILE_WORKERS; runs: $PROFILE_RUNS"
+            echo "Repetition: $PROFILE_REPETITION; observers: $DWF_GROWTH_OBSERVERS"
+            echo 'One fresh container per mode, 1 CPU / 1 GiB aggregate memory / no swap.'
+            echo 'Original 3,600-second workflow and observation bounds remain unchanged.'
+            echo 'Scalar outcome, CPU, RSS, SQL, cache, queue and timer measurements are in the log.'
+            echo 'A failed or unfinished original is not acceptance. No database/history archive is uploaded.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if test -d vendor; then rm -r -- vendor; fi
+          if test -f composer.lock; then rm -- composer.lock; fi
