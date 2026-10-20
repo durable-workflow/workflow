@@ -94,7 +94,8 @@ final class UpdateRequestIdentityTest extends TestCase
         $command->forceFill([
             'context' => $context,
         ])->save();
-        $original = $command->getRawOriginal();
+        $original = $command->fresh()
+            ->getRawOriginal();
 
         $new = $workflow->withCommandContext($this->context('new-caller', 'proxy'))
             ->submitUpdate('change', 'new');
