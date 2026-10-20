@@ -1,11 +1,11 @@
-# Embedded tracing preparation
+# Embedded tracing
 
-This document describes the optional embedded tracing implementation being
-qualified in the [tracing proposal](https://github.com/durable-workflow/workflow/issues/773).
-It is not a published-package support claim. OpenTelemetry API 1.10.1 fixes the
-encoded-value baggage regression and is the minimum supported API version.
-Full qualification and a compatible Durable Workflow release are required
-before enabling this in production.
+Core 2.9.0 adds optional OpenTelemetry tracing and Laravel log correlation for
+embedded Durable Workflow. This guide covers that embedded component; the
+[full tracing issue](https://github.com/durable-workflow/workflow/issues/773)
+also tracks separately released Server and PHP, Python and Rust SDK support.
+OpenTelemetry API 1.10.1 fixes the encoded-value baggage regression and is the
+minimum supported API version.
 
 The application owns its OpenTelemetry providers, instrumentation, sampling,
 exporters and process shutdown. Durable Workflow uses those providers when
@@ -32,7 +32,7 @@ Invalid queue-dispatch link metadata uses the separate bounded attribute
 `durable.queue_context.disposition`; dropping that link never replaces the
 run's durable parent or task authority.
 
-## Configure the source integration
+## Configure the integration
 
 In a qualification application, use one application-owned environment flag for
 tracing and its optional log tap. Set `DW_TRACING_ENABLED=true` in that
@@ -133,22 +133,22 @@ the access controls appropriate to their contents.
 
 ## Runtime and SDK qualification
 
-This matrix describes this draft's durable propagation and correlation
+This matrix describes Core 2.9.0's embedded propagation and correlation
 contract. Ordinary application HTTP instrumentation has a separate scope.
 
-| Runtime or client | Scope established by this draft | Support status |
+| Runtime or client | Scope of this component | Support status |
 | --- | --- | --- |
-| Embedded Laravel | Source controls cover incoming HTTP context, separate queue workers, retries, recovery and the transitions described below. | Unreleased. Remaining full gates and overhead acceptance still block stable support. |
-| PHP Server | This embedded draft adds no service transport contract. | Separate integration and consumer qualification required. |
+| Embedded Laravel | Incoming HTTP context, separate queue workers, retries, recovery and the transitions described below. | Core 2.9.0 embedded component. Use the qualified application/exporter profile and review its measured overhead. |
+| PHP Server | This package adds no service transport contract. | Requires a separately qualified Server release and SDK tuple. |
 | Rust Server draft | Proposed observability columns and carriers have not been adopted by its catalog. | Unqualified for this contract. |
-| Cloud | No deployment of this draft is claimed. | Separate release and deployment qualification required. |
+| Cloud | No deployment is included in this component. | Separate release and deployment qualification required. |
 | PHP service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
 | Python service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
 | Rust service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
 
 The package's optional tracing API can be absent, and tracing is disabled by
 default. In those modes the execution callback still runs with its ordinary
-business outcome. Enabling this source requires review of its proposed nullable
+business outcome. Upgrading to this version adds nullable
 `observability_context` columns on runs, commands and tasks. Existing rows keep
 null metadata. Older executions use independent processing segments instead
 of borrowing an unrelated worker's parent. Canonical histories, command receipt
@@ -160,6 +160,11 @@ by `run_model`, `command_model` and `task_model` on the workflow storage
 connection. They preserve existing rows and can be reapplied. Applications that
 create replacement tables later must include these nullable JSON columns in
 their schema. This is a schema upgrade even when tracing is disabled.
+
+Tracing-enabled workflow processing uses cold replay. It clears retained
+continuation frames and does not publish new frames while tracing is enabled.
+Changing the flag cannot extend an old frame's lifetime or generation; workers
+use the ordinary history path. This behavior contributes to enabled overhead.
 
 Worker processes can handle successive jobs, but this integration scopes
 context to the current operation. It does not keep one execution span open
@@ -302,9 +307,9 @@ The local callback precedes the parallel group. The existing `all()` API does
 not admit local-activity descriptors as group members. Simultaneous-worker
 load and large-fan-out overhead remain separate qualification gates.
 
-### Outcome links (draft)
+### Outcome links
 
-The draft adds a nullable, internal `workflow_tasks.observability_context`
+The package adds a nullable, internal `workflow_tasks.observability_context`
 column. A recording task can retain its actual outcome span context alongside
 its existing task update. Entries bind the physical history event ID, sequence
 and type to the original task, run, namespace and activity attempt or timer.
@@ -351,8 +356,8 @@ disabled/legacy modes and wrong-task/namespace metadata controls. Transaction
 rollback, duplicate decisions and legacy migration are exercised separately.
 Timeout/cancellation causality, concurrent/large fan-out, multi-backend
 acceptance and overhead remain separate qualification gates.
-The new column remains unreleased and is not adopted by the service wire or
-native catalogs.
+The task column belongs to the embedded schema upgrade. Service wire and
+native catalog adoption require separate qualification.
 
 Queue dispatch emits a short `durable.task.dispatch` producer span outside the
 database transaction. It covers the queue dispatcher call. A returned call is
@@ -378,7 +383,7 @@ request followed by its cleanup activity, and immediate cancellation or
 termination. Existing carrier metadata and deadlines remain unchanged. Cleanup
 uses the original run's parent, and task scopes restore the worker's context.
 An accepted direct cooperative cancellation request also captures its caller
-in the proposed command column. Its first actual delivery links that caller
+in the command column. Its first actual delivery links that caller
 to the workflow-processing span. Duplicate requests keep the first carrier.
 Cleanup activities and later replay keep their original parent and add no new
 delivery link. Caller baggage never replaces the run's baggage. Internal
@@ -441,13 +446,13 @@ history and deadlines. A later occurrence gets its own caller without changing
 the earlier completed run. Disabled controls keep the same business outcomes
 without capturing a carrier or emitting spans.
 
-These schedule controls add no schedule column or service wire field. The
-internal buffered metadata has no stable or native adoption claim. Full tracing
-acceptance, broader gates and overhead measurements remain unfinished.
+These schedule controls add no schedule column or service wire field. Buffered
+metadata remains internal; it is not an application API or native catalog
+contract. Full Server/SDK tracing acceptance remains separate.
 
 ## Signal caller links
 
-This draft also proposes a nullable `workflow_commands.observability_context`
+Core 2.9.0 includes a nullable `workflow_commands.observability_context`
 column. New accepted embedded signals and signal-with-start commands capture
 their own bounded carrier before the admission transaction. Existing command
 metadata, including null, stays unchanged. The column is separate from command
@@ -484,7 +489,7 @@ fan-in tracing.
 ## Update caller links
 
 New accepted embedded updates capture their independent caller in the same
-proposed command column before the admission transaction. Idempotent duplicate
+command column before the admission transaction. Idempotent duplicate
 requests keep the first carrier. Rejected commands do not retain it.
 
 The processing span links to the captured caller immediately before invoking
@@ -502,9 +507,9 @@ link bounds also apply to updates. Service/native update propagation and wider
 concurrent update cases remain unqualified.
 
 The run carrier is separate observability metadata. It is not command, history,
-payload or lease authority. The proposed nullable run column has not been
-adopted by the native Server. Other admission paths, broader trigger links,
-runtime coverage and performance qualification remain unfinished.
+payload or lease authority. The nullable run column has not been adopted by the native Server. The
+qualification described here does not establish service transport or native
+catalog support.
 
 ## Processing duration and durable waits
 
