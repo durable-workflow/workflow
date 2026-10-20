@@ -71,6 +71,73 @@ final class EmbeddedContinuationProcessTest extends TestCase
         ];
     }
 
+    public static function memoryStopProfiles(): array
+    {
+        return [
+            'ordinary cold worker' => [false],
+            'retained worker' => [true],
+        ];
+    }
+
+    #[DataProvider('memoryStopProfiles')]
+    public function testMemoryLimitStopHandsCommittedWorkToAFreshWorker(bool $enabled): void
+    {
+        ContinuationProcessEnvironment::configure($this->app, $this->directory . '/database.sqlite', $enabled);
+        $this->deadline = hrtime(true) + 30_000_000_000;
+        $stub = WorkflowStub::make(TestContinuationProcessWorkflow::class, 'memory-stop', 'process-loss');
+        $stub->start(new StartOptions(executionTimeoutSeconds: 120, runTimeoutSeconds: 90), $this->directory);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+        $stopped = $this->worker($enabled, '', 5, memory: 1);
+        $stopped->wait();
+        $this->assertSame(0, $stopped->getExitCode(), $this->diagnostic($stopped));
+        $report = json_decode(file_get_contents($this->directory . '/worker-0.json'), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(12, $report['command_exit']);
+        $this->assertSame($enabled ? 1 : 0, $report['peak_entries']);
+        $this->assertSame(0, $report['cache']['entries']);
+        $this->assertSame($enabled ? 1 : 0, $report['cache']['counts']['evict_clear'] ?? 0);
+        $this->assertSame(0, $report['transaction_level']);
+        $this->assertFalse($report['pdo_transaction']);
+        $this->assertCount(1, file($this->directory . '/entries'));
+        $this->assertFileDoesNotExist($this->directory . '/effects');
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map->getRawOriginal()
+            ->all();
+        $this->assertSame(0, $run->tasks()->where('status', 'leased')->count());
+
+        $successor = $this->worker($enabled, '', 4);
+        $successor->wait();
+        $this->assertSame(0, $successor->getExitCode(), $this->diagnostic($successor));
+        $this->assertSame('completed', $stub->refresh()->status());
+        $this->assertSame([
+            'integer' => 9007199254740993,
+            'optional' => null,
+            'unicode' => 'λ',
+        ], $stub->output());
+        $this->assertCount($enabled ? 2 : 3, file($this->directory . '/entries'));
+        $this->assertCount(1, file($this->directory . '/effects'));
+        $events = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame($prefix, $events->take(count($prefix))->map->getRawOriginal()->all());
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::TimerFired));
+        $this->assertCount(1, $events->where('event_type', HistoryEventType::WorkflowCompleted));
+        $run->refresh();
+        $this->assertSame($deadlines, [$run->getRawOriginal('execution_deadline_at'),
+            $run->getRawOriginal('run_deadline_at')]);
+        $tasks = $run->tasks()
+            ->get();
+        $this->assertCount(5, $tasks);
+        $this->assertSame(['completed'], $tasks->pluck('status')->map->value->unique()->values()->all());
+        $this->assertSame([1], $tasks->pluck('attempt_count')->unique()->values()->all());
+        $this->assertSame(0, $tasks->sum('repair_count'));
+        $this->assertSame(0, DB::table('failed_jobs')->count());
+        $this->assertSame(0, DB::table('jobs')->count());
+    }
+
     #[DataProvider('profiles')]
     public function testKilledWorkerRecoversTheSameClaimWithoutRepeatingCommittedEffects(
         bool $enabled,
@@ -197,7 +264,7 @@ final class EmbeddedContinuationProcessTest extends TestCase
         ContinuationProcessEnvironment::configure($app, $this->directory . '/database.sqlite', false);
     }
 
-    private function worker(bool $enabled, string $checkpoint, int $jobs): Process
+    private function worker(bool $enabled, string $checkpoint, int $jobs, int $memory = 256): Process
     {
         $index = count($this->workers);
         $worker = new Process([
@@ -208,6 +275,8 @@ final class EmbeddedContinuationProcessTest extends TestCase
             'DWF_PROCESS_ENABLED' => $enabled ? '1' : '0',
             'DWF_PROCESS_CHECKPOINT' => $checkpoint,
             'DWF_PROCESS_MAX_JOBS' => (string) $jobs,
+            'DWF_PROCESS_MEMORY' => (string) $memory,
+            'DWF_PROCESS_REPORT' => $this->directory . '/worker-' . $index . '.json',
             'APP_SERVICES_CACHE' => $this->directory . '/services-' . $index . '.php',
             'APP_PACKAGES_CACHE' => $this->directory . '/packages-' . $index . '.php',
             'XDEBUG_MODE' => 'off',

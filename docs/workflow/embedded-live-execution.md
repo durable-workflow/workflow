@@ -33,6 +33,10 @@ There is no wait for a previous worker or extension of a task lease.
 Use an asynchronous Laravel database queue and a persistent `queue:work`
 process. Match its connection/queue to the application's existing workflow
 routing. Octane is optional and is not part of this cache's lifetime.
+Run workers under a process supervisor that restarts memory-limit exits.
+An ordinary memory stop can occur between committed jobs; a fresh worker
+continues from durable state with an empty cache. Retention does not keep
+workers alive or replace supervision.
 
 ## Initial execution profile
 

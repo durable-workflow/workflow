@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -50,14 +52,30 @@ final class ContinuationProcessWorkerTest extends TestCase
                 });
             });
         }
-        $this->assertSame(0, Artisan::call('queue:work', [
+        $peakEntries = 0;
+        $this->app['events']->listen(JobProcessed::class, static function () use (&$peakEntries): void {
+            $peakEntries = max($peakEntries, app(WorkflowContinuationCache::class)->snapshot()['entries']);
+        });
+        $memory = (int) (getenv('DWF_PROCESS_MEMORY') ?: 256);
+        $exit = Artisan::call('queue:work', [
             'connection' => 'database',
             '--queue' => 'default',
             '--sleep' => 1,
             '--max-jobs' => (int) getenv('DWF_PROCESS_MAX_JOBS'),
             '--timeout' => 15,
-            '--memory' => 256,
-        ]), Artisan::output());
+            '--memory' => $memory,
+        ]);
+        $report = getenv('DWF_PROCESS_REPORT');
+        if (is_string($report) && $report !== '') {
+            file_put_contents($report, json_encode([
+                'command_exit' => $exit,
+                'peak_entries' => $peakEntries,
+                'cache' => app(WorkflowContinuationCache::class)->snapshot(),
+                'transaction_level' => DB::connection()->transactionLevel(),
+                'pdo_transaction' => DB::connection()->getPdo()->inTransaction(),
+            ], JSON_THROW_ON_ERROR));
+        }
+        $this->assertSame($memory === 1 ? 12 : 0, $exit, Artisan::output());
     }
 
     protected function getPackageProviders($app): array
