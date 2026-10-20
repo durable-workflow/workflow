@@ -1262,6 +1262,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
     private function loadControlPlaneWorkflow(string $instanceId, array $options): array
     {
         $namespace = $this->namespaceOption($options);
+        $runId = $options['run_id'] ?? null;
 
         try {
             $query = $this->instanceQuery();
@@ -1272,6 +1273,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             /** @var WorkflowInstance $instance */
             $instance = $query->findOrFail($instanceId);
+            $workflow = WorkflowStub::loadSelection($instanceId, is_string($runId) ? $runId : null, $namespace);
         } catch (ModelNotFoundException) {
             return [
                 'workflow' => null,
@@ -1306,7 +1308,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         }
 
         return [
-            'workflow' => WorkflowStub::load($instanceId, $namespace),
+            'workflow' => $workflow,
             'error' => null,
         ];
     }

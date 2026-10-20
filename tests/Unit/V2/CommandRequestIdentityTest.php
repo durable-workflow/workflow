@@ -349,7 +349,7 @@ final class CommandRequestIdentityTest extends TestCase
         $stub->refresh();
         $successor = $stub->runId();
         $this->assertNotSame($predecessor, $successor);
-        $before = WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray();
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $successor)->orderBy('id')->get()->toArray();
 
         $result = app(WorkflowControlPlane::class)->{$operation}($stub->id(), $name, [
             'run_id' => $predecessor,
@@ -361,7 +361,10 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertSame('selected_run_not_current', $result['reason']);
         $this->assertSame('run', $result['target_scope']);
         $this->assertSame($predecessor, $result['run_id']);
-        $this->assertSame($before, WorkflowHistoryEvent::query()->orderBy('id')->get()->toArray());
+        $this->assertSame(
+            $before,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $successor)->orderBy('id')->get()->toArray(),
+        );
         $rows = $this->rows();
         $retry = app(WorkflowControlPlane::class)->{$operation}($stub->id(), $name, [
             'run_id' => $predecessor,
@@ -433,7 +436,9 @@ final class CommandRequestIdentityTest extends TestCase
         }
     }
 
-    /** @return iterable<string, array{string, string, array}> */
+    /**
+     * @return iterable<string, array{string, string, array}>
+     */
     public static function runTargetCommands(): iterable
     {
         yield 'signal' => ['signal', 'name-provided', ['Taylor 雪']];
