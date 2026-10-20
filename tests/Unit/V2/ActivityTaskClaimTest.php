@@ -19,21 +19,51 @@ final class ActivityTaskClaimTest extends TestCase
     public static function invalidRenewals(): array
     {
         return [
-            'not renewed' => [['lease_renewed' => false]],
-            'not continuing' => [['can_continue' => false]],
-            'cancelled' => [['cancel_requested' => true]],
-            'truthy renewed' => [['lease_renewed' => 'true']],
-            'another task' => [['workflow_task_id' => 'another-task']],
-            'another run' => [['workflow_run_id' => 'another-run']],
-            'another execution' => [['activity_execution_id' => 'another-execution']],
-            'another attempt' => [['activity_attempt_id' => 'another-attempt']],
-            'another owner' => [['lease_owner' => 'another-worker']],
-            'another generation' => [['attempt_number' => 2]],
-            'missing clock' => [['server_time' => null]],
-            'invalid clock' => [['server_time' => '2026-02-30T22:00:00.000000Z']],
-            'lost precision' => [['server_time' => '2026-10-20T22:00:01Z']],
-            'expired acknowledgement' => [['lease_expires_at' => '2026-10-20T22:00:00.000000Z']],
-            'unbounded acknowledgement' => [['lease_expires_at' => '2099-10-20T22:00:00.000000Z']],
+            'not renewed' => [[
+                'lease_renewed' => false,
+            ]],
+            'not continuing' => [[
+                'can_continue' => false,
+            ]],
+            'cancelled' => [[
+                'cancel_requested' => true,
+            ]],
+            'truthy renewed' => [[
+                'lease_renewed' => 'true',
+            ]],
+            'another task' => [[
+                'workflow_task_id' => 'another-task',
+            ]],
+            'another run' => [[
+                'workflow_run_id' => 'another-run',
+            ]],
+            'another execution' => [[
+                'activity_execution_id' => 'another-execution',
+            ]],
+            'another attempt' => [[
+                'activity_attempt_id' => 'another-attempt',
+            ]],
+            'another owner' => [[
+                'lease_owner' => 'another-worker',
+            ]],
+            'another generation' => [[
+                'attempt_number' => 2,
+            ]],
+            'missing clock' => [[
+                'server_time' => null,
+            ]],
+            'invalid clock' => [[
+                'server_time' => '2026-02-30T22:00:00.000000Z',
+            ]],
+            'lost precision' => [[
+                'server_time' => '2026-10-20T22:00:01Z',
+            ]],
+            'expired acknowledgement' => [[
+                'lease_expires_at' => '2026-10-20T22:00:00.000000Z',
+            ]],
+            'unbounded acknowledgement' => [[
+                'lease_expires_at' => '2099-10-20T22:00:00.000000Z',
+            ]],
         ];
     }
 
@@ -169,47 +199,6 @@ final class ActivityTaskClaimTest extends TestCase
         }
     }
 
-    private function renewalFixture(
-        int $businessSeconds = 60,
-        int $leaseSeconds = 10,
-        ?string $workflowDeadline = null,
-    ): array
-    {
-        Date::useDefault();
-        $now = Carbon::parse('2026-10-20 22:00:00.000000 UTC');
-        Date::setTestNow($now);
-        $claim = new ActivityTaskClaim(
-            new WorkflowTask([
-                'id' => 'original-task',
-                'lease_owner' => 'original-worker',
-                'lease_expires_at' => $now->copy()->addSeconds($leaseSeconds),
-            ]),
-            new WorkflowRun(array_merge(
-                ['id' => 'original-run'],
-                $workflowDeadline === null ? [] : [$workflowDeadline => $now->copy()->addSeconds(3)],
-            )),
-            new ActivityExecution([
-                'id' => 'original-execution',
-                'close_deadline_at' => $now->copy()->addSeconds($businessSeconds),
-            ]),
-            new ActivityAttempt(['id' => 'original-attempt', 'attempt_number' => 1]),
-        );
-
-        return [$claim, [
-            'lease_renewed' => true,
-            'can_continue' => true,
-            'cancel_requested' => false,
-            'workflow_task_id' => 'original-task',
-            'workflow_run_id' => 'original-run',
-            'activity_execution_id' => 'original-execution',
-            'activity_attempt_id' => 'original-attempt',
-            'lease_owner' => 'original-worker',
-            'attempt_number' => 1,
-            'server_time' => '2026-10-20T22:00:01.000000Z',
-            'lease_expires_at' => '2026-10-20T22:00:30.000000Z',
-        ]];
-    }
-
     public static function deadlines(): array
     {
         return [
@@ -265,5 +254,55 @@ final class ActivityTaskClaimTest extends TestCase
             Date::setTestNow();
             Date::useDefault();
         }
+    }
+
+    private function renewalFixture(
+        int $businessSeconds = 60,
+        int $leaseSeconds = 10,
+        ?string $workflowDeadline = null,
+    ): array {
+        Date::useDefault();
+        $now = Carbon::parse('2026-10-20 22:00:00.000000 UTC');
+        Date::setTestNow($now);
+        $claim = new ActivityTaskClaim(
+            new WorkflowTask([
+                'id' => 'original-task',
+                'lease_owner' => 'original-worker',
+                'lease_expires_at' => $now->copy()
+                    ->addSeconds($leaseSeconds),
+            ]),
+            new WorkflowRun(array_merge(
+                [
+                    'id' => 'original-run',
+                ],
+                $workflowDeadline === null ? [] : [
+                    $workflowDeadline => $now->copy()
+                        ->addSeconds(3),
+                ],
+            )),
+            new ActivityExecution([
+                'id' => 'original-execution',
+                'close_deadline_at' => $now->copy()
+                    ->addSeconds($businessSeconds),
+            ]),
+            new ActivityAttempt([
+                'id' => 'original-attempt',
+                'attempt_number' => 1,
+            ]),
+        );
+
+        return [$claim, [
+            'lease_renewed' => true,
+            'can_continue' => true,
+            'cancel_requested' => false,
+            'workflow_task_id' => 'original-task',
+            'workflow_run_id' => 'original-run',
+            'activity_execution_id' => 'original-execution',
+            'activity_attempt_id' => 'original-attempt',
+            'lease_owner' => 'original-worker',
+            'attempt_number' => 1,
+            'server_time' => '2026-10-20T22:00:01.000000Z',
+            'lease_expires_at' => '2026-10-20T22:00:30.000000Z',
+        ]];
     }
 }
