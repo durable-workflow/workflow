@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Composer\Autoload\ClassLoader;
+use Illuminate\Support\Facades\Date;
+use Symfony\Component\Process\PhpExecutableFinder;
 use Throwable;
 use Workflow\V2\WorkflowStub;
 
@@ -33,12 +35,15 @@ final class EmbeddedActivityLease
         private readonly ActivityTaskClaim $claim
     ) {
         $this->ownerPid = getmypid();
-        if (PHP_SAPI !== 'cli' || ! function_exists('proc_open')) {
-            throw new EmbeddedActivityLeaseUnavailable('Embedded activity maintenance requires PHP CLI proc_open.');
+        $php = (new PhpExecutableFinder())->find(false);
+        if (! is_string($php) || ! function_exists('proc_open')) {
+            throw new EmbeddedActivityLeaseUnavailable(
+                'Embedded activity maintenance requires proc_open and a PHP CLI binary.'
+            );
         }
         $autoload = self::autoload();
         $this->process = proc_open(
-            [PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
+            [$php, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
                 __DIR__ . '/embedded-activity-lease.php', $autoload],
             [
                 0 => ['pipe', 'r'],
@@ -83,7 +88,7 @@ final class EmbeddedActivityLease
         $connection = $claim->task->getConnection();
         // An in-memory database and uncommitted outer transaction have no
         // independent committed grant that another process can maintain.
-        if (WorkflowStub::faked() || WorkflowStub::hasMock($claim->execution->activity_class)
+        if (WorkflowStub::faked() || WorkflowStub::hasMock($claim->execution->activity_class) || Date::hasTestNow()
             || $connection->transactionLevel() !== 0
             || ($connection->getDriverName() === 'sqlite'
                 && (! is_string($connection->getConfig('database'))
@@ -98,6 +103,9 @@ final class EmbeddedActivityLease
     public function confirm(): void
     {
         $this->exchange('check', [], $this->claim->maintenanceRequestDeadline());
+        // The callback is finished. Join the metadata writer before outcome
+        // recording takes its own row locks, inside the confirmed grant.
+        $this->stop();
     }
 
     public function stop(): void
@@ -164,6 +172,11 @@ final class EmbeddedActivityLease
         $started = hrtime(true);
         $deadline = min($deadline, $started + 5_000_000_000);
         try {
+            if ($started >= $deadline) {
+                throw new EmbeddedActivityLeaseUnavailable(
+                    'The original activity budget expired before maintenance confirmation.'
+                );
+            }
             $id = ++$this->sequence;
             $line = json_encode([
                 'id' => $id,

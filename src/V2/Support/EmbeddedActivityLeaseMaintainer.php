@@ -7,6 +7,8 @@ namespace Workflow\V2\Support;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Database\DatabaseServiceProvider;
+use Illuminate\Database\DetectsConcurrencyErrors;
+use Illuminate\Database\DetectsLostConnections;
 use Illuminate\Events\Dispatcher;
 use Illuminate\Support\Facades\Facade;
 use Throwable;
@@ -20,6 +22,9 @@ use Workflow\V2\Models\WorkflowTask;
 /** @internal Metadata-only SQL process. It never loads an activity or its arguments. */
 final class EmbeddedActivityLeaseMaintainer
 {
+    use DetectsConcurrencyErrors;
+    use DetectsLostConnections;
+
     private string $buffer = '';
 
     private bool $lost = false;
@@ -55,7 +60,7 @@ final class EmbeddedActivityLeaseMaintainer
             }
             $maintainer = new self($start);
             stream_set_blocking(STDIN, false);
-            $maintainer->renew();
+            $maintainer->renewWhenDue();
             $maintainer->respond($start);
             $maintainer->loop();
         } catch (Throwable) {
@@ -142,14 +147,7 @@ final class EmbeddedActivityLeaseMaintainer
     private function loop(): void
     {
         while (! feof(STDIN) && $this->parentPresent()) {
-            if (! $this->lost && hrtime(true) >= $this->nextRenewal) {
-                try {
-                    $this->renew();
-                } catch (Throwable) {
-                    // Failure is sticky. A later grant can never restore this helper.
-                    $this->lost = true;
-                }
-            }
+            $this->renewWhenDue();
             foreach ($this->readCommands() as $command) {
                 if (($command['operation'] ?? null) !== 'check') {
                     $this->lost = true;
@@ -157,6 +155,26 @@ final class EmbeddedActivityLeaseMaintainer
                 $this->respond($command);
             }
             usleep(10000);
+        }
+    }
+
+    private function renewWhenDue(): void
+    {
+        if ($this->lost || hrtime(true) < $this->nextRenewal) {
+            return;
+        }
+        try {
+            $this->renew();
+        } catch (Throwable $error) {
+            if (($this->causedByConcurrencyError($error) || $this->causedByLostConnection($error))
+                && hrtime(true) < $this->claim->outcomeAdmissionDeadline()) {
+                // Unavailability grants no time. Retry only inside the last
+                // confirmed original claim; elapsed/refused authority is sticky.
+                $this->nextRenewal = hrtime(true) + 100_000_000;
+
+                return;
+            }
+            $this->lost = true;
         }
     }
 

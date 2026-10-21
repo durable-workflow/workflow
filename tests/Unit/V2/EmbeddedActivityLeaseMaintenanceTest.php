@@ -4,15 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\Schema\Blueprint;
 use Orchestra\Testbench\TestCase;
 use Tests\Fixtures\V2\LeaseBlockingActivity;
 use Tests\Fixtures\V2\LeaseBlockingWorkflow;
-use Tests\Support\TestDatabaseServiceProvider;
 use Tests\Support\EmbeddedActivityLeaseEnvironment;
+use Tests\Support\TestDatabaseServiceProvider;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -37,18 +37,21 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
             $table->string('queue');
             $table->longText('payload');
             $table->unsignedTinyInteger('attempts');
-            $table->unsignedInteger('reserved_at')->nullable();
+            $table->unsignedInteger('reserved_at')
+                ->nullable();
             $table->unsignedInteger('available_at');
             $table->unsignedInteger('created_at');
         });
         Schema::create('failed_jobs', static function (Blueprint $table): void {
             $table->bigIncrements('id');
-            $table->string('uuid')->unique();
+            $table->string('uuid')
+                ->unique();
             $table->text('connection');
             $table->text('queue');
             $table->longText('payload');
             $table->longText('exception');
-            $table->timestamp('failed_at')->useCurrent();
+            $table->timestamp('failed_at')
+                ->useCurrent();
         });
         LeaseBlockingActivity::$invocations = 0;
         LeaseBlockingActivity::$callbackPid = null;
@@ -158,22 +161,32 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
     public function testBriefMetadataContentionDoesNotLoseTheOriginalActivity(): void
     {
         [$stub, $task] = $this->pendingActivity('embedded-brief-writer');
-        $checkpoint = $this->path.'.writer';
-        $log = $this->path.'.writer.log';
+        $checkpoint = $this->path . '.writer';
+        $log = $this->path . '.writer.log';
         $locker = null;
-        $environment = ['DW_EMBEDDED_LEASE_OWNER_DATABASE' => $this->path,
-            'DW_EMBEDDED_LEASE_OWNER_CHECKPOINT' => $checkpoint, 'DW_EMBEDDED_LEASE_LOCK_TASK' => $task->id];
+        $environment = [
+            'DW_EMBEDDED_LEASE_OWNER_DATABASE' => $this->path,
+            'DW_EMBEDDED_LEASE_OWNER_CHECKPOINT' => $checkpoint,
+            'DW_EMBEDDED_LEASE_LOCK_TASK' => $task->id,
+        ];
         foreach (['DRIVER', 'HOST', 'PORT'] as $key) {
-            $value = getenv('DW_EMBEDDED_LEASE_TEST_'.$key);
+            $value = getenv('DW_EMBEDDED_LEASE_TEST_' . $key);
             if (is_string($value)) {
-                $environment['DW_EMBEDDED_LEASE_TEST_'.$key] = $value;
+                $environment['DW_EMBEDDED_LEASE_TEST_' . $key] = $value;
             }
         }
         LeaseBlockingActivity::$beforeWait = static function () use (&$locker, $checkpoint, $log, $environment): void {
-            $locker = proc_open([PHP_BINARY, dirname(__DIR__, 3).'/vendor/bin/phpunit',
-                dirname(__DIR__, 2).'/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testBriefWriter'],
-                [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'w'], 2 => ['file', $log, 'a']], $pipes,
-                env_vars: $environment);
+            $locker = proc_open(
+                [PHP_BINARY, dirname(__DIR__, 3) . '/vendor/bin/phpunit',
+                    dirname(__DIR__, 2) . '/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testBriefWriter'],
+                [
+                    0 => ['file', '/dev/null', 'r'],
+                    1 => ['file', $log, 'w'],
+                    2 => ['file', $log, 'a'],
+                ],
+                $pipes,
+                env_vars: $environment
+            );
             $deadline = hrtime(true) + 5_000_000_000;
             while (! is_file($checkpoint) && hrtime(true) < $deadline) {
                 usleep(10000);
@@ -206,24 +219,33 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
 
     public function testMaintenanceStopsWhenTheActualQueueWorkerIsKilled(): void
     {
-        if (! function_exists('posix_kill') || ! is_file('/proc/self/task/'.getmypid().'/children')) {
+        if (! function_exists('posix_kill') || ! is_file('/proc/self/task/' . getmypid() . '/children')) {
             self::markTestSkipped('This owner-death control observes its own Linux processes.');
         }
         [$stub, $task] = $this->pendingActivity('embedded-owner-killed');
-        $checkpoint = $this->path.'.owner.json';
-        $log = $this->path.'.owner.log';
-        $environment = ['DW_EMBEDDED_LEASE_OWNER_DATABASE' => $this->path,
-            'DW_EMBEDDED_LEASE_OWNER_CHECKPOINT' => $checkpoint];
+        $checkpoint = $this->path . '.owner.json';
+        $log = $this->path . '.owner.log';
+        $environment = [
+            'DW_EMBEDDED_LEASE_OWNER_DATABASE' => $this->path,
+            'DW_EMBEDDED_LEASE_OWNER_CHECKPOINT' => $checkpoint,
+        ];
         foreach (['DRIVER', 'HOST', 'PORT'] as $key) {
-            $value = getenv('DW_EMBEDDED_LEASE_TEST_'.$key);
+            $value = getenv('DW_EMBEDDED_LEASE_TEST_' . $key);
             if (is_string($value)) {
-                $environment['DW_EMBEDDED_LEASE_TEST_'.$key] = $value;
+                $environment['DW_EMBEDDED_LEASE_TEST_' . $key] = $value;
             }
         }
-        $owner = proc_open([PHP_BINARY, dirname(__DIR__, 3).'/vendor/bin/phpunit',
-            dirname(__DIR__, 2).'/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testOwner'],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'w'], 2 => ['file', $log, 'a']], $pipes,
-            env_vars: $environment);
+        $owner = proc_open(
+            [PHP_BINARY, dirname(__DIR__, 3) . '/vendor/bin/phpunit',
+                dirname(__DIR__, 2) . '/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testOwner'],
+            [
+                0 => ['file', '/dev/null', 'r'],
+                1 => ['file', $log, 'w'],
+                2 => ['file', $log, 'a'],
+            ],
+            $pipes,
+            env_vars: $environment
+        );
         self::assertIsResource($owner);
         $helper = null;
         try {
@@ -245,7 +267,8 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
                 usleep(10000);
             }
             self::assertFalse(posix_kill($helper, 0), 'Metadata maintenance must stop with its actual callback owner.');
-            $expiry = $task->fresh()->getRawOriginal('lease_expires_at');
+            $expiry = $task->fresh()
+                ->getRawOriginal('lease_expires_at');
             usleep(1100000);
             self::assertSame($expiry, $task->fresh()->getRawOriginal('lease_expires_at'));
             self::assertSame(1, $task->fresh()->attempt_count);
@@ -285,7 +308,8 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
         self::assertSame(1, LeaseBlockingActivity::$invocations);
         self::assertSame(
             TaskStatus::Completed,
-            $task->fresh()->status,
+            $task->fresh()
+->status,
             'The original callback must publish once after exceeding its runtime lease.'
         );
         $this->workOnce();

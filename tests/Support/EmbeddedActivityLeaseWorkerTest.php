@@ -21,20 +21,28 @@ final class EmbeddedActivityLeaseWorkerTest extends TestCase
         }
         LeaseBlockingActivity::$beforeWait = static function () use ($checkpoint): void {
             $helper = null;
-            $children = preg_split('/\s+/', trim(file_get_contents('/proc/self/task/'.getmypid().'/children')));
+            $children = preg_split('/\s+/', trim(file_get_contents('/proc/self/task/' . getmypid() . '/children')));
             foreach ($children as $child) {
-                $command = @file_get_contents('/proc/'.$child.'/cmdline');
+                $command = @file_get_contents('/proc/' . $child . '/cmdline');
                 if (is_string($command) && str_contains($command, '/embedded-activity-lease.php')) {
                     $helper = (int) $child;
                 }
             }
-            file_put_contents($checkpoint, json_encode(['owner' => getmypid(), 'helper' => $helper], JSON_THROW_ON_ERROR));
+            file_put_contents($checkpoint, json_encode([
+                'owner' => getmypid(),
+                'helper' => $helper,
+            ], JSON_THROW_ON_ERROR));
             while (true) {
                 usleep(100000);
             }
         };
-        Artisan::call('queue:work', ['connection' => 'database', '--queue' => 'default',
-            '--once' => true, '--tries' => 1, '--timeout' => 30]);
+        Artisan::call('queue:work', [
+            'connection' => 'database',
+            '--queue' => 'default',
+            '--once' => true,
+            '--tries' => 1,
+            '--timeout' => 30,
+        ]);
         self::fail('The owner must be killed while its original callback is running.');
     }
 
