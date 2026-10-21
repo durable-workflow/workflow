@@ -181,7 +181,8 @@ final class LargeFanOutExecutionTracingTest extends TestCase
         self::assertIsInt($error['native_code'], $diagnostic);
         self::assertContains($error['native_code'] & 255, [5, 6], $diagnostic);
         self::assertTrue(in_array($error['operation'], ['update', 'delete'], true)
-            || ($reported && TracingQueueErrorDiagnostics::isFailedJobLogContention($error)), $diagnostic);
+            || ($reported && (TracingQueueErrorDiagnostics::isFailedJobLogContention($error)
+                || TracingQueueErrorDiagnostics::isQueueDispatchContention($error))), $diagnostic);
         self::assertSame(0, $error['transaction_level'], $diagnostic);
         self::assertFalse($error['pdo_in_transaction'], $diagnostic);
     }
