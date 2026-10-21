@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.8.0 - Unreleased
+
+- Prepare optional embedded OpenTelemetry spans and log correlation across
+  durable admission, tasks, activities, retries and recovery. Applications own
+  providers, sampling, exporters and shutdown. Tracing is disabled by default.
+- Keep bounded observability context separate from business payloads, command
+  equality and lease authority. Native catalogs and service wire adoption are
+  separately qualified.
+- Require OpenTelemetry API 1.10.1 or later in the 1.x line when that optional
+  API is installed, excluding the older incompatible baggage parser.
+
 ## 2.7.1 - 2026-10-20
 
 - Chunk long activity retry and workflow-task delays to the queue driver's

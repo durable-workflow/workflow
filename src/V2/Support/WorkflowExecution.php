@@ -45,6 +45,7 @@ final class WorkflowExecution
         ?StraightLineWorkflowRequiredException $straightLineError = null,
         ?CarbonInterface $eventTime = null,
     ): self {
+        $callback = ExecutionTracing::bind($callback);
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
             WorkflowFiberContext::enter();
 
@@ -62,7 +63,12 @@ final class WorkflowExecution
             WorkflowFiberContext::setTime($eventTime, $fiber);
         }
 
-        $current = $fiber->start();
+        $sample = WorkflowExecutionProfile::begin('authoring_start');
+        try {
+            $current = $fiber->start();
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
 
         if ($fiber->isSuspended()) {
             return new self(fiber: $fiber, current: $current);
@@ -111,7 +117,12 @@ final class WorkflowExecution
             WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
-        $result = $this->fiber->resume($value);
+        $sample = WorkflowExecutionProfile::begin('authoring_resume');
+        try {
+            $result = $this->fiber->resume($value);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
 
         if ($this->fiber->isSuspended()) {
             $this->current = $result;
@@ -145,7 +156,12 @@ final class WorkflowExecution
             WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
-        $result = $this->fiber->throw($throwable);
+        $sample = WorkflowExecutionProfile::begin('authoring_throw');
+        try {
+            $result = $this->fiber->throw($throwable);
+        } finally {
+            WorkflowExecutionProfile::finish($sample);
+        }
 
         if ($this->fiber->isSuspended()) {
             $this->current = $result;

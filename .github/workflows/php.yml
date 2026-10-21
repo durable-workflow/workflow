@@ -261,6 +261,15 @@ jobs:
     - name: Validate composer.json and composer.lock
       run: composer validate --strict
 
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+      with:
+        node-version: '22'
+
+    - name: Check tracing overhead recipe
+      run: |
+        composer --working-dir=.github/tracing-performance validate --strict --no-check-all --no-check-publish
+        node --test .github/tracing-performance/probe.test.mjs .github/tracing-performance/analyze.test.mjs
+
     - name: Cache Composer packages
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
@@ -316,6 +325,42 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
+  tracing-http:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      OTEL_PHP_FIBERS_ENABLED: 'false'
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up the optional application instrumentation
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      with:
+        php-version: '8.5'
+        extensions: pdo_sqlite, opentelemetry-1.4.2
+        tools: composer
+        coverage: none
+      env:
+        fail-fast: true
+
+    - name: Install ordinary package and client instrumentation dependencies
+      run: |
+        composer install --prefer-dist --no-progress
+        composer install --working-dir=.github/tracing-http --prefer-dist --no-progress --no-plugins --no-scripts
+        composer audit --working-dir=.github/tracing-http
+
+    - name: Verify real HTTP propagation through independent activity workers
+      run: >-
+        vendor/bin/phpunit --no-configuration
+        --bootstrap .github/tracing-http/bootstrap.php
+        --do-not-record-test-run-history --fail-on-warning --fail-on-skipped
+        tests/Unit/V2/HttpExecutionTracingTest.php
+        tests/Unit/V2/ExporterExecutionTracingTest.php
+
   pr-unit-contracts:
     needs: preflight
     if: ${{ github.event_name == 'pull_request' }}
@@ -349,6 +394,32 @@ jobs:
           tests/Unit/V2/ProjectionSqliteContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
 
+    - name: Run retained execution authority and process-loss controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/EmbeddedContinuationTest.php
+        tests/Unit/V2/WorkflowContinuationCacheTest.php
+        tests/Unit/V2/EmbeddedContinuationProcessTest.php
+        --testdox --fail-on-warning
+        --log-junit build/test-results/pr-retained-execution.xml
+
+    - name: Run growing continuation worker setup controls
+      env:
+        PROFILE_EMBEDDED_CONTINUATION: setup
+      run: >-
+        vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php
+        --testdox --fail-on-warning --display-phpunit-deprecations
+        --log-junit build/test-results/pr-continuation-growth.xml
+
+    - name: Run minimally observed continuation setup controls
+      env:
+        PROFILE_EMBEDDED_CONTINUATION: setup
+        DWF_GROWTH_OBSERVERS: 'off'
+      run: >-
+        vendor/bin/phpunit tests/Performance/EmbeddedContinuationGrowthProfileTest.php
+        --filter '10-events_(1-workers_1-runs|4-workers_8-runs)_(replay|retained)_repeat-1'
+        --testdox --fail-on-warning --fail-on-empty-test-suite
+        --log-junit build/test-results/pr-continuation-minimal-observers.xml
+
     - name: Resolve bounded pull-request test selection
       run: >-
         php scripts/ci/select-pr-tests.php
@@ -356,6 +427,27 @@ jobs:
         --weights=.github/feature-test-timings.json
         --weight-profile=mysql
         --output-dir=build/pr-selection
+
+    - name: Run optional embedded tracing controls
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/ActivityExecutionTracingTest.php
+        tests/Unit/V2/IncomingHttpTracingTest.php
+        tests/Unit/V2/RecoveryExecutionTracingTest.php
+        tests/Unit/V2/TransitionExecutionTracingTest.php
+        tests/Unit/V2/FailureOutcomeExecutionTracingTest.php
+        tests/Unit/V2/FanOutExecutionTracingTest.php
+        tests/Unit/V2/LargeFanOutExecutionTracingTest.php
+        tests/Unit/V2/TaskOutcomeCarrierTest.php
+        tests/Unit/V2/ChildRetryExecutionTracingTest.php
+        tests/Unit/V2/CancellationExecutionTracingTest.php
+        tests/Unit/V2/SignalStartExecutionTracingTest.php
+        tests/Unit/V2/SignalLinkExecutionTracingTest.php
+        tests/Unit/V2/UpdateLinkExecutionTracingTest.php
+        tests/Unit/V2/TimingExecutionTracingTest.php
+        tests/Unit/V2/AdmissionExecutionTracingTest.php
+        tests/Unit/V2/DispatchExecutionTracingTest.php
+        tests/Unit/V2/ScheduleExecutionTracingTest.php
+        --fail-on-warning --log-junit build/test-results/pr-activity-tracing.xml
 
     - name: Run database-independent unit contracts
       run: |
@@ -1350,6 +1442,7 @@ jobs:
     - preflight
     - regression-corpus
     - quality
+    - tracing-http
     - pr-unit-contracts
     - pr-feature-mysql
     - feature-mysql
@@ -1369,6 +1462,9 @@ jobs:
 
     - name: Require repository preflight
       run: test "${{ needs.preflight.result }}" = "success"
+
+    - name: Require the actual HTTP tracing consumer
+      run: test "${{ needs.tracing-http.result }}" = "success"
 
     - name: Check pull-request gate
       if: ${{ github.event_name == 'pull_request' }}

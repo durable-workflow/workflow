@@ -1,0 +1,5 @@
+# Prospective official-Collector profile. The October 17 PHP receiver is unchanged.
+services:
+  collector:
+    image: otel/opentelemetry-collector:0.163.1@sha256:f0e23036dce3db3f9cb80d907c75a0d034cd32e93511a1943482d46129b9ae9c
+    command: ["/otelcol", "--config=/app/collector-otelcol.yaml"]

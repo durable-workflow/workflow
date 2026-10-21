@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Support\Facades\Event;
@@ -61,6 +62,7 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
@@ -109,6 +111,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
+        $this->registerContinuationCache();
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);
@@ -201,6 +204,9 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         // Register long-poll wake signal observers
         $this->registerLongPollObservers();
+        Event::listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
+            ExecutionTracing::discardTaskOutcomes($event->connectionName);
+        });
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();
@@ -214,6 +220,26 @@ final class WorkflowServiceProvider extends ServiceProvider
                 app(MatchingRole::class)->wake($event->connectionName, $event->queue);
             }
         });
+    }
+
+    private function registerContinuationCache(): void
+    {
+        $this->app->singleton(\Workflow\V2\Support\WorkflowContinuationCache::class);
+        $this->app['events']->listen(\Illuminate\Queue\Events\Looping::class, function (): void {
+            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
+            }
+        });
+        foreach ([
+            \Illuminate\Queue\Events\WorkerStopping::class => 'evict_clear',
+            \Illuminate\Queue\Events\JobExceptionOccurred::class => 'evict_job_exception',
+        ] as $event => $reason) {
+            $this->app['events']->listen($event, function () use ($reason): void {
+                if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                    $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear($reason);
+                }
+            });
+        }
     }
 
     /**

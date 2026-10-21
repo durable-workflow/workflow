@@ -11,6 +11,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\StickyExecution;
 
 /**
@@ -25,6 +26,11 @@ class WorkflowTaskObserver
     public function __construct(
         private readonly LongPollWakeStore $wakeStore,
     ) {
+    }
+
+    public function updating(WorkflowTask $task): void
+    {
+        ExecutionTracing::persistTaskOutcomes($task);
     }
 
     public function creating(WorkflowTask $task): void

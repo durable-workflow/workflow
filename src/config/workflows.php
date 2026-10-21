@@ -20,6 +20,11 @@ use Workflow\Support\Env;
 return [
     'workflows_folder' => 'Workflows',
 
+    'tracing' => [
+        'enabled' => false,
+        'baggage_allowlist' => [],
+    ],
+
     'stored_workflow_model' => Workflow\Models\StoredWorkflow::class,
 
     'stored_workflow_exception_model' => Workflow\Models\StoredWorkflowException::class,
@@ -311,6 +316,13 @@ return [
                 'WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE',
                 true
             ),
+        ],
+
+        // Optional process-local continuation for persistent embedded workers.
+        // An empty allowlist or missing immutable build identity keeps cold replay.
+        'live_execution' => [
+            'workflows' => [],
+            'build' => null,
         ],
 
         // Sticky execution is a replay performance feature. A worker may keep

@@ -270,40 +270,36 @@ final class LocalActivityExecutor
         /** @var ActivityAttempt $attempt */
         $attempt = $started['attempt'];
 
-        $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
-        $activity = RuntimeObjectFactory::activity($activityClass, $execution, $run, $task->id);
-        $entryMethod = EntryMethod::forActivity($activity);
-        $activityArguments = $execution->activityArguments();
-        $arguments = $activity->resolveMethodDependencies($activityArguments, $entryMethod);
+        $operation = fn (): array => $this->invokeCallback($run, $task, $execution);
+        if (ExecutionTracing::enabled() && ! WorkflowStub::hasMock($execution->activity_class)) {
+            $storedContext = TraceCarrier::fromRun($run, $diagnostic);
+            [$result, $throwable] = ExecutionTracing::localActivity(
+                [
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'workflow_type' => $run->workflow_type,
+                    'namespace' => $run->namespace,
+                    'task_id' => $task->id,
+                    'activity_id' => $execution->id,
+                    'activity_type' => $execution->activity_type,
+                    'activity_attempt_id' => $attempt->id,
+                    'activity_attempt_number' => $attempt->attempt_number,
+                    'durable.trace_context.disposition' => $diagnostic,
+                ],
+                $storedContext,
+                static function () use ($operation): array {
+                    [$result, $throwable] = $operation();
+                    if ($throwable !== null) {
+                        ExecutionTracing::recordFailure($throwable);
+                    }
 
-        $result = null;
-        $throwable = null;
-
-        if (WorkflowStub::faked()) {
-            WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
-        }
-
-        if (WorkflowStub::hasMock($execution->activity_class)) {
-            $mocked = WorkflowStub::mockedResult(
-                $execution->activity_class,
-                new ActivityFakeContext(
-                    run: $run,
-                    execution: $execution,
-                    taskId: $task->id,
-                    sequence: (int) $execution->sequence,
-                    activity: $execution->activity_class,
-                ),
-                $activityArguments,
+                    return [$result, $throwable];
+                },
+                ExecutionTracing::baggageAllowlist(),
+                true,
             );
-
-            $result = $mocked['result'];
-            $throwable = $mocked['throwable'];
         } else {
-            try {
-                $result = $activity->{$entryMethod->getName()}(...$arguments);
-            } catch (Throwable $error) {
-                $throwable = $error;
-            }
+            [$result, $throwable] = $operation();
         }
 
         return $this->recordAttemptOutcome($task, $execution, $attempt, $result, $throwable);
@@ -382,6 +378,50 @@ final class LocalActivityExecutor
             'event' => $event,
             'next_task' => $outcome['next_task'],
         ];
+    }
+
+    /**
+     * @return array{mixed, Throwable|null}
+     */
+    private function invokeCallback(WorkflowRun $run, WorkflowTask $task, ActivityExecution $execution): array
+    {
+        $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
+        $activity = RuntimeObjectFactory::activity($activityClass, $execution, $run, $task->id);
+        $entryMethod = EntryMethod::forActivity($activity);
+        $activityArguments = $execution->activityArguments();
+        $arguments = $activity->resolveMethodDependencies($activityArguments, $entryMethod);
+
+        $result = null;
+        $throwable = null;
+
+        if (WorkflowStub::faked()) {
+            WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
+        }
+
+        if (WorkflowStub::hasMock($execution->activity_class)) {
+            $mocked = WorkflowStub::mockedResult(
+                $execution->activity_class,
+                new ActivityFakeContext(
+                    run: $run,
+                    execution: $execution,
+                    taskId: $task->id,
+                    sequence: (int) $execution->sequence,
+                    activity: $execution->activity_class,
+                ),
+                $activityArguments,
+            );
+
+            $result = $mocked['result'];
+            $throwable = $mocked['throwable'];
+        } else {
+            try {
+                $result = $activity->{$entryMethod->getName()}(...$arguments);
+            } catch (Throwable $error) {
+                $throwable = $error;
+            }
+        }
+
+        return [$result, $throwable];
     }
 
     /** @param array<string, mixed> $report

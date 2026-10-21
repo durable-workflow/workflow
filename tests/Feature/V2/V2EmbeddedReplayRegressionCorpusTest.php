@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
@@ -77,6 +80,97 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     private int $workflowNumber = 0;
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testCommittedTimerContinuationUsesOneWorkflowConstruction(): void
+    {
+        $path = self::FIXTURE_DIR . '/embedded-committed-timer-continuation.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained timer evidence is not present in this source revision.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $this->clearWorkflowState();
+        $previousQueue = Queue::getFacadeRoot();
+        $keys = ['queue.default', 'queue.connections.database', 'workflows.v2.queue',
+            'workflows.v2.task_dispatch_mode', 'workflows.v2.live_execution'];
+        $previous = array_combine($keys, array_map(static fn (string $key): mixed => config($key), $keys));
+        config([
+            'queue.default' => 'database',
+            'queue.connections.database' => [
+                'driver' => 'database',
+                'table' => 'jobs',
+                'queue' => 'corpus-live',
+                'retry_after' => 90,
+            ],
+            'workflows.v2.queue' => 'corpus-live',
+            'workflows.v2.task_dispatch_mode' => 'queue',
+            'workflows.v2.live_execution' => [
+                'workflows' => [$fixture['workflow']['type']],
+                'build' => 'corpus-live',
+            ],
+        ]);
+        $this->app->forgetInstance('queue');
+        Queue::swap($this->app->make('queue'));
+        $constructions = 0;
+        $count = false;
+        $this->app->resolving($fixture['workflow']['type'], static function () use (&$constructions, &$count): void {
+            if ($count) {
+                ++$constructions;
+            }
+        });
+        Carbon::setTestNow('2026-10-17 15:15:00.123456');
+        try {
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'corpus-live');
+            $stub->start(...[...$fixture['workflow']['arguments'], new StartOptions(
+                executionTimeoutSeconds: 120,
+                runTimeoutSeconds: 90,
+            )]);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $deadlines = [$run->getRawOriginal('execution_deadline_at'), $run->getRawOriginal('run_deadline_at')];
+            $worker = $this->app->make('queue.worker');
+            $work = static fn () => $worker->runNextJob('database', 'corpus-live', new WorkerOptions(sleep: 0));
+            $count = true;
+            $work();
+            $prefix = $run->historyEvents()
+                ->get()
+                ->map->getRawOriginal()
+                ->all();
+            Carbon::setTestNow(now()->addSeconds(2));
+            $work();
+            $work();
+            $this->assertSame('completed', $stub->refresh()->status());
+            $this->assertSame([
+                'waited' => true,
+                'workflow_id' => $stub->id(),
+                'run_id' => $run->id,
+            ], $stub->output());
+            $this->assertSame(
+                1,
+                $constructions,
+                'The committed timer continuation must not reconstruct its completed prefix.'
+            );
+            $this->assertSame(
+                $prefix,
+                $run->historyEvents()
+                    ->limit(count($prefix))
+                    ->get()
+                    ->map->getRawOriginal()
+                    ->all()
+            );
+            $this->assertSame($deadlines, [$run->fresh()->getRawOriginal('execution_deadline_at'),
+                $run->fresh()
+                    ->getRawOriginal('run_deadline_at')]);
+            $this->assertSame(3, $run->tasks()->count());
+            $this->assertSame(3, $run->tasks()->where('status', 'completed')->where('attempt_count', 1)->count());
+            $this->assertSame(0, (int) $run->tasks()->sum('repair_count'));
+        } finally {
+            Carbon::setTestNow();
+            Queue::swap($previousQueue);
+            config($previous);
+            DB::table('jobs')->where('queue', 'corpus-live')->delete();
+        }
+    }
+
     public function testFixturesExecuteThroughDeclaredReplayConsumers(): void
     {
         self::stopWorkers();
@@ -91,6 +185,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'embedded-committed-timer-continuation') {
+                // Its positive executor path runs in the isolated queue test above.
+                continue;
+            }
 
             if ($fixture['id'] === 'embedded-local-activity-retry-queue-delivery') {
                 $this->assertEmbeddedLocalRetryQueuesItsOriginalTask($fixture);

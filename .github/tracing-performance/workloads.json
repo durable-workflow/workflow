@@ -1,0 +1,4 @@
+{
+    "ordinary": {"members": 1, "interval_ms": 1000, "duration_seconds": 120},
+    "fanout": {"members": 64, "interval_ms": 60000, "duration_seconds": 120}
+}
