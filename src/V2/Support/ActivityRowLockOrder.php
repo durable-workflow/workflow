@@ -31,9 +31,12 @@ final class ActivityRowLockOrder
     ): array {
         /** @var ActivityExecution|null $snapshot */
         $snapshot = ActivityExecution::query()->find($executionId);
-        $snapshotAttemptId = $snapshot instanceof ActivityExecution
-            ? ($includeClosedAttempt ? $snapshot->current_attempt_id : self::runningAttemptId($snapshot))
-            : null;
+        $snapshotAttemptId = null;
+        if ($snapshot instanceof ActivityExecution) {
+            $snapshotAttemptId = $includeClosedAttempt ? $snapshot->current_attempt_id : self::runningAttemptId(
+                $snapshot
+            );
+        }
 
         /** @var ActivityAttempt|null $attempt */
         $attempt = $snapshotAttemptId === null

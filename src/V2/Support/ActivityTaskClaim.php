@@ -120,22 +120,21 @@ final class ActivityTaskClaim
             return false;
         }
 
-        if ($this->lastRenewalServerTime !== null && $window['server'] <= $this->lastRenewalServerTime) {
-            return $window['server'] === $this->lastRenewalServerTime
-                && $window['expires'] === $this->knownLeaseExpiry
-                && $requestStartedAt === $this->lastRenewalRequestStartedAt;
+        $freshRenewal = $this->lastRenewalServerTime === null || $window['server'] > $this->lastRenewalServerTime;
+        if ($freshRenewal) {
+            $this->leaseAdmissionDeadline = max(
+                $this->leaseAdmissionDeadline,
+                $requestStartedAt + $window['remaining'] * 1_000,
+            );
+            $this->acknowledgeHeartbeat($reply, $window['server'], $requestStartedAt, $receivedAt);
+            $this->lastRenewalServerTime = $window['server'];
+            $this->knownLeaseExpiry = $window['expires'];
+            $this->lastRenewalRequestStartedAt = $requestStartedAt;
         }
 
-        $this->leaseAdmissionDeadline = max(
-            $this->leaseAdmissionDeadline,
-            $requestStartedAt + $window['remaining'] * 1_000,
-        );
-        $this->acknowledgeHeartbeat($reply, $window['server'], $requestStartedAt, $receivedAt);
-        $this->lastRenewalServerTime = $window['server'];
-        $this->knownLeaseExpiry = $window['expires'];
-        $this->lastRenewalRequestStartedAt = $requestStartedAt;
-
-        return true;
+        return $freshRenewal || ($window['server'] === $this->lastRenewalServerTime
+            && $window['expires'] === $this->knownLeaseExpiry
+            && $requestStartedAt === $this->lastRenewalRequestStartedAt);
     }
 
     public function activityExecutionId(): string

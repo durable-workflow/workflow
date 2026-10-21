@@ -21,6 +21,14 @@ final class ActivityAttemptAuthority
             return 'lease_expired';
         }
 
+        return self::expiredBusinessReason($execution, $at, $run);
+    }
+
+    private static function expiredBusinessReason(
+        ActivityExecution $execution,
+        CarbonInterface $at,
+        ?WorkflowRun $run,
+    ): ?string {
         $kind = ActivityTimeoutEnforcer::expiredDeadlineKind($execution, $at);
 
         if ($kind !== null) {

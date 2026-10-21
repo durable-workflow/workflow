@@ -54,68 +54,79 @@ final class TaskRepair
             return null;
         }
 
-        if ($task->status === TaskStatus::Ready) {
-            if (! TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
-                return null;
-            }
+        return match ($task->status) {
+            TaskStatus::Ready => self::recoverReadyTask($task, $run),
+            TaskStatus::Leased => self::recoverLeasedTask($task, $run),
+            TaskStatus::Failed => self::recoverFailedReplayTask($task, $run),
+            default => null,
+        };
+    }
 
-            $task->forceFill([
-                'namespace' => $task->namespace ?? $run->namespace,
-                'repair_count' => $task->repair_count + 1,
-                'repair_available_at' => null,
-                'last_error' => null,
-            ])->save();
-
-            return $task;
+    private static function recoverReadyTask(WorkflowTask $task, WorkflowRun $run): ?WorkflowTask
+    {
+        if (! TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
+            return null;
         }
 
-        if ($task->status === TaskStatus::Leased) {
-            if (! TaskRepairPolicy::leaseExpired($task)) {
-                return null;
-            }
+        $task->forceFill([
+            'namespace' => $task->namespace ?? $run->namespace,
+            'repair_count' => $task->repair_count + 1,
+            'repair_available_at' => null,
+            'last_error' => null,
+        ])->save();
 
-            $execution = $task->task_type === TaskType::Activity ? self::activityExecutionForTask($task) : null;
-            if ($execution instanceof ActivityExecution && $execution->status === ActivityStatus::Running) {
-                // Loss of an activity lease consumes its recorded retry policy.
-                // It is not permission to silently redispatch the same attempt.
-                return ActivityTimeoutEnforcer::enforceLeaseExpiry($task->id)['next_task'];
-            }
+        return $task;
+    }
 
-            self::closeExpiredActivityAttempt($task);
-
-            $task->forceFill([
-                'status' => TaskStatus::Ready,
-                'namespace' => $task->namespace ?? $run->namespace,
-                'leased_at' => null,
-                'lease_owner' => null,
-                'lease_expires_at' => null,
-                'repair_count' => $task->repair_count + 1,
-                'repair_available_at' => null,
-                'last_error' => null,
-            ])->save();
-
-            return $task;
+    private static function recoverLeasedTask(WorkflowTask $task, WorkflowRun $run): ?WorkflowTask
+    {
+        if (! TaskRepairPolicy::leaseExpired($task)) {
+            return null;
         }
 
-        if ($task->status === TaskStatus::Failed && self::replayBlocked($task)) {
-            $payload = self::clearReplayBlockedPayload($task);
-
-            $task->forceFill([
-                'status' => TaskStatus::Ready,
-                'namespace' => $task->namespace ?? $run->namespace,
-                'payload' => $payload,
-                'leased_at' => null,
-                'lease_owner' => null,
-                'lease_expires_at' => null,
-                'repair_count' => $task->repair_count + 1,
-                'repair_available_at' => null,
-                'last_error' => null,
-            ])->save();
-
-            return $task;
+        $execution = $task->task_type === TaskType::Activity ? self::activityExecutionForTask($task) : null;
+        if ($execution instanceof ActivityExecution && $execution->status === ActivityStatus::Running) {
+            // Loss of an activity lease consumes its recorded retry policy.
+            // It is not permission to silently redispatch the same attempt.
+            return ActivityTimeoutEnforcer::enforceLeaseExpiry($task->id)['next_task'];
         }
 
-        return null;
+        self::closeExpiredActivityAttempt($task);
+
+        $task->forceFill([
+            'status' => TaskStatus::Ready,
+            'namespace' => $task->namespace ?? $run->namespace,
+            'leased_at' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'repair_count' => $task->repair_count + 1,
+            'repair_available_at' => null,
+            'last_error' => null,
+        ])->save();
+
+        return $task;
+    }
+
+    private static function recoverFailedReplayTask(WorkflowTask $task, WorkflowRun $run): ?WorkflowTask
+    {
+        if (! self::replayBlocked($task)) {
+            return null;
+        }
+
+        $payload = self::clearReplayBlockedPayload($task);
+        $task->forceFill([
+            'status' => TaskStatus::Ready,
+            'namespace' => $task->namespace ?? $run->namespace,
+            'payload' => $payload,
+            'leased_at' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'repair_count' => $task->repair_count + 1,
+            'repair_available_at' => null,
+            'last_error' => null,
+        ])->save();
+
+        return $task;
     }
 
     private static function recoverableTask(WorkflowRun $run): ?WorkflowTask
