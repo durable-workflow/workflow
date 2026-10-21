@@ -16,6 +16,9 @@ available PHP CLI executable. Laravel's existing Symfony executable finder locat
 when the activity is invoked from another PHP SAPI. No activity arguments,
 results or exception payloads are sent to the helper.
 
+SQLite maintenance uses the database's current journal mode. Opening the helper
+does not replay a journal-mode setting that the running application has changed.
+
 If process creation or a PHP CLI binary is unavailable, the callback keeps its
 original captured lease and deadline. Short activities retain their previous
 behavior, but automatic renewal is unavailable and grants no additional time.

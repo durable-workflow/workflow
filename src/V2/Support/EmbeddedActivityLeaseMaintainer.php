@@ -88,13 +88,19 @@ final class EmbeddedActivityLeaseMaintainer
             throw new EmbeddedActivityLeaseUnavailable('Malformed original maintenance configuration.');
         }
         date_default_timezone_set($start['timezone']);
+        $connection = $start['connection'];
+        if (($connection['driver'] ?? null) === 'sqlite') {
+            // The parent has already configured this database. Reopening a
+            // metadata connection must not replay a stale journal-mode change.
+            unset($connection['journal_mode']);
+        }
         $container = new Container();
         Container::setInstance($container);
         $container->instance('config', new Repository([
             'database' => [
                 'default' => 'activity-maintenance',
                 'connections' => [
-                    'activity-maintenance' => $start['connection'],
+                    'activity-maintenance' => $connection,
                 ],
             ],
             'workflows' => [
