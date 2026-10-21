@@ -1,6 +1,19 @@
 # Changelog
 
-## 2.10.0 - Unreleased
+## 2.10.1 - 2026-10-21
+
+- Maintain eligible embedded activity leases from a fresh metadata-only PHP
+  process while the original callback keeps its process, injected services,
+  captured state and application connections.
+- Preserve original task, worker, session and business-deadline authority.
+  Lease maintenance does not fabricate application heartbeat progress, and
+  stops when its original parent exits. Join the helper before recording an
+  outcome, and fence publication after authority is lost.
+- Reopen the actual current SQLite journal mode instead of reapplying a stale
+  startup setting. Environments without the required process capabilities keep
+  the original activity grant.
+
+## 2.10.0 - 2026-10-21
 
 - Add the optional `ActivityLeaseRenewal` bridge role and configurable activity
   task leases, with the existing 300-second default. Runtime renewal records no
