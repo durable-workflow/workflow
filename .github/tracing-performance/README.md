@@ -3,12 +3,17 @@
 This is the qualification recipe for Workflow #788. The
 [October 17 measurement](RESULTS-2026-10-17.md) and
 [October 20 official-Collector measurement](RESULTS-2026-10-20.md) completed;
-neither qualified any of its four CPU budgets. The current recipe uses the stable
+neither qualified any of its four CPU budgets. The complete
+[October 21 study](RESULTS-2026-10-21.md) qualified three of its four original
+5%/15% budgets. Disabled fan-out remains failed against 5% (95% upper +6.43%).
+The report separately records the maintainer's post-study acceptance of a 7.5%
+disabled release allowance. The original analyzer and results are unchanged.
+The current recipe uses the stable
 OpenTelemetry API baggage fix. The remaining acceptance requirements of
 [#773](https://github.com/durable-workflow/workflow/issues/773) are separate
 release gates.
 
-## Prospective corrected-source method
+## Recorded corrected-source method
 
 The [prospective decision](https://github.com/durable-workflow/workflow/issues/773#issuecomment-6296360973)
 defines `embedded-300s-5pairs-v2`: five fixed matched repetitions, 300-second

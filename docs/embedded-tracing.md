@@ -146,6 +146,18 @@ contract. Ordinary application HTTP instrumentation has a separate scope.
 | Python service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
 | Rust service SDK | No durable carrier API or service propagation is added here. | Unqualified for this contract. |
 
+The [complete overhead study](../.github/tracing-performance/RESULTS-2026-10-21.md)
+compares this production source with published Core 2.8.0 using 32 fixed cells
+and an accepting official Collector. Ordinary disabled overhead averaged
++0.02% (95% upper +3.76%); ordinary enabled overhead averaged +5.41% (upper
++7.59%). Disabled 64-member fan-out averaged +1.41%, with an upper bound of
++6.43%, so its original 5% target remains unproven. Enabled fan-out's interval
+includes zero and does not establish an improvement. The maintainer accepted a
+7.5% disabled / 15% enabled release allowance after reviewing those complete
+results. That post-study decision does not turn the original failed target
+into a pass. These observations apply to the recorded workload, resource and
+provider profile; applications must measure their own configuration.
+
 The package's optional tracing API can be absent, and tracing is disabled by
 default. In those modes the execution callback still runs with its ordinary
 business outcome. Upgrading to this version adds nullable
