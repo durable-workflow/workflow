@@ -374,7 +374,8 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
         $this->assertSame(
             0,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityRetryScheduled)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count()
         );
         $failed = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityFailed)->sole();
