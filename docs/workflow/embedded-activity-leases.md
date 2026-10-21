@@ -11,10 +11,14 @@ The helper renews only that original attempt and stops when its owner exits.
 It is joined before the callback outcome is recorded.
 
 The helper uses the original database connection settings, including its TLS and
-authentication configuration. It needs `proc_open` and an available PHP CLI
-executable. Laravel's existing Symfony executable finder locates the CLI binary
+authentication configuration. Automatic maintenance needs `proc_open` and an
+available PHP CLI executable. Laravel's existing Symfony executable finder locates the CLI binary
 when the activity is invoked from another PHP SAPI. No activity arguments,
 results or exception payloads are sent to the helper.
+
+If process creation or a PHP CLI binary is unavailable, the callback keeps its
+original captured lease and deadline. Short activities retain their previous
+behavior, but automatic renewal is unavailable and grants no additional time.
 
 Runtime renewal records no heartbeat event and supplies no application progress.
 Activities with a heartbeat timeout must still call `heartbeat()` with genuine

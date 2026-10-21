@@ -32,15 +32,10 @@ final class EmbeddedActivityLease
     private bool $lost = false;
 
     private function __construct(
-        private readonly ActivityTaskClaim $claim
+        private readonly ActivityTaskClaim $claim,
+        string $php,
     ) {
         $this->ownerPid = getmypid();
-        $php = (new PhpExecutableFinder())->find(false);
-        if (! is_string($php) || ! function_exists('proc_open')) {
-            throw new EmbeddedActivityLeaseUnavailable(
-                'Embedded activity maintenance requires proc_open and a PHP CLI binary.'
-            );
-        }
         $autoload = self::autoload();
         $this->process = proc_open(
             [$php, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
@@ -102,7 +97,12 @@ final class EmbeddedActivityLease
             return null;
         }
 
-        return new self($claim);
+        if (! function_exists('proc_open')) {
+            return null;
+        }
+        $php = (new PhpExecutableFinder())->find(false);
+
+        return is_string($php) ? new self($claim, $php) : null;
     }
 
     public function confirm(): void

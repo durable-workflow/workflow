@@ -304,6 +304,17 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
         ];
     }
 
+    public function testShortInlineActivityRetainsItsCapturedGrantWithoutProcessSupport(): void
+    {
+        [$stub, $task] = $this->pendingActivity('embedded-short-activity', 0.02);
+        $this->workOnce();
+
+        self::assertSame(getmypid(), LeaseBlockingActivity::$callbackPid);
+        self::assertSame(1, LeaseBlockingActivity::$invocations);
+        self::assertSame(TaskStatus::Completed, $task->fresh()->status);
+        self::assertSame(0, DB::table('failed_jobs')->count());
+    }
+
     #[DataProvider('activityNamespaces')]
     public function testOrdinaryInlineActivityOutlastsItsLeaseAndCompletesExactlyOnce(?string $namespace): void
     {
