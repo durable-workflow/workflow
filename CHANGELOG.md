@@ -1,6 +1,23 @@
 # Changelog
 
-## 2.8.0 - Unreleased
+## 2.10.0 - Unreleased
+
+- Add the optional `ActivityLeaseRenewal` bridge role and configurable activity
+  task leases, with the existing 300-second default. Runtime renewal records no
+  application progress and cannot extend authored activity or workflow timeouts.
+- Preserve original run/execution deadlines during heartbeats, runtime renewal
+  and outcome publication, including external payload preparation.
+- Settle expired or explicitly revoked activity attempts through their recorded
+  retry limits and backoff. Retain lease-loss diagnostics and terminal failures;
+  repair no longer silently redispatches the same running attempt.
+- Fence worker-departure recovery by the original namespace, holder and task
+  generation. Refuse contested repair locks without changing normal worker lock
+  order or claiming that the old callback physically stopped.
+- Automatic worker maintenance and published long-activity recovery require
+  their separately qualified Server/SDK or embedded integrations. This package's
+  renewal role alone does not keep an inline callback's lease alive.
+
+## 2.9.0 - 2026-10-21
 
 - Prepare optional embedded OpenTelemetry spans and log correlation across
   durable admission, tasks, activities, retries and recovery. Applications own
@@ -10,6 +27,14 @@
   separately qualified.
 - Require OpenTelemetry API 1.10.1 or later in the 1.x line when that optional
   API is installed, excluding the older incompatible baggage parser.
+
+## 2.8.0 - 2026-10-20
+
+- Add opt-in bounded live execution for persistent embedded database-queue
+  workers, retaining at most four eligible frames for a nonrenewing 30 seconds.
+- Preserve committed-history, task-generation, connection/session and build
+  fences. Unsupported work, worker loss and uncertain acknowledgements use cold
+  replay; no database migration or portable protocol change is required.
 
 ## 2.7.1 - 2026-10-20
 
