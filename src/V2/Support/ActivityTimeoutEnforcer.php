@@ -15,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityLeaseExpiredException;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -85,99 +86,44 @@ final class ActivityTimeoutEnforcer
      */
     public static function enforce(string $executionId): array
     {
-        try {
-            return DB::transaction(static function () use ($executionId): array {
-                $lockedRows = ActivityRowLockOrder::lockForExecution($executionId);
-                $attempt = $lockedRows['attempt'];
-                $execution = $lockedRows['execution'];
-                $snapshotAttemptId = $lockedRows['snapshot_attempt_id'];
+        return self::enforceExpiredAttempt($executionId);
+    }
 
-                if (! $execution instanceof ActivityExecution) {
-                    return self::skipped('execution_not_found');
-                }
+    /**
+     * Settle an expired original lease without claiming that its callback stopped.
+     *
+     * @return array{enforced: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    public static function enforceLeaseExpiry(string $taskId): array
+    {
+        $task = WorkflowTask::query()->find($taskId);
+        $executionId = $task?->payload['activity_execution_id'] ?? null;
 
-                if (! in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
-                    return self::skipped('execution_already_terminal');
-                }
+        return is_string($executionId)
+            ? self::enforceExpiredAttempt($executionId, $taskId)
+            : self::skipped('activity_execution_missing');
+    }
 
-                $now = now();
-                $timeoutKind = self::resolveTimeoutKind($execution, $now);
+    /**
+     * Settle an original lease relinquished by its authenticated worker.
+     *
+     * The caller must retain the registration-incarnation fence until commit.
+     * The original grant remains in history; this is explicit revocation, not
+     * evidence that its natural deadline elapsed or that a callback stopped.
+     *
+     * @return array{enforced: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    public static function revokeWorkerLease(string $taskId, string $namespace, string $leaseOwner): array
+    {
+        $task = WorkflowTask::query()->find($taskId);
+        $executionId = $task?->payload['activity_execution_id'] ?? null;
 
-                if ($timeoutKind === null) {
-                    return self::skipped('no_deadline_expired');
-                }
-
-                $attemptStateReason = self::currentAttemptStateReason($execution, $attempt, $snapshotAttemptId);
-
-                if ($attemptStateReason !== null) {
-                    return self::skipped($attemptStateReason);
-                }
-
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($execution->workflow_run_id);
-
-                if ($run->status->isTerminal() && ! ActivityAbandonment::allows($run, $execution)) {
-                    return self::skipped('run_already_terminal');
-                }
-
-                if ($attempt instanceof ActivityAttempt && $attempt->status === ActivityAttemptStatus::Running) {
-                    $attempt->forceFill([
-                        'status' => ActivityAttemptStatus::Failed,
-                        'lease_expires_at' => null,
-                        'closed_at' => $attempt->closed_at ?? $now,
-                    ])->save();
-                }
-
-                // Cancel the existing activity task.
-                $existingTask = self::openActivityTask($execution);
-
-                if ($existingTask instanceof WorkflowTask) {
-                    $existingTask->forceFill([
-                        'status' => TaskStatus::Cancelled,
-                        'lease_expires_at' => null,
-                        'last_error' => null,
-                    ])->save();
-                }
-
-                // Determine whether to retry.
-                $attemptCount = max(1, (int) $execution->attempt_count);
-                $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
-                $canRetry = $attemptCount < $maxAttempts;
-
-                // Schedule-to-close covers the entire execution lifecycle across
-                // all retries — retrying would not help.
-                if ($canRetry && $timeoutKind !== 'schedule_to_close') {
-                    return self::scheduleRetry(
-                        $run,
-                        $execution,
-                        $existingTask,
-                        $attempt,
-                        $timeoutKind,
-                        $attemptCount,
-                        $maxAttempts
-                    );
-                }
-
-                return self::recordTerminalTimeout(
-                    $run,
-                    $execution,
-                    $existingTask,
-                    $attempt,
-                    $timeoutKind,
-                    $attemptCount
-                );
-            });
-        } catch (Throwable $throwable) {
-            report($throwable);
-
-            return [
-                'enforced' => false,
-                'reason' => $throwable->getMessage(),
-                'next_task' => null,
-            ];
-        }
+        return is_string($executionId)
+            ? self::enforceExpiredAttempt($executionId, $taskId, [
+                'namespace' => $namespace,
+                'lease_owner' => $leaseOwner,
+            ])
+            : self::skipped('activity_execution_missing');
     }
 
     /**
@@ -193,6 +139,244 @@ final class ActivityTimeoutEnforcer
         return in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)
             ? self::resolveTimeoutKind($execution, $now)
             : null;
+    }
+
+    /**
+     * @return array{enforced: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    private static function enforceExpiredAttempt(
+        string $executionId,
+        ?string $expiredTaskId = null,
+        ?array $revocation = null,
+    ): array {
+        try {
+            return DB::transaction(static function () use ($executionId, $expiredTaskId, $revocation): array {
+                // Repair can already retain the run/task. Refuse contested
+                // attempt rows rather than wait against a worker needing that run.
+                $lockedRows = ActivityRowLockOrder::lockForExecution(
+                    $executionId,
+                    waitForLocks: $expiredTaskId === null
+                );
+                $attempt = $lockedRows['attempt'];
+                $execution = $lockedRows['execution'];
+                $snapshotAttemptId = $lockedRows['snapshot_attempt_id'];
+
+                $executionReason = self::executionAvailabilityReason($execution);
+                if ($executionReason !== null) {
+                    return self::skipped($executionReason);
+                }
+
+                /** @var ActivityExecution $execution */
+                $now = now();
+                $timeoutKind = self::resolveTimeoutKind($execution, $now);
+                $reason = self::timeoutSelectionRefusal($timeoutKind, $expiredTaskId, $revocation !== null)
+                    ?? self::currentAttemptStateReason($execution, $attempt, $snapshotAttemptId);
+                if ($reason !== null) {
+                    return self::skipped($reason);
+                }
+
+                return self::enforceLockedTimeout(
+                    $execution,
+                    $attempt,
+                    $timeoutKind,
+                    $expiredTaskId,
+                    $now,
+                    $revocation
+                );
+            });
+        } catch (Throwable $throwable) {
+            if ($expiredTaskId !== null) {
+                // The repair caller records its own candidate failure. Preserve
+                // the storage error instead of reporting successful recovery.
+                throw $throwable;
+            }
+
+            report($throwable);
+
+            return [
+                'enforced' => false,
+                'reason' => $throwable->getMessage(),
+                'next_task' => null,
+            ];
+        }
+    }
+
+    private static function executionAvailabilityReason(?ActivityExecution $execution): ?string
+    {
+        if ($execution === null) {
+            return 'execution_not_found';
+        }
+
+        if (! in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+            return 'execution_already_terminal';
+        }
+
+        return null;
+    }
+
+    private static function timeoutSelectionRefusal(
+        ?string $timeoutKind,
+        ?string $expiredTaskId,
+        bool $workerDeparted,
+    ): ?string {
+        if ($expiredTaskId !== null && $timeoutKind !== null && ! $workerDeparted) {
+            // The timeout sweep owns declared business deadlines and its
+            // diagnostics. Lease recovery must not consume that outcome.
+            return 'activity_deadline_expired';
+        }
+
+        if ($timeoutKind === null && $expiredTaskId === null) {
+            return 'no_deadline_expired';
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{enforced: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    private static function enforceLockedTimeout(
+        ActivityExecution $execution,
+        ?ActivityAttempt $attempt,
+        ?string $timeoutKind,
+        ?string $expiredTaskId,
+        CarbonInterface $now,
+        ?array $revocation,
+    ): array {
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->lock($revocation === null ? true : 'for update nowait')
+            ->findOrFail($execution->workflow_run_id);
+
+        if ($run->status->isTerminal() && ! ActivityAbandonment::allows($run, $execution)) {
+            return self::skipped('run_already_terminal');
+        }
+
+        $existingTask = self::openActivityTask($execution, $expiredTaskId, $revocation === null);
+        $leaseMetadata = $timeoutKind === null || $revocation !== null
+            ? self::leaseLossMetadata($existingTask, $attempt, $run, $now, $revocation)
+            : [];
+        if ($leaseMetadata === null) {
+            return self::skipped($revocation === null ? 'original_lease_not_expired' : 'lease_owner_mismatch');
+        }
+        if ($timeoutKind === null) {
+            $timeoutKind = 'lease';
+        } elseif ($timeoutKind !== 'lease') {
+            $leaseMetadata = [];
+        }
+
+        self::closeTimedOutAttempt(
+            $attempt,
+            $existingTask,
+            $timeoutKind,
+            $now,
+            $leaseMetadata['failure_reason'] ?? null
+        );
+
+        return self::settleTimeout($run, $execution, $existingTask, $attempt, $timeoutKind, $leaseMetadata);
+    }
+
+    private static function originalLeaseMatches(?WorkflowTask $task, ?ActivityAttempt $attempt): bool
+    {
+        return $task instanceof WorkflowTask
+            && $attempt instanceof ActivityAttempt
+            && $task->id === $attempt->workflow_task_id
+            && $task->status === TaskStatus::Leased
+            && $task->attempt_count === $attempt->attempt_number
+            && $task->lease_owner === $attempt->lease_owner
+            && $task->lease_expires_at !== null;
+    }
+
+    private static function leaseLossMetadata(
+        ?WorkflowTask $task,
+        ?ActivityAttempt $attempt,
+        WorkflowRun $run,
+        CarbonInterface $now,
+        ?array $revocation,
+    ): ?array {
+        if (! self::originalLeaseMatches($task, $attempt)) {
+            return null;
+        }
+        /** @var WorkflowTask $task */
+        /** @var ActivityAttempt $attempt */
+        $authorized = $revocation === null
+            ? $now->gte($task->lease_expires_at)
+            : $run->namespace === $revocation['namespace']
+                && $task->namespace === $revocation['namespace']
+                && $task->lease_owner === $revocation['lease_owner']
+                && $attempt->status === ActivityAttemptStatus::Running;
+        if (! $authorized) {
+            return null;
+        }
+
+        $revoked = $revocation !== null && $now->lt($task->lease_expires_at);
+
+        return array_merge([
+            'failure_reason' => $revoked ? 'worker_deregistered' : 'lease_expired',
+            'lease_expires_at' => $task->lease_expires_at->toJSON(),
+            'lease_owner' => $task->lease_owner,
+        ], ! $revoked ? [] : [
+            'lease_revoked_at' => $now->toJSON(),
+        ]);
+    }
+
+    private static function closeTimedOutAttempt(
+        ?ActivityAttempt $attempt,
+        ?WorkflowTask $task,
+        string $timeoutKind,
+        CarbonInterface $now,
+        ?string $leaseReason,
+    ): void {
+        if ($attempt instanceof ActivityAttempt && $attempt->status === ActivityAttemptStatus::Running) {
+            $attempt->forceFill([
+                'status' => $timeoutKind === 'lease' ? ActivityAttemptStatus::Expired : ActivityAttemptStatus::Failed,
+                'lease_expires_at' => null,
+                'closed_at' => $attempt->closed_at ?? $now,
+            ])->save();
+        }
+
+        if ($task instanceof WorkflowTask) {
+            $task->forceFill([
+                'status' => TaskStatus::Cancelled,
+                'lease_expires_at' => null,
+                'last_error' => $timeoutKind === 'lease' ? ($leaseReason ?? 'lease_expired') : null,
+            ])->save();
+        }
+    }
+
+    /**
+     * @return array{enforced: bool, reason: string|null, next_task: WorkflowTask|null}
+     */
+    private static function settleTimeout(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ?WorkflowTask $task,
+        ?ActivityAttempt $attempt,
+        string $timeoutKind,
+        array $leaseMetadata,
+    ): array {
+        $attemptCount = max(1, (int) $execution->attempt_count);
+        $canRetry = $attemptCount < ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
+        if ($timeoutKind === 'lease') {
+            $canRetry = $canRetry && ! ActivityRetryPolicy::isNonRetryableFailure(
+                $execution,
+                new ActivityLeaseExpiredException(self::timeoutMessage($execution, $timeoutKind)),
+            );
+        }
+
+        // Schedule-to-close covers the entire lifecycle across all retries.
+        if ($canRetry && $timeoutKind !== 'schedule_to_close') {
+            return self::scheduleRetry($run, $execution, $task, $attempt, $timeoutKind, $attemptCount, $leaseMetadata);
+        }
+
+        return self::recordTerminalTimeout(
+            $run,
+            $execution,
+            $task,
+            $attempt,
+            $timeoutKind,
+            $attemptCount,
+            $leaseMetadata
+        );
     }
 
     private static function deadlineBoundary(CarbonInterface $deadline): string
@@ -248,9 +432,10 @@ final class ActivityTimeoutEnforcer
         ?ActivityAttempt $attempt,
         string $timeoutKind,
         int $attemptCount,
-        int $maxAttempts,
+        array $leaseMetadata = [],
     ): array {
         $now = now();
+        $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
         $message = self::timeoutMessage($execution, $timeoutKind);
         $backoffSeconds = ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptCount);
         $retryAvailableAt = $now->copy()
@@ -322,6 +507,20 @@ final class ActivityTimeoutEnforcer
             'activity' => ActivitySnapshot::fromExecution($execution),
         ];
 
+        if ($timeoutKind === 'lease') {
+            unset($payload['timeout_kind']);
+            $payload = array_merge($payload, $leaseMetadata, [
+                'retry_reason' => $leaseMetadata['failure_reason'] ?? 'lease_expired',
+            ]);
+            $retryPayload = $retryTask->payload;
+            unset($retryPayload['timeout_kind']);
+            $retryTask->forceFill([
+                'payload' => array_merge($retryPayload, $leaseMetadata, [
+                    'retry_reason' => $leaseMetadata['failure_reason'] ?? 'lease_expired',
+                ]),
+            ])->save();
+        }
+
         if ($isLocalActivity) {
             $payload = LocalActivityRuntime::eventPayload($payload);
         }
@@ -350,11 +549,12 @@ final class ActivityTimeoutEnforcer
         ?ActivityAttempt $attempt,
         string $timeoutKind,
         int $attemptCount,
+        array $leaseMetadata = [],
     ): array {
         $now = now();
         $message = self::timeoutMessage($execution, $timeoutKind);
-        $exceptionClass = ActivityTimeoutException::class;
-        $failureCategory = FailureCategory::Timeout;
+        $exceptionClass = $timeoutKind === 'lease' ? ActivityLeaseExpiredException::class : ActivityTimeoutException::class;
+        $failureCategory = $timeoutKind === 'lease' ? FailureCategory::Internal : FailureCategory::Timeout;
 
         $execution->forceFill([
             'status' => ActivityStatus::Failed,
@@ -366,9 +566,10 @@ final class ActivityTimeoutEnforcer
             'workflow_run_id' => $run->id,
             'source_kind' => 'activity_execution',
             'source_id' => $execution->id,
-            'propagation_kind' => 'timeout',
+            'propagation_kind' => $timeoutKind === 'lease' ? 'activity' : 'timeout',
             'failure_category' => $failureCategory->value,
-            'non_retryable' => false,
+            'non_retryable' => $timeoutKind === 'lease'
+                && ActivityRetryPolicy::isNonRetryableFailure($execution, new ActivityLeaseExpiredException($message)),
             'handled' => false,
             'exception_class' => $exceptionClass,
             'message' => $message,
@@ -399,14 +600,24 @@ final class ActivityTimeoutEnforcer
             'activity' => ActivitySnapshot::fromExecution($execution),
         ];
 
+        if ($timeoutKind === 'lease') {
+            unset($payload['timeout_kind']);
+            unset($payload['schedule_deadline_at'], $payload['close_deadline_at'], $payload['schedule_to_close_deadline_at'], $payload['heartbeat_deadline_at']);
+            $payload = array_merge($payload, $leaseMetadata, [
+                'non_retryable' => (bool) $failure->non_retryable,
+            ]);
+        }
+
         if (LocalActivityRuntime::isExecution($execution)) {
             $payload = LocalActivityRuntime::eventPayload($payload);
         }
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityTimedOut, array_merge(
-            $payload,
-            $parallelMetadata ?? []
-        ), $existingTask);
+        WorkflowHistoryEvent::record(
+            $run,
+            $timeoutKind === 'lease' ? HistoryEventType::ActivityFailed : HistoryEventType::ActivityTimedOut,
+            array_merge($payload, $parallelMetadata ?? []),
+            $existingTask
+        );
 
         LifecycleEventDispatcher::activityFailed(
             $run,
@@ -440,7 +651,15 @@ final class ActivityTimeoutEnforcer
         // close the host run as Failed instead of scheduling a workflow-task
         // resume row that no worker will be able to drive.
         if (StandaloneActivityHostType::isHostRun($run)) {
-            self::closeStandaloneHostRunAfterTimeout($run, $execution, $failure, $exceptionClass, $message, $now);
+            self::closeStandaloneHostRunAfterTimeout(
+                $run,
+                $execution,
+                $failure,
+                $exceptionClass,
+                $message,
+                $now,
+                $timeoutKind === 'lease' ? 'failed' : 'timed_out'
+            );
 
             self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
@@ -503,10 +722,11 @@ final class ActivityTimeoutEnforcer
         string $exceptionClass,
         string $message,
         CarbonInterface $now,
+        string $closedReason,
     ): void {
         $run->forceFill([
             'status' => RunStatus::Failed,
-            'closed_reason' => 'timed_out',
+            'closed_reason' => $closedReason,
             'closed_at' => $now,
             'last_progress_at' => $now,
         ])->save();
@@ -539,6 +759,7 @@ final class ActivityTimeoutEnforcer
         $label = $execution->activity_type ?? $execution->activity_class;
 
         return match ($timeoutKind) {
+            'lease' => sprintf('Activity %s lost its original task lease before the attempt settled.', $label),
             'schedule_to_start' => sprintf(
                 'Activity %s schedule-to-start deadline expired at %s.',
                 $label,
@@ -599,13 +820,18 @@ final class ActivityTimeoutEnforcer
         return null;
     }
 
-    private static function openActivityTask(ActivityExecution $execution): ?WorkflowTask
-    {
+    private static function openActivityTask(
+        ActivityExecution $execution,
+        ?string $taskId = null,
+        bool $waitForLocks = true,
+    ): ?WorkflowTask {
         return WorkflowTask::query()
             ->where('workflow_run_id', $execution->workflow_run_id)
             ->where('task_type', TaskType::Activity->value)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->where('payload->activity_execution_id', $execution->id)
+            ->when($taskId !== null, static fn ($query) => $query->whereKey($taskId))
+            ->lock($waitForLocks ? true : 'for update nowait')
             ->first();
     }
 

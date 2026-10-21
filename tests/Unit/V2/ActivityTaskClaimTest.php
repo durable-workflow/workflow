@@ -16,6 +16,296 @@ use Workflow\V2\Support\ActivityTaskClaim;
 
 final class ActivityTaskClaimTest extends TestCase
 {
+    public static function invalidRenewals(): array
+    {
+        return [
+            'not renewed' => [[
+                'lease_renewed' => false,
+            ]],
+            'not continuing' => [[
+                'can_continue' => false,
+            ]],
+            'cancelled' => [[
+                'cancel_requested' => true,
+            ]],
+            'truthy renewed' => [[
+                'lease_renewed' => 'true',
+            ]],
+            'another task' => [[
+                'workflow_task_id' => 'another-task',
+            ]],
+            'another run' => [[
+                'workflow_run_id' => 'another-run',
+            ]],
+            'another execution' => [[
+                'activity_execution_id' => 'another-execution',
+            ]],
+            'another attempt' => [[
+                'activity_attempt_id' => 'another-attempt',
+            ]],
+            'another owner' => [[
+                'lease_owner' => 'another-worker',
+            ]],
+            'another generation' => [[
+                'attempt_number' => 2,
+            ]],
+            'missing clock' => [[
+                'server_time' => null,
+            ]],
+            'invalid clock' => [[
+                'server_time' => '2026-02-30T22:00:00.000000Z',
+            ]],
+            'lost precision' => [[
+                'server_time' => '2026-10-20T22:00:01Z',
+            ]],
+            'expired acknowledgement' => [[
+                'lease_expires_at' => '2026-10-20T22:00:00.000000Z',
+            ]],
+            'unbounded acknowledgement' => [[
+                'lease_expires_at' => '2099-10-20T22:00:00.000000Z',
+            ]],
+            'predates the original lease' => [[
+                'server_time' => '2026-10-20T21:59:00.000000Z',
+                'lease_expires_at' => '2026-10-20T21:59:30.000000Z',
+            ]],
+        ];
+    }
+
+    #[DataProvider('invalidRenewals')]
+    public function testUnconfirmedRenewalCannotExtendPublication(array $changes): void
+    {
+        [$claim, $reply] = $this->renewalFixture();
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertFalse($claim->acknowledgeLeaseRenewal(array_replace($reply, $changes), hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testActualOriginalRenewalExtendsOnlyTheAcknowledgedLeaseBudget(): void
+    {
+        [$claim, $reply] = $this->renewalFixture();
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $requestStarted = hrtime(true);
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, $requestStarted));
+            $renewed = $claim->outcomeAdmissionDeadline();
+            self::assertGreaterThan($original, $renewed);
+            self::assertSame($requestStarted + 29_000_000_000, $renewed);
+
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, $requestStarted));
+            self::assertSame($renewed, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testRuntimeRenewalDoesNotExtendOriginalBusinessDeadlines(): void
+    {
+        [$claim, $reply] = $this->renewalFixture(3);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testConfirmedHeartbeatCanAdvanceItsOriginalProgressDeadline(): void
+    {
+        [$claim, $reply] = $this->renewalFixture(60, 20, heartbeatSeconds: 3);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $started = hrtime(true);
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, $started));
+            self::assertSame($started + 10_000_000_000, $claim->outcomeAdmissionDeadline());
+            self::assertGreaterThan($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public static function invalidHeartbeatEvidence(): array
+    {
+        return [
+            'missing deadline' => [[
+                'heartbeat_deadline_at' => null,
+            ]],
+            'missing heartbeat' => [[
+                'last_heartbeat_at' => null,
+            ]],
+            'not UTC6' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:00:11Z',
+            ]],
+            'unrecorded timeout' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:01:11.000000Z',
+            ]],
+            'future progress' => [[
+                'last_heartbeat_at' => '2026-10-20T22:00:02.000000Z',
+            ]],
+            'old progress' => [[
+                'last_heartbeat_at' => '2026-10-20T21:59:53.000000Z',
+            ]],
+            'old deadline' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:00:03.000000Z',
+            ]],
+        ];
+    }
+
+    #[DataProvider('invalidHeartbeatEvidence')]
+    public function testLeaseRenewalCannotInventHeartbeatProgress(array $changes): void
+    {
+        [$claim, $reply] = $this->renewalFixture(60, 20, heartbeatSeconds: 3);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertTrue($claim->acknowledgeLeaseRenewal(array_replace($reply, $changes), hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testConfirmedHeartbeatPreservesTheOriginalCloseDeadline(): void
+    {
+        $before = hrtime(true);
+        [$claim, $reply] = $this->renewalFixture(2, 20, heartbeatSeconds: 1);
+        $after = hrtime(true);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertGreaterThan($original, $claim->outcomeAdmissionDeadline());
+            self::assertGreaterThanOrEqual($before + 2_000_000_000, $claim->outcomeAdmissionDeadline());
+            self::assertLessThanOrEqual($after + 2_000_000_000, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testAnotherLeaseReplyCannotRebaseTheSameHeartbeat(): void
+    {
+        [$claim, $reply] = $this->renewalFixture(60, 20, heartbeatSeconds: 3);
+        try {
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            $confirmed = $claim->outcomeAdmissionDeadline();
+            self::assertTrue($claim->acknowledgeLeaseRenewal(array_replace($reply, [
+                'server_time' => '2026-10-20T22:00:02.000000Z',
+                'lease_expires_at' => '2026-10-20T22:00:31.000000Z',
+            ]), hrtime(true)));
+            self::assertSame($confirmed, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testConfirmedHeartbeatCannotReviveAnExpiredProgressDeadline(): void
+    {
+        [$claim, $reply] = $this->renewalFixture(60, 20, heartbeatSeconds: 0);
+        try {
+            $expired = $claim->outcomeAdmissionDeadline();
+            self::assertFalse($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertSame($expired, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public static function workflowDeadlines(): array
+    {
+        return [
+            'run deadline' => ['run_deadline_at'],
+            'execution deadline' => ['execution_deadline_at'],
+        ];
+    }
+
+    #[DataProvider('workflowDeadlines')]
+    public function testRenewalPreservesTheCapturedWorkflowDeadline(string $field): void
+    {
+        $before = hrtime(true);
+        [$claim, $reply] = $this->renewalFixture(60, 10, $field);
+        $after = hrtime(true);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertGreaterThanOrEqual($before + 3_000_000_000, $original);
+            self::assertLessThanOrEqual($after + 3_000_000_000, $original);
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testReplayedRenewalCannotAcquireAFreshRequestBudget(): void
+    {
+        [$claim, $reply] = $this->renewalFixture();
+        try {
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertFalse($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testRenewalRejectsRequestsOutsideTheCapturedClaim(): void
+    {
+        [$claim, $reply] = $this->renewalFixture();
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertFalse($claim->acknowledgeLeaseRenewal($reply, 0));
+            self::assertFalse($claim->acknowledgeLeaseRenewal($reply, hrtime(true) + 1_000_000_000));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testExpiredLocalAuthorityCannotBeRevivedByARenewalReply(): void
+    {
+        [$claim, $reply] = $this->renewalFixture(60, 0);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            self::assertFalse($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testRenewalUsesTheCapturedIdentityInsteadOfMutableModelState(): void
+    {
+        [$claim, $reply] = $this->renewalFixture();
+        try {
+            $claim->task->id = 'replacement-task';
+            $claim->attempt->id = 'replacement-attempt';
+            $claim->task->lease_owner = 'replacement-worker';
+            self::assertFalse($claim->acknowledgeLeaseRenewal(array_replace($reply, [
+                'workflow_task_id' => 'replacement-task',
+                'activity_attempt_id' => 'replacement-attempt',
+                'lease_owner' => 'replacement-worker',
+            ]), hrtime(true)));
+            self::assertTrue($claim->acknowledgeLeaseRenewal($reply, hrtime(true)));
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
     public static function deadlines(): array
     {
         return [
@@ -71,5 +361,65 @@ final class ActivityTaskClaimTest extends TestCase
             Date::setTestNow();
             Date::useDefault();
         }
+    }
+
+    private function renewalFixture(
+        int $businessSeconds = 60,
+        int $leaseSeconds = 10,
+        ?string $workflowDeadline = null,
+        ?int $heartbeatSeconds = null,
+    ): array {
+        Date::useDefault();
+        $now = Carbon::parse('2026-10-20 22:00:00.000000 UTC');
+        Date::setTestNow($now);
+        $claim = new ActivityTaskClaim(
+            new WorkflowTask([
+                'id' => 'original-task',
+                'lease_owner' => 'original-worker',
+                'lease_expires_at' => $now->copy()
+                    ->addSeconds($leaseSeconds),
+            ]),
+            new WorkflowRun(array_merge(
+                [
+                    'id' => 'original-run',
+                ],
+                $workflowDeadline === null ? [] : [
+                    $workflowDeadline => $now->copy()
+                        ->addSeconds(3),
+                ],
+            )),
+            new ActivityExecution([
+                'id' => 'original-execution',
+                'close_deadline_at' => $now->copy()
+                    ->addSeconds($businessSeconds),
+                'retry_policy' => $heartbeatSeconds === null ? [] : [
+                    'heartbeat_timeout' => 10,
+                ],
+                'last_heartbeat_at' => $heartbeatSeconds === null ? null : $now->copy()
+                    ->subSeconds(10 - $heartbeatSeconds),
+                'heartbeat_deadline_at' => $heartbeatSeconds === null ? null : $now->copy()
+                    ->addSeconds($heartbeatSeconds),
+            ]),
+            new ActivityAttempt([
+                'id' => 'original-attempt',
+                'attempt_number' => 1,
+            ]),
+        );
+
+        return [$claim, [
+            'lease_renewed' => true,
+            'can_continue' => true,
+            'cancel_requested' => false,
+            'workflow_task_id' => 'original-task',
+            'workflow_run_id' => 'original-run',
+            'activity_execution_id' => 'original-execution',
+            'activity_attempt_id' => 'original-attempt',
+            'lease_owner' => 'original-worker',
+            'attempt_number' => 1,
+            'server_time' => '2026-10-20T22:00:01.000000Z',
+            'lease_expires_at' => '2026-10-20T22:00:30.000000Z',
+            'last_heartbeat_at' => $heartbeatSeconds === null ? null : '2026-10-20T22:00:01.000000Z',
+            'heartbeat_deadline_at' => $heartbeatSeconds === null ? null : '2026-10-20T22:00:11.000000Z',
+        ]];
     }
 }

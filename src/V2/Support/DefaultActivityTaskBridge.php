@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\ActivityLeaseRenewal;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -22,7 +23,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
-final class DefaultActivityTaskBridge implements ActivityTaskBridge
+final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLeaseRenewal
 {
     /**
      * Relations the history-projection role consumes for an activity-bridge
@@ -263,6 +264,17 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         return $this->observeAttempt($attemptId, true, HeartbeatProgress::normalizeForWrite($progress));
     }
 
+    public function renewLease(string $attemptId, string $leaseOwner): array
+    {
+        $status = $this->observeAttempt($attemptId, true, null, $leaseOwner);
+
+        return array_merge($status, [
+            'lease_renewed' => $status['can_continue'],
+            'server_time' => now()
+                ->toJSON(),
+        ]);
+    }
+
     /**
      * @return array{
      *     can_continue: bool,
@@ -286,10 +298,14 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
      *     last_heartbeat_at: string|null,
      * }
      */
-    private function observeAttempt(string $attemptId, bool $renewLease, ?array $progress = null): array
-    {
-        return DB::transaction(static function () use ($attemptId, $renewLease, $progress): array {
-            $lockedRows = ActivityRowLockOrder::lockForAttempt($attemptId);
+    private function observeAttempt(
+        string $attemptId,
+        bool $renewLease,
+        ?array $progress = null,
+        ?string $leaseOwner = null
+    ): array {
+        return DB::transaction(static function () use ($attemptId, $renewLease, $progress, $leaseOwner): array {
+            $lockedRows = self::lockedObservationRows($attemptId);
             $attempt = $lockedRows['attempt'];
 
             if (! $attempt instanceof ActivityAttempt) {
@@ -308,142 +324,201 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
             $execution = $lockedRows['execution'];
 
-            $run = null;
-
-            if ($execution instanceof ActivityExecution) {
-                /** @var WorkflowRun|null $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->find($execution->workflow_run_id);
-            }
-
-            $task = null;
-
-            if (is_string($attempt->workflow_task_id) && $attempt->workflow_task_id !== '') {
-                /** @var WorkflowTask|null $task */
-                $task = WorkflowTask::query()
-                    ->lockForUpdate()
-                    ->find($attempt->workflow_task_id);
-            }
-
-            [$canContinue, $cancelRequested, $reason] = self::attemptContinuationState(
+            $run = $lockedRows['run'];
+            $task = $lockedRows['task'];
+            [$canContinue, $cancelRequested, $reason] = self::observationContinuationState(
                 $attempt,
                 $execution,
                 $run,
                 $task,
+                $leaseOwner,
             );
 
             if (
                 ! $canContinue
                 && $cancelRequested
                 && $renewLease
+                && $leaseOwner === null
                 && $run instanceof WorkflowRun
                 && $execution instanceof ActivityExecution
             ) {
                 self::closeCancelledAttempt($attempt, $execution, $run, $task);
 
-                return self::attemptStatus(
-                    $attemptId,
-                    $attempt->fresh(),
-                    $execution->fresh(),
-                    $run,
-                    $task?->fresh(),
-                    false,
-                    true,
-                    $reason,
-                    false,
-                );
+                $attempt = $attempt->fresh();
+                $execution = $execution->fresh();
+                $task = $task?->fresh();
             }
 
-            if (! $canContinue) {
-                return self::attemptStatus(
+            if ($canContinue && $renewLease) {
+                /** @var ActivityAttempt $attempt */
+                /** @var ActivityExecution $execution */
+                /** @var WorkflowRun $run */
+                /** @var WorkflowTask $task */
+                return self::renewObservedAttempt(
                     $attemptId,
                     $attempt,
                     $execution,
                     $run,
                     $task,
-                    false,
-                    $cancelRequested,
-                    $reason,
-                    false,
+                    $leaseOwner,
+                    $progress
                 );
             }
 
-            /** @var ActivityExecution $execution */
-            /** @var WorkflowRun $run */
-            /** @var WorkflowTask $task */
-            if (! $renewLease) {
-                return self::attemptStatus(
-                    $attemptId,
-                    $attempt,
-                    $execution,
-                    $run,
-                    $task,
-                    true,
-                    false,
-                    null,
-                    false,
-                );
-            }
+            return self::attemptStatus(
+                $attemptId,
+                $attempt,
+                $execution,
+                $run,
+                $task,
+                $canContinue,
+                $cancelRequested,
+                $reason,
+                false,
+            );
+        });
+    }
 
-            $heartbeatAt = now();
-            $leaseExpiresAt = ActivityLease::expiresAt();
-            $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
-            $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
-                && $retryPolicy['heartbeat_timeout'] > 0
-                    ? $retryPolicy['heartbeat_timeout']
-                    : null;
-            $heartbeatDeadlineAt = $heartbeatTimeout !== null
-                ? $heartbeatAt->copy()
-                    ->addSeconds($heartbeatTimeout)
-                : null;
+    /**
+     * Preserve the attempt/execution/run/task lock order within the owning transaction.
+     *
+     * @return array{attempt: ActivityAttempt|null, execution: ActivityExecution|null, run: WorkflowRun|null, task: WorkflowTask|null}
+     */
+    private static function lockedObservationRows(string $attemptId): array
+    {
+        $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
+        $attempt = $rows['attempt'];
+        $execution = $rows['execution'];
+        /** @var WorkflowRun|null $run */
+        $run = $execution instanceof ActivityExecution
+            ? WorkflowRun::query()->lockForUpdate()->find($execution->workflow_run_id)
+            : null;
+        /** @var WorkflowTask|null $task */
+        $task = $attempt instanceof ActivityAttempt && is_string(
+            $attempt->workflow_task_id
+        ) && $attempt->workflow_task_id !== ''
+            ? WorkflowTask::query()->lockForUpdate()->find($attempt->workflow_task_id)
+            : null;
 
-            $execution->forceFill([
-                'last_heartbeat_at' => $heartbeatAt,
-                'heartbeat_deadline_at' => $heartbeatDeadlineAt,
-            ])->save();
+        return [
+            'attempt' => $attempt,
+            'execution' => $execution,
+            'run' => $run,
+            'task' => $task,
+        ];
+    }
 
+    /**
+     * @return array{0: bool, 1: bool, 2: string|null}
+     */
+    private static function observationContinuationState(
+        ActivityAttempt $attempt,
+        ?ActivityExecution $execution,
+        ?WorkflowRun $run,
+        ?WorkflowTask $task,
+        ?string $leaseOwner,
+    ): array {
+        if ($leaseOwner !== null && (self::nonEmptyString($leaseOwner) === null
+            || $attempt->lease_owner !== $leaseOwner || $task?->lease_owner !== $leaseOwner)) {
+            return [false, false, 'lease_owner_mismatch'];
+        }
+
+        return self::attemptContinuationState($attempt, $execution, $run, $task);
+    }
+
+    /**
+     * @param array<string, mixed>|null $progress
+     * @return array{
+     *     can_continue: bool, cancel_requested: bool, reason: string|null, heartbeat_recorded: bool,
+     *     workflow_instance_id: string|null, workflow_run_id: string|null, workflow_task_id: string|null,
+     *     activity_execution_id: string|null, activity_attempt_id: string, attempt_number: int|null,
+     *     run_status: string|null, run_closed_reason: string|null, run_closed_at: string|null,
+     *     activity_status: string|null, attempt_status: string|null, task_status: string|null,
+     *     lease_owner: string|null, lease_expires_at: string|null, last_heartbeat_at: string|null,
+     * }
+     */
+    private static function renewObservedAttempt(
+        string $attemptId,
+        ActivityAttempt $attempt,
+        ActivityExecution $execution,
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?string $leaseOwner,
+        ?array $progress,
+    ): array {
+        $heartbeatAt = now();
+        $leaseExpiresAt = ActivityLease::expiresAt();
+        if ($task->lease_expires_at !== null && $task->lease_expires_at->gt($leaseExpiresAt)) {
+            $leaseExpiresAt = $task->lease_expires_at->copy();
+        }
+
+        if ($leaseOwner !== null) {
+            // Runtime presence never acknowledges user heartbeat progress,
+            // extends its deadline, or creates a durable history event.
             $attempt->forceFill([
-                'last_heartbeat_at' => $heartbeatAt,
                 'lease_expires_at' => $leaseExpiresAt,
             ])->save();
-
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
             ])->save();
 
-            $payload = [
-                'activity_execution_id' => $execution->id,
-                'activity_attempt_id' => $attempt->id,
-                'activity_class' => $execution->activity_class,
-                'activity_type' => $execution->activity_type,
-                'sequence' => $execution->sequence,
+            return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, false);
+        }
+        $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
+        $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
+            && $retryPolicy['heartbeat_timeout'] > 0
+                ? $retryPolicy['heartbeat_timeout']
+                : null;
+        $heartbeatDeadlineAt = $heartbeatTimeout !== null
+            ? $heartbeatAt->copy()
+                ->addSeconds($heartbeatTimeout)
+            : null;
+
+        $execution->forceFill([
+            'last_heartbeat_at' => $heartbeatAt,
+            'heartbeat_deadline_at' => $heartbeatDeadlineAt,
+        ])->save();
+
+        $attempt->forceFill([
+            'last_heartbeat_at' => $heartbeatAt,
+            'lease_expires_at' => $leaseExpiresAt,
+        ])->save();
+
+        $task->forceFill([
+            'lease_expires_at' => $leaseExpiresAt,
+        ])->save();
+
+        $payload = [
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $attempt->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => $attempt->attempt_number,
+            'heartbeat_at' => $heartbeatAt->toJSON(),
+            'lease_expires_at' => $leaseExpiresAt->toJSON(),
+            'activity' => ActivitySnapshot::fromExecution($execution),
+            'activity_attempt' => [
+                'id' => $attempt->id,
                 'attempt_number' => $attempt->attempt_number,
-                'heartbeat_at' => $heartbeatAt->toJSON(),
+                'status' => $attempt->status->value,
+                'task_id' => $attempt->workflow_task_id,
+                'lease_owner' => $attempt->lease_owner,
+                'last_heartbeat_at' => $heartbeatAt->toJSON(),
                 'lease_expires_at' => $leaseExpiresAt->toJSON(),
-                'activity' => ActivitySnapshot::fromExecution($execution),
-                'activity_attempt' => [
-                    'id' => $attempt->id,
-                    'attempt_number' => $attempt->attempt_number,
-                    'status' => $attempt->status->value,
-                    'task_id' => $attempt->workflow_task_id,
-                    'lease_owner' => $attempt->lease_owner,
-                    'last_heartbeat_at' => $heartbeatAt->toJSON(),
-                    'lease_expires_at' => $leaseExpiresAt->toJSON(),
-                    'started_at' => $attempt->started_at?->toJSON(),
-                ],
-            ];
+                'started_at' => $attempt->started_at?->toJSON(),
+            ],
+        ];
 
-            if ($progress !== null) {
-                $payload['progress'] = $progress;
-            }
+        if ($progress !== null) {
+            $payload['progress'] = $progress;
+        }
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
 
-            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
-            return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
-        });
+        return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
     }
 
     /**
@@ -528,7 +603,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             return [false, false, 'task_not_leased'];
         }
 
-        $expiredReason = ActivityAttemptAuthority::expiredReason($task, $execution, now());
+        $expiredReason = ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run);
         if ($expiredReason !== null) {
             return [false, false, $expiredReason];
         }
@@ -625,6 +700,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             'lease_owner' => self::nonEmptyString($attempt?->lease_owner ?? $task?->lease_owner),
             'lease_expires_at' => $attempt?->lease_expires_at?->toJSON() ?? $task?->lease_expires_at?->toJSON(),
             'last_heartbeat_at' => $attempt?->last_heartbeat_at?->toJSON() ?? $execution?->last_heartbeat_at?->toJSON(),
+            'heartbeat_deadline_at' => $execution?->heartbeat_deadline_at?->toJSON(),
         ];
     }
 
