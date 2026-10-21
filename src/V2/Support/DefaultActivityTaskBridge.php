@@ -673,6 +673,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             'lease_owner' => self::nonEmptyString($attempt?->lease_owner ?? $task?->lease_owner),
             'lease_expires_at' => $attempt?->lease_expires_at?->toJSON() ?? $task?->lease_expires_at?->toJSON(),
             'last_heartbeat_at' => $attempt?->last_heartbeat_at?->toJSON() ?? $execution?->last_heartbeat_at?->toJSON(),
+            'heartbeat_deadline_at' => $execution?->heartbeat_deadline_at?->toJSON(),
         ];
     }
 

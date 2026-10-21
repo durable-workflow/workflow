@@ -22,6 +22,11 @@ interface ActivityLeaseRenewal
      * monotonic request clock before calling so response latency consumes the
      * acknowledged lease window.
      *
+     * last_heartbeat_at and heartbeat_deadline_at report stored application
+     * progress. Renewal does not modify either field. A consumer may observe a
+     * newer committed heartbeat within its original live claim and recorded
+     * heartbeat timeout, while preserving all other business deadlines.
+     *
      * @return array<string, mixed>
      */
     public function renewLease(string $attemptId, string $leaseOwner): array;

@@ -24,6 +24,14 @@ final class ActivityTaskClaim
 
     private readonly ?int $businessAdmissionDeadline;
 
+    private ?int $heartbeatAdmissionDeadline;
+
+    private readonly ?int $heartbeatTimeout;
+
+    private ?int $knownHeartbeatTime;
+
+    private ?int $knownHeartbeatDeadline;
+
     private ?int $lastRenewalServerTime = null;
 
     private ?int $knownLeaseExpiry = null;
@@ -52,10 +60,19 @@ final class ActivityTaskClaim
             : max(0, $now->diffInMicroseconds($task->lease_expires_at, false));
         $this->leaseAdmissionDeadline = $monotonic + (int) ($leaseRemaining * 1_000);
         $this->knownLeaseExpiry = self::utcMicroseconds($task->lease_expires_at?->toJSON());
+        $policy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
+        $this->heartbeatTimeout = is_int($policy['heartbeat_timeout'] ?? null) && $policy['heartbeat_timeout'] > 0
+            ? $policy['heartbeat_timeout'] : null;
+        $this->knownHeartbeatTime = self::utcMicroseconds($execution->last_heartbeat_at?->toJSON());
+        $this->knownHeartbeatDeadline = self::utcMicroseconds($execution->heartbeat_deadline_at?->toJSON());
+        $this->heartbeatAdmissionDeadline = $execution->heartbeat_deadline_at === null
+            ? null : $monotonic + (int) (max(
+                0,
+                $now->diffInMicroseconds($execution->heartbeat_deadline_at, false)
+            ) * 1_000);
         $businessRemaining = null;
         foreach ([
             $execution->close_deadline_at,
-            $execution->heartbeat_deadline_at,
             $execution->schedule_to_close_deadline_at,
             $run->run_deadline_at,
             $run->execution_deadline_at,
@@ -74,9 +91,12 @@ final class ActivityTaskClaim
      */
     public function outcomeAdmissionDeadline(): int
     {
-        return $this->businessAdmissionDeadline === null
+        $deadline = $this->businessAdmissionDeadline === null
             ? $this->leaseAdmissionDeadline
             : min($this->leaseAdmissionDeadline, $this->businessAdmissionDeadline);
+
+        return $this->heartbeatAdmissionDeadline === null
+            ? $deadline : min($deadline, $this->heartbeatAdmissionDeadline);
     }
 
     /**
@@ -110,6 +130,7 @@ final class ActivityTaskClaim
             $this->leaseAdmissionDeadline,
             $requestStartedAt + $window['remaining'] * 1_000,
         );
+        $this->acknowledgeHeartbeat($reply, $window['server'], $requestStartedAt, $receivedAt);
         $this->lastRenewalServerTime = $window['server'];
         $this->knownLeaseExpiry = $window['expires'];
         $this->lastRenewalRequestStartedAt = $requestStartedAt;
@@ -130,6 +151,37 @@ final class ActivityTaskClaim
     public function attemptNumber(): int
     {
         return max(1, (int) $this->attempt->attempt_number);
+    }
+
+    /**
+     * Observe committed application progress; runtime renewal never creates it.
+     *
+     * @param array<string, mixed> $reply
+     */
+    private function acknowledgeHeartbeat(array $reply, int $serverTime, int $requestStartedAt, int $receivedAt): void
+    {
+        if ($this->heartbeatAdmissionDeadline === null || $this->heartbeatTimeout === null) {
+            return;
+        }
+
+        $heartbeat = self::utcMicroseconds($reply['last_heartbeat_at'] ?? null);
+        $deadline = self::utcMicroseconds($reply['heartbeat_deadline_at'] ?? null);
+        if ($heartbeat === null || $deadline === null || $heartbeat > $serverTime || $deadline <= $serverTime
+            || ($this->knownHeartbeatTime !== null && $heartbeat <= $this->knownHeartbeatTime)
+            || ($this->knownHeartbeatDeadline !== null && $deadline <= $this->knownHeartbeatDeadline)) {
+            return;
+        }
+
+        $duration = $deadline - $heartbeat;
+        $localDeadline = $requestStartedAt + ($deadline - $serverTime) * 1_000;
+        if ($duration % 1_000_000 !== 0 || intdiv($duration, 1_000_000) !== $this->heartbeatTimeout
+            || $localDeadline <= $receivedAt) {
+            return;
+        }
+
+        $this->heartbeatAdmissionDeadline = max($this->heartbeatAdmissionDeadline, $localDeadline);
+        $this->knownHeartbeatTime = $heartbeat;
+        $this->knownHeartbeatDeadline = $deadline;
     }
 
     /**

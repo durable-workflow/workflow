@@ -127,6 +127,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
             $this->assertSame($task->id, $receipt['workflow_task_id']);
             $this->assertSame(now()->toJSON(), $receipt['server_time']);
             $this->assertSame(now()->addSeconds(19)->toJSON(), $receipt['lease_expires_at']);
+            $this->assertSame($execution->fresh()->heartbeat_deadline_at?->toJSON(), $receipt['heartbeat_deadline_at']);
             $this->assertSame($before, $execution->fresh()->getAttributes());
             $this->assertNull(ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->last_heartbeat_at);
             $this->assertSame(
@@ -137,6 +138,47 @@ final class V2ActivityTaskBridgeTest extends TestCase
             $observedLease = $view['attempts'][0]['lease_expires_at'];
             $this->assertInstanceOf(\Carbon\CarbonInterface::class, $observedLease);
             $this->assertSame($receipt['lease_expires_at'], $observedLease->toJSON());
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeRenewalReportsCommittedHeartbeatWithoutRecordingAnother(): void
+    {
+        config([
+            'workflows.v2.activity_task_lease_seconds' => 19,
+        ]);
+        Date::setTestNow('2026-10-21T00:00:00.123456Z');
+        try {
+            [$run, $execution, $task] = $this->createActivityTask();
+            $execution->forceFill([
+                'retry_policy' => [
+                    'snapshot_version' => 1,
+                    'max_attempts' => 1,
+                    'heartbeat_timeout' => 90,
+                    'start_to_close_timeout' => 180,
+                ],
+            ])->save();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+            Date::setTestNow(now()->addSeconds(10));
+            $progress = $this->bridge->heartbeat($claim['activity_attempt_id'], [
+                'message' => 'working',
+            ]);
+            $this->assertTrue($progress['heartbeat_recorded']);
+            $this->assertSame(now()->addSeconds(90)->toJSON(), $progress['heartbeat_deadline_at']);
+            $before = $execution->fresh()
+                ->getAttributes();
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+            Date::setTestNow(now()->addSeconds(2));
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+            $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+            $this->assertTrue($receipt['lease_renewed']);
+            $this->assertFalse($receipt['heartbeat_recorded']);
+            $this->assertSame($progress['last_heartbeat_at'], $receipt['last_heartbeat_at']);
+            $this->assertSame($progress['heartbeat_deadline_at'], $receipt['heartbeat_deadline_at']);
+            $this->assertSame($before, $execution->fresh()->getAttributes());
+            $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
         } finally {
             Date::setTestNow();
         }

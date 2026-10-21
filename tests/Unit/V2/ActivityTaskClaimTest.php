@@ -135,13 +135,27 @@ final class ActivityTaskClaimTest extends TestCase
     public static function invalidHeartbeatEvidence(): array
     {
         return [
-            'missing deadline' => [['heartbeat_deadline_at' => null]],
-            'missing heartbeat' => [['last_heartbeat_at' => null]],
-            'not UTC6' => [['heartbeat_deadline_at' => '2026-10-20T22:00:11Z']],
-            'unrecorded timeout' => [['heartbeat_deadline_at' => '2026-10-20T22:01:11.000000Z']],
-            'future progress' => [['last_heartbeat_at' => '2026-10-20T22:00:02.000000Z']],
-            'old progress' => [['last_heartbeat_at' => '2026-10-20T21:59:53.000000Z']],
-            'old deadline' => [['heartbeat_deadline_at' => '2026-10-20T22:00:03.000000Z']],
+            'missing deadline' => [[
+                'heartbeat_deadline_at' => null,
+            ]],
+            'missing heartbeat' => [[
+                'last_heartbeat_at' => null,
+            ]],
+            'not UTC6' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:00:11Z',
+            ]],
+            'unrecorded timeout' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:01:11.000000Z',
+            ]],
+            'future progress' => [[
+                'last_heartbeat_at' => '2026-10-20T22:00:02.000000Z',
+            ]],
+            'old progress' => [[
+                'last_heartbeat_at' => '2026-10-20T21:59:53.000000Z',
+            ]],
+            'old deadline' => [[
+                'heartbeat_deadline_at' => '2026-10-20T22:00:03.000000Z',
+            ]],
         ];
     }
 
@@ -378,7 +392,9 @@ final class ActivityTaskClaimTest extends TestCase
                 'id' => 'original-execution',
                 'close_deadline_at' => $now->copy()
                     ->addSeconds($businessSeconds),
-                'retry_policy' => $heartbeatSeconds === null ? [] : ['heartbeat_timeout' => 10],
+                'retry_policy' => $heartbeatSeconds === null ? [] : [
+                    'heartbeat_timeout' => 10,
+                ],
                 'last_heartbeat_at' => $heartbeatSeconds === null ? null : $now->copy()
                     ->subSeconds(10 - $heartbeatSeconds),
                 'heartbeat_deadline_at' => $heartbeatSeconds === null ? null : $now->copy()
