@@ -114,6 +114,80 @@ final class TracingQueueErrorDiagnosticsTest extends TestCase
         ];
     }
 
+    public function testOnlyKnownQueueDispatchContentionIsClassified(): void
+    {
+        $error = self::queueDispatchRefusal();
+        foreach ([5, 6, 517] as $code) {
+            $error['native_code'] = $code;
+            self::assertTrue(TracingQueueErrorDiagnostics::isQueueDispatchContention($error));
+        }
+        unset($error['ack_fence']);
+        self::assertFalse(TracingQueueErrorDiagnostics::isQueueDispatchContention($error));
+    }
+
+    #[DataProvider('unsafeQueueDispatchReports')]
+    public function testOtherQueueDispatchErrorsRemainRefusals(array $changes): void
+    {
+        self::assertFalse(TracingQueueErrorDiagnostics::isQueueDispatchContention(
+            array_replace(self::queueDispatchRefusal(), $changes),
+        ));
+    }
+
+    public static function unsafeQueueDispatchReports(): array
+    {
+        return self::unsafeRefusals() + [
+            'other exception' => [[
+                'error_class' => RuntimeException::class,
+            ]],
+            'untyped sqlite code' => [[
+                'native_code' => '5',
+            ]],
+            'invalid negative sqlite code' => [[
+                'native_code' => -251,
+            ]],
+            'acknowledgment instead of dispatch' => [[
+                'operation' => 'delete',
+            ]],
+            'unexpected acknowledgment fence' => [[
+                'ack_fence' => [1, 'default', 10, 1],
+            ]],
+            'missing producer frame' => [[
+                'stage_frames' => [[
+                    'file' => 'DatabaseQueue.php',
+                    'function' => 'insertGetId',
+                ]],
+            ]],
+            'missing insert frame' => [[
+                'stage_frames' => [[
+                    'file' => 'DatabaseQueue.php',
+                    'function' => 'pushToDatabase',
+                ]],
+            ]],
+        ];
+    }
+
+    private static function queueDispatchRefusal(): array
+    {
+        return [
+            'error_class' => QueryException::class,
+            'native_code' => 5,
+            'operation' => 'insert',
+            'transaction_level' => 0,
+            'pdo_in_transaction' => false,
+            'ack_fence' => null,
+            'statement_truncated' => false,
+            'statement' => 'insert into "jobs" '
+                . '("queue", "attempts", "reserved_at", "available_at", "created_at", "payload") values (?, ?, ?, ?, ?, ?)',
+            'stage_frames' => [[
+                'file' => 'DatabaseQueue.php',
+                'function' => 'insertGetId',
+            ], [
+                'file' => 'DatabaseQueue.php',
+                'function' => 'pushToDatabase',
+            ]],
+        ];
+    }
+
     private static function failedJobLogRefusal(): array
     {
         return [
