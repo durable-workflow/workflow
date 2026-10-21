@@ -38,16 +38,18 @@ final class ActivityRowLockOrder
             );
         }
 
+        $lockMode = $waitForLocks ? true : 'for update nowait';
+
         /** @var ActivityAttempt|null $attempt */
         $attempt = $snapshotAttemptId === null
             ? null
             : ActivityAttempt::query()
-                ->lock($waitForLocks ? true : 'for update nowait')
+                ->lock($lockMode)
                 ->find($snapshotAttemptId);
 
         /** @var ActivityExecution|null $execution */
         $execution = ActivityExecution::query()
-            ->lock($waitForLocks ? true : 'for update nowait')
+            ->lock($lockMode)
             ->find($executionId);
 
         return [
