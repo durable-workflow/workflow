@@ -306,6 +306,94 @@ final class ActivityTaskClaimTest extends TestCase
         }
     }
 
+    public static function changedMaintenanceIdentity(): array
+    {
+        return [
+            'task' => ['workflow_task_id', 'another-task'],
+            'run' => ['workflow_run_id', 'another-run'],
+            'execution' => ['activity_execution_id', 'another-execution'],
+            'attempt' => ['activity_attempt_id', 'another-attempt'],
+            'owner' => ['lease_owner', 'another-worker'],
+            'generation' => ['attempt_number', 2],
+        ];
+    }
+
+    #[DataProvider('changedMaintenanceIdentity')]
+    public function testPrivateMaintenanceProofCannotChangeTheOriginalClaim(string $field, mixed $value): void
+    {
+        [$claim] = $this->renewalFixture();
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $started = hrtime(true);
+            $proof = $this->maintenanceProof($claim);
+            $proof['identity'][$field] = $value;
+            self::assertFalse($claim->acknowledgeMaintenance($proof, $started));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public static function invalidMaintenanceProof(): array
+    {
+        return [
+            'refused' => ['can_continue', false],
+            'truthy' => ['can_continue', 1],
+            'expired' => ['until', 0],
+            'float grant' => ['until', 1.5],
+            'unbounded grant' => ['until', PHP_INT_MAX],
+            'old clock' => ['monotonic', 0],
+            'future clock' => ['monotonic', PHP_INT_MAX],
+            'float clock' => ['monotonic', 1.5],
+        ];
+    }
+
+    #[DataProvider('invalidMaintenanceProof')]
+    public function testPrivateMaintenanceProofRequiresCurrentBoundedAuthority(string $field, mixed $value): void
+    {
+        [$claim] = $this->renewalFixture();
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $started = hrtime(true);
+            self::assertFalse($claim->acknowledgeMaintenance(array_replace($this->maintenanceProof($claim), [
+                $field => $value,
+            ]), $started));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testPrivateMaintenanceProofPreservesTheOriginalBusinessCeiling(): void
+    {
+        [$claim] = $this->renewalFixture(3);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $started = hrtime(true);
+            self::assertTrue($claim->acknowledgeMaintenance($this->maintenanceProof($claim), $started));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
+    public function testPrivateMaintenanceProofCannotReopenAnExpiredBusinessBudget(): void
+    {
+        [$claim] = $this->renewalFixture(0);
+        try {
+            $original = $claim->outcomeAdmissionDeadline();
+            $started = hrtime(true);
+            self::assertFalse($claim->acknowledgeMaintenance($this->maintenanceProof($claim), $started));
+            self::assertSame($original, $claim->outcomeAdmissionDeadline());
+        } finally {
+            Date::setTestNow();
+            Date::useDefault();
+        }
+    }
+
     public static function deadlines(): array
     {
         return [
@@ -361,6 +449,18 @@ final class ActivityTaskClaimTest extends TestCase
             Date::setTestNow();
             Date::useDefault();
         }
+    }
+
+    private function maintenanceProof(ActivityTaskClaim $claim): array
+    {
+        $now = hrtime(true);
+
+        return [
+            'can_continue' => true,
+            'identity' => $claim->identity(),
+            'until' => $now + 20_000_000_000,
+            'monotonic' => $now,
+        ];
     }
 
     private function renewalFixture(

@@ -295,6 +295,8 @@ return [
         // Runtime ownership, not an activity execution timeout. Valid values
         // are 1..86400 seconds; invalid values resolve to the 300-second default.
         // A live runtime renews the same attempt without inventing user progress.
+        // Embedded callbacks stay inline while a separate PHP metadata process
+        // maintains committed persistent-storage claims under their original bounds.
         'activity_task_lease_seconds' => env(
             'DW_V2_ACTIVITY_TASK_LEASE_SECONDS',
             Workflow\V2\Support\ActivityLease::DURATION_SECONDS,

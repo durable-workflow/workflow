@@ -16,6 +16,7 @@ use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
+use Workflow\V2\Support\EmbeddedActivityLease;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
@@ -101,6 +102,16 @@ final class RunActivityTask implements ShouldQueue
 
     private function executeClaim(ActivityTaskClaim $claim): void
     {
+        $maintenance = EmbeddedActivityLease::start($claim);
+        try {
+            $this->executeMaintainedClaim($claim, $maintenance);
+        } finally {
+            $maintenance?->stop();
+        }
+    }
+
+    private function executeMaintainedClaim(ActivityTaskClaim $claim, ?EmbeddedActivityLease $maintenance): void
+    {
         $attemptId = $claim->attemptId();
         $attemptCount = $claim->attemptNumber();
 
@@ -149,6 +160,8 @@ final class RunActivityTask implements ShouldQueue
             ExecutionTracing::recordFailure($throwable);
         }
         $backoffSeconds = ActivityRetryPolicy::backoffSeconds($execution, $activity, $attemptCount);
+
+        $maintenance?->confirm();
 
         $outcome = ActivityOutcomeRecorder::record(
             $this->taskId,
