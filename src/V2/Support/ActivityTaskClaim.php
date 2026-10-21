@@ -38,6 +38,8 @@ final class ActivityTaskClaim
 
     private ?int $lastRenewalRequestStartedAt = null;
 
+    private ?int $maintainedAdmissionDeadline = null;
+
     public function __construct(
         public readonly WorkflowTask $task,
         public readonly WorkflowRun $run,
@@ -91,12 +93,56 @@ final class ActivityTaskClaim
      */
     public function outcomeAdmissionDeadline(): int
     {
+        if ($this->maintainedAdmissionDeadline !== null) {
+            return $this->businessAdmissionDeadline === null
+                ? $this->maintainedAdmissionDeadline
+                : min($this->maintainedAdmissionDeadline, $this->businessAdmissionDeadline);
+        }
         $deadline = $this->businessAdmissionDeadline === null
             ? $this->leaseAdmissionDeadline
             : min($this->leaseAdmissionDeadline, $this->businessAdmissionDeadline);
 
         return $this->heartbeatAdmissionDeadline === null
             ? $deadline : min($deadline, $this->heartbeatAdmissionDeadline);
+    }
+
+    /**
+     * @internal The independent maintainer validates every intermediate original grant.
+     */
+    public function maintenanceRequestDeadline(): int
+    {
+        $deadline = hrtime(true) + 5_000_000_000;
+
+        return $this->businessAdmissionDeadline === null ? $deadline : min($deadline, $this->businessAdmissionDeadline);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function identity(): array
+    {
+        return $this->identity;
+    }
+
+    /**
+     * @internal A fresh proof from this claim's private metadata process, never a remote Worker response.
+     * @param array<string, mixed> $reply
+     */
+    public function acknowledgeMaintenance(array $reply, int $started): bool
+    {
+        $received = hrtime(true);
+        if ($started < $this->claimedAt || $started > $received
+            || ($reply['can_continue'] ?? null) !== true
+            || ($reply['identity'] ?? null) !== $this->identity
+            || ! is_int($reply['monotonic'] ?? null) || $reply['monotonic'] < $started
+            || $reply['monotonic'] > $received || ! is_int($reply['until'] ?? null)
+            || $reply['until'] <= $received || $reply['until'] - $received > 86_400_000_000_000
+            || ($this->businessAdmissionDeadline !== null && $received >= $this->businessAdmissionDeadline)) {
+            return false;
+        }
+        $this->maintainedAdmissionDeadline = $reply['until'];
+
+        return true;
     }
 
     /**
