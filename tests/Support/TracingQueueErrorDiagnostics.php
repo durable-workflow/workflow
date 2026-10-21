@@ -52,4 +52,34 @@ final class TracingQueueErrorDiagnostics
                 && ($frame['file'] ?? null) === 'WorkCommand.php'
                 && ($frame['function'] ?? null) === 'logFailedJob') !== [];
     }
+
+    public static function isQueueDispatchContention(array $error): bool
+    {
+        $code = $error['native_code'] ?? null;
+        if (
+            ($error['error_class'] ?? null) !== QueryException::class
+            || ! is_int($code) || $code < 0 || ! in_array($code & 255, [5, 6], true)
+            || ($error['operation'] ?? null) !== 'insert'
+            || ($error['transaction_level'] ?? null) !== 0
+            || ($error['pdo_in_transaction'] ?? null) !== false
+            || ! array_key_exists('ack_fence', $error) || $error['ack_fence'] !== null
+            || ($error['statement_truncated'] ?? null) !== false
+            || ($error['statement'] ?? null) !== 'insert into "jobs" '
+                . '("queue", "attempts", "reserved_at", "available_at", "created_at", "payload") values (?, ?, ?, ?, ?, ?)'
+        ) {
+            return false;
+        }
+
+        $frames = $error['stage_frames'] ?? [];
+        if (! is_array($frames)) {
+            return false;
+        }
+
+        return array_filter($frames, static fn (mixed $frame): bool => is_array($frame)
+            && ($frame['file'] ?? null) === 'DatabaseQueue.php'
+            && ($frame['function'] ?? null) === 'insertGetId') !== []
+            && array_filter($frames, static fn (mixed $frame): bool => is_array($frame)
+                && ($frame['file'] ?? null) === 'DatabaseQueue.php'
+                && ($frame['function'] ?? null) === 'pushToDatabase') !== [];
+    }
 }
