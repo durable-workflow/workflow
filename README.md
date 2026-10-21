@@ -43,6 +43,14 @@ For the default database queue on SQLite, failed reservation writes preserve
 unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)
 for the supported framework versions and custom-connector boundary.
 
+## Optional tracing and log correlation
+
+Core 2.9.0 can recover bounded W3C context across embedded queue workers and
+add run, task, activity, attempt, trace and span identifiers to Laravel logs.
+Tracing is disabled by default and uses the application's OpenTelemetry
+provider. See [embedded tracing](docs/embedded-tracing.md) for migrations,
+configuration, the log tap, exporter limits and measured overhead.
+
 ## Your First Workflow
 
 ```php

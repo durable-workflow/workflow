@@ -1,14 +1,19 @@
 # Embedded tracing overhead workload
 
-This is the qualification recipe for draft Workflow #788. The
+This is the qualification recipe for Workflow #788. The
 [October 17 measurement](RESULTS-2026-10-17.md) and
 [October 20 official-Collector measurement](RESULTS-2026-10-20.md) completed;
-neither qualified any of its four CPU budgets. The current recipe uses the stable
+neither qualified any of its four CPU budgets. The complete
+[October 21 study](RESULTS-2026-10-21.md) qualified three of its four original
+5%/15% budgets. Disabled fan-out remains failed against 5% (95% upper +6.43%).
+The report separately records the maintainer's post-study acceptance of a 7.5%
+disabled release allowance. The original analyzer and results are unchanged.
+The current recipe uses the stable
 OpenTelemetry API baggage fix. The remaining acceptance requirements of
 [#773](https://github.com/durable-workflow/workflow/issues/773) are separate
 release gates.
 
-## Prospective corrected-source method
+## Recorded corrected-source method
 
 The [prospective decision](https://github.com/durable-workflow/workflow/issues/773#issuecomment-6296360973)
 defines `embedded-300s-5pairs-v2`: five fixed matched repetitions, 300-second
@@ -98,9 +103,15 @@ a separate Docker-hostname label. The analyzer requires that container label to
 match the measured CPU role's container-ID prefix. A same-container process restart
 still changes the process identifier and refuses the old counter proof.
 
-The prospective package baseline is published Workflow 2.7.3 with OpenTelemetry
-API 1.10.1. Both baseline
-and candidate include the released bounded history-payload read optimization.
+The original official-Collector preparation pinned published Workflow 2.7.3
+with OpenTelemetry API 1.10.1. The corrected 32-cell study declared in
+[the owning record](https://github.com/durable-workflow/workflow/issues/773#issuecomment-6301992685)
+uses normal published **Workflow 2.8.0 /
+`2edaa6b1c6f45fcec4570813c2e741aadde92b3b`** with a separately recorded normal
+Composer lock and unchanged non-Workflow dependencies. Both installations
+include the released bounded history-payload read optimization. Preserve each
+study's actual lock and source identity; the older committed preparation lock
+is not a substitute for the admitted 2.8.0 baseline.
 This source/baseline update precedes admission of any official-Collector
 measurement. The earlier prospective 2.6.1, 2.6.2 and 2.7.0 preparations and the October 17
 study's 2.5.28 lock remain available at their recorded sources. Their results
