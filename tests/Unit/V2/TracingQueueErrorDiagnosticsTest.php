@@ -136,17 +136,33 @@ final class TracingQueueErrorDiagnosticsTest extends TestCase
     public static function unsafeQueueDispatchReports(): array
     {
         return self::unsafeRefusals() + [
-            'other exception' => [['error_class' => RuntimeException::class]],
-            'untyped sqlite code' => [['native_code' => '5']],
-            'invalid negative sqlite code' => [['native_code' => -251]],
-            'acknowledgment instead of dispatch' => [['operation' => 'delete']],
-            'unexpected acknowledgment fence' => [['ack_fence' => [1, 'default', 10, 1]]],
-            'missing producer frame' => [['stage_frames' => [[
-                'file' => 'DatabaseQueue.php', 'function' => 'insertGetId',
-            ]]]],
-            'missing insert frame' => [['stage_frames' => [[
-                'file' => 'DatabaseQueue.php', 'function' => 'pushToDatabase',
-            ]]]],
+            'other exception' => [[
+                'error_class' => RuntimeException::class,
+            ]],
+            'untyped sqlite code' => [[
+                'native_code' => '5',
+            ]],
+            'invalid negative sqlite code' => [[
+                'native_code' => -251,
+            ]],
+            'acknowledgment instead of dispatch' => [[
+                'operation' => 'delete',
+            ]],
+            'unexpected acknowledgment fence' => [[
+                'ack_fence' => [1, 'default', 10, 1],
+            ]],
+            'missing producer frame' => [[
+                'stage_frames' => [[
+                    'file' => 'DatabaseQueue.php',
+                    'function' => 'insertGetId',
+                ]],
+            ]],
+            'missing insert frame' => [[
+                'stage_frames' => [[
+                    'file' => 'DatabaseQueue.php',
+                    'function' => 'pushToDatabase',
+                ]],
+            ]],
         ];
     }
 
@@ -163,9 +179,11 @@ final class TracingQueueErrorDiagnosticsTest extends TestCase
             'statement' => 'insert into "jobs" '
                 . '("queue", "attempts", "reserved_at", "available_at", "created_at", "payload") values (?, ?, ?, ?, ?, ?)',
             'stage_frames' => [[
-                'file' => 'DatabaseQueue.php', 'function' => 'insertGetId',
+                'file' => 'DatabaseQueue.php',
+                'function' => 'insertGetId',
             ], [
-                'file' => 'DatabaseQueue.php', 'function' => 'pushToDatabase',
+                'file' => 'DatabaseQueue.php',
+                'function' => 'pushToDatabase',
             ]],
         ];
     }
