@@ -287,6 +287,20 @@ a longer activity to retain a short worker-loss recovery interval without
 requiring business progress heartbeats. Actual worker integration is required
 before an adapter can claim automatic renewal.
 
+An adapter holding the original worker-registration incarnation fence may call
+`ActivityTimeoutEnforcer::revokeWorkerLease(taskId, namespace, leaseOwner)` at
+deregistration. The runtime rechecks the original task, attempt generation,
+owner and namespace under canonical locks. It settles that attempt through its
+recorded retry/backoff policy instead of silently redispatching it. Contested
+locks fail without committing the registration receipt or activity settlement.
+
+An explicit revocation before the grant expires records
+`failure_reason=worker_deregistered`, the original `lease_expires_at` and optional
+`lease_revoked_at` in `ActivityRetryScheduled` or `ActivityFailed`. An already
+expired lease retains `lease_expired`; an elapsed business timeout keeps its
+own timeout outcome. These fields do not prove physical callback stop. SDK
+shutdown must retain its physical callback ownership and late-result fences.
+
 ## Workflow service operation caller API
 
 PHP workflow code can initiate a durable Nexus service operation from inside
