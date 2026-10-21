@@ -118,7 +118,7 @@ final class ActivityOutcomeRecorder
                 return self::ignored('activity_deadline_elapsed');
             }
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
             if ($expiredReason !== null) {
                 return self::ignored($expiredReason);
             }
@@ -168,7 +168,7 @@ final class ActivityOutcomeRecorder
             }
 
             // Payload preparation can outlive a claim even while its rows stay locked.
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
             if ($expiredReason !== null) {
                 return self::ignored($expiredReason);
             }
@@ -210,7 +210,7 @@ final class ActivityOutcomeRecorder
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
             $resolutionEvent = null;
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now());
+            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
             if ($expiredReason !== null) {
                 return self::ignored($expiredReason);
             }

@@ -576,7 +576,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             return [false, false, 'task_not_leased'];
         }
 
-        $expiredReason = ActivityAttemptAuthority::expiredReason($task, $execution, now());
+        $expiredReason = ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run);
         if ($expiredReason !== null) {
             return [false, false, $expiredReason];
         }

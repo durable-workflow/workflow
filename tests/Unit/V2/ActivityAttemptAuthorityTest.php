@@ -29,15 +29,26 @@ final class ActivityAttemptAuthorityTest extends TestCase
         Date::useDefault();
         try {
             $deadline = Carbon::parse('2026-10-21T03:00:00.123456Z');
-            $task = new WorkflowTask(['lease_expires_at' => $deadline->copy()->addMinutes(5)]);
+            $task = new WorkflowTask([
+                'lease_expires_at' => $deadline->copy()
+                    ->addMinutes(5),
+            ]);
             $execution = new ActivityExecution();
-            $run = new WorkflowRun([$field => $deadline]);
+            $run = new WorkflowRun([
+                $field => $deadline,
+            ]);
             $before = [$execution->getAttributes(), $run->getAttributes()];
 
-            self::assertNull(ActivityAttemptAuthority::expiredReason($task, $execution, $deadline->copy()->subMicrosecond(), $run));
+            self::assertNull(
+                ActivityAttemptAuthority::expiredReason($task, $execution, $deadline->copy()->subMicrosecond(), $run)
+            );
             self::assertSame($reason, ActivityAttemptAuthority::expiredReason($task, $execution, $deadline, $run));
-            $task->lease_expires_at = $deadline->copy()->addDay();
-            self::assertSame($reason, ActivityAttemptAuthority::expiredReason($task, $execution, $deadline->copy()->addMicrosecond(), $run));
+            $task->lease_expires_at = $deadline->copy()
+                ->addDay();
+            self::assertSame(
+                $reason,
+                ActivityAttemptAuthority::expiredReason($task, $execution, $deadline->copy()->addMicrosecond(), $run)
+            );
             self::assertSame($before, [$execution->getAttributes(), $run->getAttributes()]);
         } finally {
             Date::setTestNow();

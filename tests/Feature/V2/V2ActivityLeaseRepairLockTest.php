@@ -38,7 +38,8 @@ final class V2ActivityLeaseRepairLockTest extends TestCase
         [$claim] = ActivityTaskClaimer::claim($task->id, 'lease-original');
         $this->assertNotNull($claim);
         $task->forceFill([
-            'lease_expires_at' => now()->subSecond(),
+            'lease_expires_at' => now()
+                ->subSecond(),
         ])->save();
         $claim->attempt->forceFill([
             'lease_expires_at' => $task->lease_expires_at,

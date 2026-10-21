@@ -147,7 +147,7 @@ abstract class Activity
             }
 
             $expired = $task instanceof WorkflowTask
-                ? ActivityAttemptAuthority::expiredReason($task, $execution, now()) !== null
+                ? ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run) !== null
                 : ActivityTimeoutEnforcer::hasExpiredDeadline($execution, now());
             if ($expired) {
                 return;
