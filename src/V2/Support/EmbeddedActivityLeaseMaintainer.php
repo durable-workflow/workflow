@@ -91,7 +91,7 @@ final class EmbeddedActivityLeaseMaintainer
         $connection = $start['connection'];
         if (($connection['driver'] ?? null) === 'sqlite') {
             // The parent has already configured this database. Reopening a
-            // metadata connection must not replay a stale journal-mode change.
+            // metadata connection must not reapply a stale journal-mode change.
             unset($connection['journal_mode']);
         }
         $container = new Container();
