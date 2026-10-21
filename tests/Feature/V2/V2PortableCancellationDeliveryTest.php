@@ -322,7 +322,7 @@ final class V2PortableCancellationDeliveryTest extends TestCase
     public function testInternalActivityAbandonRecoversAnExpiredOwnerAfterParentClosure(): void
     {
         [$run, $initial] = $this->newRun();
-        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial, maxAttempts: 2);
         $activities = $this->app->make(ActivityTaskBridge::class);
         $this->assertTrue($activities->claimStatus($activityTask->id, 'lost-owner')['claimed']);
         $first = $execution->attempts()
@@ -339,6 +339,9 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertNotNull($repaired);
         $this->assertSame(TaskStatus::Ready, $repaired->status);
         $this->assertSame(ActivityAttemptStatus::Expired, $first->refresh()->status);
+        $retry = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled)->sole();
+        $this->assertSame('lease_expired', $retry->payload['failure_reason']);
         $this->assertTrue($activities->claimStatus($repaired->id, 'fresh-owner')['claimed']);
         $second = $execution->attempts()
             ->where('attempt_number', 2)
@@ -346,6 +349,36 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         $this->assertSame('stale_attempt', $activities->complete($first->id, 'lost owner result')['reason']);
         $this->assertTrue($activities->complete($second->id, 'recovered result')['recorded']);
         $this->assertSame($deadline, $execution->refresh()->schedule_to_close_deadline_at->toISOString());
+        $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
+    }
+
+    public function testInternalActivityAbandonKeepsItsOneAttemptLimitAfterParentClosure(): void
+    {
+        [$run, $initial] = $this->newRun();
+        [$execution, $activityTask] = $this->scheduleInternalAbandonableActivity($run, $initial);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($activityTask->id, 'lost-owner')['claimed']);
+        $first = $execution->attempts()
+            ->sole();
+        $this->closeCooperativeParent($run, $initial);
+        $activityTask->refresh()
+            ->forceFill([
+                'lease_expires_at' => now()
+                    ->subSecond(),
+            ])->save();
+
+        $this->assertNull(TaskRepair::recoverExistingTask($activityTask, $run->fresh()));
+        $this->assertSame(ActivityAttemptStatus::Expired, $first->refresh()->status);
+        $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
+        $this->assertSame(1, $execution->attempts()->count());
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Ready)->count());
+        $this->assertSame(
+            0,
+            $run->historyEvents()->where('event_type', HistoryEventType::ActivityRetryScheduled)->count()
+        );
+        $failed = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityFailed)->sole();
+        $this->assertSame('lease_expired', $failed->payload['failure_reason']);
         $this->assertSame(RunStatus::Cancelled, $run->refresh()->status);
     }
 
