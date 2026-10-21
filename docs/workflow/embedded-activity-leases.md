@@ -36,3 +36,8 @@ retain the captured lease without an independent helper. Use persistent storage
 and a real clock when qualifying long-running queue workers. Custom database
 connectors must be available to the fresh metadata process; application-specific
 connector bootstraps are not qualified by the built-in driver tests.
+
+Legacy activity jobs that start after their workflow has completed or failed
+retain the original captured lease and outcome handling. They receive no new
+renewal authority. An activity retained by the runtime's explicit abandon policy
+can renew only within that policy's original recorded deadlines.

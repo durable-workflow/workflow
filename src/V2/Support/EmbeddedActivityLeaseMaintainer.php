@@ -79,7 +79,9 @@ final class EmbeddedActivityLeaseMaintainer
     {
         if (! is_array($start['connection'] ?? null) || ! is_int($start['parent_pid'] ?? null)
             || ! is_int($start['initial_deadline'] ?? null) || ! is_array($start['identity'] ?? null)
-            || ! is_string($start['namespace'] ?? null) || ! is_string($start['timezone'] ?? null)
+            || ! array_key_exists('namespace', $start)
+            || ($start['namespace'] !== null && ! is_string($start['namespace']))
+            || ! is_string($start['timezone'] ?? null)
             || ! is_int($start['lease_seconds'] ?? null) || $start['lease_seconds'] < 1
             || $start['lease_seconds'] > ActivityLease::MAX_SECONDS
             || hrtime(true) >= $start['initial_deadline']) {

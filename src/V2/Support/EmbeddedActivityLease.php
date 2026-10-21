@@ -86,6 +86,11 @@ final class EmbeddedActivityLease
     public static function start(ActivityTaskClaim $claim): ?self
     {
         $connection = $claim->task->getConnection();
+        // Legacy selection losers may execute after their run closes. Keep
+        // that existing outcome path without inventing renewal authority.
+        if ($claim->run->status->isTerminal() && ! ActivityAbandonment::allows($claim->run, $claim->execution)) {
+            return null;
+        }
         // An in-memory database and uncommitted outer transaction have no
         // independent committed grant that another process can maintain.
         if (WorkflowStub::faked() || WorkflowStub::hasMock($claim->execution->activity_class) || Date::hasTestNow()

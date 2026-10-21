@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\LeaseBlockingActivity;
 use Tests\Fixtures\V2\LeaseBlockingWorkflow;
 use Tests\Support\EmbeddedActivityLeaseEnvironment;
@@ -178,7 +179,10 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
         LeaseBlockingActivity::$beforeWait = static function () use (&$locker, $checkpoint, $log, $environment): void {
             $locker = proc_open(
                 [PHP_BINARY, dirname(__DIR__, 3) . '/vendor/bin/phpunit',
-                    dirname(__DIR__, 2) . '/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testBriefWriter'],
+                    dirname(
+                        __DIR__,
+                        2
+                    ) . '/Support/EmbeddedActivityLeaseWorkerTest.php', '--filter', 'testBriefWriter'],
                 [
                     0 => ['file', '/dev/null', 'r'],
                     1 => ['file', $log, 'w'],
@@ -289,9 +293,21 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
         }
     }
 
-    public function testOrdinaryInlineActivityOutlastsItsLeaseAndCompletesExactlyOnce(): void
+    /**
+     * @return array<string, array{?string}>
+     */
+    public static function activityNamespaces(): array
     {
-        $stub = WorkflowStub::make(LeaseBlockingWorkflow::class, 'embedded-long-activity', 'lease-tenant');
+        return [
+            'default' => [null],
+            'named' => ['lease-tenant'],
+        ];
+    }
+
+    #[DataProvider('activityNamespaces')]
+    public function testOrdinaryInlineActivityOutlastsItsLeaseAndCompletesExactlyOnce(?string $namespace): void
+    {
+        $stub = WorkflowStub::make(LeaseBlockingWorkflow::class, 'embedded-long-activity', $namespace);
         $stub->start(4.2);
         $this->workOnce();
         $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
@@ -304,6 +320,7 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
             ->all();
         $this->workOnce();
 
+        self::assertSame($namespace, $task->fresh()->namespace);
         self::assertSame(getmypid(), LeaseBlockingActivity::$callbackPid);
         self::assertSame(1, LeaseBlockingActivity::$invocations);
         self::assertSame(
