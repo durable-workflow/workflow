@@ -131,18 +131,19 @@ class WorkflowHistoryEvent extends Model
                 ]);
                 ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
 
-                $lockedRun->forceFill([
+                $updates = [
                     'last_history_sequence' => $sequence,
-                    'last_progress_at' => $now,
-                ])->save();
+                ];
+                if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {
+                    $updates['last_progress_at'] = $now;
+                }
+                $lockedRun->forceFill($updates)
+                    ->save();
 
                 PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
 
-                $run->forceFill([
-                    'last_history_sequence' => $lockedRun->last_history_sequence,
-                    'last_progress_at' => $lockedRun->last_progress_at,
-                ]);
-                $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
+                $run->forceFill($updates);
+                $run->syncOriginalAttributes(array_keys($updates));
 
                 LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
                 ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);

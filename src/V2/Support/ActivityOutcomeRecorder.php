@@ -110,6 +110,15 @@ final class ActivityOutcomeRecorder
                 || $lockedExecution->current_attempt_id !== $attemptId
             ) {
                 self::closeAttemptIfStale($run, $attemptId);
+                ActivityOutcomeRejection::record(
+                    $run,
+                    $lockedExecution,
+                    $task,
+                    $attemptId,
+                    $attemptCount,
+                    $throwable === null ? 'completed' : 'failed',
+                    'stale_attempt',
+                );
 
                 return self::ignored('stale_attempt');
             }
@@ -120,6 +129,15 @@ final class ActivityOutcomeRecorder
 
             $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
             if ($expiredReason !== null) {
+                ActivityOutcomeRejection::record(
+                    $run,
+                    $lockedExecution,
+                    $task,
+                    $attemptId,
+                    $attemptCount,
+                    $throwable === null ? 'completed' : 'failed',
+                    $expiredReason,
+                );
                 return self::ignored($expiredReason);
             }
 
