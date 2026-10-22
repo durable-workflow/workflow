@@ -42,7 +42,7 @@ jobs:
       with:
         python-version: "3.13"
     - name: Bootstrap patched pip trust
-      uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+      uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
     - name: Install policy dependencies
       run: "python -m pip install --only-binary :all: PyYAML==6.0.2"
     - name: Require centrally approved immutable action commits
