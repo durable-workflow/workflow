@@ -63,6 +63,9 @@ final class LegacyOverlapOptionsBoundaryTest extends TestCase
             $this->assertSame('legacy-boundary', $run->queue);
             $this->assertSame($run->connection, $task->connection);
             $this->assertSame($run->queue, $task->queue);
+            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->execute($task->id)['executed']);
+            $this->assertSame('argument', WorkflowStub::load($run->workflow_instance_id)->output());
+            $task->refresh();
             $history = $run->historyEvents()
                 ->orderBy('sequence')
                 ->get();
@@ -76,8 +79,6 @@ final class LegacyOverlapOptionsBoundaryTest extends TestCase
                     $this->shape($event->payload),
                 ])->all(),
             ];
-            $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->execute($task->id)['executed']);
-            $this->assertSame('argument', WorkflowStub::load($run->workflow_instance_id)->output());
         }
         $this->assertSame($snapshots[0], $snapshots[1]);
     }
