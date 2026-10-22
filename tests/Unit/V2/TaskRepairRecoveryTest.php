@@ -79,6 +79,9 @@ final class TaskRepairRecoveryTest extends TestCase
             ],
             'availability' => [
                 'available_at' => $deadline,
+                'last_claim_failed_at' => now()
+                    ->subMinute(),
+                'last_claim_error' => 'claim unavailable',
             ],
             'dispatch backoff' => [
                 'last_dispatch_attempt_at' => now()
