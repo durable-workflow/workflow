@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\V2\TestRetryWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -173,6 +177,66 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertSame('ActivityOutcomeRejected', $rows->last()->type);
         self::assertStringContainsString('stale_attempt', $rows->last()->summary);
         self::assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+    }
+
+    public static function publicationDeadlines(): array
+    {
+        return [
+            'lease boundary' => ['lease_expired', false],
+            'activity boundary' => ['start_to_close_timeout', false],
+            'run boundary' => ['run_timeout', false],
+            'completed request converted by payload guard' => ['lease_expired', true],
+        ];
+    }
+
+    #[DataProvider('publicationDeadlines')]
+    public function testRefusalDuringPreparationRetainsOriginalOutcome(string $reason, bool $payloadLimit): void
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal();
+        $task = WorkflowTask::query()->findOrFail($claim['task_id']);
+        $boundary = now()->addSecond();
+        if ($reason === 'lease_expired') {
+            $boundary = $task->lease_expires_at;
+        } elseif ($reason === 'start_to_close_timeout') {
+            ActivityExecution::query()->findOrFail($claim['activity_execution_id'])->forceFill([
+                'close_deadline_at' => $boundary,
+            ])->save();
+        } else {
+            $run->forceFill(['run_deadline_at' => $boundary])->save();
+        }
+        if ($payloadLimit) {
+            config(['workflows.v2.structural_limits.payload_size_bytes' => 1]);
+        }
+        $this->app->instance(ExternalPayloadStoragePolicy::class, new class($boundary) implements ExternalPayloadStoragePolicy {
+            public function __construct(private readonly CarbonInterface $boundary)
+            {
+            }
+
+            public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+            {
+                Date::setTestNow($this->boundary);
+
+                return null;
+            }
+
+            public function thresholdBytesFor(?string $namespace): ?int
+            {
+                return null;
+            }
+        });
+        $before = $this->businessState($run);
+
+        $reply = $bridge->complete($claim['activity_attempt_id'], 'discarded-private-result');
+
+        self::assertFalse($reply['recorded']);
+        self::assertSame($reason, $reply['reason']);
+        self::assertCount(1, $this->notices($run));
+        $notice = $this->notices($run)[0];
+        self::assertSame('completed', $notice->payload['outcome']);
+        self::assertSame($reason, $notice->payload['reason']);
+        self::assertSame($claim['activity_attempt_id'], $notice->payload['activity_attempt_id']);
+        self::assertStringNotContainsString('discarded-private-result', json_encode($notice->payload));
+        self::assertSame($before, $this->businessState($run));
     }
 
     private function expiredOriginal(bool $closed = false): array
