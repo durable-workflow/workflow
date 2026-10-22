@@ -174,7 +174,8 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, Shou
 
     public function middleware()
     {
-        $releaseAfter = $this->storedWorkflow->workflowOptions()->overlapReleaseAfter;
+        $releaseAfter = $this->storedWorkflow->workflowOptions()
+->overlapReleaseAfter;
         $parentWorkflow = $this->storedWorkflow->parents()
             ->wherePivot('parent_index', '!=', StoredWorkflow::CONTINUE_PARENT_INDEX)
             ->wherePivot('parent_index', '!=', StoredWorkflow::ACTIVE_WORKFLOW_INDEX)
@@ -182,11 +183,21 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUniqueUntilProcessing, Shou
 
         if ($parentWorkflow) {
             return [
-                new WithoutOverlappingMiddleware($parentWorkflow->id, WithoutOverlappingMiddleware::ACTIVITY, $releaseAfter, 15),
+                new WithoutOverlappingMiddleware(
+                    $parentWorkflow->id,
+                    WithoutOverlappingMiddleware::ACTIVITY,
+                    $releaseAfter,
+                    15
+                ),
             ];
         }
         return [
-            new WithoutOverlappingMiddleware($this->storedWorkflow->id, WithoutOverlappingMiddleware::WORKFLOW, $releaseAfter, 15),
+            new WithoutOverlappingMiddleware(
+                $this->storedWorkflow->id,
+                WithoutOverlappingMiddleware::WORKFLOW,
+                $releaseAfter,
+                15
+            ),
         ];
     }
 

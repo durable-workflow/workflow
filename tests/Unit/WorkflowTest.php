@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Event;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestChildWorkflow;
@@ -479,14 +480,25 @@ final class WorkflowTest extends TestCase
         $this->assertSame(1, $storedWorkflow->continuedWorkflows()->count());
     }
 
-    public function testContinueAsNewCarriesWorkflowOptions(): void
+    public static function inheritedWorkflowOptions(): array
+    {
+        return [
+            'routing' => ['sync', 'default', 0],
+            'delay only' => [null, null, 7],
+        ];
+    }
+
+    #[DataProvider('inheritedWorkflowOptions')]
+    public function testContinueAsNewCarriesWorkflowOptions(?string $connection, ?string $queue, int $delay): void
     {
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestContinueAsNewWorkflow::class,
             'arguments' => Serializer::serialize([
                 'arguments' => [0, 3],
                 'options' => [
-                    'overlapReleaseAfter' => 7,
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'overlapReleaseAfter' => $delay,
                 ],
             ]),
             'status' => WorkflowPendingStatus::class,
@@ -507,9 +519,9 @@ final class WorkflowTest extends TestCase
             ->first();
 
         $this->assertNotNull($continuedWorkflow);
-        $this->assertNull($continuedWorkflow->workflowOptions()->connection);
-        $this->assertNull($continuedWorkflow->workflowOptions()->queue);
-        $this->assertSame(7, $continuedWorkflow->workflowOptions()->overlapReleaseAfter);
+        $this->assertSame($connection, $continuedWorkflow->workflowOptions()->connection);
+        $this->assertSame($queue, $continuedWorkflow->workflowOptions()->queue);
+        $this->assertSame($delay, $continuedWorkflow->workflowOptions()->overlapReleaseAfter);
     }
 
     public function testRedeliveredJobResumesFromRunningState(): void

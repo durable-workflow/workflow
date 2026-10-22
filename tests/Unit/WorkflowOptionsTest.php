@@ -31,19 +31,32 @@ final class WorkflowOptionsTest extends TestCase
         $this->assertSame(0, WorkflowOptions::set([])->overlapReleaseAfter);
         $metadata = WorkflowMetadata::fromSerializedArguments([
             'arguments' => [],
-            'options' => ['connection' => 'database', 'queue' => 'default'],
+            'options' => [
+                'connection' => 'database',
+                'queue' => 'default',
+            ],
         ]);
         $this->assertSame(0, $metadata->options->overlapReleaseAfter);
-        $this->assertSame(
-            ['connection' => 'database', 'queue' => 'default'],
-            $metadata->toArray()['options'],
-        );
+        $this->assertSame([
+            'connection' => 'database',
+            'queue' => 'default',
+        ], $metadata->toArray()['options'],);
     }
 
     public function testConstructorRejectsNegativeDelay(): void
     {
         $this->expectException(InvalidArgumentException::class);
         new WorkflowOptions(overlapReleaseAfter: -1);
+    }
+
+    public function testExplicitOptionsReplaceTheInheritedDelay(): void
+    {
+        $inherited = new WorkflowOptions(overlapReleaseAfter: 7);
+        $metadata = WorkflowMetadata::fromStartArguments(['argument'], $inherited);
+        $this->assertSame(7, $metadata->options->overlapReleaseAfter);
+        $metadata = WorkflowMetadata::fromStartArguments(['argument', new WorkflowOptions()], $inherited);
+        $this->assertSame(0, $metadata->options->overlapReleaseAfter);
+        $this->assertSame(['argument'], $metadata->arguments);
     }
 
     public static function invalidDelays(): array
@@ -61,6 +74,8 @@ final class WorkflowOptionsTest extends TestCase
     public function testRejectsInvalidPersistedDelay(mixed $delay, string $exception): void
     {
         $this->expectException($exception);
-        WorkflowOptions::set(['overlapReleaseAfter' => $delay]);
+        WorkflowOptions::set([
+            'overlapReleaseAfter' => $delay,
+        ]);
     }
 }

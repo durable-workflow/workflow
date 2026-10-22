@@ -133,10 +133,11 @@ The contract authorities are:
   `RoutingResolver::activityConnection`, and
   `RoutingResolver::activityQueue`. No other class is allowed to
   compute `(connection, queue)` from the same inputs.
-- **`WorkflowOptions`** — the durable wire value for workflow start
-  routing overrides. The type carries only `?string $connection` and
-  `?string $queue`. Any additional fields on `WorkflowOptions` are a
-  protocol change.
+- **`WorkflowOptions`** — workflow start routing overrides are
+  `?string $connection` and `?string $queue`. The optional nonnegative
+  `int $overlapReleaseAfter` controls only the legacy `Workflow\\Workflow`
+  queue middleware. It defaults to zero, is omitted from stored metadata at
+  that default, and does not change V2 routing or the portable service protocol.
 - **`ActivityOptions`** — the durable wire value for activity
   scheduling overrides. Routing fields on `ActivityOptions` are
   `?string $connection` and `?string $queue`; retry and timeout

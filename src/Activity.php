@@ -138,7 +138,8 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             new WithoutOverlappingMiddleware(
                 $this->storedWorkflow->id,
                 WithoutOverlappingMiddleware::ACTIVITY,
-                $this->storedWorkflow->workflowOptions()->overlapReleaseAfter,
+                $this->storedWorkflow->workflowOptions()
+->overlapReleaseAfter,
                 $this->timeout
             ),
             new ActivityMiddleware(),

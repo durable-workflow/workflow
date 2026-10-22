@@ -6,6 +6,7 @@ namespace Tests\Unit;
 
 use Exception;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\TestChildWorkflow;
 use Tests\Fixtures\TestExceptionWorkflow;
 use Tests\Fixtures\TestParentWorkflow;
@@ -347,8 +348,20 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertSame(1, WorkflowStub::getContext()->index);
     }
 
-    public function testUsesParentContextForInheritedWorkflowOptions(): void
+    public static function inheritedWorkflowOptions(): array
     {
+        return [
+            'routing' => ['sync', 'parent-queue', 0],
+            'delay only' => [null, null, 7],
+        ];
+    }
+
+    #[DataProvider('inheritedWorkflowOptions')]
+    public function testUsesParentContextForInheritedWorkflowOptions(
+        ?string $connection,
+        ?string $queue,
+        int $delay
+    ): void {
         $childContextStoredWorkflow = Mockery::mock();
         $childContextStoredWorkflow->shouldNotReceive('workflowOptions');
 
@@ -359,7 +372,7 @@ final class ChildWorkflowStubTest extends TestCase
             ->andReturn(null);
         $parentStoredWorkflow->shouldReceive('workflowOptions')
             ->once()
-            ->andReturn(new WorkflowOptions(overlapReleaseAfter: 7));
+            ->andReturn(new WorkflowOptions($connection, $queue, $delay));
 
         $childWorkflow = Mockery::mock();
         $childWorkflow->shouldReceive('running')
@@ -371,7 +384,7 @@ final class ChildWorkflowStubTest extends TestCase
         $childWorkflow->shouldReceive('startAsChild')
             ->once()
             ->withArgs(
-                static function (...$arguments) use ($parentStoredWorkflow): bool {
+                static function (...$arguments) use ($parentStoredWorkflow, $connection, $queue, $delay): bool {
                     if (count($arguments) !== 4) {
                         return false;
                     }
@@ -381,9 +394,9 @@ final class ChildWorkflowStubTest extends TestCase
                     return $parentWorkflow === $parentStoredWorkflow
                         && $index === 0
                         && $options instanceof WorkflowOptions
-                        && $options->connection === null
-                        && $options->queue === null
-                        && $options->overlapReleaseAfter === 7;
+                        && $options->connection === $connection
+                        && $options->queue === $queue
+                        && $options->overlapReleaseAfter === $delay;
                 }
             );
 

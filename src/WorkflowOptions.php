@@ -18,6 +18,15 @@ final class WorkflowOptions
         }
     }
 
+    public function __unserialize(array $data): void
+    {
+        // Options serialized before this setting was introduced keep their zero delay.
+        $options = self::set($data);
+        $this->connection = $options->connection;
+        $this->queue = $options->queue;
+        $this->overlapReleaseAfter = $options->overlapReleaseAfter;
+    }
+
     /**
      * @param array{connection?: string|null, queue?: string|null, overlapReleaseAfter?: int} $options
      */
@@ -28,14 +37,5 @@ final class WorkflowOptions
             $options['queue'] ?? null,
             array_key_exists('overlapReleaseAfter', $options) ? $options['overlapReleaseAfter'] : 0,
         );
-    }
-
-    public function __unserialize(array $data): void
-    {
-        // Options serialized before this setting was introduced keep their zero delay.
-        $options = self::set($data);
-        $this->connection = $options->connection;
-        $this->queue = $options->queue;
-        $this->overlapReleaseAfter = $options->overlapReleaseAfter;
     }
 }
