@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.1 - 2026-10-22
+
+- Preserve microsecond precision when selecting expired task leases, available
+  tasks and elapsed repair backoffs. A repair pass can select a task at its
+  recorded deadline without waiting for the next whole second.
+
 ## 2.11.0 - 2026-10-22
 
 - Add the opt-in `WorkflowOptions::overlapReleaseAfter` delay for legacy
