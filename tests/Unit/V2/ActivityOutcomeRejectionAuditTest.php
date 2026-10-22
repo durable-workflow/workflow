@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -194,7 +194,8 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
     {
         [$bridge, $claim, $run] = $this->claimedOriginal();
         $task = WorkflowTask::query()->findOrFail($claim['task_id']);
-        $boundary = now()->addSecond();
+        $boundary = now()
+            ->addSecond();
         if ($reason === 'lease_expired') {
             $boundary = $task->lease_expires_at;
         } elseif ($reason === 'start_to_close_timeout') {
@@ -202,14 +203,21 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
                 'close_deadline_at' => $boundary,
             ])->save();
         } else {
-            $run->forceFill(['run_deadline_at' => $boundary])->save();
+            $run->forceFill([
+                'run_deadline_at' => $boundary,
+            ])->save();
         }
         if ($payloadLimit) {
-            config(['workflows.v2.structural_limits.payload_size_bytes' => 1]);
+            config([
+                'workflows.v2.structural_limits.payload_size_bytes' => 1,
+            ]);
         }
-        $this->app->instance(ExternalPayloadStoragePolicy::class, new class($boundary) implements ExternalPayloadStoragePolicy {
-            public function __construct(private readonly CarbonInterface $boundary)
-            {
+        $this->app->instance(ExternalPayloadStoragePolicy::class, new class(
+            $boundary
+        ) implements ExternalPayloadStoragePolicy {
+            public function __construct(
+                private readonly CarbonInterface $boundary
+            ) {
             }
 
             public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver

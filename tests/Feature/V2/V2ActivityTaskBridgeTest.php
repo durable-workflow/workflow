@@ -341,7 +341,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
             $this->assertFalse($outcome['recorded']);
             $this->assertSame('lease_expired', $outcome['reason']);
-            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertRejectedOutcomeDiagnostic($run, $claim, $before, 'completed', 'lease_expired');
             $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
             $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
             $this->assertSame(
@@ -366,7 +366,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
             $this->assertFalse($outcome['recorded']);
             $this->assertSame('lease_expired', $outcome['reason']);
-            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertRejectedOutcomeDiagnostic($run, $claim, $before, 'failed', 'lease_expired');
             $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
             $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
         } finally {
@@ -449,7 +449,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
             $this->assertFalse($outcome['recorded']);
             $this->assertSame('lease_expired', $outcome['reason']);
-            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertRejectedOutcomeDiagnostic($run, $claim, $before, 'completed', 'lease_expired');
             $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
             $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
         } finally {
@@ -501,7 +501,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
             $this->assertFalse($fail['recorded']);
             $this->assertSame($reason, $fail['reason']);
             $this->assertTrue($task->fresh()->lease_expires_at->equalTo($expiry));
-            $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertRejectedOutcomeDiagnostic($run, $claim, $before, 'completed', $reason);
 
             $timeout = ActivityTimeoutEnforcer::enforce($execution->id);
             $this->assertTrue($timeout['enforced']);
@@ -1625,6 +1625,25 @@ final class V2ActivityTaskBridgeTest extends TestCase
                 }
             },
         );
+    }
+
+    private function assertRejectedOutcomeDiagnostic(
+        WorkflowRun $run,
+        array $claim,
+        int $prefixSize,
+        string $outcome,
+        string $reason
+    ): void {
+        $this->assertSame($prefixSize + 1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityOutcomeRejected)->sole();
+        $this->assertSame($claim['task_id'], $event->workflow_task_id);
+        $this->assertSame($claim['activity_attempt_id'], $event->payload['activity_attempt_id']);
+        $this->assertSame($outcome, $event->payload['outcome']);
+        $this->assertSame($reason, $event->payload['reason']);
+        foreach (['result', 'exception', 'message', 'stack_trace', 'task', 'command'] as $field) {
+            $this->assertArrayNotHasKey($field, $event->payload);
+        }
     }
 
     private function assertExternalArgumentsEnvelope(mixed $arguments): void
