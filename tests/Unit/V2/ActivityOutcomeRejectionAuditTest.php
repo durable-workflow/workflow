@@ -20,13 +20,16 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\ActivityOutcomeRejection;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\WorkflowStub;
 
 final class ActivityOutcomeRejectionAuditTest extends TestCase
@@ -113,6 +116,55 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertFalse($bridge->complete($claim['activity_attempt_id'], 'late')['recorded']);
         self::assertCount(0, $this->notices($run));
         self::assertSame($history, $run->historyEvents()->count());
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testDiagnosticRequiresExactAttemptIdDespiteCaseInsensitiveStorage(): void
+    {
+        [, $claim, $run] = $this->expiredOriginal();
+        $alias = strtolower($claim['activity_attempt_id']);
+        if ($alias === $claim['activity_attempt_id']) {
+            $alias = strtoupper($claim['activity_attempt_id']);
+        }
+        self::assertNotSame($claim['activity_attempt_id'], $alias);
+        $lookup = ActivityAttempt::query()->find($alias);
+        if (DB::connection()->getDriverName() === 'mysql') {
+            self::assertInstanceOf(ActivityAttempt::class, $lookup);
+            self::assertSame($claim['activity_attempt_id'], $lookup->id);
+        }
+        $before = $this->businessState($run);
+
+        self::assertNull($this->recordDiagnostic($claim, $run, $alias));
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+
+        $canonical = $this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']);
+        self::assertInstanceOf(WorkflowHistoryEvent::class, $canonical);
+        self::assertSame($claim['activity_attempt_id'], $canonical->payload['activity_attempt_id']);
+        self::assertSame($claim['lease_owner'], $canonical->payload['lease_owner']);
+        self::assertCount(1, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public static function missingOriginalOwners(): array
+    {
+        return [
+            'unknown original owner' => [null],
+            'empty original owner' => [''],
+        ];
+    }
+
+    #[DataProvider('missingOriginalOwners')]
+    public function testDiagnosticDoesNotInventMissingOriginalOwnership(?string $owner): void
+    {
+        [, $claim, $run] = $this->expiredOriginal();
+        ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->forceFill([
+            'lease_owner' => $owner,
+        ])->save();
+        $before = $this->businessState($run);
+
+        self::assertNull($this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']));
+        self::assertCount(0, $this->notices($run));
         self::assertSame($before, $this->businessState($run));
     }
 
@@ -299,6 +351,25 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
             : $bridge->fail($attemptId, [
                 'message' => 'private failure that must not enter audit history',
             ]);
+    }
+
+    private function recordDiagnostic(array $claim, WorkflowRun $run, string $attemptId): ?WorkflowHistoryEvent
+    {
+        return SqliteTransaction::forTask($claim['task_id'], static function () use ($claim, $run, $attemptId) {
+            $task = WorkflowTask::query()->lockForUpdate()->findOrFail($claim['task_id']);
+            $execution = ActivityExecution::query()->lockForUpdate()->findOrFail($claim['activity_execution_id']);
+            $lockedRun = WorkflowRun::query()->lockForUpdate()->findOrFail($run->id);
+
+            return ActivityOutcomeRejection::record(
+                $lockedRun,
+                $execution,
+                $task,
+                $attemptId,
+                $claim['attempt_number'],
+                'completed',
+                'stale_attempt',
+            );
+        });
     }
 
     private function notices(WorkflowRun $run): array
