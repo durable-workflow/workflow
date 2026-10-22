@@ -405,7 +405,8 @@ jobs:
       run: |
         touch "$DB_DATABASE"
         vendor/bin/phpunit tests/Unit/WorkflowOverlapReleaseTest.php \
-          tests/Unit/WorkflowOptionsTest.php --testdox --fail-on-warning
+          tests/Unit/WorkflowOptionsTest.php \
+          tests/Unit/V2/LegacyOverlapOptionsBoundaryTest.php --testdox --fail-on-warning
 
     - name: Run retained execution authority and process-loss controls
       run: >-
