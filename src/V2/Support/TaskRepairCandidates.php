@@ -713,7 +713,11 @@ final class TaskRepairCandidates
                                         $claimRepairable
                                             ->where(static function ($backoffReady) use ($now): void {
                                                 $backoffReady->whereNotNull('repair_available_at')
-                                                    ->where('repair_available_at', '<=', $now->format(self::TIMESTAMP_FORMAT));
+                                                    ->where(
+                                                        'repair_available_at',
+                                                        '<=',
+                                                        $now->format(self::TIMESTAMP_FORMAT)
+                                                    );
                                             })
                                             ->orWhere(static function ($legacyClaimFailure) use (
                                                 $staleDispatchCutoff
