@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.10.2 - 2026-10-22
 
 - Preserve recorded activity lease expiry and worker deregistration in canonical
   attempt views, including exhausted retries and cold history reads. Keep
