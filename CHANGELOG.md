@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.11.0 - 2026-10-22
+
+- Add the opt-in `WorkflowOptions::overlapReleaseAfter` delay for legacy
+  workflow, activity, signal and child-completion jobs contending on overlap
+  locks. Preserve the zero default, stored options, lock ownership and expiry.
+- Preserve the delay through child inheritance and continue-as-new. Queue
+  releases still count toward Laravel attempt limits.
+
 ## 2.10.2 - 2026-10-22
 
 - Preserve recorded activity lease expiry and worker deregistration in canonical

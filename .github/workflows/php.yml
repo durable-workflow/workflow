@@ -394,6 +394,20 @@ jobs:
           tests/Unit/V2/ProjectionSqliteContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
 
+    - name: Run legacy overlap releases on a real database queue
+      env:
+        DB_CONNECTION: sqlite
+        DB_DATABASE: ${{ runner.temp }}/workflow-overlap-release.sqlite
+        CACHE_DRIVER: array
+        CACHE_STORE: array
+        QUEUE_CONNECTION: sync
+        REDIS_HOST: ''
+      run: |
+        touch "$DB_DATABASE"
+        vendor/bin/phpunit tests/Unit/WorkflowOverlapReleaseTest.php \
+          tests/Unit/WorkflowOptionsTest.php \
+          tests/Unit/V2/LegacyOverlapOptionsBoundaryTest.php --testdox --fail-on-warning
+
     - name: Run retained execution authority and process-loss controls
       run: >-
         vendor/bin/phpunit tests/Unit/V2/EmbeddedContinuationTest.php
