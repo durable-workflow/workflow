@@ -236,7 +236,10 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         return [
             'lease boundary' => ['lease_expired', false],
             'activity boundary' => ['start_to_close_timeout', false],
+            'heartbeat boundary' => ['heartbeat_timeout', false],
+            'activity lifetime boundary' => ['schedule_to_close_timeout', false],
             'run boundary' => ['run_timeout', false],
+            'execution boundary' => ['execution_timeout', false],
             'completed request converted by payload guard' => ['lease_expired', true],
         ];
     }
@@ -248,15 +251,21 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         $task = WorkflowTask::query()->findOrFail($claim['task_id']);
         $boundary = now()
             ->addSecond();
+        $activityDeadline = match ($reason) {
+            'start_to_close_timeout' => 'close_deadline_at',
+            'heartbeat_timeout' => 'heartbeat_deadline_at',
+            'schedule_to_close_timeout' => 'schedule_to_close_deadline_at',
+            default => null,
+        };
         if ($reason === 'lease_expired') {
             $boundary = $task->lease_expires_at;
-        } elseif ($reason === 'start_to_close_timeout') {
+        } elseif ($activityDeadline !== null) {
             ActivityExecution::query()->findOrFail($claim['activity_execution_id'])->forceFill([
-                'close_deadline_at' => $boundary,
+                $activityDeadline => $boundary,
             ])->save();
         } else {
             $run->forceFill([
-                'run_deadline_at' => $boundary,
+                ($reason === 'execution_timeout' ? 'execution_deadline_at' : 'run_deadline_at') => $boundary,
             ])->save();
         }
         if ($payloadLimit) {
