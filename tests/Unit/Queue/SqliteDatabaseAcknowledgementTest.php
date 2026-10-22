@@ -194,12 +194,15 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
     {
         foreach (['queue', 'reserved_at'] as $field) {
             $job = $this->job();
-            $changed = $this->connection->table('jobs')->find($job->getJobId());
+            $changed = $this->connection->table('jobs')
+                ->find($job->getJobId());
             self::assertNotNull($changed);
             $changed->{$field} = $field === 'queue' ? 'neighbor' : (int) $changed->reserved_at + 1;
             $this->connection->table('jobs')
                 ->where('id', $job->getJobId())
-                ->update([$field => $changed->{$field}]);
+                ->update([
+                    $field => $changed->{$field},
+                ]);
             $job->delete();
             self::assertEquals($changed, $this->connection->table('jobs')->find($job->getJobId()));
         }
