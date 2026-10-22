@@ -192,17 +192,16 @@ final class SqliteDatabaseAcknowledgementTest extends TestCase
 
     public function testChangedQueueAndReservationTimestampAreAlsoFenced(): void
     {
-        foreach ([[
-            'queue' => 'neighbor',
-        ], [
-            'reserved_at' => time() + 1,
-        ]] as $change) {
+        foreach (['queue', 'reserved_at'] as $field) {
             $job = $this->job();
+            $changed = $this->connection->table('jobs')->find($job->getJobId());
+            self::assertNotNull($changed);
+            $changed->{$field} = $field === 'queue' ? 'neighbor' : (int) $changed->reserved_at + 1;
             $this->connection->table('jobs')
                 ->where('id', $job->getJobId())
-                ->update($change);
+                ->update([$field => $changed->{$field}]);
             $job->delete();
-            self::assertNotNull($this->connection->table('jobs')->find($job->getJobId()));
+            self::assertEquals($changed, $this->connection->table('jobs')->find($job->getJobId()));
         }
     }
 
