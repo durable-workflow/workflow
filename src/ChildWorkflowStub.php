@@ -121,7 +121,7 @@ final class ChildWorkflowStub
             if (! $hasOptions) {
                 $options = $context->storedWorkflow->workflowOptions();
 
-                if ($options->connection !== null || $options->queue !== null) {
+                if ($options->connection !== null || $options->queue !== null || $options->overlapReleaseAfter !== 0) {
                     $arguments[] = $options;
                 }
             }
