@@ -23,6 +23,10 @@ outcome merely because its response was retried.
 
 - Authenticate and enforce namespace, task, attempt and original owner binding
   before any audit write. Unrelated or unknown identities create no record.
+  Attempt identifiers require exact stored spelling even when the database
+  collation considers a case alias equal. A missing stored original lease owner
+  is unavailable evidence; do not manufacture an owner or append a fact without
+  that binding. These internal checks do not replace HTTP authentication.
 - Recheck lost authority under the existing storage transaction and locks.
   Select the reason from stored state and original deadlines. A request cannot
   nominate its own audit reason or make a valid claim stale.

@@ -31,6 +31,9 @@ final class ActivityOutcomeRejection
         }
         $attempt = ActivityAttempt::query()->lockForUpdate()->find($attemptId);
         if (! $attempt instanceof ActivityAttempt
+            || $attempt->id !== $attemptId
+            || ! is_string($attempt->lease_owner)
+            || $attempt->lease_owner === ''
             || $attempt->workflow_task_id !== $task->id
             || $attempt->activity_execution_id !== $execution->id
             || $attempt->workflow_run_id !== $run->id
