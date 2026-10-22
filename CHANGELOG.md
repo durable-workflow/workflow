@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.10.2 - 2026-10-22
+
+- Preserve recorded activity lease expiry and worker deregistration in canonical
+  attempt views, including exhausted retries and cold history reads. Keep
+  ordinary failures and unavailable lease-loss reasons distinct.
+
 ## 2.10.1 - 2026-10-21
 
 - Maintain eligible embedded activity leases from a fresh metadata-only PHP

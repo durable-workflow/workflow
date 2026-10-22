@@ -400,6 +400,7 @@ final class RunActivityView
             'can_continue' => self::attemptStateCanContinue($attempt, $execution),
             'cancel_requested' => self::attemptStateCancelRequested($attempt, $execution),
             'stop_reason' => self::attemptStateStopReason($attempt, $execution),
+            'failure_reason' => self::stringValue($attempt['failure_reason'] ?? null),
         ];
     }
 
@@ -433,6 +434,7 @@ final class RunActivityView
             'can_continue' => self::syntheticAttemptCanContinue($state, $execution),
             'cancel_requested' => self::syntheticAttemptCancelRequested($state, $execution),
             'stop_reason' => self::syntheticAttemptStopReason($state, $execution),
+            'failure_reason' => null,
         ];
     }
 
@@ -471,12 +473,13 @@ final class RunActivityView
             return 'attempt_cancelled';
         }
 
-        if ($execution?->status === ActivityStatus::Cancelled) {
-            return 'activity_cancelled';
+        if ($status === ActivityAttemptStatus::Expired->value) {
+            return self::stringValue($attempt['failure_reason'] ?? null)
+                ?? ($execution?->status === ActivityStatus::Cancelled ? 'activity_cancelled' : 'attempt_expired');
         }
 
-        if ($status === ActivityAttemptStatus::Expired->value) {
-            return 'attempt_expired';
+        if ($execution?->status === ActivityStatus::Cancelled) {
+            return 'activity_cancelled';
         }
 
         if (in_array($status, [
