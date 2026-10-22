@@ -1,6 +1,7 @@
 # Rejected activity outcome audit
 
-This is the proposed contract for the remaining history requirement in #878.
+This is the proposed contract for the remaining history requirement in
+[Workflow issue 878](https://github.com/durable-workflow/workflow/issues/878).
 It is not a published capability. Existing completion and failure responses
 continue to decide whether the business outcome was accepted.
 
