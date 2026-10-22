@@ -359,7 +359,7 @@ final class ChildWorkflowStubTest extends TestCase
             ->andReturn(null);
         $parentStoredWorkflow->shouldReceive('workflowOptions')
             ->once()
-            ->andReturn(new WorkflowOptions('sync', 'parent-queue'));
+            ->andReturn(new WorkflowOptions(overlapReleaseAfter: 7));
 
         $childWorkflow = Mockery::mock();
         $childWorkflow->shouldReceive('running')
@@ -381,8 +381,9 @@ final class ChildWorkflowStubTest extends TestCase
                     return $parentWorkflow === $parentStoredWorkflow
                         && $index === 0
                         && $options instanceof WorkflowOptions
-                        && $options->connection === 'sync'
-                        && $options->queue === 'parent-queue';
+                        && $options->connection === null
+                        && $options->queue === null
+                        && $options->overlapReleaseAfter === 7;
                 }
             );
 

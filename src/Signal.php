@@ -46,7 +46,7 @@ class Signal implements ShouldBeEncrypted, ShouldQueue
             new WithoutOverlappingMiddleware(
                 $this->storedWorkflow->id,
                 WithoutOverlappingMiddleware::WORKFLOW,
-                0,
+                $this->storedWorkflow->workflowOptions()->overlapReleaseAfter,
                 15
             ),
         ];

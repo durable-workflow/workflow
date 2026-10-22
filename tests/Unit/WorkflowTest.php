@@ -486,8 +486,7 @@ final class WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([
                 'arguments' => [0, 3],
                 'options' => [
-                    'connection' => 'sync',
-                    'queue' => 'default',
+                    'overlapReleaseAfter' => 7,
                 ],
             ]),
             'status' => WorkflowPendingStatus::class,
@@ -508,8 +507,9 @@ final class WorkflowTest extends TestCase
             ->first();
 
         $this->assertNotNull($continuedWorkflow);
-        $this->assertSame('sync', $continuedWorkflow->workflowOptions()->connection);
-        $this->assertSame('default', $continuedWorkflow->workflowOptions()->queue);
+        $this->assertNull($continuedWorkflow->workflowOptions()->connection);
+        $this->assertNull($continuedWorkflow->workflowOptions()->queue);
+        $this->assertSame(7, $continuedWorkflow->workflowOptions()->overlapReleaseAfter);
     }
 
     public function testRedeliveredJobResumesFromRunningState(): void
