@@ -154,6 +154,12 @@ final class ActivityAttemptSnapshots
             HistoryEventType::ActivityTimedOut,
             HistoryEventType::ActivityCancelled,
         ], true);
+        $leaseFailureReason = in_array($event->event_type, [
+            HistoryEventType::ActivityRetryScheduled,
+            HistoryEventType::ActivityFailed,
+        ], true) && in_array($payload['failure_reason'] ?? null, ['lease_expired', 'worker_deregistered'], true)
+            ? $payload['failure_reason']
+            : null;
 
         $snapshot = array_filter([
             'id' => $attemptId,
@@ -168,8 +174,9 @@ final class ActivityAttemptSnapshots
                 ?? self::intValue($payload['retry_after_attempt'] ?? null)
                 ?? self::intValue($activity['attempt_count'] ?? null)
                 ?? self::intValue($task['attempt_count'] ?? null),
-            'status' => self::statusForEvent($event->event_type)
-                ?? self::stringValue($attempt['status'] ?? null),
+            'status' => $leaseFailureReason !== null
+                ? ActivityAttemptStatus::Expired->value
+                : (self::statusForEvent($event->event_type) ?? self::stringValue($attempt['status'] ?? null)),
             'lease_owner' => self::stringValue($attempt['lease_owner'] ?? null)
                 ?? self::stringValue($task['lease_owner'] ?? null),
             'started_at' => self::timestamp($attempt['started_at'] ?? null)
@@ -189,6 +196,7 @@ final class ActivityAttemptSnapshots
 
         if ($terminalEvent) {
             $snapshot['lease_expires_at'] = null;
+            $snapshot['failure_reason'] = $leaseFailureReason;
         }
 
         return $snapshot;
