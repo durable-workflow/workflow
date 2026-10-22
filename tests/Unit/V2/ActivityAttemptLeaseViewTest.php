@@ -107,7 +107,23 @@ final class ActivityAttemptLeaseViewTest extends TestCase
         self::assertCount(0, $run->activityExecutions[0]->attempts);
     }
 
-    private function createRun(HistoryEventType $eventType, ?string $reason): WorkflowRun
+    public function testLaterCancellationKeepsTheEarlierAttemptLeaseLoss(): void
+    {
+        $run = $this->createRun(HistoryEventType::ActivityRetryScheduled, 'lease_expired', cancelled: true);
+        $before = $this->attributes($run);
+        $row = RunActivityView::activitiesForRun($run, decodePayloads: false)[0];
+
+        self::assertSame('cancelled', $row['status']);
+        self::assertSame('expired', $row['attempts'][0]['status']);
+        self::assertSame('lease_expired', $row['attempts'][0]['stop_reason']);
+        self::assertSame('lease_expired', $row['attempts'][0]['failure_reason']);
+        self::assertFalse($row['attempts'][0]['can_continue']);
+        self::assertSame('cancelled', $row['attempts'][1]['status']);
+        self::assertSame('attempt_cancelled', $row['attempts'][1]['stop_reason']);
+        self::assertSame($before, $this->attributes($run));
+    }
+
+    private function createRun(HistoryEventType $eventType, ?string $reason, bool $cancelled = false): WorkflowRun
     {
         $original = new ActivityAttempt([
             'id' => 'original-attempt',
@@ -124,11 +140,11 @@ final class ActivityAttemptLeaseViewTest extends TestCase
             'activity_execution_id' => 'activity',
             'workflow_task_id' => 'replacement-task',
             'attempt_number' => 2,
-            'status' => 'completed',
+            'status' => $cancelled ? 'cancelled' : 'completed',
         ]);
         $execution = new ActivityExecution([
             'id' => 'activity',
-            'status' => 'completed',
+            'status' => $cancelled ? 'cancelled' : 'completed',
             'current_attempt_id' => 'replacement-attempt',
             'attempt_count' => 2,
         ]);
@@ -156,7 +172,7 @@ final class ActivityAttemptLeaseViewTest extends TestCase
         ]);
         $completed = new WorkflowHistoryEvent([
             'sequence' => 2,
-            'event_type' => HistoryEventType::ActivityCompleted,
+            'event_type' => $cancelled ? HistoryEventType::ActivityCancelled : HistoryEventType::ActivityCompleted,
             'workflow_task_id' => 'replacement-task',
             'recorded_at' => '2026-10-22 06:15:00.123456',
             'payload' => [
@@ -165,7 +181,7 @@ final class ActivityAttemptLeaseViewTest extends TestCase
                 'attempt_number' => 2,
                 'activity' => [
                     'id' => 'activity',
-                    'status' => 'completed',
+                    'status' => $cancelled ? 'cancelled' : 'completed',
                     'attempt_count' => 2,
                 ],
             ],

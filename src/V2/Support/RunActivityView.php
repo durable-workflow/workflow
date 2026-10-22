@@ -473,12 +473,13 @@ final class RunActivityView
             return 'attempt_cancelled';
         }
 
-        if ($execution?->status === ActivityStatus::Cancelled) {
-            return 'activity_cancelled';
+        if ($status === ActivityAttemptStatus::Expired->value) {
+            return self::stringValue($attempt['failure_reason'] ?? null)
+                ?? ($execution?->status === ActivityStatus::Cancelled ? 'activity_cancelled' : 'attempt_expired');
         }
 
-        if ($status === ActivityAttemptStatus::Expired->value) {
-            return self::stringValue($attempt['failure_reason'] ?? null) ?? 'attempt_expired';
+        if ($execution?->status === ActivityStatus::Cancelled) {
+            return 'activity_cancelled';
         }
 
         if (in_array($status, [
