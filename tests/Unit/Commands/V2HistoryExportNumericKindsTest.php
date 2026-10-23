@@ -23,30 +23,6 @@ use Workflow\V2\WorkflowStub;
 
 final class V2HistoryExportNumericKindsTest extends TestCase
 {
-    protected function getPackageProviders($app): array
-    {
-        return [WorkflowServiceProvider::class];
-    }
-
-    protected function defineEnvironment($app): void
-    {
-        $app['config']->set([
-            'database.default' => 'sqlite',
-            'database.connections.sqlite' => [
-                'driver' => 'sqlite',
-                'database' => ':memory:',
-                'prefix' => '',
-                'foreign_key_constraints' => true,
-            ],
-            'cache.default' => 'array',
-            'queue.default' => 'redis',
-            'workflows.v1.enabled' => false,
-            'workflows.serializer' => 'avro',
-            'workflows.v2.compatibility.current' => null,
-            'workflows.v2.execution_continuation.enabled' => false,
-        ]);
-    }
-
     /**
      * @return iterable<string, array{bool, bool}>
      */
@@ -61,7 +37,9 @@ final class V2HistoryExportNumericKindsTest extends TestCase
     #[DataProvider('exportModes')]
     public function testSerializedExportsPreserveNumericKinds(bool $complete, bool $pretty): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertSuccessful();
+        $this->artisan('migrate', [
+            '--force' => true,
+        ])->assertSuccessful();
         Queue::fake();
         $memo = [
             'nested' => [
@@ -73,11 +51,7 @@ final class V2HistoryExportNumericKindsTest extends TestCase
             'whole' => 1.0,
         ];
         $workflow = WorkflowStub::make(NumericExportWorkflow::class);
-        $workflow->start(new StartOptions(
-            executionTimeoutSeconds: 30,
-            runTimeoutSeconds: 30,
-            memo: $memo,
-        ));
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 30, runTimeoutSeconds: 30, memo: $memo));
         $this->runReadyTask(TaskType::Workflow);
 
         if ($complete) {
@@ -133,10 +107,35 @@ final class V2HistoryExportNumericKindsTest extends TestCase
         $this->assertContains('integrity.checksum_mismatch', $rules);
     }
 
+    protected function getPackageProviders($app): array
+    {
+        return [WorkflowServiceProvider::class];
+    }
+
+    protected function defineEnvironment($app): void
+    {
+        $app['config']->set([
+            'database.default' => 'sqlite',
+            'database.connections.sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ],
+            'cache.default' => 'array',
+            'queue.default' => 'redis',
+            'workflows.v1.enabled' => false,
+            'workflows.serializer' => 'avro',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.execution_continuation.enabled' => false,
+        ]);
+    }
+
     private function runReadyTask(TaskType $type): void
     {
         $task = WorkflowTask::query()->where('status', TaskStatus::Ready->value)
-            ->where('task_type', $type->value)->sole();
+            ->where('task_type', $type->value)
+            ->sole();
         $job = $type === TaskType::Workflow ? new RunWorkflowTask($task->id) : new RunActivityTask($task->id);
         $this->app->call([$job, 'handle']);
     }
@@ -154,6 +153,9 @@ final class NumericExportActivity extends Activity
 {
     public function handle(): array
     {
-        return [1.0, -0.0, ['whole' => 2.0]];
+        return [
+            1.0, -0.0, [
+                'whole' => 2.0,
+            ]];
     }
 }
