@@ -1,17 +1,14 @@
 # Changelog
 
-## Unreleased
-
-- Bound derived timeline summaries by UTF-8 bytes so a large accepted activity
-  failure can be recorded without overflowing MySQL TEXT storage. Preserve the
-  full failure evidence and callback-authority recovery notice.
-
 ## 2.12.0 - 2026-10-23
 
 - Preserve UTC instants and microseconds in datetime search attributes and
   embedded visibility predicates, including values with non-UTC offsets.
 - Add `workflow:v2:repair-search-datetimes` to preview or explicitly repair
   selected datetime projections from matching retained, typed history.
+- Bound derived timeline summaries by UTF-8 bytes so a large accepted activity
+  failure can be recorded without overflowing MySQL TEXT storage. Preserve the
+  full failure evidence and callback-authority recovery notice.
 
 ## 2.11.4 - 2026-10-23
 
