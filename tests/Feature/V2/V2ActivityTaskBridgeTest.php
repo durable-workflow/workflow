@@ -647,6 +647,81 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertCount(0, $results);
     }
 
+    /**
+     * @return array<string, array{0: string|null, 1: string}>
+     */
+    public static function unpinnedActivityBuilds(): array
+    {
+        return [
+            'null pin, first build' => [null, 'build-a'],
+            'null pin, second build' => [null, 'build-b'],
+            'empty pin, first build' => ['', 'build-a'],
+            'empty pin, second build' => ['', 'build-b'],
+        ];
+    }
+
+    #[DataProvider('unpinnedActivityBuilds')]
+    public function testVersionedWorkerCanPollAndClaimAnUnpinnedActivity(?string $compatibility, string $build): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask([
+            'compatibility' => $compatibility,
+        ]);
+        $run->forceFill([
+            'compatibility' => null,
+        ])->save();
+        config()->set('workflows.v2.compatibility.current', $build);
+        config()->set('workflows.v2.compatibility.supported', [$build]);
+
+        $results = $this->bridge->poll('redis', 'default', 1, $build);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($task->id, $results[0]['task_id']);
+        $this->assertSame($run->id, $results[0]['workflow_run_id']);
+        $this->assertSame($execution->id, $results[0]['activity_execution_id']);
+        $claim = $this->bridge->claimStatus($results[0]['task_id'], $build . '-worker');
+        $this->assertTrue($claim['claimed']);
+        $this->assertSame($task->id, $claim['task_id']);
+        $this->assertSame($execution->id, $claim['activity_execution_id']);
+        $this->assertSame(1, $claim['attempt_number']);
+        $this->assertSame($build . '-worker', $claim['lease_owner']);
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertNull($run->fresh()->compatibility);
+        $this->assertSame($compatibility, $task->fresh()->compatibility);
+    }
+
+    public function testVersionedActivityPollPreservesItsScopeAndBuildFence(): void
+    {
+        $scope = [
+            'namespace' => 'tenant-main',
+            'queue' => 'work',
+        ];
+        [, , $unpinned] = $this->createActivityTask($scope);
+        [, , $pinned] = $this->createActivityTask(array_merge($scope, [
+            'compatibility' => 'build-a',
+        ]));
+        foreach ([
+            ['compatibility' => 'build-b'],
+            ['namespace' => 'tenant-other'],
+            ['queue' => 'other'],
+            ['connection' => 'other'],
+            ['task_type' => TaskType::Workflow->value],
+            ['status' => TaskStatus::Leased->value],
+            ['available_at' => now()->addMinutes(5)],
+        ] as $excluded) {
+            $this->createActivityTask(array_merge($scope, $excluded));
+        }
+        [, $otherType] = $this->createActivityTask($scope);
+        $otherType->forceFill([
+            'activity_type' => 'other-activity',
+        ])->save();
+
+        $results = $this->bridge->poll('redis', 'work', 20, 'build-a', 'tenant-main', ['test-greeting-activity']);
+
+        $this->assertEqualsCanonicalizing([$unpinned->id, $pinned->id], array_column($results, 'task_id'));
+        $this->assertSame(0, $unpinned->fresh()->attempt_count);
+        $this->assertSame(0, $pinned->fresh()->attempt_count);
+    }
+
     public function testPollWithNullFiltersReturnsAllReadyTasks(): void
     {
         $this->createActivityTask();
