@@ -33,8 +33,32 @@ final class SearchAttributeValueFilterTest extends TestCase
         yield 'boolean' => [true, 'value_bool'];
         yield 'integer' => [42, 'value_int'];
         yield 'float' => [2.5, 'value_float'];
-        yield 'datetime' => [new DateTimeImmutable('2026-09-04T12:00:00Z'), 'value_datetime'];
         yield 'long string' => [str_repeat('x', 256), 'value_string'];
+    }
+
+    #[DataProvider('datetimeValues')]
+    public function testDatetimeBindingsPreserveUtcAndMicroseconds(string $input): void
+    {
+        $value = new DateTimeImmutable($input);
+        $query = $this->query('sqlite');
+        SearchAttributeValueFilter::apply($query, $value);
+
+        $this->assertStringContainsString('"value_datetime" = ?', $query->toSql());
+        $this->assertSame(
+            ['2026-10-08 10:34:56.123456'],
+            $query->getQuery()->getConnection()->prepareBindings($query->getBindings()),
+        );
+        $this->assertSame($input, $value->format('Y-m-d\TH:i:s.uP'));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function datetimeValues(): iterable
+    {
+        yield 'positive offset' => ['2026-10-08T12:34:56.123456+02:00'];
+        yield 'negative offset' => ['2026-10-08T06:34:56.123456-04:00'];
+        yield 'UTC control' => ['2026-10-08T10:34:56.123456+00:00'];
     }
 
     public function testShortStringsMatchKeywordsOrKeywordListMembersOnSqlite(): void

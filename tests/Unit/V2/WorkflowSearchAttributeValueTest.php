@@ -124,6 +124,52 @@ final class WorkflowSearchAttributeValueTest extends TestCase
         $this->assertSame('2026-09-04 13:00:00.654321', $nativeAttribute->getValue()?->format('Y-m-d H:i:s.u'));
     }
 
+    #[DataProvider('offsetDatetimes')]
+    public function testDatetimeStoragePreservesTheInstantWithoutMutatingInput(mixed $value): void
+    {
+        $before = $value instanceof \DateTimeInterface ? $value->format('Y-m-d\TH:i:s.uP') : $value;
+        $attribute = new WorkflowSearchAttribute();
+        $attribute->setTypedValue($value, WorkflowSearchAttribute::TYPE_DATETIME);
+
+        $this->assertSame('2026-10-08 10:34:56.123456', $attribute->getAttributes()['value_datetime']);
+        $this->assertSame('2026-10-08T10:34:56.123456Z', $attribute->getValue()?->toISOString());
+        $this->assertSame(
+            $before,
+            $value instanceof \DateTimeInterface ? $value->format('Y-m-d\TH:i:s.uP') : $value,
+        );
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function offsetDatetimes(): iterable
+    {
+        yield 'positive offset text' => ['2026-10-08T12:34:56.123456+02:00'];
+        yield 'negative offset text' => ['2026-10-08T06:34:56.123456-04:00'];
+        yield 'mutable Carbon' => [Carbon::parse('2026-10-08T12:34:56.123456+02:00')];
+        yield 'immutable Carbon' => [\Carbon\CarbonImmutable::parse('2026-10-08T06:34:56.123456-04:00')];
+        yield 'mutable native datetime' => [new \DateTime('2026-10-08T12:34:56.123456+02:00')];
+        yield 'immutable native datetime' => [new DateTimeImmutable('2026-10-08T06:34:56.123456-04:00')];
+        yield 'UTC control' => ['2026-10-08T10:34:56.123456Z'];
+    }
+
+    public function testStoredUtcDatetimeDoesNotAdoptTheApplicationTimezone(): void
+    {
+        $previous = date_default_timezone_get();
+        try {
+            date_default_timezone_set('America/New_York');
+            $attribute = new WorkflowSearchAttribute();
+            $attribute->setRawAttributes([
+                'type' => WorkflowSearchAttribute::TYPE_DATETIME,
+                'value_datetime' => '2026-10-08 10:34:56.123456',
+            ]);
+
+            $this->assertSame('2026-10-08T10:34:56.123456Z', $attribute->getValue()?->toISOString());
+        } finally {
+            date_default_timezone_set($previous);
+        }
+    }
+
     public function testItRejectsAnInvalidDeclaredType(): void
     {
         $this->expectException(InvalidArgumentException::class);
