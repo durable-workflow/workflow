@@ -77,6 +77,8 @@ final class V2SearchAttributeTest extends TestCase
     {
         yield 'positive offset' => ['2026-10-08T12:34:56.123456+02:00'];
         yield 'negative offset' => ['2026-10-08T06:34:56.123456-04:00'];
+        yield 'next local day' => ['2026-10-09T00:34:56.123456+14:00'];
+        yield 'previous local day' => ['2026-10-07T22:34:56.123456-12:00'];
         yield 'UTC control' => ['2026-10-08T10:34:56.123456Z'];
     }
 
