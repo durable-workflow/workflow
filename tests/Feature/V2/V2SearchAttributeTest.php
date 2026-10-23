@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DateTimeImmutable;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestSearchAttributeWorkflow;
 use Tests\TestCase;
@@ -11,11 +13,69 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Support\SearchAttributeUpsertService;
+use Workflow\V2\Support\SearchAttributeValueFilter;
+use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VisibilityFilters;
 use Workflow\V2\WorkflowStub;
 
 final class V2SearchAttributeTest extends TestCase
 {
+    #[DataProvider('datetimeInstants')]
+    public function testDatetimeUpsertsPreserveTheInstantThroughStorageAndFiltering(string $value): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+        $workflow = WorkflowStub::make(TestSearchAttributeWorkflow::class, 'sa-datetime');
+        $workflow->start('Taylor');
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $this->app->make(SearchAttributeUpsertService::class)->upsert(
+            $run,
+            new UpsertSearchAttributesCall(['happened_at' => $value]),
+            0,
+            attributeTypes: ['happened_at' => WorkflowSearchAttribute::TYPE_DATETIME],
+        );
+
+        $attribute = WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('key', 'happened_at')
+            ->firstOrFail();
+        $this->assertSame('2026-10-08 10:34:56.123456', $attribute->getRawOriginal('value_datetime'));
+
+        $previous = date_default_timezone_get();
+
+        try {
+            date_default_timezone_set('America/New_York');
+            $this->assertSame('2026-10-08T10:34:56.123456Z', $attribute->fresh()?->getValue()?->toISOString());
+        } finally {
+            date_default_timezone_set($previous);
+        }
+
+        $query = static fn () => WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('key', 'happened_at');
+        $this->assertSame(1, SearchAttributeValueFilter::apply(
+            $query(),
+            new DateTimeImmutable('2026-10-08T10:34:56.123456Z'),
+        )->count());
+        $this->assertSame(0, SearchAttributeValueFilter::apply(
+            $query(),
+            new DateTimeImmutable('2026-10-08T10:34:56.123455Z'),
+        )->count());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function datetimeInstants(): iterable
+    {
+        yield 'positive offset' => ['2026-10-08T12:34:56.123456+02:00'];
+        yield 'negative offset' => ['2026-10-08T06:34:56.123456-04:00'];
+        yield 'UTC control' => ['2026-10-08T10:34:56.123456Z'];
+    }
+
     public function testWorkflowCanUpsertSearchAttributes(): void
     {
         WorkflowStub::fake();
