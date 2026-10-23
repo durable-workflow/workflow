@@ -10,8 +10,10 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Throwable;
+use Workflow\V2\Exceptions\ActivityEntryArgumentsMismatchException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityEntryArguments;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
@@ -122,17 +124,22 @@ final class RunActivityTask implements ShouldQueue
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = RuntimeObjectFactory::activity($activityClass, $execution, $execution->run, $this->taskId);
         $entryMethod = EntryMethod::forActivity($activity);
-        $arguments = $activity->resolveMethodDependencies($execution->activityArguments(), $entryMethod);
         $activityArguments = $execution->activityArguments();
 
         $result = null;
         $throwable = null;
+        try {
+            $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
+        } catch (ActivityEntryArgumentsMismatchException $error) {
+            $arguments = [];
+            $throwable = $error;
+        }
 
         if (WorkflowStub::faked()) {
             WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
         }
 
-        if (WorkflowStub::hasMock($execution->activity_class)) {
+        if ($throwable === null && WorkflowStub::hasMock($execution->activity_class)) {
             $mocked = WorkflowStub::mockedResult(
                 $execution->activity_class,
                 new ActivityFakeContext(
@@ -147,7 +154,7 @@ final class RunActivityTask implements ShouldQueue
 
             $result = $mocked['result'];
             $throwable = $mocked['throwable'];
-        } else {
+        } elseif ($throwable === null) {
             try {
                 $result = $activity->{$entryMethod->getName()}(...$arguments);
             } catch (Throwable $error) {

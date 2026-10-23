@@ -26,29 +26,6 @@ final class V2ActivityEntryArgumentsTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function getPackageProviders($app): array
-    {
-        return [WorkflowServiceProvider::class];
-    }
-
-    protected function defineEnvironment($app): void
-    {
-        $driver = getenv('DB_CONNECTION') ?: 'sqlite';
-        $app['config']->set('database.default', $driver);
-        if ($driver === 'sqlite') {
-            $app['config']->set('database.connections.sqlite.database', ':memory:');
-        }
-        $app['config']->set([
-            'app.key' => 'base64:'.base64_encode(str_repeat('a', 32)),
-            'cache.default' => 'array',
-            'queue.default' => 'redis',
-            'queue.connections.redis.driver' => 'redis',
-            'workflows.v1.enabled' => false,
-            'workflows.serializer' => 'avro',
-            'workflows.v2.execution_continuation.enabled' => false,
-        ]);
-    }
-
     protected function setUp(): void
     {
         parent::setUp();
@@ -133,6 +110,29 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         yield 'scalar without injection' => [ActivityEntryScalar::class, [7], 7];
     }
 
+    protected function getPackageProviders($app): array
+    {
+        return [WorkflowServiceProvider::class];
+    }
+
+    protected function defineEnvironment($app): void
+    {
+        $driver = getenv('DB_CONNECTION') ?: 'sqlite';
+        $app['config']->set('database.default', $driver);
+        if ($driver === 'sqlite') {
+            $app['config']->set('database.connections.sqlite.database', ':memory:');
+        }
+        $app['config']->set([
+            'app.key' => 'base64:' . base64_encode(str_repeat('a', 32)),
+            'cache.default' => 'array',
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+            'workflows.v1.enabled' => false,
+            'workflows.serializer' => 'avro',
+            'workflows.v2.execution_continuation.enabled' => false,
+        ]);
+    }
+
     private function scheduled(string $activity, array $arguments): array
     {
         ActivityEntryWorkflow::$activity = $activity;
@@ -173,7 +173,10 @@ class ActivityEntryWorkflow extends Workflow
 
 class ActivityEntryData
 {
-    public function __construct(public int $amount = 0) {}
+    public function __construct(
+        public int $amount = 0
+    ) {
+    }
 }
 
 class ActivityEntryDto extends Activity
@@ -206,7 +209,9 @@ class ActivityEntryScalar extends Activity
     }
 }
 
-class ActivityEntryService {}
+class ActivityEntryService
+{
+}
 
 class ActivityEntryInjected extends Activity
 {
