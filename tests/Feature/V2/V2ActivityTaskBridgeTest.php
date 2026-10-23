@@ -29,6 +29,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityRecovery;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
@@ -39,6 +40,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\TaskRepair;
 
 final class V2ActivityTaskBridgeTest extends TestCase
@@ -1213,6 +1215,60 @@ final class V2ActivityTaskBridgeTest extends TestCase
             ->firstOrFail();
 
         $this->assertExternalFailurePayloadIsPublic($failed, 'External failure');
+    }
+
+    #[DataProvider('largeFailureMessages')]
+    public function testLargeFailureDeliveryPreservesAuthoritativePayloadAndBoundsOnlyTimeline(string $message): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claim($task->id, 'worker-large-failure');
+        $this->assertNotNull($claim);
+
+        $result = $this->bridge->fail($claim['activity_attempt_id'], [
+            'message' => $message,
+            'type' => 'OriginalFailureType',
+            'non_retryable' => true,
+        ]);
+
+        $this->assertTrue($result['recorded']);
+        $this->assertIsString($result['next_task_id']);
+        $failed = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+        $this->assertExternalFailurePayloadIsPublic($failed, $message);
+        $this->assertSame($message, $failed->payload['message']);
+        $this->assertSame('OriginalFailureType', $failed->payload['exception_type']);
+        $this->assertTrue($failed->payload['non_retryable']);
+        $this->assertSame(ActivityStatus::Failed, $execution->fresh()->status);
+        $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
+        $this->assertDatabaseHas((new WorkflowTask())->getTable(), [
+            'id' => $result['next_task_id'],
+            'workflow_run_id' => $run->id,
+            'status' => TaskStatus::Ready->value,
+        ]);
+
+        $entry = WorkflowTimelineEntry::query()->where('history_event_id', $failed->id)->firstOrFail();
+        $this->assertLessThanOrEqual(65_535, strlen($entry->summary));
+        $this->assertTrue(mb_check_encoding($entry->summary, 'UTF-8'));
+        $this->assertStringContainsString('[truncated]', $entry->summary);
+        $this->assertSame($message, $entry->toTimelinePayload()['failure']['message']);
+
+        $originalPayload = $failed->getRawOriginal('payload');
+        $originalSummary = $entry->summary;
+        RunTimelineProjector::project($run->fresh());
+        $this->assertSame($originalPayload, $failed->fresh()->getRawOriginal('payload'));
+        $this->assertSame($originalSummary, $entry->fresh()->summary);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function largeFailureMessages(): iterable
+    {
+        yield 'ASCII at TEXT ceiling' => [str_repeat('x', 65_535)];
+        yield 'UTF-8 at TEXT ceiling' => [str_repeat('界', 21_845)];
+        yield 'mixed multibyte over ceiling' => [str_repeat('界🦀', 10_000)];
     }
 
     public function testCompleteAfterCancelledRunClosesAttemptAndReportsIgnoredOutcome(): void
