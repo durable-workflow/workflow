@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.12.0 - 2026-10-23
 
 - Preserve UTC instants and microseconds in datetime search attributes and
   embedded visibility predicates, including values with non-UTC offsets.

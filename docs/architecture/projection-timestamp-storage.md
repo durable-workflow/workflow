@@ -37,7 +37,8 @@ offset in the `SearchAttributesUpserted` history event. Upgrading the writer
 prevents new errors but does not identify or rewrite those existing rows.
 Never infer an original offset from a stored wall time.
 
-The unreleased `workflow:v2:repair-search-datetimes` command derives a repair
+The `workflow:v2:repair-search-datetimes` command, added in Workflow 2.12.0,
+derives a repair
 from the latest retained, explicitly typed upsert for each selected key. Back
 up the database and upgrade every writer before inspecting affected runs:
 
