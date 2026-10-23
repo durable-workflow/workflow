@@ -46,7 +46,9 @@ final class SearchAttributeValueFilterTest extends TestCase
         $this->assertStringContainsString('"value_datetime" = ?', $query->toSql());
         $this->assertSame(
             ['2026-10-08 10:34:56.123456'],
-            $query->getQuery()->getConnection()->prepareBindings($query->getBindings()),
+            $query->getQuery()
+                ->getConnection()
+                ->prepareBindings($query->getBindings()),
         );
         $this->assertSame($input, $value->format('Y-m-d\TH:i:s.uP'));
     }
