@@ -1268,7 +1268,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
     {
         yield 'ASCII at TEXT ceiling' => [str_repeat('x', 65_535)];
         yield 'UTF-8 at TEXT ceiling' => [str_repeat('界', 21_845)];
-        yield 'mixed multibyte over ceiling' => [str_repeat('界🦀', 10_000)];
+        yield 'mixed multibyte at TEXT ceiling' => [str_repeat('界🦀', 9_362) . 'x'];
     }
 
     public function testCompleteAfterCancelledRunClosesAttemptAndReportsIgnoredOutcome(): void

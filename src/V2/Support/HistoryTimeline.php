@@ -17,6 +17,10 @@ use Workflow\V2\Models\WorkflowTimer;
 
 final class HistoryTimeline
 {
+    private const MAX_SUMMARY_BYTES = 65_535;
+
+    private const SUMMARY_TRUNCATION_MARKER = ' [truncated]';
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -717,9 +721,27 @@ final class HistoryTimeline
             ),
         };
 
-        return ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
-            ? $summary . ' The previous attempt lost authority. Callback stop is unknown.'
-            : $summary;
+        $recoveryNotice = ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
+            ? ' The previous attempt lost authority. Callback stop is unknown.'
+            : '';
+
+        return self::boundedSummary($summary, $recoveryNotice);
+    }
+
+    private static function boundedSummary(string $summary, string $recoveryNotice): string
+    {
+        if (strlen($summary) + strlen($recoveryNotice) <= self::MAX_SUMMARY_BYTES) {
+            return $summary . $recoveryNotice;
+        }
+
+        // MySQL TEXT counts bytes. Bound only this derived display value,
+        // preserving full failure evidence and the callback-authority notice.
+        $prefixBytes = self::MAX_SUMMARY_BYTES
+            - strlen(self::SUMMARY_TRUNCATION_MARKER)
+            - strlen($recoveryNotice);
+
+        return mb_strcut($summary, 0, $prefixBytes, 'UTF-8')
+            . self::SUMMARY_TRUNCATION_MARKER . $recoveryNotice;
     }
 
     /**
