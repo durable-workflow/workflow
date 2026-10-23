@@ -31,6 +31,7 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         parent::setUp();
         Queue::fake();
         ActivityEntryDto::$entered = false;
+        ActivityEntryWorkflow::$local = false;
     }
 
     public function testInjectedDtoCannotReplaceTheRecordedBusinessArgument(): void
@@ -110,6 +111,58 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         yield 'scalar without injection' => [ActivityEntryScalar::class, [7], 7];
     }
 
+    public function testLocalActivityCannotDiscardRecordedInputDuringDependencyInjection(): void
+    {
+        ActivityEntryWorkflow::$local = true;
+        ActivityEntryWorkflow::$activity = ActivityEntryDto::class;
+        ActivityEntryWorkflow::$arguments = [7];
+        $stub = WorkflowStub::make(ActivityEntryWorkflow::class);
+        $stub->start();
+        $this->runWorkflowTask();
+
+        self::assertFalse(ActivityEntryDto::$entered, 'The incompatible local activity body ran.');
+        $execution = ActivityExecution::query()->sole();
+        self::assertSame([7], $execution->activityArguments());
+        self::assertSame(ActivityStatus::Failed, $execution->status);
+        self::assertSame(1, $execution->attempt_count);
+        $event = $this->history($stub->runId(), 'ActivityFailed');
+        self::assertSame(ActivityEntryArgumentsMismatchException::class, $event->payload['exception_class']);
+        self::assertSame(0, WorkflowTask::query()->where('task_type', TaskType::Activity->value)->count());
+        self::assertTrue($stub->refresh()->failed());
+    }
+
+    #[DataProvider('executionModes')]
+    public function testDependencyResolutionFailureHasAnActivityOutcome(bool $local): void
+    {
+        ActivityEntryWorkflow::$local = $local;
+        ActivityEntryWorkflow::$activity = ActivityEntryRequiredDto::class;
+        ActivityEntryWorkflow::$arguments = [7];
+        $stub = WorkflowStub::make(ActivityEntryWorkflow::class);
+        $stub->start();
+        $this->runWorkflowTask();
+        if (! $local) {
+            $task = WorkflowTask::query()->where('task_type', TaskType::Activity->value)->sole();
+            $this->app->call([new RunActivityTask($task->id), 'handle']);
+            $this->runWorkflowTask();
+        }
+
+        self::assertFalse(ActivityEntryDto::$entered);
+        $execution = ActivityExecution::query()->sole();
+        self::assertSame(ActivityStatus::Failed, $execution->status);
+        self::assertSame([7], $execution->activityArguments());
+        self::assertSame(1, $execution->attempt_count);
+        $event = $this->history($stub->runId(), 'ActivityFailed');
+        self::assertSame(\Illuminate\Contracts\Container\BindingResolutionException::class, $event->payload['exception_class']);
+        self::assertTrue($stub->refresh()->failed());
+        self::assertSame(0, WorkflowTask::query()->where('status', TaskStatus::Leased->value)->count());
+    }
+
+    public static function executionModes(): iterable
+    {
+        yield 'queued' => [false];
+        yield 'local' => [true];
+    }
+
     protected function getPackageProviders($app): array
     {
         return [WorkflowServiceProvider::class];
@@ -161,12 +214,18 @@ final class V2ActivityEntryArgumentsTest extends TestCase
 
 class ActivityEntryWorkflow extends Workflow
 {
+    public static bool $local = false;
+
     public static string $activity;
 
     public static array $arguments;
 
     public function handle(): mixed
     {
+        if (self::$local) {
+            return \Workflow\V2\localActivity(self::$activity, ...self::$arguments);
+        }
+
         return \Workflow\V2\activity(self::$activity, ...self::$arguments);
     }
 }
@@ -186,6 +245,23 @@ class ActivityEntryDto extends Activity
     public function handle(ActivityEntryData $data): int
     {
         self::$entered = true;
+
+        return $data->amount;
+    }
+}
+
+class ActivityEntryRequiredData
+{
+    public function __construct(public int $amount)
+    {
+    }
+}
+
+class ActivityEntryRequiredDto extends Activity
+{
+    public function handle(ActivityEntryRequiredData $data): int
+    {
+        ActivityEntryDto::$entered = true;
 
         return $data->amount;
     }
