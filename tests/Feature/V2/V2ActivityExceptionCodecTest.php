@@ -36,6 +36,45 @@ use Workflow\V2\Support\FailureSnapshots;
  */
 final class V2ActivityExceptionCodecTest extends TestCase
 {
+    public function testLargeTerminalFailureKeepsFullCanonicalMessageAndHistory(): void
+    {
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'avro',
+            maxAttempts: 1,
+            instanceId: 'large-canonical-failure',
+        );
+        $message = str_repeat("\0界🦀", 10_000);
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: null,
+            throwable: new RuntimeException($message, 9),
+            maxAttempts: 1,
+            backoffSeconds: 0,
+        );
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $this->assertSame($message, $failure->message);
+        $this->assertSame($message, $failure->getRawOriginal('message_full'));
+        $this->assertLessThanOrEqual(65_535, strlen($failure->getRawOriginal('message')));
+        $this->assertArrayNotHasKey('message_full', $failure->toArray());
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+        $this->assertSame($message, $event->payload['message']);
+        $this->assertSame($failure->id, $event->payload['failure_id']);
+        $this->assertExceptionBytesDecodeAs(
+            bytes: $execution->exception,
+            runCodec: 'avro',
+            otherCodec: 'json',
+            expectedMessage: $message,
+        );
+    }
+
     public function testRetryPathStoresExceptionUnderAvroRunCodec(): void
     {
         // Package default differs from the run's pinned codec: this is the

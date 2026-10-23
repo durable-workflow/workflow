@@ -30,6 +30,9 @@ final class WorkflowFailureMessageStorageTest extends TestCase
         $this->assertTrue($failure->non_retryable);
     }
 
+    /**
+     * @return iterable<string, array{string}>
+     */
     public static function messages(): iterable
     {
         yield 'ASCII beyond TEXT' => [str_repeat('a', 70_000)];
