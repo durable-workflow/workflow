@@ -721,7 +721,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
                 'status' => TaskStatus::Leased->value,
             ],
             [
-                'available_at' => now()->addMinutes(5),
+                'available_at' => now()
+                    ->addMinutes(5),
             ],
         ] as $excluded) {
             $this->createActivityTask(array_merge($scope, $excluded));
