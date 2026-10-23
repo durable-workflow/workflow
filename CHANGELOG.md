@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.4 - 2026-10-23
+
+- Preserve whole-valued floats and signed zero in CLI history-export JSON,
+  including nested memo projections. Untouched compact and pretty exports
+  retain their original canonical checksum and pass integrity verification.
+
 ## 2.11.3 - 2026-10-23
 
 - Refuse dependency injection that would silently discard recorded activity
