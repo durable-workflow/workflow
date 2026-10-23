@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Activity;
 use Workflow\V2\Enums\ActivityStatus;
@@ -32,6 +33,33 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         Queue::fake();
         ActivityEntryDto::$entered = false;
         ActivityEntryWorkflow::$local = false;
+    }
+
+    public function testEntrySafetyChecksDoNotClaimAnUnrelatedRunsReadyTask(): void
+    {
+        $foreign = WorkflowStub::make(TestGreetingWorkflow::class, 'unrelated-entry-control');
+        $foreign->start('Other');
+        $foreignTask = WorkflowTask::query()->where('workflow_run_id', $foreign->runId())->sole();
+        $foreignBefore = $foreignTask->getAttributes();
+        $foreignHistoryCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $foreign->runId())->count();
+
+        [$stub, $execution, $task, $arguments] = $this->scheduled(ActivityEntryDto::class, [7]);
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
+
+        self::assertNotSame($foreign->runId(), $stub->runId());
+        self::assertFalse(ActivityEntryDto::$entered);
+        self::assertSame($arguments, $execution->fresh()->getRawOriginal('arguments'));
+        self::assertSame(ActivityStatus::Failed, $execution->fresh()->status);
+        self::assertSame(
+            ActivityEntryArgumentsMismatchException::class,
+            $this->history($stub->runId(), 'ActivityFailed')->payload['exception_class'],
+        );
+        $this->runWorkflowTask();
+        self::assertTrue($stub->refresh()->failed());
+        self::assertSame($foreignBefore, $foreignTask->fresh()->getAttributes());
+        self::assertSame($foreignHistoryCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $foreign->runId())->count());
     }
 
     public function testInjectedDtoCannotReplaceTheRecordedBusinessArgument(): void
