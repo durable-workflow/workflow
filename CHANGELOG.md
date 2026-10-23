@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.2 - 2026-10-23
+
+- Deliver unpinned activity tasks to eligible versioned workers during rolling
+  deployments. Preserve build pins, namespace and queue isolation, activity-type
+  routing, readiness and availability filters.
+
 ## 2.11.1 - 2026-10-22
 
 - Preserve microsecond precision when selecting expired task leases, available
