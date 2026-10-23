@@ -73,7 +73,14 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         }
 
         if ($compatibility !== null) {
-            $query->where('compatibility', $compatibility);
+            // Rolling-deploy starts can be unpinned while multiple builds are
+            // active. They remain eligible for either build without widening
+            // the queue, namespace or activity-type predicates.
+            $query->where(static function ($builder) use ($compatibility): void {
+                $builder->whereNull('compatibility')
+                    ->orWhere('compatibility', '')
+                    ->orWhere('compatibility', $compatibility);
+            });
         }
 
         if ($namespace !== null) {

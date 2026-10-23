@@ -669,8 +669,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $run->forceFill([
             'compatibility' => null,
         ])->save();
-        config()->set('workflows.v2.compatibility.current', $build);
-        config()->set('workflows.v2.compatibility.supported', [$build]);
+        config()
+            ->set('workflows.v2.compatibility.current', $build);
+        config()
+            ->set('workflows.v2.compatibility.supported', [$build]);
 
         $results = $this->bridge->poll('redis', 'default', 1, $build);
 
@@ -700,13 +702,27 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'compatibility' => 'build-a',
         ]));
         foreach ([
-            ['compatibility' => 'build-b'],
-            ['namespace' => 'tenant-other'],
-            ['queue' => 'other'],
-            ['connection' => 'other'],
-            ['task_type' => TaskType::Workflow->value],
-            ['status' => TaskStatus::Leased->value],
-            ['available_at' => now()->addMinutes(5)],
+            [
+                'compatibility' => 'build-b',
+            ],
+            [
+                'namespace' => 'tenant-other',
+            ],
+            [
+                'queue' => 'other',
+            ],
+            [
+                'connection' => 'other',
+            ],
+            [
+                'task_type' => TaskType::Workflow->value,
+            ],
+            [
+                'status' => TaskStatus::Leased->value,
+            ],
+            [
+                'available_at' => now()->addMinutes(5),
+            ],
         ] as $excluded) {
             $this->createActivityTask(array_merge($scope, $excluded));
         }
