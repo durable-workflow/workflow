@@ -10,7 +10,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Throwable;
-use Workflow\V2\Exceptions\ActivityEntryArgumentsMismatchException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityEntryArguments;
@@ -130,7 +129,7 @@ final class RunActivityTask implements ShouldQueue
         $throwable = null;
         try {
             $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
-        } catch (ActivityEntryArgumentsMismatchException $error) {
+        } catch (Throwable $error) {
             $arguments = [];
             $throwable = $error;
         }

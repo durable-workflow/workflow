@@ -152,7 +152,10 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         self::assertSame([7], $execution->activityArguments());
         self::assertSame(1, $execution->attempt_count);
         $event = $this->history($stub->runId(), 'ActivityFailed');
-        self::assertSame(\Illuminate\Contracts\Container\BindingResolutionException::class, $event->payload['exception_class']);
+        self::assertSame(
+            \Illuminate\Contracts\Container\BindingResolutionException::class,
+            $event->payload['exception_class']
+        );
         self::assertTrue($stub->refresh()->failed());
         self::assertSame(0, WorkflowTask::query()->where('status', TaskStatus::Leased->value)->count());
     }
@@ -252,8 +255,9 @@ class ActivityEntryDto extends Activity
 
 class ActivityEntryRequiredData
 {
-    public function __construct(public int $amount)
-    {
+    public function __construct(
+        public int $amount
+    ) {
     }
 }
 
