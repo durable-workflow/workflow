@@ -24,7 +24,9 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
     #[DataProvider('offsetDatetimes')]
     public function testPreviewApplyAndRepeatedApplyPreserveBusinessState(string $original): void
     {
-        $run = $this->legacyRun(['Offset' => $original]);
+        $run = $this->legacyRun([
+            'Offset' => $original,
+        ]);
         $business = $this->businessSnapshot($run);
         $before = $this->attributes($run);
 
@@ -35,17 +37,23 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
         $this->assertSame(0, $preview['repaired']);
         $this->assertSame($before, $this->attributes($run));
 
-        $this->assertSame(0, $this->command($run, ['--apply' => true]));
+        $this->assertSame(0, $this->command($run, [
+            '--apply' => true,
+        ]));
         $applied = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
         $this->assertSame(1, $applied['repaired']);
         $this->assertSame(
             '2026-10-08T10:34:56.123456Z',
-            $run->searchAttributes()->firstOrFail()->getValue()?->toISOString(),
+            $run->searchAttributes()
+                ->firstOrFail()
+                ->getValue()?->toISOString(),
         );
         $this->assertSame($business, $this->businessSnapshot($run));
 
         $repaired = $this->attributes($run);
-        $this->assertSame(0, $this->command($run, ['--apply' => true]));
+        $this->assertSame(0, $this->command($run, [
+            '--apply' => true,
+        ]));
         $repeat = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
         $this->assertSame(0, $repeat['repaired']);
         $this->assertSame(1, $repeat['already_correct']);
@@ -73,29 +81,46 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
         $before = $this->attributes($run);
         $business = $this->businessSnapshot($run);
 
-        $this->assertSame(1, $this->command($run, ['--apply' => true]));
+        $this->assertSame(1, $this->command($run, [
+            '--apply' => true,
+        ]));
         $this->assertSame($before, $this->attributes($run));
         $this->assertSame($business, $this->businessSnapshot($run));
 
-        $this->assertSame(0, $this->command($run, ['--apply' => true, '--key' => ['Recoverable']]));
-        $rows = $run->searchAttributes()->get()->keyBy('key');
+        $this->assertSame(0, $this->command($run, [
+            '--apply' => true,
+            '--key' => ['Recoverable'],
+        ]));
+        $rows = $run->searchAttributes()
+            ->get()
+            ->keyBy('key');
         $this->assertSame('2026-10-08 10:34:56.123456', $rows['Recoverable']->getRawOriginal('value_datetime'));
         $this->assertSame('2026-10-08 12:34:56.123456', $rows['Unknown']->getRawOriginal('value_datetime'));
     }
 
     public function testLaterCanonicalUpsertFencesAStaleProjection(): void
     {
-        $run = $this->legacyRun(['Offset' => '2026-10-08T12:34:56.123456+02:00']);
+        $run = $this->legacyRun([
+            'Offset' => '2026-10-08T12:34:56.123456+02:00',
+        ]);
         WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
             'sequence' => 8,
-            'attributes' => ['Offset' => '2026-10-09T10:00:00Z'],
-            'attribute_types' => ['Offset' => WorkflowSearchAttribute::TYPE_DATETIME],
-            'merged' => ['Offset' => '2026-10-09T10:00:00Z'],
+            'attributes' => [
+                'Offset' => '2026-10-09T10:00:00Z',
+            ],
+            'attribute_types' => [
+                'Offset' => WorkflowSearchAttribute::TYPE_DATETIME,
+            ],
+            'merged' => [
+                'Offset' => '2026-10-09T10:00:00Z',
+            ],
         ]);
         $before = $this->attributes($run);
         $business = $this->businessSnapshot($run);
 
-        $this->assertSame(1, $this->command($run, ['--apply' => true]));
+        $this->assertSame(1, $this->command($run, [
+            '--apply' => true,
+        ]));
         $this->assertSame($before, $this->attributes($run));
         $this->assertSame($business, $this->businessSnapshot($run));
     }
@@ -109,24 +134,37 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
         $before = $this->attributes($run);
         $business = $this->businessSnapshot($run);
         $this->mock(HistoryProjectionMaintenanceRole::class, static function (MockInterface $mock): void {
-            $mock->shouldReceive('projectRun')->once()->andThrow(new RuntimeException('Projection write failed'));
+            $mock->shouldReceive('projectRun')
+                ->once()
+                ->andThrow(new RuntimeException('Projection write failed'));
         });
 
-        $this->assertSame(1, $this->command($run, ['--apply' => true]));
+        $this->assertSame(1, $this->command($run, [
+            '--apply' => true,
+        ]));
         $this->assertSame($before, $this->attributes($run));
         $this->assertSame($business, $this->businessSnapshot($run));
     }
 
     public function testNamespaceAndPrunedHistoryRefusalsDoNotMutateRows(): void
     {
-        $run = $this->legacyRun(['Offset' => '2026-10-08T12:34:56.123456+02:00']);
+        $run = $this->legacyRun([
+            'Offset' => '2026-10-08T12:34:56.123456+02:00',
+        ]);
         $before = $this->attributes($run);
-        $this->assertSame(1, $this->command($run, ['--namespace' => 'other', '--apply' => true]));
+        $this->assertSame(1, $this->command($run, [
+            '--namespace' => 'other',
+            '--apply' => true,
+        ]));
         $this->assertSame($before, $this->attributes($run));
 
-        $run->forceFill(['details_pruned_at' => now()])->save();
+        $run->forceFill([
+            'details_pruned_at' => now(),
+        ])->save();
         $business = $this->businessSnapshot($run);
-        $this->assertSame(1, $this->command($run, ['--apply' => true]));
+        $this->assertSame(1, $this->command($run, [
+            '--apply' => true,
+        ]));
         $this->assertSame($before, $this->attributes($run));
         $this->assertSame($business, $this->businessSnapshot($run));
     }
@@ -152,9 +190,12 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
             $attribute->setTypedValue($original, WorkflowSearchAttribute::TYPE_DATETIME);
             $attribute->save();
             // Reproduce the original wall-clock SQL representation without altering history.
-            $attribute->getConnection()->table($attribute->getTable())
+            $attribute->getConnection()
+                ->table($attribute->getTable())
                 ->where('id', $attribute->id)
-                ->update(['value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u')]);
+                ->update([
+                    'value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u'),
+                ]);
         }
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
@@ -184,9 +225,13 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
      */
     private function attributes(WorkflowRun $run): array
     {
-        return $run->getConnection()->table('workflow_search_attributes')
-            ->where('workflow_run_id', $run->id)->orderBy('key')->get()
-            ->map(static fn (object $row): array => (array) $row)->all();
+        return $run->getConnection()
+            ->table('workflow_search_attributes')
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('key')
+            ->get()
+            ->map(static fn (object $row): array => (array) $row)
+            ->all();
     }
 
     /**
@@ -199,7 +244,10 @@ final class V2SearchAttributeDatetimeRepairTest extends TestCase
         foreach (['workflow_runs', 'workflow_tasks', 'workflow_history_events', 'workflow_commands'] as $table) {
             $snapshot[$table] = $run->getConnection()->table($table)
                 ->where($table === 'workflow_runs' ? 'id' : 'workflow_run_id', $run->id)
-                ->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
+                ->orderBy('id')
+                ->get()
+                ->map(static fn (object $row): array => (array) $row)
+                ->all();
         }
 
         return $snapshot;
