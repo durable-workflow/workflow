@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use DateTimeImmutable;
 use DateTimeZone;
 use DomainException;
+use Illuminate\Database\Eloquent\Collection;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Enums\HistoryEventType;
@@ -28,38 +29,9 @@ final class SearchAttributeDatetimeRepair
     {
         return $selectedRun->getConnection()
             ->transaction(function () use ($selectedRun, $apply, $keys): array {
-                $query = $selectedRun->newQuery()
-                    ->whereKey($selectedRun->id)
-                    ->where('namespace', $selectedRun->namespace);
-
-                if ($apply) {
-                    $query->lockForUpdate();
-                }
-
-                $run = $query->firstOrFail();
-
-                if ($run->details_pruned_at !== null) {
-                    throw new DomainException('Retained history is unavailable for this pruned run.');
-                }
-
-                $attributeQuery = $run->searchAttributes()
-                    ->where('type', WorkflowSearchAttribute::TYPE_DATETIME);
-
-                if ($keys !== []) {
-                    $attributeQuery->whereIn('key', $keys);
-                }
-
-                if ($apply) {
-                    $attributeQuery->lockForUpdate();
-                }
-
-                $attributes = $attributeQuery->orderBy('key')
-                    ->get();
+                $run = $this->selectedRun($selectedRun, $apply);
+                $attributes = $this->selectedAttributes($run, $keys, $apply);
                 $selectedKeys = array_map('strval', $attributes->pluck('key')->all());
-
-                if (array_diff($keys, $selectedKeys) !== []) {
-                    throw new DomainException('A selected key is not a retained datetime attribute on this run.');
-                }
 
                 $latest = $this->latestValues($run, $selectedKeys);
                 $plan = [];
@@ -91,27 +63,82 @@ final class SearchAttributeDatetimeRepair
                     return $report;
                 }
 
-                foreach ($plan as [$attribute, $canonical]) {
-                    $changed = $attribute->getConnection()
-                        ->table($attribute->getTable())
-                        ->where('id', $attribute->id)
-                        ->where('workflow_run_id', $run->id)
-                        ->where('type', WorkflowSearchAttribute::TYPE_DATETIME)
-                        ->where('upserted_at_sequence', $attribute->upserted_at_sequence)
-                        ->update([
-                            'value_datetime' => $canonical,
-                        ]);
-
-                    if ($changed !== 1) {
-                        throw new DomainException('The selected datetime projection changed before repair.');
-                    }
-                }
-
-                $this->projectionRole->projectRun($run);
+                $this->applyPlan($run, $plan);
                 $report['repaired'] = count($plan);
 
                 return $report;
             });
+    }
+
+    private function selectedRun(WorkflowRun $selectedRun, bool $lock): WorkflowRun
+    {
+        $query = $selectedRun->newQuery()
+            ->whereKey($selectedRun->id)
+            ->where('namespace', $selectedRun->namespace);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        $run = $query->firstOrFail();
+
+        if ($run->details_pruned_at !== null) {
+            throw new DomainException('Retained history is unavailable for this pruned run.');
+        }
+
+        return $run;
+    }
+
+    /**
+     * @param list<string> $keys
+     * @return Collection<int, WorkflowSearchAttribute>
+     */
+    private function selectedAttributes(WorkflowRun $run, array $keys, bool $lock): Collection
+    {
+        $query = $run->searchAttributes()
+            ->where('type', WorkflowSearchAttribute::TYPE_DATETIME);
+
+        if ($keys !== []) {
+            $query->whereIn('key', $keys);
+        }
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        $attributes = $query->orderBy('key')
+            ->get();
+        $selectedKeys = array_map('strval', $attributes->pluck('key')->all());
+
+        if (array_diff($keys, $selectedKeys) !== []) {
+            throw new DomainException('A selected key is not a retained datetime attribute on this run.');
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * @param list<array{WorkflowSearchAttribute, string}> $plan
+     */
+    private function applyPlan(WorkflowRun $run, array $plan): void
+    {
+        foreach ($plan as [$attribute, $canonical]) {
+            $changed = $attribute->getConnection()
+                ->table($attribute->getTable())
+                ->where('id', $attribute->id)
+                ->where('workflow_run_id', $run->id)
+                ->where('type', WorkflowSearchAttribute::TYPE_DATETIME)
+                ->where('upserted_at_sequence', $attribute->upserted_at_sequence)
+                ->update([
+                    'value_datetime' => $canonical,
+                ]);
+
+            if ($changed !== 1) {
+                throw new DomainException('The selected datetime projection changed before repair.');
+            }
+        }
+
+        $this->projectionRole->projectRun($run);
     }
 
     /**
@@ -210,30 +237,31 @@ final class SearchAttributeDatetimeRepair
             return new DateTimeImmutable('@' . $value);
         }
 
-        if (! is_string($value)) {
-            return null;
+        if (is_string($value) && $this->hasAbsoluteDateParts($value)) {
+            return new DateTimeImmutable($value);
         }
 
+        return null;
+    }
+
+    private function hasAbsoluteDateParts(string $value): bool
+    {
         $parsed = date_parse($value);
 
         if ($parsed['warning_count'] !== 0 || $parsed['error_count'] !== 0 || isset($parsed['relative'])) {
-            return null;
+            return false;
         }
 
         foreach (['year', 'month', 'day', 'hour', 'minute', 'second'] as $field) {
             if (! is_int($parsed[$field])) {
-                return null;
+                return false;
             }
         }
 
         $numericOffset = ($parsed['zone_type'] ?? null) === 1;
         $explicitUtc = in_array(strtoupper($parsed['tz_abbr'] ?? $parsed['tz_id'] ?? ''), ['UTC', 'GMT', 'Z'], true);
 
-        if (! $numericOffset && ! $explicitUtc) {
-            return null;
-        }
-
-        return new DateTimeImmutable($value);
+        return $numericOffset || $explicitUtc;
     }
 
     private function storedValue(WorkflowSearchAttribute $attribute): ?string
@@ -248,11 +276,8 @@ final class SearchAttributeDatetimeRepair
             $value = new DateTimeImmutable($raw, new DateTimeZone('UTC'));
             $errors = DateTimeImmutable::getLastErrors();
 
-            if ($errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0)) {
-                return null;
-            }
-
-            return $value->format('Y-m-d H:i:s.u');
+            return $errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0)
+                ? null : $value->format('Y-m-d H:i:s.u');
         } catch (Throwable) {
             return null;
         }

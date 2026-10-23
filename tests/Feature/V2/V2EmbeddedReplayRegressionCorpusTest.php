@@ -1040,11 +1040,19 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $attribute->setTypedValue($original, WorkflowSearchAttribute::TYPE_DATETIME);
         $attribute->save();
         $connection = $run->getConnection();
-        $connection->table('workflow_search_attributes')->where('id', $attribute->id)->update([
-            'value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u'),
-        ]);
-        $history = $run->historyEvents()->orderBy('sequence')->get()->toArray();
-        $tasks = $connection->table('workflow_tasks')->where('workflow_run_id', $run->id)->get()->all();
+        $connection->table('workflow_search_attributes')
+            ->where('id', $attribute->id)
+            ->update([
+                'value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u'),
+            ]);
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $tasks = $connection->table('workflow_tasks')
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->all();
         $options = [
             'run' => $run->id,
             '--namespace' => $run->namespace,
@@ -1059,12 +1067,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ...$options,
             '--apply' => true,
         ]));
-        $this->assertSame(
-            '2026-10-08T10:34:56.123456Z',
-            $attribute->fresh()->getValue()?->toISOString(),
-        );
+        $this->assertSame('2026-10-08T10:34:56.123456Z', $attribute->fresh() ->getValue()?->toISOString());
         $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
-        $tasksAfter = $connection->table('workflow_tasks')->where('workflow_run_id', $run->id)->get()->all();
+        $tasksAfter = $connection->table('workflow_tasks')
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->all();
         $this->assertEquals($tasks, $tasksAfter);
     }
 

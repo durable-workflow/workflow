@@ -26,6 +26,8 @@ final class V2RepairSearchDatetimesCommand extends Command
 
     public function handle(SearchAttributeDatetimeRepair $repair): int
     {
+        $status = self::SUCCESS;
+
         try {
             $model = ConfiguredV2Models::resolve('run_model', WorkflowRun::class);
             $query = $model::query()->whereKey((string) $this->argument('run'));
@@ -62,18 +64,18 @@ final class V2RepairSearchDatetimesCommand extends Command
                     $report['repaired'], $report['already_correct'],
                 ]]);
             }
-
-            return self::SUCCESS;
         } catch (ModelNotFoundException) {
-            return $this->failure('The selected run was not found in the requested namespace.', 'refused');
+            $status = $this->failure('The selected run was not found in the requested namespace.', 'refused');
         } catch (DomainException|InvalidArgumentException $exception) {
-            return $this->failure($exception->getMessage(), 'refused');
+            $status = $this->failure($exception->getMessage(), 'refused');
         } catch (Throwable) {
-            return $this->failure(
+            $status = $this->failure(
                 'Repair could not be verified. Inspect the selected projections before retrying.',
                 'unverified',
             );
         }
+
+        return $status;
     }
 
     private function failure(string $message, string $status): int
