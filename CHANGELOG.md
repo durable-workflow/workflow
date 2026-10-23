@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.11.3 - 2026-10-23
+
+- Refuse dependency injection that would silently discard recorded activity
+  input before queued or local activity code runs. Record a typed attempt
+  failure and preserve the authored retry policy, original input and identity.
+- Record activity entry dependency-resolution failures through the normal
+  outcome path instead of leaving the attempt leased without an outcome.
+
 ## 2.11.2 - 2026-10-23
 
 - Deliver unpinned activity tasks to eligible versioned workers during rolling
