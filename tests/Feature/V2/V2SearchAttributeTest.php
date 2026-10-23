@@ -33,9 +33,13 @@ final class V2SearchAttributeTest extends TestCase
 
         $this->app->make(SearchAttributeUpsertService::class)->upsert(
             $run,
-            new UpsertSearchAttributesCall(['happened_at' => $value]),
+            new UpsertSearchAttributesCall([
+                'happened_at' => $value,
+            ]),
             0,
-            attributeTypes: ['happened_at' => WorkflowSearchAttribute::TYPE_DATETIME],
+            attributeTypes: [
+                'happened_at' => WorkflowSearchAttribute::TYPE_DATETIME,
+            ],
         );
 
         $attribute = WorkflowSearchAttribute::query()
