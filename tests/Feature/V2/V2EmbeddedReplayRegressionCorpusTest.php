@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DateTimeImmutable;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -225,6 +226,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'manual-repair-blocked-replay-with-pending-activity') {
                 $this->assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'datetime-search-projection-history-repair') {
+                $this->assertDatetimeSearchProjectionRepairPreservesItsOriginal($fixture);
                 continue;
             }
 
@@ -1015,6 +1021,51 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         $this->assertTrue($scheduled['completed'], json_encode($scheduled, JSON_THROW_ON_ERROR));
         $this->assertCount(3, $scheduled['created_task_ids']);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertDatetimeSearchProjectionRepairPreservesItsOriginal(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $payload = $fixture['history'][1]['payload'];
+        $original = $payload['attributes']['SubmittedAt'];
+        $attribute = new WorkflowSearchAttribute([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'SubmittedAt',
+            'upserted_at_sequence' => $payload['sequence'],
+        ]);
+        $attribute->setTypedValue($original, WorkflowSearchAttribute::TYPE_DATETIME);
+        $attribute->save();
+        $connection = $run->getConnection();
+        $connection->table('workflow_search_attributes')->where('id', $attribute->id)->update([
+            'value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u'),
+        ]);
+        $history = $run->historyEvents()->orderBy('sequence')->get()->toArray();
+        $tasks = $connection->table('workflow_tasks')->where('workflow_run_id', $run->id)->get()->all();
+        $options = [
+            'run' => $run->id,
+            '--namespace' => $run->namespace,
+            '--json' => true,
+        ];
+
+        $this->assertSame(0, Artisan::call('workflow:v2:repair-search-datetimes', $options));
+        $preview = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(1, $preview['would_repair']);
+        $this->assertSame(0, $preview['repaired']);
+        $this->assertSame(0, Artisan::call('workflow:v2:repair-search-datetimes', [
+            ...$options,
+            '--apply' => true,
+        ]));
+        $this->assertSame(
+            '2026-10-08T10:34:56.123456Z',
+            $attribute->fresh()->getValue()?->toISOString(),
+        );
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $tasksAfter = $connection->table('workflow_tasks')->where('workflow_run_id', $run->id)->get()->all();
+        $this->assertEquals($tasks, $tasksAfter);
     }
 
     /**
