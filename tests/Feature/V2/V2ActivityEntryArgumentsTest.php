@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Activity;
 use Workflow\V2\Enums\ActivityStatus;
@@ -34,6 +35,36 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         ActivityEntryWorkflow::$local = false;
     }
 
+    public function testEntrySafetyChecksDoNotClaimAnUnrelatedRunsReadyTask(): void
+    {
+        $foreign = WorkflowStub::make(TestGreetingWorkflow::class, 'unrelated-entry-control');
+        $foreign->start('Other');
+        $foreignTask = WorkflowTask::query()->where('workflow_run_id', $foreign->runId())->sole();
+        $foreignBefore = $foreignTask->getAttributes();
+        $foreignHistoryCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $foreign->runId())
+            ->count();
+
+        [$stub, $execution, $task, $arguments] = $this->scheduled(ActivityEntryDto::class, [7]);
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
+
+        self::assertNotSame($foreign->runId(), $stub->runId());
+        self::assertFalse(ActivityEntryDto::$entered);
+        self::assertSame($arguments, $execution->fresh()->getRawOriginal('arguments'));
+        self::assertSame(ActivityStatus::Failed, $execution->fresh()->status);
+        self::assertSame(
+            ActivityEntryArgumentsMismatchException::class,
+            $this->history($stub->runId(), 'ActivityFailed')
+->payload['exception_class'],
+        );
+        $this->runWorkflowTask($stub->runId());
+        self::assertTrue($stub->refresh()->failed());
+        self::assertSame($foreignBefore, $foreignTask->fresh()->getAttributes());
+        self::assertSame($foreignHistoryCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $foreign->runId())
+            ->count());
+    }
+
     public function testInjectedDtoCannotReplaceTheRecordedBusinessArgument(): void
     {
         [$stub, $execution, $task, $arguments] = $this->scheduled(ActivityEntryDto::class, [7]);
@@ -48,10 +79,10 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         self::assertSame(ActivityEntryArgumentsMismatchException::class, $event->payload['exception_class']);
         self::assertStringContainsString('recorded_argument_would_be_discarded', $event->payload['message']);
 
-        $this->runWorkflowTask();
+        $this->runWorkflowTask($stub->runId());
         self::assertTrue($stub->refresh()->failed());
         self::assertNull($stub->output());
-        self::assertSame(0, WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $stub->runId())->sum('repair_count'));
     }
 
     public function testAuthoredRetryUsesTheSameOriginalInputAfterCompatibleCodeIsRestored(): void
@@ -71,10 +102,13 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         // A new deployment can supply a compatible implementation through the
         // normal Laravel binding without rewriting durable class/input fields.
         $this->app->bind(ActivityEntryRetryDto::class, static fn (): Activity => new ActivityEntryScalar());
-        $retryTask = WorkflowTask::query()->where('task_type', TaskType::Activity->value)
+        $retryTask = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where(
+            'task_type',
+            TaskType::Activity->value
+        )
             ->where('status', TaskStatus::Ready->value)->sole();
         $this->app->call([new RunActivityTask($retryTask->id), 'handle']);
-        $this->runWorkflowTask();
+        $this->runWorkflowTask($stub->runId());
 
         self::assertTrue($stub->refresh()->completed());
         self::assertSame(7, $stub->output());
@@ -82,9 +116,21 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         self::assertSame($originalExecutionId, $execution->fresh()->id);
         self::assertSame($arguments, $execution->fresh()->getRawOriginal('arguments'));
         self::assertSame(2, $execution->fresh()->attempt_count);
-        self::assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count());
-        self::assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'ActivityFailed')->count());
-        self::assertSame(0, WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(
+            1,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->where(
+                'event_type',
+                'ActivityCompleted'
+            )->count()
+        );
+        self::assertSame(
+            0,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->where(
+                'event_type',
+                'ActivityFailed'
+            )->count()
+        );
+        self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $stub->runId())->sum('repair_count'));
     }
 
     #[DataProvider('compatibleEntries')]
@@ -95,13 +141,13 @@ final class V2ActivityEntryArgumentsTest extends TestCase
     ): void {
         [$stub, $execution, $task, $storedArguments] = $this->scheduled($activity, $arguments);
         $this->app->call([new RunActivityTask($task->id), 'handle']);
-        $this->runWorkflowTask();
+        $this->runWorkflowTask($stub->runId());
 
         self::assertTrue($stub->refresh()->completed());
         self::assertSame($expected, $stub->output());
         self::assertSame($storedArguments, $execution->fresh()->getRawOriginal('arguments'));
         self::assertSame(1, $execution->fresh()->attempt_count);
-        self::assertSame(0, WorkflowTask::query()->sum('repair_count'));
+        self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $stub->runId())->sum('repair_count'));
     }
 
     public static function compatibleEntries(): iterable
@@ -118,16 +164,22 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         ActivityEntryWorkflow::$arguments = [7];
         $stub = WorkflowStub::make(ActivityEntryWorkflow::class);
         $stub->start();
-        $this->runWorkflowTask();
+        $this->runWorkflowTask($stub->runId());
 
         self::assertFalse(ActivityEntryDto::$entered, 'The incompatible local activity body ran.');
-        $execution = ActivityExecution::query()->sole();
+        $execution = ActivityExecution::query()->where('workflow_run_id', $stub->runId())->sole();
         self::assertSame([7], $execution->activityArguments());
         self::assertSame(ActivityStatus::Failed, $execution->status);
         self::assertSame(1, $execution->attempt_count);
         $event = $this->history($stub->runId(), 'ActivityFailed');
         self::assertSame(ActivityEntryArgumentsMismatchException::class, $event->payload['exception_class']);
-        self::assertSame(0, WorkflowTask::query()->where('task_type', TaskType::Activity->value)->count());
+        self::assertSame(
+            0,
+            WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where(
+                'task_type',
+                TaskType::Activity->value
+            )->count()
+        );
         self::assertTrue($stub->refresh()->failed());
     }
 
@@ -139,15 +191,18 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         ActivityEntryWorkflow::$arguments = [7];
         $stub = WorkflowStub::make(ActivityEntryWorkflow::class);
         $stub->start();
-        $this->runWorkflowTask();
+        $this->runWorkflowTask($stub->runId());
         if (! $local) {
-            $task = WorkflowTask::query()->where('task_type', TaskType::Activity->value)->sole();
+            $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where(
+                'task_type',
+                TaskType::Activity->value
+            )->sole();
             $this->app->call([new RunActivityTask($task->id), 'handle']);
-            $this->runWorkflowTask();
+            $this->runWorkflowTask($stub->runId());
         }
 
         self::assertFalse(ActivityEntryDto::$entered);
-        $execution = ActivityExecution::query()->sole();
+        $execution = ActivityExecution::query()->where('workflow_run_id', $stub->runId())->sole();
         self::assertSame(ActivityStatus::Failed, $execution->status);
         self::assertSame([7], $execution->activityArguments());
         self::assertSame(1, $execution->attempt_count);
@@ -157,7 +212,13 @@ final class V2ActivityEntryArgumentsTest extends TestCase
             $event->payload['exception_class']
         );
         self::assertTrue($stub->refresh()->failed());
-        self::assertSame(0, WorkflowTask::query()->where('status', TaskStatus::Leased->value)->count());
+        self::assertSame(
+            0,
+            WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where(
+                'status',
+                TaskStatus::Leased->value
+            )->count()
+        );
     }
 
     public static function executionModes(): iterable
@@ -195,16 +256,21 @@ final class V2ActivityEntryArgumentsTest extends TestCase
         ActivityEntryWorkflow::$arguments = $arguments;
         $stub = WorkflowStub::make(ActivityEntryWorkflow::class);
         $stub->start();
-        $this->runWorkflowTask();
-        $execution = ActivityExecution::query()->sole();
-        $task = WorkflowTask::query()->where('task_type', TaskType::Activity->value)->sole();
+        $this->runWorkflowTask($stub->runId());
+        $execution = ActivityExecution::query()->where('workflow_run_id', $stub->runId())->sole();
+        $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->where(
+            'task_type',
+            TaskType::Activity->value
+        )->sole();
 
         return [$stub, $execution, $task, $execution->getRawOriginal('arguments')];
     }
 
-    private function runWorkflowTask(): void
+    private function runWorkflowTask(string $runId): void
     {
-        $task = WorkflowTask::query()->where('task_type', TaskType::Workflow->value)
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)->sole();
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
     }
