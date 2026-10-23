@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Preserve UTC instants and microseconds in datetime search attributes and
+  embedded visibility predicates, including values with non-UTC offsets.
+- Add `workflow:v2:repair-search-datetimes` to preview or explicitly repair
+  selected datetime projections from matching retained, typed history.
+
 ## 2.11.4 - 2026-10-23
 
 - Preserve whole-valued floats and signed zero in CLI history-export JSON,
