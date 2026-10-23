@@ -64,13 +64,13 @@ final class V2HistoryExportNumericKindsTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertSuccessful();
         Queue::fake();
         $memo = [
-            'whole' => 1.0,
-            'signed_zero' => -0.0,
             'nested' => [
-                'whole' => 2.0,
-                'signed_zero' => -0.0,
                 'list' => [3.0, -0.0, 1.5, 4],
+                'signed_zero' => -0.0,
+                'whole' => 2.0,
             ],
+            'signed_zero' => -0.0,
+            'whole' => 1.0,
         ];
         $workflow = WorkflowStub::make(NumericExportWorkflow::class);
         $workflow->start(new StartOptions(
@@ -111,7 +111,11 @@ final class V2HistoryExportNumericKindsTest extends TestCase
         $this->assertSame(-INF, fdiv(1.0, $projection['nested']['list'][1]));
         $this->assertSame($memo, MemoPayload::decodeEntries($bundle['workflow']['memo_payload']));
         $report = BundleIntegrityVerifier::verifyJson($raw);
-        $this->assertSame(BundleIntegrityVerifier::STATUS_OK, $report['status'], json_encode($report));
+        $this->assertSame(
+            BundleIntegrityVerifier::STATUS_OK,
+            $report['status'],
+            json_encode($report, JSON_THROW_ON_ERROR),
+        );
         $this->artisan('workflow:v2:replay-verify', [
             'bundle' => $path,
             '--skip-replay' => true,
