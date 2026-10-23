@@ -389,16 +389,20 @@ final class LocalActivityExecutor
         $activity = RuntimeObjectFactory::activity($activityClass, $execution, $run, $task->id);
         $entryMethod = EntryMethod::forActivity($activity);
         $activityArguments = $execution->activityArguments();
-        $arguments = $activity->resolveMethodDependencies($activityArguments, $entryMethod);
-
         $result = null;
         $throwable = null;
+        try {
+            $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
+        } catch (Throwable $error) {
+            $arguments = [];
+            $throwable = $error;
+        }
 
         if (WorkflowStub::faked()) {
             WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
         }
 
-        if (WorkflowStub::hasMock($execution->activity_class)) {
+        if ($throwable === null && WorkflowStub::hasMock($execution->activity_class)) {
             $mocked = WorkflowStub::mockedResult(
                 $execution->activity_class,
                 new ActivityFakeContext(
@@ -413,7 +417,7 @@ final class LocalActivityExecutor
 
             $result = $mocked['result'];
             $throwable = $mocked['throwable'];
-        } else {
+        } elseif ($throwable === null) {
             try {
                 $result = $activity->{$entryMethod->getName()}(...$arguments);
             } catch (Throwable $error) {
