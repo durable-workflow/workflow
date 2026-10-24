@@ -31,7 +31,7 @@ def workflow_job_source(source: str, name: str) -> str:
 
 def workflow_job_needs(source: str, name: str) -> list[str]:
     job = workflow_job_source(source, name)
-    needs = re.search(r"(?m)^    needs:[ \t]*(.*)$", job)
+    needs = re.search(r"(?m)^ {4}needs:[ \t]*(.*)$", job)
 
     if needs is None:
         return []
@@ -49,7 +49,7 @@ def workflow_job_needs(source: str, name: str) -> list[str]:
 
     dependencies = []
     for line in job[needs.end() :].splitlines():
-        dependency = re.match(r"^    (?:  )?-\s+(['\"]?)([a-z0-9-]+)\1\s*$", line)
+        dependency = re.match(r"^ {4}(?: {2})?-\s+(['\"]?)([a-z0-9-]+)\1\s*$", line)
         if dependency:
             dependencies.append(dependency.group(2))
             continue
