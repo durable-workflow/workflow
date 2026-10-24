@@ -53,7 +53,9 @@ final class ActivityOutcomeRejectionProcessTest extends TestCase
         ], JSON_THROW_ON_ERROR));
         $this->assertFalse($reply['recorded']);
         $this->assertContains($reply['reason'], $input['outcome'] === 'pruned' ? ['pruned']
-            : ($input['allow_pruned'] ? ['stale_attempt', 'attempt_not_found', 'task_not_found'] : ['stale_attempt']));
+            : ($input['allow_pruned'] ? [
+                'stale_attempt', 'lease_expired', 'attempt_not_found', 'task_not_found', 'activity_execution_missing',
+            ] : ['stale_attempt']));
     }
 
     protected function getPackageProviders($app): array

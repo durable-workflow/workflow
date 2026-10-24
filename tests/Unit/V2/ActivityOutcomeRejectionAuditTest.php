@@ -340,15 +340,32 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertStringNotContainsString('discarded concurrent', json_encode($notices[0]->payload));
     }
 
-    public function testConcurrentPruningAndLateOutcomeNeverRestoreDetails(): void
+    public static function pruningAttemptStates(): array
+    {
+        return [
+            'reclaimed expired attempt' => [true],
+            'lease expired before maintenance' => [false],
+        ];
+    }
+
+    #[DataProvider('pruningAttemptStates')]
+    public function testConcurrentPruningAndLateOutcomeNeverRestoreDetails(bool $reclaimed): void
     {
         $deadline = hrtime(true) + 30_000_000_000;
-        [, $claim, $run] = $this->expiredOriginal(closed: true);
+        if ($reclaimed) {
+            [, $claim, $run] = $this->expiredOriginal(closed: true);
+        } else {
+            [, $claim, $run] = $this->claimedOriginal();
+            $this->travel(301)->seconds();
+            $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+        }
         $status = $run->fresh()
 ->status;
         $reports = $this->concurrentOutcomes($run, $claim, ['completed', 'pruned'], $deadline);
         self::assertFalse($reports[0]['recorded']);
-        self::assertContains($reports[0]['reason'], ['stale_attempt', 'attempt_not_found', 'task_not_found']);
+        self::assertContains($reports[0]['reason'], [
+            'stale_attempt', 'lease_expired', 'attempt_not_found', 'task_not_found', 'activity_execution_missing',
+        ]);
         self::assertSame('pruned', $reports[1]['reason']);
         self::assertSame($status, $run->fresh()->status);
         self::assertNotNull($run->fresh()->details_pruned_at);
