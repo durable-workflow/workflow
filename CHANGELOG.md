@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.13.0 - Unreleased
+
+- Recognize bounded `ActivityOutcomeRejected` diagnostics in history pages,
+  timeline inspection, exports and cold replay. The reader preserves business
+  replay positions and does not produce the event or accept a refused outcome.
+- Require reader-equipped applications, Server roles, inspection tools and
+  rollback artifacts before enabling the separate rejected-outcome producer.
+
+## 2.12.1 - Unreleased
+
+- Require the upstream TokenGuard string-validation fix on Laravel 11, raising
+  its minimum to 11.56.1. Keep the maintained Laravel 12/13 minimums unchanged.
+- Record the newly published Composer TokenGuard advisory against the retained
+  Laravel 9–11 upgrade/drain compatibility paths, with an explicit review date.
+  Maintained Laravel 12/13 minimums already include the upstream fixes.
+- Preserve canonical failure messages beyond MySQL TEXT capacity and across
+  NUL-bearing PostgreSQL text parameters. Add nullable encoded overflow storage
+  without backfilling existing rows, retain the exact public message and keep
+  compatibility previews bounded. Metadata-lock waits are bounded and a package
+  rollback retains the added storage and failure evidence.
+
 ## 2.12.0 - 2026-10-23
 
 - Preserve UTC instants and microseconds in datetime search attributes and
