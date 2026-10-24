@@ -68,7 +68,10 @@ final class V2ActivityExceptionCodecTest extends TestCase
             ->firstOrFail();
         $this->assertSame($message, $event->payload['message']);
         $this->assertSame($failure->id, $event->payload['failure_id']);
-        $this->assertSame($message, RunRecentFailures::forRun($run)['failures'][0]['message']);
+        $recentMessage = RunRecentFailures::forRun($run)['failures'][0]['message'];
+        $this->assertLessThanOrEqual(65_535, strlen($recentMessage));
+        $this->assertStringContainsString('[full message stored separately]', $recentMessage);
+        $this->assertSame($message, $failure->fresh()->message);
         $this->assertExceptionBytesDecodeAs(
             bytes: $execution->exception,
             runCodec: 'avro',

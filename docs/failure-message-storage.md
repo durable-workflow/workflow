@@ -5,6 +5,10 @@ history or the history export. The physical `workflow_failures.message` column
 can contain a compatibility preview for a new large message. Reading that
 column directly does not always return the full message.
 
+Recent-failure diagnostic lists read only bounded overflow values. For larger
+messages they retain the labelled compatibility preview and supporting-history
+link. Use a canonical detail, model or history read for the complete value.
+
 The additive `2026_10_23_000100_add_full_failure_message_storage` migration adds
 nullable `message_full` storage. Existing rows are not rewritten or backfilled.
 Ordinary messages keep their existing storage. Messages beyond the old TEXT
