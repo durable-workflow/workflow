@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.12.2 - Unreleased
+
+- Refuse expired or settled activity callbacks under the original run lock
+  before acquiring task or execution locks. Preserve committed renewals and
+  the normal live-outcome path. Concurrent retention can finish without a
+  reverse lock dependency or restored details.
+- Acquire SQLite writer admission before reading a retained run for pruning,
+  within the existing transaction policy and original publication budget.
+  This correction emits no new history event and needs no new event reader.
+
 ## 2.12.1 - Unreleased
 
 - Require the upstream TokenGuard string-validation fix on Laravel 11, raising

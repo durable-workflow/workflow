@@ -11,8 +11,8 @@ use Orchestra\Testbench\TestCase;
 use RuntimeException;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Contracts\ActivityTaskBridge;
-use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 final class ActivityOutcomeRetentionProcessTest extends TestCase
 {
@@ -37,7 +37,10 @@ final class ActivityOutcomeRetentionProcessTest extends TestCase
             });
             $report = WorkflowRunRetentionCleanup::pruneRun($input['run_id']);
             self::assertGreaterThan(0, $report['history_events_deleted']);
-            $reply = ['recorded' => false, 'reason' => 'pruned'];
+            $reply = [
+                'recorded' => false,
+                'reason' => 'pruned',
+            ];
         } else {
             // Signal before this query can wait on retention's run lock. The
             // preceding implementation already holds task/execution locks here.
@@ -61,7 +64,9 @@ final class ActivityOutcomeRetentionProcessTest extends TestCase
                 $bridge = $this->app->make(ActivityTaskBridge::class);
                 $reply = $input['outcome'] === 'completed'
                     ? $bridge->complete($input['attempt_id'], 'discarded late result')
-                    : $bridge->fail($input['attempt_id'], ['message' => 'discarded late failure']);
+                    : $bridge->fail($input['attempt_id'], [
+                        'message' => 'discarded late failure',
+                    ]);
             }
             self::assertFalse($reply['recorded']);
         }
