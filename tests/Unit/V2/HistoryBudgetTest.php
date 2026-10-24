@@ -401,6 +401,43 @@ final class HistoryBudgetTest extends TestCase
     }
 
     #[DataProvider('largeHistorySummaryStates')]
+    public function testBoundedHistoryPreservesNullEscapesAndCanonicalByteCounts(bool $staleSummary): void
+    {
+        $run = $this->createRun();
+        $message = str_repeat("\0\0界\\u0000\\\0\"", 1_000);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, [
+            'failure_id' => 'failure',
+            'message' => $message,
+        ]);
+        if ($staleSummary) {
+            WorkflowRunSummary::query()->create([
+                'id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'run_number' => $run->run_number,
+                'is_current_run' => true,
+                'class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'status' => $run->status->value,
+                'status_bucket' => $run->status->statusBucket()
+->value,
+                'history_event_count' => 0,
+                'history_size_bytes' => 0,
+                'history_fan_out' => 0,
+            ]);
+        }
+        $original = DB::table('workflow_history_events')->where('workflow_run_id', $run->id)->value('payload');
+        $expected = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+        $this->assertSame($expected, HistoryBudget::forRunBounded($run));
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+        $this->assertSame(
+            $original,
+            DB::table('workflow_history_events')->where('workflow_run_id', $run->id)->value('payload')
+        );
+    }
+
+    #[DataProvider('largeHistorySummaryStates')]
     public function testLargeInlineHistoryFitsDefaultMysqlSortBuffer(bool $staleSummary): void
     {
         if (DB::connection()->getDriverName() !== 'mysql'

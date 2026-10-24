@@ -26,7 +26,9 @@ final class RunRecentFailuresTest extends TestCase
             $this->event($run, $index + 1, 'ActivityFailed', [
                 'failure_id' => $id,
                 'message' => $message,
-                'details' => ['message' => $message],
+                'details' => [
+                    'message' => $message,
+                ],
             ]);
         }
         $before = DB::table('workflow_history_events')->orderBy('sequence')->pluck('payload')->all();
