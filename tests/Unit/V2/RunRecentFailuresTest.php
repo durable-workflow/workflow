@@ -16,6 +16,33 @@ use Workflow\V2\Support\RunRecentFailures;
 
 final class RunRecentFailuresTest extends TestCase
 {
+    public function testSupportingEventLinksSurviveNullBytesWithoutChangingHistory(): void
+    {
+        $run = $this->createRun('null-history');
+        $identities = ['plain', 'literal\\u0000', 'slashes\\\\u0000', 'unicode-界'];
+        $message = "\0\0literal\\u0000\\\0\"{\"failure_id\":\"decoy\"}";
+        foreach ($identities as $index => $id) {
+            $this->failure($run, $id);
+            $this->event($run, $index + 1, 'ActivityFailed', [
+                'failure_id' => $id,
+                'message' => $message,
+                'details' => ['message' => $message],
+            ]);
+        }
+        $before = DB::table('workflow_history_events')->orderBy('sequence')->pluck('payload')->all();
+        $result = RunRecentFailures::forRun($run);
+        $byIdentity = array_column($result['failures'], null, 'id');
+        foreach ($identities as $index => $id) {
+            $this->assertSame($index + 1, $byIdentity[$id]['event_sequence']);
+            $this->assertSame('ActivityFailed', $byIdentity[$id]['supporting_event']['event_type']);
+        }
+        $this->assertSame($before, DB::table('workflow_history_events')->orderBy('sequence')->pluck('payload')->all());
+        foreach (WorkflowHistoryEvent::query()->get() as $event) {
+            $this->assertSame($message, $event->payload['message']);
+            $this->assertSame($message, $event->payload['details']['message']);
+        }
+    }
+
     public function testRecentFailuresReadOnlySelectedRowsAndPrimaryEventHeaders(): void
     {
         $run = $this->createRun('selected');
