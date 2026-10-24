@@ -10,11 +10,13 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRetryWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -30,6 +32,7 @@ use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\SqliteTransaction;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\WorkflowStub;
 
 final class ActivityOutcomeRejectionAuditTest extends TestCase
@@ -198,6 +201,70 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertSame($history, $run->historyEvents()->count());
     }
 
+    public function testRetryingACommittedFailureCreatesNoRejectionAudit(): void
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal(TestGreetingWorkflow::class);
+        self::assertSame(1, $claim['retry_policy']['max_attempts']);
+        self::assertTrue($bridge->fail($claim['activity_attempt_id'], ['message' => 'accepted failure'])['recorded']);
+        self::assertSame(
+            ActivityAttemptStatus::Failed,
+            ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status,
+        );
+        $before = $this->businessState($run);
+        $history = $run->historyEvents()->get()->map->getAttributes()->all();
+
+        self::assertFalse($bridge->fail($claim['activity_attempt_id'], ['message' => 'duplicate failure'])['recorded']);
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($history, $run->historyEvents()->get()->map->getAttributes()->all());
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public static function settledAttempts(): array
+    {
+        return [
+            'completed attempt' => [ActivityAttemptStatus::Completed],
+            'failed attempt' => [ActivityAttemptStatus::Failed],
+            'cancelled attempt' => [ActivityAttemptStatus::Cancelled],
+        ];
+    }
+
+    #[DataProvider('settledAttempts')]
+    public function testSettledAttemptsCannotBeReclassifiedToCreateADiagnostic(ActivityAttemptStatus $status): void
+    {
+        [, $claim, $run] = $this->expiredOriginal();
+        ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->forceFill([
+            'status' => $status,
+        ])->save();
+        $before = $this->businessState($run);
+        $history = $run->historyEvents()->get()->map->getAttributes()->all();
+
+        self::assertNull($this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']));
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($history, $run->historyEvents()->get()->map->getAttributes()->all());
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testActualPruningLeavesNoAttemptForALateOutcomeAudit(): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal(closed: true);
+        $report = WorkflowRunRetentionCleanup::pruneRun($run);
+        self::assertGreaterThan(0, $report['activity_attempts_deleted']);
+        self::assertGreaterThan(0, $report['history_events_deleted']);
+        $retained = $run->fresh()->getAttributes();
+        self::assertNotNull($retained['details_pruned_at']);
+
+        $reply = $bridge->complete($claim['activity_attempt_id'], 'discarded after pruning');
+
+        self::assertFalse($reply['recorded']);
+        self::assertSame('attempt_not_found', $reply['reason']);
+        self::assertSame($retained, $run->fresh()->getAttributes());
+        self::assertCount(0, $this->notices($run));
+        self::assertSame(0, $run->historyEvents()->count());
+        self::assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        self::assertSame(0, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+        self::assertNull(WorkflowRunSummary::query()->find($run->id));
+    }
+
     public function testDiagnosticAppendKeepsBoundedCountersAndTimelineCurrent(): void
     {
         [$bridge, $claim, $run] = $this->expiredOriginal(closed: true);
@@ -328,9 +395,12 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         return [$bridge, $claim, $run];
     }
 
-    private function claimedOriginal(): array
+    /**
+     * @param class-string<\Workflow\V2\Workflow> $workflowClass
+     */
+    private function claimedOriginal(string $workflowClass = TestRetryWorkflow::class): array
     {
-        $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'outcome-rejection-audit');
+        $workflow = WorkflowStub::make($workflowClass, 'outcome-rejection-audit');
         $workflow->start('Ada');
         $this->runWorkflowTask();
         $bridge = $this->app->make(ActivityTaskBridge::class);
