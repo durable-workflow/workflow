@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.12.1 - Unreleased
+
+- Preserve canonical failure messages beyond MySQL TEXT capacity and across
+  NUL-bearing PostgreSQL text parameters. Add nullable encoded overflow storage
+  without backfilling existing rows, retain the exact public message and keep
+  compatibility previews bounded. Metadata-lock waits are bounded and a package
+  rollback retains the added storage and failure evidence.
+
 ## 2.12.0 - 2026-10-23
 
 - Preserve UTC instants and microseconds in datetime search attributes and

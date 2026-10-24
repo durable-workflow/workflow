@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use RuntimeException;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -21,6 +22,8 @@ class WorkflowFailure extends Model
     private const LEGACY_MESSAGE_LIMIT_BYTES = 65_535;
 
     private const OVERFLOW_MARKER = "\n[full message stored separately]";
+
+    private const FULL_MESSAGE_ENCODING = 'base64:';
 
     public $incrementing = false;
 
@@ -47,9 +50,12 @@ class WorkflowFailure extends Model
     {
         return Attribute::make(
             get: static fn (?string $value, array $attributes): ?string =>
-                is_string($attributes['message_full'] ?? null) ? $attributes['message_full'] : $value,
+                ($attributes['message_full'] ?? null) === null
+                    ? $value
+                    : self::decodeFullMessage($attributes['message_full']),
             set: static function (?string $value): array {
-                if ($value === null || strlen($value) <= self::LEGACY_MESSAGE_LIMIT_BYTES) {
+                if ($value === null || (strlen($value) <= self::LEGACY_MESSAGE_LIMIT_BYTES
+                        && ! str_contains($value, "\0"))) {
                     return [
                         'message' => $value,
                         'message_full' => null,
@@ -60,15 +66,32 @@ class WorkflowFailure extends Model
                 // a valid TEXT preview without a copying column alteration.
                 return [
                     'message' => mb_strcut(
-                        $value,
+                        str_replace("\0", '\\0', $value),
                         0,
                         self::LEGACY_MESSAGE_LIMIT_BYTES - strlen(self::OVERFLOW_MARKER),
                         'UTF-8',
                     ) . self::OVERFLOW_MARKER,
-                    'message_full' => $value,
+                    // PostgreSQL text parameters cannot carry literal NULs.
+                    // This is internal storage, not an SDK payload codec.
+                    'message_full' => self::FULL_MESSAGE_ENCODING . base64_encode($value),
                 ];
             },
         );
+    }
+
+    private static function decodeFullMessage(mixed $stored): string
+    {
+        if (! is_string($stored) || ! str_starts_with($stored, self::FULL_MESSAGE_ENCODING)) {
+            throw new RuntimeException('Invalid stored full failure-message encoding.');
+        }
+
+        $encoded = substr($stored, strlen(self::FULL_MESSAGE_ENCODING));
+        $decoded = base64_decode($encoded, true);
+        if ($decoded === false || base64_encode($decoded) !== $encoded) {
+            throw new RuntimeException('Invalid stored full failure-message encoding.');
+        }
+
+        return $decoded;
     }
 
     public function run(): BelongsTo

@@ -29,6 +29,7 @@ use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\FailureSnapshots;
+use Workflow\V2\Support\RunRecentFailures;
 
 /**
  * TD-089 regression: activity exception rows must be encoded with the
@@ -58,7 +59,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
         $failure = WorkflowFailure::query()->where('workflow_run_id', $run->id)->firstOrFail();
         $this->assertSame($message, $failure->message);
-        $this->assertSame($message, $failure->getRawOriginal('message_full'));
+        $this->assertSame('base64:' . base64_encode($message), $failure->getRawOriginal('message_full'));
         $this->assertLessThanOrEqual(65_535, strlen($failure->getRawOriginal('message')));
         $this->assertArrayNotHasKey('message_full', $failure->toArray());
         $event = WorkflowHistoryEvent::query()
@@ -67,6 +68,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
             ->firstOrFail();
         $this->assertSame($message, $event->payload['message']);
         $this->assertSame($failure->id, $event->payload['failure_id']);
+        $this->assertSame($message, RunRecentFailures::forRun($run)['failures'][0]['message']);
         $this->assertExceptionBytesDecodeAs(
             bytes: $execution->exception,
             runCodec: 'avro',

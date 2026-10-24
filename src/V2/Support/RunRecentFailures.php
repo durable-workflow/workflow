@@ -36,7 +36,7 @@ final class RunRecentFailures
             ->get([
                 'id', 'workflow_run_id', 'source_kind', 'source_id', 'propagation_kind',
                 'failure_category', 'non_retryable', 'handled', 'exception_class',
-                'message', 'file', 'line', 'trace_preview', 'created_at',
+                'message', 'message_full', 'file', 'line', 'trace_preview', 'created_at',
             ]);
         $hasMore = $rows->count() > $limit;
         $rows = $rows->take($limit);
