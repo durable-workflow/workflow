@@ -95,6 +95,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         self::stopWorkers();
         Queue::fake();
         config([
+            'queue.default' => 'database',
             'workflows.v2.compatibility.current' => 'build-a',
             'workflows.v2.compatibility.supported' => ['build-a'],
         ]);
@@ -192,7 +193,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $this->assertSame($accepted['history_event_id'], $duplicate['history_event_id']);
             $this->assertSame(
                 1,
-                $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
             );
             if ($policy === CancellationPolicy::WaitCancellationCompleted) {
                 $this->assertTrue($deliver($lease($ready()))['delivered']);
