@@ -18,9 +18,9 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
-use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStepHistory;
 
@@ -32,7 +32,10 @@ final class QueryStateReplayerBoundaryTest extends TestCase
     {
         foreach ($this->goldenCases() as $caseIndex => $case) {
             $original = $this->createRun(
-                $case['scenario'], $case['history'], "original-{$caseIndex}", RunStatus::Completed,
+                $case['scenario'],
+                $case['history'],
+                "original-{$caseIndex}",
+                RunStatus::Completed,
             );
             $originalState = (new QueryStateReplayer())->replayState($original->fresh());
             $originalNext = WorkflowStepHistory::nextDurableCommandSequence($original->fresh());
@@ -42,6 +45,7 @@ final class QueryStateReplayerBoundaryTest extends TestCase
                 'payload' => $this->rejectedOutcomePayload(),
             ]]);
             $run = $this->createRun($case['scenario'], $history, "diagnostic-{$caseIndex}", RunStatus::Completed);
+            $run = $run->fresh();
             $before = $run->getRawOriginal();
             $rowCounts = $this->runtimeRowCounts($run);
 
@@ -49,7 +53,8 @@ final class QueryStateReplayerBoundaryTest extends TestCase
             $bundle = HistoryExport::forRun($run->fresh());
             $exported = (new WorkflowReplayer())->replayExport($bundle);
             $timeline = HistoryTimeline::fromHistory($run->fresh());
-            $point = collect($timeline)->firstWhere('type', 'ActivityOutcomeRejected');
+            $point = collect($timeline)
+                ->firstWhere('type', 'ActivityOutcomeRejected');
 
             $this->assertNull($cold->current);
             $this->assertNull($exported->current);
@@ -71,7 +76,10 @@ final class QueryStateReplayerBoundaryTest extends TestCase
         $case = $this->goldenCases()[0];
         $history = [
             $case['history'][0],
-            ['event_type' => 'ActivityOutcomeRejected', 'payload' => $this->rejectedOutcomePayload()],
+            [
+                'event_type' => 'ActivityOutcomeRejected',
+                'payload' => $this->rejectedOutcomePayload(),
+            ],
         ];
         $run = $this->createRun('single-activity', $history, 'rejection-is-not-completion', RunStatus::Waiting);
         $before = $this->runtimeRowCounts($run);
@@ -86,19 +94,6 @@ final class QueryStateReplayerBoundaryTest extends TestCase
         $this->assertSame($before, $this->runtimeRowCounts($run));
         $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
         $this->assertNull($run->fresh()->output);
-    }
-
-    private function rejectedOutcomePayload(): array
-    {
-        return [
-            'activity_execution_id' => 'original-activity',
-            'activity_attempt_id' => 'original-attempt',
-            'attempt_number' => 1,
-            'lease_owner' => 'original-worker',
-            'outcome' => 'completed',
-            'reason' => 'lease_expired',
-            'observed_at' => '2026-10-24T01:00:00.000000Z',
-        ];
     }
 
     public function testEveryGoldenHistoryPrefixReplaysDeterministicallyWithoutWritingRuntimeState(): void
@@ -163,6 +158,19 @@ final class QueryStateReplayerBoundaryTest extends TestCase
         $this->expectExceptionMessage('activity_type');
 
         (new QueryStateReplayer())->replayState($run->fresh());
+    }
+
+    private function rejectedOutcomePayload(): array
+    {
+        return [
+            'activity_execution_id' => 'original-activity',
+            'activity_attempt_id' => 'original-attempt',
+            'attempt_number' => 1,
+            'lease_owner' => 'original-worker',
+            'outcome' => 'completed',
+            'reason' => 'lease_expired',
+            'observed_at' => '2026-10-24T01:00:00.000000Z',
+        ];
     }
 
     /**

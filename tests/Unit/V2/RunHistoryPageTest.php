@@ -36,6 +36,7 @@ final class RunHistoryPageTest extends TestCase
             'event_type' => 'ActivityOutcomeRejected',
             'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
         ]);
+        $run = $run->fresh();
         $before = $run->getRawOriginal();
         DB::flushQueryLog();
         DB::enableQueryLog();

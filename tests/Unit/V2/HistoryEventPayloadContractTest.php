@@ -37,7 +37,9 @@ final class HistoryEventPayloadContractTest extends TestCase
 
         HistoryEventPayloadContract::assertKnownPayloadKeys(
             HistoryEventType::from('ActivityOutcomeRejected'),
-            [$field => 'must-not-be-retained'],
+            [
+                $field => 'must-not-be-retained',
+            ],
         );
     }
 
