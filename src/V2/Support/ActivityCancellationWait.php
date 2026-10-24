@@ -46,7 +46,8 @@ final class ActivityCancellationWait
         if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
             $activityTask = $run->tasks->first(static fn (WorkflowTask $task): bool =>
                 $task->task_type === TaskType::Activity
-                && ($task->payload['activity_execution_id'] ?? null) === $execution->id);
+                && ($task->payload['activity_execution_id'] ?? null) === $execution->id
+                && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
             $event = ActivityCancellation::record($run, $execution, $activityTask, $context->requestId);
             if ($event !== null) {
                 $run->historyEvents->push($event);

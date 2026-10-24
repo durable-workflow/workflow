@@ -154,6 +154,78 @@ final class V2PortableCancellationDeliveryTest extends TestCase
         yield 'bounded independent remote work' => ['abandon'];
     }
 
+    #[DataProvider('retriedActivityCancellationPolicies')]
+    public function testCancellationFencesTheLiveRetriedTaskAndKeepsTheCompletedTask(CancellationPolicy $policy): void
+    {
+        [$run, $initial] = $this->newRun();
+        $commands = WorkflowCommandNormalizer::normalize([[
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.portable-remote',
+            'arguments' => Serializer::serialize(['Taylor']),
+            'cancellation_policy' => $policy->value,
+            'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [0]],
+        ]], '1.20');
+        $this->assertTrue($this->bridge->complete($initial->id, $commands)['completed']);
+        $execution = $run->activityExecutions()->sole();
+        $firstTask = $run->tasks()->where('task_type', TaskType::Activity)->sole();
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $this->assertTrue($activities->claimStatus($firstTask->id, 'first-owner')['claimed']);
+        $firstAttempt = $execution->attempts()->sole();
+        $retry = $activities->fail($firstAttempt->id, [
+            'class' => \RuntimeException::class,
+            'message' => 'temporary failure',
+        ]);
+        $this->assertTrue($retry['recorded']);
+        $liveTask = WorkflowTask::query()->findOrFail($retry['next_task_id']);
+        $this->assertTrue($activities->claimStatus($liveTask->id, 'replacement-owner')['claimed']);
+        $liveAttempt = $execution->attempts()->where('attempt_number', 2)->sole();
+        $this->assertSame(TaskStatus::Completed, $firstTask->refresh()->status);
+        $completedBefore = $firstTask->getRawOriginal();
+
+        $this->request($run);
+        $delivery = $this->deliver($run, $this->leaseReadyTask($run));
+        $this->assertSame($policy === CancellationPolicy::TryCancel, $delivery['delivered']);
+        if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+            $this->assertTrue($delivery['claim_released']);
+            $this->assertSame('cancellation_waiting_for_activity', $delivery['reason']);
+        }
+        $this->assertSame($completedBefore, $firstTask->refresh()->getRawOriginal());
+        $this->assertSame(TaskStatus::Cancelled, $liveTask->refresh()->status);
+        $this->assertNull($liveTask->lease_expires_at);
+        $this->assertSame(ActivityAttemptStatus::Cancelled, $liveAttempt->refresh()->status);
+        $cancelled = $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancelled)->sole();
+        $this->assertSame($liveTask->id, $cancelled->payload['task']['id']);
+        $this->assertSame('cancelled', $cancelled->payload['task']['status']);
+        $this->assertSame($liveAttempt->id, $cancelled->payload['activity_attempt']['id']);
+
+        $accepted = ActivityCancellationAcknowledgement::recordStopped(
+            $liveAttempt->id,
+            'replacement-owner',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertTrue($accepted['acknowledged']);
+        $this->assertFalse($accepted['duplicate']);
+        $duplicate = ActivityCancellationAcknowledgement::recordStopped(
+            $liveAttempt->id,
+            'replacement-owner',
+            $run->cancellation_request_command_id,
+        );
+        $this->assertTrue($duplicate['acknowledged']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($accepted['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame(1, $this->stopReceiptCount($run));
+        if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+            $this->assertTrue($this->deliver($run, $this->leaseReadyTask($run))['delivered']);
+        }
+        $this->assertSame(1, $this->deliveryCount($run));
+    }
+
+    public static function retriedActivityCancellationPolicies(): iterable
+    {
+        yield 'request and continue' => [CancellationPolicy::TryCancel];
+        yield 'wait for original callback stop' => [CancellationPolicy::WaitCancellationCompleted];
+    }
+
     #[DataProvider('invalidPortableRemoteActivityPolicies')]
     public function testPortableRemoteActivityPolicyRefusesInvalidBridgeInputBeforeScheduling(mixed $policy): void
     {

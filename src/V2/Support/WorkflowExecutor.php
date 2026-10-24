@@ -5831,7 +5831,8 @@ final class WorkflowExecutor
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $run->tasks->first(
                     static fn (WorkflowTask $candidate): bool => $candidate->task_type === TaskType::Activity
-                        && ($candidate->payload['activity_execution_id'] ?? null) === $execution->id,
+                        && ($candidate->payload['activity_execution_id'] ?? null) === $execution->id
+                        && in_array($candidate->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                 );
                 ActivityCancellation::record(
                     $run,
