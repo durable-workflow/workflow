@@ -16,13 +16,13 @@ Unknown event names remain unknown; this is not a catch-all enum fallback.
 ## Qualification and deployment order
 
 1. Qualify and publish the non-emitting reader release after the independent
-   Core 2.12.1 failure-storage patch. Exercise history pages,
+   failure-storage and retention repairs. Exercise history pages,
    cold replay and exported replay with constructed rejected-outcome facts.
    A rejected completion must leave an unfinished activity unresolved.
 2. Update all participating embedded applications, PHP Server roles, inspection
    tools and rollback artifacts to a reader-equipped release. A package tag does
    not update a pinned Server image. Keep the emitter disabled while any reader
-   still uses a release without this bridge, including Core 2.12.1. Qualify the
+   still uses a release without this bridge. Qualify the
    exact reader-equipped package and image rather than assuming that a version
    range or an unrelated patch includes this event.
 3. Qualify the normal PHP, Python and Rust SDK readers and real Waterline against
