@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PDO;
@@ -222,6 +223,51 @@ final class ActivityOutcomeRetentionTest extends TestCase
         self::assertTrue($writerHeld, 'The retention snapshot must already own SQLite writer admission.');
         self::assertNotNull($run->fresh()->details_pruned_at);
         self::assertSame(0, $run->historyEvents()->count());
+    }
+
+    public function testSqliteRefusalMetadataKeepsTheOriginalPublicationBudget(): void
+    {
+        $connection = DB::connection();
+        if ($connection->getDriverName() !== 'sqlite' || $connection->getDatabaseName() === ':memory:') {
+            $this->markTestSkipped('Publication contention requires two connections to one SQLite file.');
+        }
+        [, $claim, $run] = $this->claimedOriginal();
+        $pdo = $connection->getPdo();
+        $previousTimeout = (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn();
+        $previousJournal = (string) $pdo->query('PRAGMA journal_mode')->fetchColumn();
+        self::assertContains(strtolower($previousJournal), ['delete', 'wal', 'truncate', 'persist', 'memory', 'off']);
+        $pdo->exec('PRAGMA journal_mode=DELETE');
+        $pdo->exec('PRAGMA busy_timeout=3000');
+        $other = new PDO('sqlite:' . $connection->getDatabaseName());
+        $other->exec('BEGIN EXCLUSIVE');
+        $started = hrtime(true);
+        try {
+            try {
+                ActivityOutcomeRecorder::record(
+                    $claim['task_id'],
+                    $claim['activity_attempt_id'],
+                    $claim['attempt_number'],
+                    'must not be published',
+                    null,
+                    2,
+                    5,
+                    admissionDeadline: $started + 250_000_000,
+                );
+                self::fail('The held writer cannot admit this outcome.');
+            } catch (QueryException $error) {
+                self::assertInstanceOf(PDOException::class, $error->getPrevious());
+                self::assertContains(((int) ($error->getPrevious()->errorInfo[1] ?? 0)) & 255, [5, 6]);
+            }
+            $elapsed = (hrtime(true) - $started) / 1_000_000_000;
+        } finally {
+            $other->exec('ROLLBACK');
+            $pdo->exec('PRAGMA busy_timeout=' . $previousTimeout);
+            $pdo->exec('PRAGMA journal_mode=' . $previousJournal);
+        }
+
+        self::assertLessThan(1.0, $elapsed, 'A metadata read must not consume the unrelated three-second SQLite timeout.');
+        self::assertSame(RunStatus::Waiting, $run->fresh()->status);
+        self::assertSame(ActivityAttemptStatus::Running, ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status);
     }
 
     private function claimedOriginal(): array
