@@ -142,6 +142,48 @@ final class HistoryTimeline
         return self::mapEvent($event, collect(), collect(), collect(), collect(), $failures);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public static function fromActivityOutcomeRejection(WorkflowHistoryEvent $event): array
+    {
+        if ($event->event_type !== HistoryEventType::ActivityOutcomeRejected) {
+            throw new \LogicException('Rejection timeline requires an ActivityOutcomeRejected event.');
+        }
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $activityId = self::stringValue($payload['activity_execution_id'] ?? null);
+        $attemptId = self::stringValue($payload['activity_attempt_id'] ?? null);
+        $attemptNumber = self::intValue($payload['attempt_number'] ?? null);
+
+        return [
+            'id' => $event->id,
+            'sequence' => $event->sequence,
+            'type' => $event->event_type->value,
+            'kind' => 'activity',
+            'entry_kind' => 'point',
+            'source_kind' => 'activity_execution',
+            'source_id' => $activityId,
+            'summary' => self::boundedSummary(sprintf(
+                'Rejected %s outcome from activity attempt %s: %s.',
+                self::stringValue($payload['outcome'] ?? null) ?? 'unknown',
+                $attemptNumber ?? 'unknown',
+                self::stringValue($payload['reason'] ?? null) ?? 'unknown',
+            ), ''),
+            'recorded_at' => self::timestamp($event->recorded_at),
+            'command_id' => null,
+            'command_sequence' => null,
+            'task_id' => $event->workflow_task_id,
+            'activity_execution_id' => $activityId,
+            'timer_id' => null,
+            'failure_id' => null,
+            'activity' => [
+                'id' => $activityId,
+                'attempt_id' => $attemptId,
+                'attempt_count' => $attemptNumber,
+            ],
+        ];
+    }
+
     private static function mapEvent(
         WorkflowHistoryEvent $event,
         Collection $commands,
@@ -150,6 +192,9 @@ final class HistoryTimeline
         Collection $timers,
         Collection $failures,
     ): array {
+        if ($event->event_type === HistoryEventType::ActivityOutcomeRejected) {
+            return self::fromActivityOutcomeRejection($event);
+        }
         /** @var array<string, mixed> $payload */
         $payload = is_array($event->payload) ? $event->payload : [];
         $commandId = self::stringValue($event->workflow_command_id)
