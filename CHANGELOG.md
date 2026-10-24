@@ -6,6 +6,8 @@
   Preserve completed tasks and snapshot the cancelled attempt's matching task so
   its worker can acknowledge the stop and repeat that acknowledgement safely.
 - Apply the same task selection when waiting for cancellation completion.
+- Retry rolled-back SQLite application heartbeats after metadata contention,
+  preserving the current attempt, deadlines and one progress event per call.
 
 ## 2.13.0 - 2026-10-24
 

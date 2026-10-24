@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Illuminate\Container\Container;
-use Illuminate\Support\Facades\DB;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -26,6 +25,7 @@ use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\LocalActivityRuntime;
+use Workflow\V2\Support\SqliteTransaction;
 
 abstract class Activity
 {
@@ -112,7 +112,7 @@ abstract class Activity
     {
         $normalizedProgress = HeartbeatProgress::normalizeForWrite($progress);
 
-        DB::transaction(function () use ($normalizedProgress): void {
+        SqliteTransaction::run(function () use ($normalizedProgress): void {
             $lockedRows = ActivityRowLockOrder::lockForExecution($this->execution->id);
             $execution = $lockedRows['execution'];
 
