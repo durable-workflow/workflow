@@ -8,9 +8,9 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use RuntimeException;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Exceptions\FailureMessageStorageException;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowFailure extends Model
@@ -82,13 +82,13 @@ class WorkflowFailure extends Model
     private static function decodeFullMessage(mixed $stored): string
     {
         if (! is_string($stored) || ! str_starts_with($stored, self::FULL_MESSAGE_ENCODING)) {
-            throw new RuntimeException('Invalid stored full failure-message encoding.');
+            throw new FailureMessageStorageException('Invalid stored full failure-message encoding.');
         }
 
         $encoded = substr($stored, strlen(self::FULL_MESSAGE_ENCODING));
         $decoded = base64_decode($encoded, true);
         if ($decoded === false || base64_encode($decoded) !== $encoded) {
-            throw new RuntimeException('Invalid stored full failure-message encoding.');
+            throw new FailureMessageStorageException('Invalid stored full failure-message encoding.');
         }
 
         return $decoded;

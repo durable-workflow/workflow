@@ -15,7 +15,8 @@ Ordinary messages keep their existing storage. Messages beyond the old TEXT
 capacity, and messages containing NUL, retain their full bytes in a marked
 base64 representation in the new column. The model decodes that representation
 and hides the physical field from public serialization. Invalid encoded storage
-raises an error instead of presenting a preview as the canonical message.
+raises `FailureMessageStorageException` instead of presenting a preview as the
+canonical message. The exception does not include the stored payload.
 
 Base64 is a storage representation, not encryption. Apply the same access and
 backup protections to both columns. SDK report limits and visible truncation

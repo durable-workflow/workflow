@@ -6,7 +6,7 @@ namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use RuntimeException;
+use Workflow\V2\Exceptions\FailureMessageStorageException;
 use Workflow\V2\Models\WorkflowFailure;
 
 final class WorkflowFailureMessageStorageTest extends TestCase
@@ -87,7 +87,7 @@ final class WorkflowFailureMessageStorageTest extends TestCase
     {
         $failure = new WorkflowFailure();
         $failure->setRawAttributes(['message' => 'diagnostic preview', 'message_full' => $stored], true);
-        $this->expectException(RuntimeException::class);
+        $this->expectException(FailureMessageStorageException::class);
         $this->expectExceptionMessage('Invalid stored full failure-message encoding.');
         $failure->message;
     }
