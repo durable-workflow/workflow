@@ -158,9 +158,8 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
                     || ! str_starts_with($query->sql, 'select') || ! str_contains($query->sql, 'activity_executions')) {
                     return;
                 }
-                $writer->exec(
-                    "UPDATE workflow_tasks SET updated_at = '2000-01-01 00:00:00' WHERE id = " . $writer->quote($task->id)
-                );
+                $statement = $writer->prepare('UPDATE workflow_tasks SET updated_at = ? WHERE id = ?');
+                $statement->execute(['2000-01-01 00:00:00', $task->id]);
                 $conflicts++;
             });
         };
