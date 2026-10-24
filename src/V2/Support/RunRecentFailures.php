@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use InvalidArgumentException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowFailure;
@@ -66,7 +67,8 @@ final class RunRecentFailures
             ->where('workflow_run_id', $run->id);
         // Aggregate only selected identities. Successful updates and later
         // FailureHandled events must never become the primary failure link.
-        $references = (clone $query)->whereIn('payload->failure_id', $rows->modelKeys())
+        $failureId = self::failureIdExpression($query);
+        $references = (clone $query)->whereIn($connection->raw($failureId), $rows->modelKeys())
             ->whereIn('event_type', [
                 HistoryEventType::ActivityFailed->value,
                 HistoryEventType::ActivityTimedOut->value,
@@ -79,9 +81,9 @@ final class RunRecentFailures
                 HistoryEventType::WorkflowTerminated->value,
                 HistoryEventType::UpdateCompleted->value,
             ])->toBase()
-            ->select('payload->failure_id as failure_id')
+            ->selectRaw("{$failureId} AS failure_id")
             ->selectRaw('MAX(sequence) as sequence')
-            ->groupBy('payload->failure_id')
+            ->groupByRaw($failureId)
             ->get();
         $failureBySequence = $references->pluck('failure_id', 'sequence');
         $events = (clone $query)->whereIn('sequence', $failureBySequence->keys()->all())
@@ -135,5 +137,23 @@ final class RunRecentFailures
             'limit' => $limit,
             'has_more' => $hasMore,
         ];
+    }
+
+    /**
+     * @param Builder<WorkflowHistoryEvent> $query
+     */
+    private static function failureIdExpression(Builder $query): string
+    {
+        $model = $query->getModel();
+        $connection = $model->getConnection();
+        $grammar = $connection->getQueryGrammar();
+        $payload = $model->qualifyColumn('payload');
+        if ($connection->getDriverName() !== 'pgsql') {
+            return $grammar->wrap($payload . '->failure_id');
+        }
+
+        $metadata = PostgresJsonMetadata::textExpression($grammar->wrap($payload));
+
+        return "({$metadata}::json->>'failure_id')";
     }
 }
