@@ -233,8 +233,10 @@ final class ActivityOutcomeRetentionTest extends TestCase
         }
         [, $claim, $run] = $this->claimedOriginal();
         $pdo = $connection->getPdo();
-        $previousTimeout = (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn();
-        $previousJournal = (string) $pdo->query('PRAGMA journal_mode')->fetchColumn();
+        $previousTimeout = (int) $pdo->query('PRAGMA busy_timeout')
+            ->fetchColumn();
+        $previousJournal = (string) $pdo->query('PRAGMA journal_mode')
+            ->fetchColumn();
         self::assertContains(strtolower($previousJournal), ['delete', 'wal', 'truncate', 'persist', 'memory', 'off']);
         $pdo->exec('PRAGMA journal_mode=DELETE');
         $pdo->exec('PRAGMA busy_timeout=3000');
@@ -265,9 +267,16 @@ final class ActivityOutcomeRetentionTest extends TestCase
             $pdo->exec('PRAGMA journal_mode=' . $previousJournal);
         }
 
-        self::assertLessThan(1.0, $elapsed, 'A metadata read must not consume the unrelated three-second SQLite timeout.');
+        self::assertLessThan(
+            1.0,
+            $elapsed,
+            'A metadata read must not consume the unrelated three-second SQLite timeout.'
+        );
         self::assertSame(RunStatus::Waiting, $run->fresh()->status);
-        self::assertSame(ActivityAttemptStatus::Running, ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status);
+        self::assertSame(
+            ActivityAttemptStatus::Running,
+            ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status
+        );
     }
 
     private function claimedOriginal(): array

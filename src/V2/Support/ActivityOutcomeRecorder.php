@@ -41,9 +41,13 @@ final class ActivityOutcomeRecorder
         ?string $codec = null,
         ?int $admissionDeadline = null,
     ): array {
-        $refused = self::refusedExpiredAttempt($taskId, $attemptId, $attemptCount, $admissionDeadline);
-        if ($refused !== null) {
-            return $refused;
+        $sqlite = (new ActivityAttempt())->getConnection()
+            ->getDriverName() === 'sqlite';
+        if (! $sqlite) {
+            $refused = self::refusedExpiredAttempt($taskId, $attemptId, $attemptCount, $admissionDeadline);
+            if ($refused !== null) {
+                return $refused;
+            }
         }
 
         return SqliteTransaction::forTask($taskId, static function () use (
@@ -55,7 +59,18 @@ final class ActivityOutcomeRecorder
             $maxAttempts,
             $backoffSeconds,
             $codec,
+            $sqlite,
+            $admissionDeadline,
         ): array {
+            // Even an unlocked SQLite read can wait behind an exclusive writer.
+            // Keep the refusal metadata behind the original bounded admission.
+            if ($sqlite) {
+                $refused = self::refusedExpiredAttempt($taskId, $attemptId, $attemptCount, $admissionDeadline);
+                if ($refused !== null) {
+                    return $refused;
+                }
+            }
+
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
