@@ -8,9 +8,11 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\TestCase;
+use RuntimeException;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
+use Workflow\V2\Support\ActivityOutcomeRecorder;
 
 final class ActivityOutcomeRetentionProcessTest extends TestCase
 {
@@ -45,10 +47,22 @@ final class ActivityOutcomeRetentionProcessTest extends TestCase
                     file_put_contents($input['ready'], 'requesting run lock');
                 }
             });
-            $bridge = $this->app->make(ActivityTaskBridge::class);
-            $reply = $input['outcome'] === 'completed'
-                ? $bridge->complete($input['attempt_id'], 'discarded late result')
-                : $bridge->fail($input['attempt_id'], ['message' => 'discarded late failure']);
+            if ($input['direct']) {
+                $reply = ActivityOutcomeRecorder::record(
+                    $input['task_id'],
+                    $input['attempt_id'],
+                    $input['attempt_number'],
+                    'discarded late result',
+                    $input['outcome'] === 'failed' ? new RuntimeException('discarded late failure') : null,
+                    2,
+                    5,
+                );
+            } else {
+                $bridge = $this->app->make(ActivityTaskBridge::class);
+                $reply = $input['outcome'] === 'completed'
+                    ? $bridge->complete($input['attempt_id'], 'discarded late result')
+                    : $bridge->fail($input['attempt_id'], ['message' => 'discarded late failure']);
+            }
             self::assertFalse($reply['recorded']);
         }
 

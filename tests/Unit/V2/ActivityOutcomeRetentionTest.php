@@ -41,7 +41,9 @@ final class ActivityOutcomeRetentionTest extends TestCase
         foreach ([RunStatus::Completed, RunStatus::Failed, RunStatus::Cancelled, RunStatus::Terminated] as $status) {
             foreach ([false, true] as $reclaimed) {
                 foreach (['completed', 'failed'] as $outcome) {
-                    $cases[$status->value . '/' . (int) $reclaimed . '/' . $outcome] = [$status, $reclaimed, $outcome];
+                    $key = $status->value . '/' . (int) $reclaimed . '/' . $outcome;
+                    $cases[$key . '/bridge'] = [$status, $reclaimed, $outcome, false];
+                    $cases[$key . '/inline'] = [$status, $reclaimed, $outcome, true];
                 }
             }
         }
@@ -54,6 +56,7 @@ final class ActivityOutcomeRetentionTest extends TestCase
         RunStatus $status,
         bool $reclaimed,
         string $outcome,
+        bool $direct,
     ): void {
         if (DB::connection()->getDriverName() === 'sqlite') {
             $this->markTestSkipped('This deterministic row-lock interleaving requires PostgreSQL or MySQL.');
@@ -65,7 +68,7 @@ final class ActivityOutcomeRetentionTest extends TestCase
             self::assertTrue(ActivityTimeoutEnforcer::enforceLeaseExpiry($claim['task_id'])['enforced']);
         }
         $run->forceFill(['status' => $status, 'closed_at' => now()])->save();
-        $reports = $this->interleavePruning($run, $claim, $outcome, $deadline);
+        $reports = $this->interleavePruning($run, $claim, $outcome, $deadline, $direct);
 
         self::assertNotSame($reports[0]['pid'], $reports[1]['pid']);
         self::assertSame('pruned', $reports[0]['reason']);
@@ -114,7 +117,7 @@ final class ActivityOutcomeRetentionTest extends TestCase
         return [$bridge, $claim, WorkflowRun::query()->findOrFail($workflow->runId())];
     }
 
-    private function interleavePruning(WorkflowRun $run, array $claim, string $outcome, int $deadline): array
+    private function interleavePruning(WorkflowRun $run, array $claim, string $outcome, int $deadline, bool $direct): array
     {
         $directory = sys_get_temp_dir() . '/workflow-outcome-retention-' . bin2hex(random_bytes(8));
         mkdir($directory, 0700);
@@ -126,6 +129,9 @@ final class ActivityOutcomeRetentionTest extends TestCase
                     'database' => DB::connection($run->getConnectionName())->getConfig(),
                     'run_id' => $run->id,
                     'attempt_id' => $claim['activity_attempt_id'],
+                    'task_id' => $claim['task_id'],
+                    'attempt_number' => $claim['attempt_number'],
+                    'direct' => $direct,
                     'outcome' => $operation,
                     'observed_at' => now()->toISOString(),
                     'deadline' => $deadline,
