@@ -19,6 +19,47 @@ use Workflow\V2\Support\RunHistoryPage;
 
 final class RunHistoryPageTest extends TestCase
 {
+    public function testRejectedOutcomeIsReadableWithoutChangingBusinessStateOrRebuildingProjections(): void
+    {
+        $run = $this->createRun('rejected-outcome', 'namespace-a');
+        $this->events($run, 1, 2);
+        $payload = [
+            'activity_execution_id' => 'original-activity',
+            'activity_attempt_id' => 'original-attempt',
+            'attempt_number' => 1,
+            'lease_owner' => 'original-worker',
+            'outcome' => 'failed',
+            'reason' => 'lease_expired',
+            'observed_at' => '2026-10-24T01:00:00.000000Z',
+        ];
+        DB::table('workflow_history_events')->where('id', 'rejected-outcome-2')->update([
+            'event_type' => 'ActivityOutcomeRejected',
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+        ]);
+        $before = $run->getRawOriginal();
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        try {
+            $page = RunHistoryPage::forRun($run, afterSequence: 1);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertCount(1, $page['events']);
+        $this->assertSame('ActivityOutcomeRejected', $page['events'][0]['event_type']);
+        $this->assertSame($payload, $page['events'][0]['payload']);
+        $this->assertSame(2, $page['through_sequence']);
+        $this->assertSame($before, $run->fresh()->getRawOriginal());
+        $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, DB::table('workflow_run_timeline_entries')->count());
+        $this->assertSame(0, WorkflowRunSummary::query()->where('id', $run->id)->count());
+        foreach ($queries as $query) {
+            $this->assertStringStartsWith('select ', strtolower(ltrim($query['query'])));
+        }
+    }
+
     public function testLongHistoryReadsOnlyOnePageAndNoChildOrProjectionModels(): void
     {
         $run = $this->createRun('selected', 'namespace-a');
