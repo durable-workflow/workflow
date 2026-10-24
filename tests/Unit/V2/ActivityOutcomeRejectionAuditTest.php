@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRetryWorkflow;
 use Tests\TestCase;
@@ -205,15 +206,22 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
     {
         [$bridge, $claim, $run] = $this->claimedOriginal(TestGreetingWorkflow::class);
         self::assertSame(1, $claim['retry_policy']['max_attempts']);
-        self::assertTrue($bridge->fail($claim['activity_attempt_id'], ['message' => 'accepted failure'])['recorded']);
+        self::assertTrue($bridge->fail($claim['activity_attempt_id'], [
+            'message' => 'accepted failure',
+        ])['recorded']);
         self::assertSame(
             ActivityAttemptStatus::Failed,
             ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status,
         );
         $before = $this->businessState($run);
-        $history = $run->historyEvents()->get()->map->getAttributes()->all();
+        $history = $run->historyEvents()
+            ->get()
+            ->map->getAttributes()
+            ->all();
 
-        self::assertFalse($bridge->fail($claim['activity_attempt_id'], ['message' => 'duplicate failure'])['recorded']);
+        self::assertFalse($bridge->fail($claim['activity_attempt_id'], [
+            'message' => 'duplicate failure',
+        ])['recorded']);
         self::assertCount(0, $this->notices($run));
         self::assertSame($history, $run->historyEvents()->get()->map->getAttributes()->all());
         self::assertSame($before, $this->businessState($run));
@@ -236,7 +244,10 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
             'status' => $status,
         ])->save();
         $before = $this->businessState($run);
-        $history = $run->historyEvents()->get()->map->getAttributes()->all();
+        $history = $run->historyEvents()
+            ->get()
+            ->map->getAttributes()
+            ->all();
 
         self::assertNull($this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']));
         self::assertCount(0, $this->notices($run));
@@ -250,7 +261,8 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         $report = WorkflowRunRetentionCleanup::pruneRun($run);
         self::assertGreaterThan(0, $report['activity_attempts_deleted']);
         self::assertGreaterThan(0, $report['history_events_deleted']);
-        $retained = $run->fresh()->getAttributes();
+        $retained = $run->fresh()
+            ->getAttributes();
         self::assertNotNull($retained['details_pruned_at']);
 
         $reply = $bridge->complete($claim['activity_attempt_id'], 'discarded after pruning');
@@ -261,6 +273,52 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertCount(0, $this->notices($run));
         self::assertSame(0, $run->historyEvents()->count());
         self::assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        self::assertSame(0, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+        self::assertNull(WorkflowRunSummary::query()->find($run->id));
+    }
+
+    public function testConcurrentLateCompletionAndFailureProduceOneImmutableDiagnostic(): void
+    {
+        $deadline = hrtime(true) + 30_000_000_000;
+        [, $claim, $run] = $this->expiredOriginal();
+        $before = $this->businessState($run);
+        $prefix = $run->historyEvents()->orderBy('sequence')->get()->map->getAttributes()->all();
+        $reports = $this->concurrentOutcomes($run, $claim, ['completed', 'failed'], $deadline);
+        foreach ($reports as $report) {
+            self::assertFalse($report['recorded']);
+            self::assertSame('stale_attempt', $report['reason']);
+        }
+
+        $notices = $this->notices($run);
+        self::assertCount(1, $notices);
+        self::assertSame($claim['activity_attempt_id'], $notices[0]->payload['activity_attempt_id']);
+        self::assertContains($notices[0]->payload['outcome'], ['completed', 'failed']);
+        $retained = $notices[0]->getAttributes();
+        $this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']);
+        self::assertSame($retained, $this->notices($run)[0]->getAttributes());
+        self::assertSame($before, $this->businessState($run));
+        self::assertSame($prefix, $run->historyEvents()->orderBy('sequence')->limit(count($prefix))
+            ->get()
+            ->map->getAttributes()
+            ->all());
+        self::assertStringNotContainsString('discarded concurrent', json_encode($notices[0]->payload));
+    }
+
+    public function testConcurrentPruningAndLateOutcomeNeverRestoreDetails(): void
+    {
+        $deadline = hrtime(true) + 30_000_000_000;
+        [, $claim, $run] = $this->expiredOriginal(closed: true);
+        $status = $run->fresh()->status;
+        $reports = $this->concurrentOutcomes($run, $claim, ['completed', 'pruned'], $deadline);
+        self::assertFalse($reports[0]['recorded']);
+        self::assertContains($reports[0]['reason'], ['stale_attempt', 'attempt_not_found', 'task_not_found']);
+        self::assertSame('pruned', $reports[1]['reason']);
+        self::assertSame($status, $run->fresh()->status);
+        self::assertNotNull($run->fresh()->details_pruned_at);
+        self::assertSame(0, $run->historyEvents()->count());
+        self::assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        self::assertSame(0, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+        self::assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
         self::assertSame(0, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
         self::assertNull(WorkflowRunSummary::query()->find($run->id));
     }
@@ -373,6 +431,91 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertSame($claim['activity_attempt_id'], $notice->payload['activity_attempt_id']);
         self::assertStringNotContainsString('discarded-private-result', json_encode($notice->payload));
         self::assertSame($before, $this->businessState($run));
+    }
+
+    /**
+     * @param array<string, mixed> $claim
+     * @param list<string> $outcomes
+     * @return list<array<string, mixed>>
+     */
+    private function concurrentOutcomes(WorkflowRun $run, array $claim, array $outcomes, int $deadline): array
+    {
+        $connection = DB::connection($run->getConnectionName());
+        if ($connection->getDriverName() === 'sqlite' && $connection->getDatabaseName() === ':memory:') {
+            $this->markTestSkipped('The two-process control requires a shared file or network database.');
+        }
+        $directory = sys_get_temp_dir() . '/workflow-rejected-outcome-' . bin2hex(random_bytes(8));
+        mkdir($directory, 0700);
+        $workers = [];
+        try {
+            foreach ($outcomes as $index => $outcome) {
+                $path = $directory . '/input-' . $index . '.json';
+                file_put_contents($path, json_encode([
+                    'database' => $connection->getConfig(),
+                    'attempt_id' => $claim['activity_attempt_id'],
+                    'run_id' => $run->id,
+                    'allow_pruned' => in_array('pruned', $outcomes, true),
+                    'outcome' => $outcome,
+                    'observed_at' => now()
+                        ->toISOString(),
+                    'deadline' => $deadline,
+                    'ready' => $directory . '/ready-' . $index,
+                    'go' => $directory . '/go',
+                    'report' => $directory . '/report-' . $index . '.json',
+                ], JSON_THROW_ON_ERROR));
+                $worker = new Process([
+                    PHP_BINARY,
+                    dirname(__DIR__, 3) . '/vendor/bin/phpunit',
+                    dirname(__DIR__, 2) . '/Support/ActivityOutcomeRejectionProcessTest.php',
+                    '--do-not-cache-result',
+                ], dirname(__DIR__, 3), [
+                    'DWF_REJECTION_PROCESS_INPUT' => $path,
+                    'APP_SERVICES_CACHE' => $directory . '/services-' . $index . '.php',
+                    'APP_PACKAGES_CACHE' => $directory . '/packages-' . $index . '.php',
+                    'XDEBUG_MODE' => 'off',
+                ], timeout: 30);
+                $workers[] = $worker;
+                $worker->start();
+            }
+            while (! is_file($directory . '/ready-0') || ! is_file($directory . '/ready-1')) {
+                foreach ($workers as $worker) {
+                    if (! $worker->isRunning()) {
+                        self::fail(substr($worker->getErrorOutput() . $worker->getOutput(), -8_192));
+                    }
+                }
+                if (hrtime(true) >= $deadline) {
+                    self::fail('Both processes must share the original budget.');
+                }
+                usleep(1_000);
+            }
+            file_put_contents($directory . '/go', 'go');
+            while ($workers[0]->isRunning() || $workers[1]->isRunning()) {
+                if (hrtime(true) >= $deadline) {
+                    self::fail('The concurrent outcomes exceeded their original budget.');
+                }
+                usleep(1_000);
+            }
+            foreach ($workers as $worker) {
+                self::assertSame(
+                    0,
+                    $worker->getExitCode(),
+                    substr($worker->getErrorOutput() . $worker->getOutput(), -8_192)
+                );
+            }
+            $first = json_decode(file_get_contents($directory . '/report-0.json'), true, flags: JSON_THROW_ON_ERROR);
+            $second = json_decode(file_get_contents($directory . '/report-1.json'), true, flags: JSON_THROW_ON_ERROR);
+            self::assertNotSame($first['pid'], $second['pid']);
+            return [$first, $second];
+        } finally {
+            foreach ($workers as $worker) {
+                $worker->stop(2);
+            }
+            foreach (glob($directory . '/*') ?: [] as $path) {
+                unlink($path);
+            }
+            rmdir($directory);
+        }
+
     }
 
     private function expiredOriginal(bool $closed = false): array
