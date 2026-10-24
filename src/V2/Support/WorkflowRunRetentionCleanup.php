@@ -75,7 +75,7 @@ final class WorkflowRunRetentionCleanup
             ->getModel()
             ->getConnection();
 
-        return $runConnection->transaction(static function () use ($runId): array {
+        return SqliteTransaction::run(static function () use ($runId): array {
             /** @var WorkflowRun $lockedRun */
             $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($runId)
@@ -171,7 +171,16 @@ final class WorkflowRunRetentionCleanup
             }
 
             return $report;
-        });
+        }, admission: static function () use ($runId): void {
+            $runs = ConfiguredV2Models::query('run_model', WorkflowRun::class);
+            $key = $runs->getModel()
+                ->getKeyName();
+            $runs->whereKey($runId)
+                ->toBase()
+                ->update([
+                    $key => $runId,
+                ]);
+        }, connection: $runConnection);
     }
 
     /**
