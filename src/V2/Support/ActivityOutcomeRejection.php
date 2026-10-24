@@ -15,12 +15,12 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ActivityOutcomeRejection
 {
-    public static function recordExpiredAttempt(ActivityAttempt $original, string $outcome): string
+    public static function recordExpiredAttempt(ActivityAttempt $original, string $outcome): ?string
     {
         $connection = $original->getConnection();
         $runId = (string) $original->workflow_run_id;
 
-        return SqliteTransaction::run(static function () use ($original, $outcome, $connection, $runId): string {
+        return SqliteTransaction::run(static function () use ($original, $outcome, $connection, $runId): ?string {
             // Retention owns this same run lock before deleting detail rows.
             // A refused expired attempt never needs the business task locks.
             $run = WorkflowRun::on($connection->getName())->whereKey($runId)->lockForUpdate()->first();
@@ -33,11 +33,17 @@ final class ActivityOutcomeRejection
                 return 'stale_attempt';
             }
             $attempt = ActivityAttempt::on($connection->getName())->find($original->id);
-            if (! $attempt instanceof ActivityAttempt || $attempt->id !== $original->id
-                || $attempt->status !== ActivityAttemptStatus::Expired) {
+            if (! $attempt instanceof ActivityAttempt || $attempt->id !== $original->id) {
                 return 'stale_attempt';
             }
-            $reason = self::expiredAttemptReason($run, $execution);
+            $reason = match ($attempt->status) {
+                ActivityAttemptStatus::Expired => self::expiredAttemptReason($run, $execution),
+                ActivityAttemptStatus::Running => self::runningExpiredReason($run, $execution, $task),
+                default => 'stale_attempt',
+            };
+            if ($reason === null) {
+                return null;
+            }
             self::recordBoundAttempt($run, $execution, $task, $attempt, $outcome, $reason);
 
             return $reason;
@@ -134,7 +140,21 @@ final class ActivityOutcomeRejection
         }
 
         return $attempt->status === ActivityAttemptStatus::Running
-            && ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run) === $reason;
+            && self::runningExpiredReason($run, $execution, $task) === $reason;
+    }
+
+    private static function runningExpiredReason(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        WorkflowTask $task,
+    ): ?string {
+        $reason = ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run);
+        if ($reason === null) {
+            return null;
+        }
+        $closedReason = self::expiredAttemptReason($run, $execution);
+
+        return $closedReason === 'stale_attempt' ? $reason : $closedReason;
     }
 
     private static function expiredAttemptReason(WorkflowRun $run, ActivityExecution $execution): string

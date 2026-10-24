@@ -232,6 +232,25 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         self::assertSame($before, $this->businessState($run));
     }
 
+    public function testLeaseRenewedBeforeTheRunLockCreatesNoRefusalFact(): void
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal();
+        $original = ActivityAttempt::query()->findOrFail($claim['activity_attempt_id']);
+        $this->travel(295)
+            ->seconds();
+        $renewed = $bridge->renewLease($claim['activity_attempt_id'], $claim['lease_owner']);
+        self::assertTrue($renewed['lease_renewed']);
+        $this->travel(10)
+            ->seconds();
+        self::assertTrue(now()->gte($original->lease_expires_at));
+        self::assertTrue(now()->lt(WorkflowTask::query()->findOrFail($claim['task_id'])->lease_expires_at));
+        $before = $this->businessState($run);
+
+        self::assertNull(ActivityOutcomeRejection::recordExpiredAttempt($original, 'completed'));
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+    }
+
     public static function settledAttempts(): array
     {
         return [
@@ -356,8 +375,12 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
             [, $claim, $run] = $this->expiredOriginal(closed: true);
         } else {
             [, $claim, $run] = $this->claimedOriginal();
-            $this->travel(301)->seconds();
-            $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+            $this->travel(301)
+                ->seconds();
+            $run->forceFill([
+                'status' => RunStatus::Completed,
+                'closed_at' => now(),
+            ])->save();
         }
         $status = $run->fresh()
 ->status;

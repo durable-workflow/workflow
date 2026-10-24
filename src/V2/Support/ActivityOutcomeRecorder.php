@@ -519,14 +519,22 @@ final class ActivityOutcomeRecorder
             return self::ignored('task_not_found');
         }
 
-        if ($attempt->status === ActivityAttemptStatus::Expired) {
-            return self::ignored(ActivityOutcomeRejection::recordExpiredAttempt(
+        $execution = $attempt->execution;
+        $at = now();
+        $expired = $attempt->status === ActivityAttemptStatus::Expired
+            || ($attempt->status === ActivityAttemptStatus::Running
+                && ($attempt->lease_expires_at === null || $at->gte($attempt->lease_expires_at)
+                    || ($execution instanceof ActivityExecution
+                        && ActivityTimeoutEnforcer::hasExpiredDeadline($execution, $at))));
+        if ($expired) {
+            $reason = ActivityOutcomeRejection::recordExpiredAttempt(
                 $attempt,
                 $throwable === null ? 'completed' : 'failed',
-            ));
+            );
+            if ($reason !== null) {
+                return self::ignored($reason);
+            }
         }
-
-        $execution = $attempt->execution;
 
         if (! $execution instanceof ActivityExecution) {
             return self::ignored('activity_execution_missing');

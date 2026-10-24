@@ -41,6 +41,13 @@ outcome merely because its response was retried.
   serialize the append against pruning. Closed retained runs may acquire this
   diagnostic fact without acquiring new execution authority.
 
+Already lost claims use a run-first audit transaction, matching retention's
+lock order. Read their original task, execution and attempt bindings without
+taking the business-row locks in reverse order. Recheck actual stored authority
+under the run lock: a lease renewed before that check creates no refusal fact.
+Both a reclaimed expired attempt and a lease that expires before maintenance
+must remain safe against concurrent pruning.
+
 ## Required qualification
 
 Prove original identity, one-record behavior across repeated and concurrent
