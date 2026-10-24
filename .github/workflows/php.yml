@@ -1255,17 +1255,14 @@ jobs:
         name: laravel-log-mariadb
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
-  coverage:
-    needs:
-    - preflight
-    - feature-mysql
+  coverage-unit:
+    needs: preflight
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     outputs:
-      sonar_artifact_id: ${{ steps.sonar_coverage.outputs.artifact-id }}
+      unit_artifact_id: ${{ steps.unit_coverage.outputs.artifact-id }}
 
     env:
-      COVERAGE_BRANCH: ${{ github.head_ref || github.ref_name }}
       COVERAGE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
 
     services:
@@ -1297,13 +1294,6 @@ jobs:
 
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
-
-    - name: Download MySQL feature coverage
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-      with:
-        pattern: feature-timing-mysql-*
-        path: build/feature-coverage
-        merge-multiple: true
 
     - name: Create SQLite database on fast temporary storage
       run: |
@@ -1359,6 +1349,67 @@ jobs:
         QUEUE_CONNECTION: sync
         XDEBUG_MODE: off
 
+    - name: Retain unit coverage for the combined gate
+      id: unit_coverage
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: unit-coverage
+        path: coverage.xml
+        if-no-files-found: error
+        retention-days: 1
+
+    - name: Upload coverage resource metrics
+      if: ${{ always() && github.server_url == 'https://github.com' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      with:
+        name: coverage-resource-metrics
+        path: build/test-results/coverage-resource-metrics.md
+
+    - name: Remove SQLite database from tmpfs
+      if: ${{ always() }}
+      run: rm -f "$COVERAGE_DB_PATH" "$COVERAGE_DB_PATH-journal" "$COVERAGE_DB_PATH-wal" "$COVERAGE_DB_PATH-shm"
+
+  # Only aggregation needs the MySQL results. Collect unit coverage in parallel.
+  coverage:
+    needs:
+    - preflight
+    - feature-mysql
+    - coverage-unit
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    outputs:
+      sonar_artifact_id: ${{ steps.sonar_coverage.outputs.artifact-id }}
+
+    env:
+      COVERAGE_BRANCH: ${{ github.head_ref || github.ref_name }}
+      COVERAGE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        fetch-depth: 10
+        persist-credentials: false
+        ref: ${{ env.COVERAGE_COMMIT }}
+
+    - name: Set up PHP for coverage aggregation
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      with:
+        php-version: '8.3'
+        coverage: none
+
+    - name: Download unit coverage from this run
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        artifact-ids: ${{ needs.coverage-unit.outputs.unit_artifact_id }}
+        digest-mismatch: error
+
+    - name: Download MySQL feature coverage
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        pattern: feature-timing-mysql-*
+        path: build/feature-coverage
+        merge-multiple: true
+
     - name: Enforce the v2 coverage ratchet
       run: >-
         php scripts/ci/check-v2-coverage.php
@@ -1381,13 +1432,6 @@ jobs:
           build/feature-coverage/mysql-shard-3-coverage.xml
         if-no-files-found: error
         retention-days: 1
-
-    - name: Upload coverage resource metrics
-      if: ${{ always() && github.server_url == 'https://github.com' }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-      with:
-        name: coverage-resource-metrics
-        path: build/test-results/coverage-resource-metrics.md
 
     - name: Upload machine-readable v2 coverage summary
       if: ${{ always() && github.server_url == 'https://github.com' }}
@@ -1425,10 +1469,6 @@ jobs:
       if: ${{ steps.codecov.outcome == 'failure' }}
       run: echo '::warning title=Codecov upload unavailable::Runtime tests and coverage thresholds remain required. Raw coverage evidence is retained in this run.'
 
-    - name: Remove SQLite database from tmpfs
-      if: ${{ always() }}
-      run: rm -f "$COVERAGE_DB_PATH" "$COVERAGE_DB_PATH-journal" "$COVERAGE_DB_PATH-wal" "$COVERAGE_DB_PATH-shm"
-
   sonar-coverage:
     name: SonarQube analysis
     needs: [coverage]
@@ -1464,6 +1504,7 @@ jobs:
     - feature-mysql
     - feature-mariadb
     - feature-postgresql
+    - coverage-unit
     - coverage
     - laravel-embedded-upgrade-source
     - action-policy
@@ -1492,6 +1533,7 @@ jobs:
         test "${{ needs.feature-mysql.result }}" = "skipped"
         test "${{ needs.feature-mariadb.result }}" = "skipped"
         test "${{ needs.feature-postgresql.result }}" = "skipped"
+        test "${{ needs.coverage-unit.result }}" = "skipped"
         test "${{ needs.coverage.result }}" = "skipped"
         test "${{ needs.laravel-embedded-upgrade-source.result }}" = "skipped"
         echo "Pull-request validation succeeded."
@@ -1506,6 +1548,7 @@ jobs:
         test "${{ needs.feature-mysql.result }}" = "success"
         test "${{ needs.feature-mariadb.result }}" = "success"
         test "${{ needs.feature-postgresql.result }}" = "success"
+        test "${{ needs.coverage-unit.result }}" = "success"
         test "${{ needs.coverage.result }}" = "success"
         test "${{ needs.laravel-embedded-upgrade-source.result }}" = "success"
         echo "The target-branch test matrix succeeded for this SHA."
