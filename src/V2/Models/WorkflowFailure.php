@@ -43,6 +43,11 @@ class WorkflowFailure extends Model
         'failure_category' => FailureCategory::class,
     ];
 
+    public function run(): BelongsTo
+    {
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
+    }
+
     /**
      * @return Attribute<string|null, string|null>
      */
@@ -92,10 +97,5 @@ class WorkflowFailure extends Model
         }
 
         return $decoded;
-    }
-
-    public function run(): BelongsTo
-    {
-        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 }

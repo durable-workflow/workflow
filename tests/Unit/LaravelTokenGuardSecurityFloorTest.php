@@ -25,8 +25,11 @@ final class LaravelTokenGuardSecurityFloorTest extends TestCase
     public function testNonStringTokenNeverReachesTheUserLookup(): void
     {
         $provider = $this->createMock(UserProvider::class);
-        $provider->expects($this->never())->method('retrieveByCredentials');
-        $guard = new TokenGuard($provider, Request::create('/', 'GET', ['api_token' => [0]]));
+        $provider->expects($this->never())
+            ->method('retrieveByCredentials');
+        $guard = new TokenGuard($provider, Request::create('/', 'GET', [
+            'api_token' => [0],
+        ]));
 
         $this->assertNull($guard->user());
     }
@@ -35,9 +38,14 @@ final class LaravelTokenGuardSecurityFloorTest extends TestCase
     {
         $user = $this->createMock(Authenticatable::class);
         $provider = $this->createMock(UserProvider::class);
-        $provider->expects($this->once())->method('retrieveByCredentials')
-            ->with(['api_token' => 'ordinary-token'])->willReturn($user);
-        $guard = new TokenGuard($provider, Request::create('/', 'GET', ['api_token' => 'ordinary-token']));
+        $provider->expects($this->once())
+            ->method('retrieveByCredentials')
+            ->with([
+                'api_token' => 'ordinary-token',
+            ])->willReturn($user);
+        $guard = new TokenGuard($provider, Request::create('/', 'GET', [
+            'api_token' => 'ordinary-token',
+        ]));
 
         $this->assertSame($user, $guard->user());
     }

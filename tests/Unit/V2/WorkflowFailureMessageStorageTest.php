@@ -52,7 +52,9 @@ final class WorkflowFailureMessageStorageTest extends TestCase
         ], true);
 
         $this->assertSame($message, $failure->message);
-        $this->assertSame(['message' => $message], $failure->toArray());
+        $this->assertSame([
+            'message' => $message,
+        ], $failure->toArray());
         $this->assertFalse($failure->isDirty());
     }
 
@@ -60,10 +62,14 @@ final class WorkflowFailureMessageStorageTest extends TestCase
     {
         $message = "unchanged\0雪";
         $failure = new WorkflowFailure();
-        $failure->setRawAttributes(['message' => $message], true);
+        $failure->setRawAttributes([
+            'message' => $message,
+        ], true);
 
         $this->assertSame($message, $failure->message);
-        $this->assertSame(['message' => $message], $failure->toArray());
+        $this->assertSame([
+            'message' => $message,
+        ], $failure->toArray());
         $this->assertFalse($failure->isDirty());
     }
 
@@ -79,14 +85,19 @@ final class WorkflowFailureMessageStorageTest extends TestCase
         $this->assertSame('replacement', $failure->message);
         $this->assertSame('replacement', $failure->getAttributes()['message']);
         $this->assertNull($failure->getAttributes()['message_full']);
-        $this->assertSame(['message' => 'replacement'], $failure->toArray());
+        $this->assertSame([
+            'message' => 'replacement',
+        ], $failure->toArray());
     }
 
     #[DataProvider('invalidStorage')]
     public function testMalformedOverflowStorageNeverFabricatesCanonicalMessage(mixed $stored): void
     {
         $failure = new WorkflowFailure();
-        $failure->setRawAttributes(['message' => 'diagnostic preview', 'message_full' => $stored], true);
+        $failure->setRawAttributes([
+            'message' => 'diagnostic preview',
+            'message_full' => $stored,
+        ], true);
         $this->expectException(FailureMessageStorageException::class);
         $this->expectExceptionMessage('Invalid stored full failure-message encoding.');
         $failure->message;

@@ -122,7 +122,9 @@ final class RunRecentFailuresTest extends TestCase
         ];
         foreach ($messages as $id => $message) {
             $this->failure($run, $id);
-            WorkflowFailure::query()->findOrFail($id)->update(['message' => $message]);
+            WorkflowFailure::query()->findOrFail($id)->update([
+                'message' => $message,
+            ]);
         }
 
         $captured = [];

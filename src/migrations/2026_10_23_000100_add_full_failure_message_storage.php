@@ -18,7 +18,8 @@ return new class() extends WorkflowMigration {
 
             $connection = Schema::getConnection();
             if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
-                $table = $connection->getQueryGrammar()->wrapTable('workflow_failures');
+                $table = $connection->getQueryGrammar()
+                    ->wrapTable('workflow_failures');
                 // Never silently copy a live failure table during bootstrap.
                 $connection->statement(
                     "ALTER TABLE {$table} ADD COLUMN message_full LONGTEXT NULL, ALGORITHM=INSTANT",
@@ -28,7 +29,8 @@ return new class() extends WorkflowMigration {
             }
 
             Schema::table('workflow_failures', static function (Blueprint $table): void {
-                $table->longText('message_full')->nullable();
+                $table->longText('message_full')
+                    ->nullable();
             });
         });
     }

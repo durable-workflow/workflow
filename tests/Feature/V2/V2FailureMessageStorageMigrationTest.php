@@ -21,7 +21,8 @@ final class V2FailureMessageStorageMigrationTest extends TestCase
         $migration = $this->migration();
         $migration->up();
         $connection = Schema::getConnection();
-        $row = $connection->table('workflow_failures')->where('id', $legacy['id'])->first();
+        $row = $connection->table('workflow_failures')
+            ->where('id', $legacy['id'])->first();
         $this->assertNull($row->message_full);
         unset($row->message_full);
         $this->assertSame($legacy, (array) $row);
@@ -52,11 +53,13 @@ final class V2FailureMessageStorageMigrationTest extends TestCase
         $timeoutQuery = $driver === 'pgsql' ? 'SHOW lock_timeout' : 'SELECT @@SESSION.lock_wait_timeout AS value';
         $previous = (array) $connection->selectOne($timeoutQuery);
         $blockerName = 'failure_message_metadata_blocker';
-        config()->set('database.connections.' . $blockerName, $connection->getConfig());
+        config()
+            ->set('database.connections.' . $blockerName, $connection->getConfig());
         DB::purge($blockerName);
         $blocker = DB::connection($blockerName);
         $blocker->beginTransaction();
-        $blocker->table('workflow_failures')->where('id', $legacy['id'])->lockForUpdate()->first();
+        $blocker->table('workflow_failures')
+            ->where('id', $legacy['id'])->lockForUpdate()->first();
         $migration = $this->migration();
         $started = microtime(true);
 
@@ -92,7 +95,8 @@ final class V2FailureMessageStorageMigrationTest extends TestCase
         }
 
         $legacy = $this->legacyRow();
-        $table = $connection->getQueryGrammar()->wrapTable('workflow_failures');
+        $table = $connection->getQueryGrammar()
+            ->wrapTable('workflow_failures');
         // This is disposable fixture preparation, not a rolling-upgrade operation.
         $connection->statement("ALTER TABLE {$table} ROW_FORMAT=COMPRESSED");
         $migration = $this->migration();
@@ -121,25 +125,27 @@ final class V2FailureMessageStorageMigrationTest extends TestCase
             $table->dropColumn('message_full');
         });
         $connection = Schema::getConnection();
-        $connection->table('workflow_failures')->insert([
-            'id' => (string) Str::ulid(),
-            'workflow_run_id' => (string) Str::ulid(),
-            'source_kind' => 'activity_execution',
-            'source_id' => 'original-attempt',
-            'propagation_kind' => 'activity',
-            'failure_category' => null,
-            'non_retryable' => false,
-            'handled' => false,
-            'exception_class' => 'RuntimeException',
-            'message' => 'unchanged legacy message',
-            'file' => '/fixture/activity.php',
-            'line' => 7,
-            'trace_preview' => null,
-            'created_at' => '2026-10-23 23:00:00',
-            'updated_at' => '2026-10-23 23:00:00',
-        ]);
+        $connection->table('workflow_failures')
+            ->insert([
+                'id' => (string) Str::ulid(),
+                'workflow_run_id' => (string) Str::ulid(),
+                'source_kind' => 'activity_execution',
+                'source_id' => 'original-attempt',
+                'propagation_kind' => 'activity',
+                'failure_category' => null,
+                'non_retryable' => false,
+                'handled' => false,
+                'exception_class' => 'RuntimeException',
+                'message' => 'unchanged legacy message',
+                'file' => '/fixture/activity.php',
+                'line' => 7,
+                'trace_preview' => null,
+                'created_at' => '2026-10-23 23:00:00',
+                'updated_at' => '2026-10-23 23:00:00',
+            ]);
 
-        return (array) $connection->table('workflow_failures')->first();
+        return (array) $connection->table('workflow_failures')
+            ->first();
     }
 
     private function migration(): WorkflowMigration

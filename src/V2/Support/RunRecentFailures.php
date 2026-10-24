@@ -30,7 +30,8 @@ final class RunRecentFailures
         $failureModel = ConfiguredV2Models::resolve('failure_model', WorkflowFailure::class);
         $model = (new $failureModel())->setConnection($run->getConnectionName());
         $connection = $model->getConnection();
-        $full = $connection->getQueryGrammar()->wrap('message_full');
+        $full = $connection->getQueryGrammar()
+            ->wrap('message_full');
         $bytes = match ($connection->getDriverName()) {
             'sqlite' => "LENGTH(CAST({$full} AS BLOB))",
             'sqlsrv' => "DATALENGTH({$full})",
