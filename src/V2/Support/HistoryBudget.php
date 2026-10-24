@@ -509,19 +509,23 @@ final class HistoryBudget
      */
     private static function postgresAggregateExpressions(string $eventType, string $payload): array
     {
-        $json = "COALESCE({$payload}::jsonb::text, '[]')";
+        $metadata = PostgresJsonMetadata::textExpression($payload);
+        $json = "COALESCE({$metadata}::jsonb::text, '[]')";
+        // Each masked NUL escape occupies six canonical JSON bytes. Restore
+        // its byte difference after measuring the temporary metadata copy.
+        $nullEscapeBytes = "COALESCE(OCTET_LENGTH({$payload}::text) - OCTET_LENGTH({$metadata}), 0)";
         $jsonWithoutStrings = "regexp_replace({$json}, convert_from(decode('22285B5E225C5C5D7C5C5C2E292A22', 'hex'), 'UTF8'), '\"\"', 'g')";
         $structuralSpaces = "((CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ':', ''))) + (CHAR_LENGTH({$jsonWithoutStrings}) - CHAR_LENGTH(REPLACE({$jsonWithoutStrings}, ',', ''))))";
         $canonicalJson = "REPLACE(REPLACE(REPLACE({$json}, E'\\\\/', '/'), "
             . "convert_from(decode('E280A8', 'hex'), 'UTF8'), convert_from(decode('5C7532303238', 'hex'), 'UTF8')), "
             . "convert_from(decode('E280A9', 'hex'), 'UTF8'), convert_from(decode('5C7532303239', 'hex'), 'UTF8'))";
-        $groupId = "{$payload}->>'parallel_group_id'";
-        $groupIdIsValid = "jsonb_typeof({$payload}::jsonb->'parallel_group_id') = 'string' AND COALESCE({$groupId}, '') <> ''";
-        $groupSize = "{$payload}->>'parallel_group_size'";
-        $groupSizeIsNumeric = "jsonb_typeof({$payload}::jsonb->'parallel_group_size') IN ('number', 'string') AND COALESCE({$groupSize}, '') ~ '^[[:space:]]*[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?[[:space:]]*$'";
+        $groupId = "({$metadata}::json->>'parallel_group_id')";
+        $groupIdIsValid = "jsonb_typeof({$metadata}::jsonb->'parallel_group_id') = 'string' AND COALESCE({$groupId}, '') <> ''";
+        $groupSize = "({$metadata}::json->>'parallel_group_size')";
+        $groupSizeIsNumeric = "jsonb_typeof({$metadata}::jsonb->'parallel_group_size') IN ('number', 'string') AND COALESCE({$groupSize}, '') ~ '^[[:space:]]*[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?[[:space:]]*$'";
 
         return [
-            "OCTET_LENGTH({$eventType}::text) + OCTET_LENGTH({$canonicalJson}) - {$structuralSpaces}",
+            "OCTET_LENGTH({$eventType}::text) + OCTET_LENGTH({$canonicalJson}) - {$structuralSpaces} + {$nullEscapeBytes}",
             $groupId,
             $groupIdIsValid,
             $groupSizeIsNumeric,

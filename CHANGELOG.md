@@ -10,6 +10,9 @@
 
 ## 2.12.2 - 2026-10-24
 
+- Read recent failure links and rebuild history-budget counters on PostgreSQL
+  when retained messages contain NUL bytes. Preserve canonical history and
+  exact byte counts without loading full payloads into diagnostic readers.
 - Refuse expired or settled activity callbacks under the original run lock
   before acquiring task or execution locks. Preserve committed renewals and
   the normal live-outcome path. Concurrent retention can finish without a
