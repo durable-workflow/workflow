@@ -36,7 +36,7 @@ final class LaravelTokenGuardSecurityFloorTest extends TestCase
 
     public function testOrdinaryStringTokenRetainsItsNormalLookup(): void
     {
-        $user = $this->createMock(Authenticatable::class);
+        $user = $this->createStub(Authenticatable::class);
         $provider = $this->createMock(UserProvider::class);
         $provider->expects($this->once())
             ->method('retrieveByCredentials')
