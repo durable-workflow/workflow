@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.13.1 - 2026-10-24
+
+- Cancel the live task when a retried activity receives cooperative cancellation.
+  Preserve completed tasks and snapshot the cancelled attempt's matching task so
+  its worker can acknowledge the stop and repeat that acknowledgement safely.
+- Apply the same task selection when waiting for cancellation completion.
+
 ## 2.13.0 - 2026-10-24
 
 - Recognize bounded `ActivityOutcomeRejected` diagnostics in history pages,

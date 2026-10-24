@@ -24,8 +24,10 @@ use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -52,6 +54,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -64,6 +67,7 @@ use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowStep;
@@ -80,6 +84,124 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testRetriedActivityCancellationCorpusKeepsTheCompletedTaskAndAcknowledgesTheLiveTask(): void
+    {
+        $path = self::FIXTURE_DIR . '/retried-activity-cancellation-live-task.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained retried-activity cancellation evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $this->executeColdReplayFixture($fixture);
+        $scenario = $fixture['retry_cancellation'];
+        $scheduled = collect($fixture['history'])->firstWhere('event_type', 'ActivityScheduled')['payload'];
+        $recordedCancellation = collect($fixture['history'])->firstWhere('event_type', 'ActivityCancelled')['payload'];
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $lease = static function (WorkflowTask $task): WorkflowTask {
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'portable-worker',
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
+            ])->save();
+            return $task;
+        };
+        foreach ($scenario['policies'] as $policyValue) {
+            $this->clearWorkflowState();
+            $policy = CancellationPolicy::from($policyValue);
+            $stub = WorkflowStub::make(
+                $fixture['workflow']['type'],
+                'corpus-retried-cancellation-' . ++$this->workflowNumber
+            );
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $initial = $lease($run->tasks()->where('task_type', TaskType::Workflow)->sole());
+            $commands = WorkflowCommandNormalizer::normalize([[
+                'type' => 'schedule_activity',
+                'activity_type' => $scheduled['activity_type'],
+                'arguments' => Serializer::serialize($scenario['activity_arguments']),
+                'cancellation_policy' => $policy->value,
+                'retry_policy' => $scenario['retry_policy'],
+            ]], $fixture['protocol_version']);
+            $this->assertTrue($bridge->complete($initial->id, $commands)['completed']);
+            $execution = $run->activityExecutions()
+                ->sole();
+            $firstTask = $run->tasks()
+                ->where('task_type', TaskType::Activity)->sole();
+            $this->assertTrue($activities->claimStatus($firstTask->id, 'first-owner')['claimed']);
+            $firstAttempt = $execution->attempts()
+                ->sole();
+            $retry = $activities->fail($firstAttempt->id, [
+                'class' => \RuntimeException::class,
+                'message' => 'temporary failure',
+            ]);
+            $this->assertTrue($retry['recorded']);
+            $liveTask = WorkflowTask::query()->findOrFail($retry['next_task_id']);
+            $this->assertTrue($activities->claimStatus($liveTask->id, 'replacement-owner')['claimed']);
+            $liveAttempt = $execution->attempts()
+                ->where('attempt_number', $recordedCancellation['attempt_number'])->sole();
+            $this->assertSame($scenario['completed_task_status'], $firstTask->refresh()->status->value);
+            $completedBefore = $firstTask->getRawOriginal();
+            $this->assertTrue(
+                $stub->requestCancellation('maintenance', $scenario['cleanup_timeout_seconds'])->accepted()
+            );
+            $run->refresh();
+            $deadline = $run->cancellation_deadline_at->toISOString();
+            $ready = static fn (): WorkflowTask => $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->sole();
+            $deliver = static fn (WorkflowTask $task): array => $bridge->deliverCancellation(
+                $task->id,
+                $run->cancellation_request_command_id,
+                $scheduled['sequence'],
+                'activity'
+            );
+            $delivery = $deliver($lease($ready()));
+            $this->assertSame($policy === CancellationPolicy::TryCancel, $delivery['delivered']);
+            if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                $this->assertTrue($delivery['claim_released']);
+                $this->assertSame('cancellation_waiting_for_activity', $delivery['reason']);
+            }
+            $this->assertSame($completedBefore, $firstTask->refresh()->getRawOriginal());
+            $this->assertSame($scenario['live_task_status'], $liveTask->refresh()->status->value);
+            $this->assertNull($liveTask->lease_expires_at);
+            $cancelled = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancelled)->sole();
+            $this->assertSame($liveTask->id, $cancelled->payload['task']['id']);
+            $this->assertSame($liveAttempt->id, $cancelled->payload['activity_attempt']['id']);
+            $accepted = ActivityCancellationAcknowledgement::recordStopped(
+                $liveAttempt->id,
+                'replacement-owner',
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($accepted['acknowledged']);
+            $this->assertFalse($accepted['duplicate']);
+            $duplicate = ActivityCancellationAcknowledgement::recordStopped(
+                $liveAttempt->id,
+                'replacement-owner',
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($duplicate['acknowledged']);
+            $this->assertTrue($duplicate['duplicate']);
+            $this->assertSame($accepted['history_event_id'], $duplicate['history_event_id']);
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+            );
+            if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                $this->assertTrue($deliver($lease($ready()))['delivered']);
+            }
+            $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        }
+    }
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
@@ -186,6 +308,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'retried-activity-cancellation-live-task') {
+                // Its live retry/delivery proof is exercised by the dedicated corpus test.
+                continue;
+            }
 
             if ($fixture['id'] === 'embedded-committed-timer-continuation') {
                 // Its positive executor path runs in the isolated queue test above.
