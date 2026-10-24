@@ -151,6 +151,9 @@ final class HistoryTimeline
             throw new \LogicException('Rejection timeline requires an ActivityOutcomeRejected event.');
         }
         $payload = is_array($event->payload) ? $event->payload : [];
+        $activityId = self::stringValue($payload['activity_execution_id'] ?? null);
+        $attemptId = self::stringValue($payload['activity_attempt_id'] ?? null);
+        $attemptNumber = self::intValue($payload['attempt_number'] ?? null);
 
         return [
             'id' => $event->id,
@@ -159,24 +162,24 @@ final class HistoryTimeline
             'kind' => 'activity',
             'entry_kind' => 'point',
             'source_kind' => 'activity_execution',
-            'source_id' => $payload['activity_execution_id'] ?? null,
-            'summary' => sprintf(
+            'source_id' => $activityId,
+            'summary' => self::boundedSummary(sprintf(
                 'Rejected %s outcome from activity attempt %s: %s.',
-                $payload['outcome'] ?? 'unknown',
-                $payload['attempt_number'] ?? 'unknown',
-                $payload['reason'] ?? 'unknown',
-            ),
+                self::stringValue($payload['outcome'] ?? null) ?? 'unknown',
+                $attemptNumber ?? 'unknown',
+                self::stringValue($payload['reason'] ?? null) ?? 'unknown',
+            ), ''),
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => null,
             'command_sequence' => null,
             'task_id' => $event->workflow_task_id,
-            'activity_execution_id' => $payload['activity_execution_id'] ?? null,
+            'activity_execution_id' => $activityId,
             'timer_id' => null,
             'failure_id' => null,
             'activity' => [
-                'id' => $payload['activity_execution_id'] ?? null,
-                'attempt_id' => $payload['activity_attempt_id'] ?? null,
-                'attempt_count' => $payload['attempt_number'] ?? null,
+                'id' => $activityId,
+                'attempt_id' => $attemptId,
+                'attempt_count' => $attemptNumber,
             ],
         ];
     }

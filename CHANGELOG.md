@@ -1,10 +1,12 @@
 # Changelog
 
-## 2.13.0 - Unreleased
+## 2.13.0 - 2026-10-24
 
 - Recognize bounded `ActivityOutcomeRejected` diagnostics in history pages,
   timeline inspection, exports and cold replay. The reader preserves business
   replay positions and does not produce the event or accept a refused outcome.
+- Bound diagnostic timeline summaries for storage and tolerate malformed fields
+  without changing the original history payload.
 - Require reader-equipped applications, Server roles, inspection tools and
   rollback artifacts before enabling the separate rejected-outcome producer.
 

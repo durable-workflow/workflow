@@ -14,6 +14,49 @@ use Workflow\V2\Support\HistoryTimeline;
 
 final class HistoryTimelineSummaryLimitTest extends TestCase
 {
+    public function testRejectedOutcomeSummaryIsBoundedWithoutChangingDiagnosticEvidence(): void
+    {
+        $payload = [
+            'activity_execution_id' => 'original-activity',
+            'activity_attempt_id' => 'original-attempt',
+            'attempt_number' => 1,
+            'outcome' => 'completed',
+            'reason' => str_repeat('界🦀', 10_000),
+        ];
+        $event = $this->event(HistoryEventType::ActivityOutcomeRejected, $payload);
+        $entry = HistoryTimeline::fromHistory($this->timelineRun($event))[0];
+
+        $this->assertLessThanOrEqual(65_535, strlen($entry['summary']));
+        $this->assertTrue(mb_check_encoding($entry['summary'], 'UTF-8'));
+        $this->assertStringContainsString('[truncated]', $entry['summary']);
+        $this->assertSame('original-activity', $entry['activity_execution_id']);
+        $this->assertSame('original-attempt', $entry['activity']['attempt_id']);
+        $this->assertSame(1, $entry['activity']['attempt_count']);
+        $this->assertSame($payload, $event->payload);
+        $this->assertSame($entry, HistoryTimeline::fromActivityOutcomeRejection($event));
+    }
+
+    public function testMalformedRejectedOutcomeFieldsDoNotBreakTimelineInspection(): void
+    {
+        $payload = [
+            'activity_execution_id' => [],
+            'activity_attempt_id' => [],
+            'attempt_number' => [],
+            'outcome' => [],
+            'reason' => [],
+        ];
+        $event = $this->event(HistoryEventType::ActivityOutcomeRejected, $payload);
+        $entry = HistoryTimeline::fromHistory($this->timelineRun($event))[0];
+
+        $this->assertSame('Rejected unknown outcome from activity attempt unknown: unknown.', $entry['summary']);
+        $this->assertNull($entry['source_id']);
+        $this->assertNull($entry['activity_execution_id']);
+        $this->assertNull($entry['activity']['id']);
+        $this->assertNull($entry['activity']['attempt_id']);
+        $this->assertNull($entry['activity']['attempt_count']);
+        $this->assertSame($payload, $event->payload);
+    }
+
     #[DataProvider('failureEvents')]
     public function testLargeSummariesFitStorageWithoutChangingFailureEvidence(
         HistoryEventType $type,
