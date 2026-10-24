@@ -76,6 +76,7 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
 
+            $attemptedOutcome = $throwable === null ? 'completed' : 'failed';
             $abandoned = ActivityAbandonment::allows($run, $lockedExecution);
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true) && ! $abandoned) {
                 $reason = $run->status === RunStatus::Terminated
@@ -110,6 +111,15 @@ final class ActivityOutcomeRecorder
                 || $lockedExecution->current_attempt_id !== $attemptId
             ) {
                 self::closeAttemptIfStale($run, $attemptId);
+                ActivityOutcomeRejection::record(
+                    $run,
+                    $lockedExecution,
+                    $task,
+                    $attemptId,
+                    $attemptCount,
+                    $attemptedOutcome,
+                    'stale_attempt',
+                );
 
                 return self::ignored('stale_attempt');
             }
@@ -118,9 +128,16 @@ final class ActivityOutcomeRecorder
                 return self::ignored('activity_deadline_elapsed');
             }
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -168,9 +185,16 @@ final class ActivityOutcomeRecorder
             }
 
             // Payload preparation can outlive a claim even while its rows stay locked.
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
@@ -210,9 +234,16 @@ final class ActivityOutcomeRecorder
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
             $resolutionEvent = null;
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             if ($throwable === null) {
@@ -613,6 +644,35 @@ final class ActivityOutcomeRecorder
             'reason' => $reason,
             'next_task' => null,
         ];
+    }
+
+    /**
+     * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}|null
+     */
+    private static function expiredOutcome(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        WorkflowTask $task,
+        string $attemptId,
+        int $attemptCount,
+        string $attemptedOutcome,
+    ): ?array {
+        $reason = ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run);
+        if ($reason === null) {
+            return null;
+        }
+
+        ActivityOutcomeRejection::record(
+            $run,
+            $execution,
+            $task,
+            $attemptId,
+            $attemptCount,
+            $attemptedOutcome,
+            $reason
+        );
+
+        return self::ignored($reason);
     }
 
     /**

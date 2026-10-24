@@ -143,22 +143,14 @@ final class RunTimelineProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowTimelineEntry {
-        if ($event->workflow_run_id !== $run->id) {
-            throw new \LogicException('Timeline event must belong to the projected workflow run.');
-        }
+        return self::projectHistoryPoint($run, $event, HistoryTimeline::fromWorkerTerminalEvent($event));
+    }
 
-        $historyEventId = (string) $event->id;
-        $row = self::upsertEntry(
-            $run,
-            self::entryModel(),
-            self::projectionId($run->id, $historyEventId),
-            $historyEventId,
-            HistoryTimeline::fromWorkerTerminalEvent($event),
-        );
-
-        $run->unsetRelation('timelineEntries');
-
-        return $row;
+    public static function projectActivityOutcomeRejection(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+    ): WorkflowTimelineEntry {
+        return self::projectHistoryPoint($run, $event, HistoryTimeline::fromActivityOutcomeRejection($event));
     }
 
     /**
@@ -228,6 +220,32 @@ final class RunTimelineProjector
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionMatchesHistory($projected, $canonicalTimeline),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private static function projectHistoryPoint(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        array $entry,
+    ): WorkflowTimelineEntry {
+        if ($event->workflow_run_id !== $run->id) {
+            throw new \LogicException('Timeline event must belong to the projected workflow run.');
+        }
+
+        $historyEventId = (string) $event->id;
+        $row = self::upsertEntry(
+            $run,
+            self::entryModel(),
+            self::projectionId($run->id, $historyEventId),
+            $historyEventId,
+            $entry,
+        );
+
+        $run->unsetRelation('timelineEntries');
+
+        return $row;
     }
 
     /**

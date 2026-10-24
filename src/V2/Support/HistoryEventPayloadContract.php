@@ -25,6 +25,10 @@ final class HistoryEventPayloadContract
      * @var array<string, list<string>>
      */
     private const PAYLOAD_KEYS = [
+        'ActivityOutcomeRejected' => [
+            'activity_execution_id', 'activity_attempt_id', 'attempt_number',
+            'lease_owner', 'outcome', 'reason', 'observed_at',
+        ],
         'CancellationScopeRequested' => [
             'schema', 'workflow_run_id', 'scope_id', 'parent_scope_id', 'request_id', 'cancellation',
         ],

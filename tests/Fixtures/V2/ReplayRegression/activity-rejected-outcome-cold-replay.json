@@ -1,0 +1,100 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "activity-rejected-outcome-cold-replay",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestHandledFailureWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-22T01:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-10-22T01:00:00.000001Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestFailingActivity"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityStarted",
+      "recorded_at": "2026-10-22T01:00:00.000002Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000a",
+        "activity_class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "attempt_number": 1
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityFailed",
+      "recorded_at": "2026-10-22T01:00:30.000002Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000a",
+        "activity_class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "attempt_number": 1,
+        "failure_id": "01j0000000000000000000000f",
+        "failure_category": "internal",
+        "non_retryable": false,
+        "failure_reason": "lease_expired",
+        "lease_expires_at": "2026-10-22T01:00:30.000002Z",
+        "lease_owner": "original-worker",
+        "exception_class": "Workflow\\V2\\Exceptions\\ActivityLeaseExpiredException",
+        "message": "Activity Tests\\Fixtures\\V2\\TestFailingActivity lost its original task lease before the attempt settled."
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityOutcomeRejected",
+      "recorded_at": "2026-10-22T01:00:30.500000Z",
+      "payload": {
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_attempt_id": "01j0000000000000000000000a",
+        "attempt_number": 1,
+        "lease_owner": "original-worker",
+        "outcome": "completed",
+        "reason": "stale_attempt",
+        "observed_at": "2026-10-22T01:00:30.500000Z"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-10-22T01:00:31.000000Z",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "01j00000000000000000000002",
+        "activity_attempt_id": "01j0000000000000000000000b",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "attempt_number": 1,
+        "result": "wwHioz3/VYAiNwoiSGVsbG8sIFJlY292ZXJlZCE=",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": "Hello, Recovered!",
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

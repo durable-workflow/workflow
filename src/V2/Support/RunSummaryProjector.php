@@ -96,6 +96,35 @@ final class RunSummaryProjector
         return $summary;
     }
 
+    public static function projectActivityOutcomeRejection(WorkflowRun $run, WorkflowHistoryEvent $event): void
+    {
+        if ($event->workflow_run_id !== $run->id
+            || $event->event_type !== HistoryEventType::ActivityOutcomeRejected) {
+            throw new \LogicException('Rejection counters must belong to the original workflow run.');
+        }
+        $summary = self::summaryModel()::query()->find($run->id);
+        if (! $summary instanceof WorkflowRunSummary
+            || $summary->projection_schema_version !== self::SCHEMA_VERSION
+            || (int) $summary->history_event_count !== (int) $event->sequence - 1
+            || (int) $summary->history_size_bytes <= 0
+            || (int) $summary->history_fan_out < 0) {
+            return;
+        }
+        $budget = HistoryBudget::fromCounters(
+            (int) $event->sequence,
+            (int) $summary->history_size_bytes + HistoryBudget::sizeOfEvent($event),
+            (int) $summary->history_fan_out,
+        );
+        // Preserve the business timestamp and every routing/wait field. A
+        // diagnostic append must not look like workflow progress or repair.
+        self::summaryModel()::query()->whereKey($run->id)->toBase()->update([
+            'history_event_count' => $budget['history_event_count'],
+            'history_size_bytes' => $budget['history_size_bytes'],
+            'continue_as_new_recommended' => $budget['continue_as_new_recommended'],
+            'history_budget_pressure' => $budget['pressure'],
+        ]);
+    }
+
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
         $claimedTask = WorkflowTaskClaimProjectionContext::taskFor($run);
