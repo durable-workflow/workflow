@@ -40,6 +40,9 @@ return new class() extends WorkflowMigration {
         // Older code can ignore this column; removing it could destroy evidence.
     }
 
+    /**
+     * @param callable(): void $operation
+     */
     private function withMetadataLockBudget(callable $operation): void
     {
         $connection = Schema::getConnection();

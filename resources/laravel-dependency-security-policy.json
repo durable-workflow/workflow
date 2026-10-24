@@ -79,6 +79,16 @@
       ],
       "review_by": "2026-11-24",
       "reason": "Laravel 9 has no patched release; compatibility is retained only for embedded upgrade and drain paths."
+    },
+    "PKSA-b41t-wbzk-9q51": {
+      "github_advisory": "GHSA-f9x3-7vq9-cph6",
+      "affected_supported_majors": [
+        "9",
+        "10",
+        "11"
+      ],
+      "review_by": "2026-10-31",
+      "reason": "The upstream advisory feed classifies these legacy majors as affected by TokenGuard authentication bypass. Compatibility remains only for embedded upgrade and drain paths, not security-qualified production use. The host application must not expose the token guard while migrating to patched Laravel 12 or 13. This library does not configure host authentication guards. Maintained-major minimums already exceed the upstream patched versions; dependency alerts and exact per-major auditing remain enabled."
     }
   }
 }

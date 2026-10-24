@@ -2,6 +2,9 @@
 
 ## 2.12.1 - Unreleased
 
+- Record the newly published Composer TokenGuard advisory against the retained
+  Laravel 9–11 upgrade/drain compatibility paths, with an explicit review date.
+  Maintained Laravel 12/13 minimums already include the upstream fixes.
 - Preserve canonical failure messages beyond MySQL TEXT capacity and across
   NUL-bearing PostgreSQL text parameters. Add nullable encoded overflow storage
   without backfilling existing rows, retain the exact public message and keep
