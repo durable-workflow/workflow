@@ -19,7 +19,7 @@
       "disposition": "accepted-risk"
     },
     "11": {
-      "minimum": "11.44.1",
+      "minimum": "11.56.1",
       "disposition": "accepted-risk"
     },
     "12": {
@@ -88,7 +88,7 @@
         "11"
       ],
       "review_by": "2026-10-31",
-      "reason": "The upstream advisory feed classifies these legacy majors as affected by TokenGuard authentication bypass. Compatibility remains only for embedded upgrade and drain paths, not security-qualified production use. The host application must not expose the token guard while migrating to patched Laravel 12 or 13. This library does not configure host authentication guards. Maintained-major minimums already exceed the upstream patched versions; dependency alerts and exact per-major auditing remain enabled."
+      "reason": "The advisory feed includes Laravel 9-11. Laravel 11 now requires 11.56.1 or later, whose upstream TokenGuard source includes the strict string check; the feed still classifies this patched branch as affected. Laravel 9/10 compatibility remains only for embedded upgrade and drain paths and must not expose TokenGuard while migrating. Other declared legacy risks remain. Maintained Laravel 12/13 minimums exceed the upstream patched versions. Alerts and exact per-major auditing remain enabled."
     }
   }
 }

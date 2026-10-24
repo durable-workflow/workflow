@@ -2,6 +2,8 @@
 
 ## 2.12.1 - Unreleased
 
+- Require the upstream TokenGuard string-validation fix on Laravel 11, raising
+  its minimum to 11.56.1. Keep the maintained Laravel 12/13 minimums unchanged.
 - Record the newly published Composer TokenGuard advisory against the retained
   Laravel 9–11 upgrade/drain compatibility paths, with an explicit review date.
   Maintained Laravel 12/13 minimums already include the upstream fixes.
