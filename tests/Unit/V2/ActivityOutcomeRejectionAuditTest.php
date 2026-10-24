@@ -18,6 +18,7 @@ use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -125,7 +126,7 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
 
     public function testDiagnosticRequiresExactAttemptIdDespiteCaseInsensitiveStorage(): void
     {
-        [, $claim, $run] = $this->expiredOriginal();
+        [$bridge, $claim, $run] = $this->expiredOriginal();
         $alias = strtolower($claim['activity_attempt_id']);
         if ($alias === $claim['activity_attempt_id']) {
             $alias = strtoupper($claim['activity_attempt_id']);
@@ -138,6 +139,10 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         }
         $before = $this->businessState($run);
 
+        $reply = $bridge->complete($alias, 'unbound case alias');
+        self::assertFalse($reply['recorded']);
+        self::assertSame('attempt_not_found', $reply['reason']);
+        self::assertCount(0, $this->notices($run));
         self::assertNull($this->recordDiagnostic($claim, $run, $alias));
         self::assertCount(0, $this->notices($run));
         self::assertSame($before, $this->businessState($run));
@@ -236,6 +241,33 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         ];
     }
 
+    public static function cancelledRunStates(): array
+    {
+        return [
+            'cancelled retained run' => [RunStatus::Cancelled, 'run_cancelled'],
+            'terminated retained run' => [RunStatus::Terminated, 'run_terminated'],
+        ];
+    }
+
+    #[DataProvider('cancelledRunStates')]
+    public function testExpiredOutcomeOnClosedRunKeepsBusinessState(RunStatus $status, string $reason): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal();
+        $run->forceFill([
+            'status' => $status,
+            'closed_at' => now(),
+        ])->save();
+        $before = $this->businessState($run);
+
+        $reply = $this->refusedOutcome($bridge, $claim['activity_attempt_id'], 'completed');
+
+        self::assertFalse($reply['recorded']);
+        self::assertSame($reason, $reply['reason']);
+        self::assertSame($before, $this->businessState($run));
+        self::assertCount(1, $this->notices($run));
+        self::assertSame($reason, $this->notices($run)[0]->payload['reason']);
+    }
+
     #[DataProvider('settledAttempts')]
     public function testSettledAttemptsCannotBeReclassifiedToCreateADiagnostic(ActivityAttemptStatus $status): void
     {
@@ -282,7 +314,11 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
         $deadline = hrtime(true) + 30_000_000_000;
         [, $claim, $run] = $this->expiredOriginal();
         $before = $this->businessState($run);
-        $prefix = $run->historyEvents()->orderBy('sequence')->get()->map->getAttributes()->all();
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
         $reports = $this->concurrentOutcomes($run, $claim, ['completed', 'failed'], $deadline);
         foreach ($reports as $report) {
             self::assertFalse($report['recorded']);
@@ -308,7 +344,8 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
     {
         $deadline = hrtime(true) + 30_000_000_000;
         [, $claim, $run] = $this->expiredOriginal(closed: true);
-        $status = $run->fresh()->status;
+        $status = $run->fresh()
+->status;
         $reports = $this->concurrentOutcomes($run, $claim, ['completed', 'pruned'], $deadline);
         self::assertFalse($reports[0]['recorded']);
         self::assertContains($reports[0]['reason'], ['stale_attempt', 'attempt_not_found', 'task_not_found']);
@@ -515,7 +552,6 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
             }
             rmdir($directory);
         }
-
     }
 
     private function expiredOriginal(bool $closed = false): array

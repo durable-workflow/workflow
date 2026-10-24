@@ -33,12 +33,17 @@ final class ActivityOutcomeRejectionProcessTest extends TestCase
         if ($input['outcome'] === 'pruned') {
             $pruned = WorkflowRunRetentionCleanup::pruneRun($input['run_id']);
             $this->assertGreaterThan(0, $pruned['history_events_deleted']);
-            $reply = ['recorded' => false, 'reason' => 'pruned'];
+            $reply = [
+                'recorded' => false,
+                'reason' => 'pruned',
+            ];
         } else {
             $bridge = $this->app->make(ActivityTaskBridge::class);
             $reply = $input['outcome'] === 'completed'
                 ? $bridge->complete($input['attempt_id'], 'discarded concurrent output')
-                : $bridge->fail($input['attempt_id'], ['message' => 'discarded concurrent failure']);
+                : $bridge->fail($input['attempt_id'], [
+                    'message' => 'discarded concurrent failure',
+                ]);
         }
 
         file_put_contents($input['report'], json_encode([

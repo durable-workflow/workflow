@@ -511,12 +511,19 @@ final class ActivityOutcomeRecorder
             ->with('execution')
             ->find($attemptId);
 
-        if (! $attempt instanceof ActivityAttempt) {
+        if (! $attempt instanceof ActivityAttempt || $attempt->id !== $attemptId) {
             return self::ignored('attempt_not_found');
         }
 
         if (! is_string($attempt->workflow_task_id) || $attempt->workflow_task_id === '') {
             return self::ignored('task_not_found');
+        }
+
+        if ($attempt->status === ActivityAttemptStatus::Expired) {
+            return self::ignored(ActivityOutcomeRejection::recordExpiredAttempt(
+                $attempt,
+                $throwable === null ? 'completed' : 'failed',
+            ));
         }
 
         $execution = $attempt->execution;

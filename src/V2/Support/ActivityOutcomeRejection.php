@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -14,8 +15,43 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ActivityOutcomeRejection
 {
+    public static function recordExpiredAttempt(ActivityAttempt $original, string $outcome): string
+    {
+        $connection = $original->getConnection();
+        $runId = (string) $original->workflow_run_id;
+
+        return SqliteTransaction::run(static function () use ($original, $outcome, $connection, $runId): string {
+            // Retention owns this same run lock before deleting detail rows.
+            // A refused expired attempt never needs the business task locks.
+            $run = WorkflowRun::on($connection->getName())->whereKey($runId)->lockForUpdate()->first();
+            if (! $run instanceof WorkflowRun || $run->details_pruned_at !== null) {
+                return 'stale_attempt';
+            }
+            $execution = ActivityExecution::on($connection->getName())->find($original->activity_execution_id);
+            $task = WorkflowTask::on($connection->getName())->find($original->workflow_task_id);
+            if (! $execution instanceof ActivityExecution || ! $task instanceof WorkflowTask) {
+                return 'stale_attempt';
+            }
+            $attempt = ActivityAttempt::on($connection->getName())->find($original->id);
+            if (! $attempt instanceof ActivityAttempt || $attempt->id !== $original->id
+                || $attempt->status !== ActivityAttemptStatus::Expired) {
+                return 'stale_attempt';
+            }
+            $reason = self::expiredAttemptReason($run, $execution);
+            self::recordBoundAttempt($run, $execution, $task, $attempt, $outcome, $reason);
+
+            return $reason;
+        }, admission: static function () use ($connection, $runId): void {
+            WorkflowRun::on($connection->getName())->whereKey($runId)->toBase()->update([
+                'id' => $runId,
+            ]);
+        }, connection: $connection);
+    }
+
     /**
-     * Record only under the original task/execution/run mutation locks.
+     * The caller holds the original run mutation lock. Business writers also
+     * retain task/execution locks; expired audit-only calls read their immutable
+     * identity bindings without taking those locks in the reverse order.
      */
     public static function record(
         WorkflowRun $run,
@@ -26,18 +62,31 @@ final class ActivityOutcomeRejection
         string $outcome,
         string $reason,
     ): ?WorkflowHistoryEvent {
+        $attempt = ActivityAttempt::query()->lockForUpdate()->find($attemptId);
+        if (! $attempt instanceof ActivityAttempt || $attempt->id !== $attemptId
+            || $attempt->attempt_number !== $attemptNumber) {
+            return null;
+        }
+
+        return self::recordBoundAttempt($run, $execution, $task, $attempt, $outcome, $reason);
+    }
+
+    private static function recordBoundAttempt(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        WorkflowTask $task,
+        ActivityAttempt $attempt,
+        string $outcome,
+        string $reason,
+    ): ?WorkflowHistoryEvent {
         if ($run->details_pruned_at !== null || ! in_array($outcome, ['completed', 'failed'], true)) {
             return null;
         }
-        $attempt = ActivityAttempt::query()->lockForUpdate()->find($attemptId);
-        if (! $attempt instanceof ActivityAttempt
-            || $attempt->id !== $attemptId
-            || ! is_string($attempt->lease_owner)
+        if (! is_string($attempt->lease_owner)
             || $attempt->lease_owner === ''
             || $attempt->workflow_task_id !== $task->id
             || $attempt->activity_execution_id !== $execution->id
             || $attempt->workflow_run_id !== $run->id
-            || $attempt->attempt_number !== $attemptNumber
             || $execution->workflow_run_id !== $run->id
             || $task->workflow_run_id !== $run->id
             || $task->namespace !== $run->namespace
@@ -49,7 +98,7 @@ final class ActivityOutcomeRejection
         $existing = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::ActivityOutcomeRejected)
             ->where('workflow_task_id', $task->id)
-            ->where('payload->activity_attempt_id', $attemptId)
+            ->where('payload->activity_attempt_id', $attempt->id)
             ->first();
         if ($existing instanceof WorkflowHistoryEvent) {
             return $existing;
@@ -80,11 +129,21 @@ final class ActivityOutcomeRejection
         WorkflowRun $run,
         string $reason,
     ): bool {
-        if ($reason === 'stale_attempt' && $attempt->status === ActivityAttemptStatus::Expired) {
-            return true;
+        if ($attempt->status === ActivityAttemptStatus::Expired) {
+            return $reason === self::expiredAttemptReason($run, $execution);
         }
 
         return $attempt->status === ActivityAttemptStatus::Running
             && ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run) === $reason;
+    }
+
+    private static function expiredAttemptReason(WorkflowRun $run, ActivityExecution $execution): string
+    {
+        if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
+            && ! ActivityAbandonment::allows($run, $execution)) {
+            return $run->status === RunStatus::Terminated ? 'run_terminated' : 'run_cancelled';
+        }
+
+        return 'stale_attempt';
     }
 }
