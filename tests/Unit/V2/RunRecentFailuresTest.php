@@ -110,6 +110,56 @@ final class RunRecentFailuresTest extends TestCase
         $this->assertSame('not_evaluated', $empty['history_audit']);
     }
 
+    public function testDiagnosticReadsDoNotLoadLargeCanonicalMessagesIntoPhp(): void
+    {
+        $run = $this->createRun('bounded-message');
+        $largeMessage = str_repeat("\0界🦀", 10_000);
+        $smallMessage = "invalid\0input";
+        $messages = [
+            'large' => $largeMessage,
+            'small' => $smallMessage,
+            'ordinary' => 'Observed failure',
+        ];
+        foreach ($messages as $id => $message) {
+            $this->failure($run, $id);
+            WorkflowFailure::query()->findOrFail($id)->update([
+                'message' => $message,
+            ]);
+        }
+
+        $captured = [];
+        $capture = true;
+        WorkflowFailure::retrieved(static function (WorkflowFailure $failure) use (&$captured, &$capture): void {
+            if ($capture) {
+                $captured[$failure->id] = $failure->getRawOriginal('message_full');
+            }
+        });
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        try {
+            $result = RunRecentFailures::forRun($run);
+            $queries = DB::getQueryLog();
+        } finally {
+            $capture = false;
+            DB::disableQueryLog();
+        }
+
+        $messages = array_column($result['failures'], 'message', 'id');
+        $this->assertCount(3, $queries);
+        foreach ($queries as $query) {
+            $this->assertStringStartsWith('select ', strtolower($query['query']));
+        }
+        $this->assertArrayHasKey('large', $captured);
+        $this->assertNull($captured['large']);
+        $this->assertSame('base64:' . base64_encode($smallMessage), $captured['small']);
+        $this->assertNull($captured['ordinary']);
+        $this->assertLessThanOrEqual(65_535, strlen($messages['large']));
+        $this->assertStringContainsString('[full message stored separately]', $messages['large']);
+        $this->assertSame($smallMessage, $messages['small']);
+        $this->assertSame('Observed failure', $messages['ordinary']);
+        $this->assertSame($largeMessage, WorkflowFailure::query()->findOrFail('large')->message);
+    }
+
     public function testConfiguredFailureScopeAndEagerLoadsArePreservedAndBounded(): void
     {
         $run = $this->createRun('scope');

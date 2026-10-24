@@ -20,6 +20,16 @@ This package also provides the orchestration engine hosted by
 [Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
 to run outside the Laravel application or across PHP, Python, and Rust.
 
+Use a patched Laravel 12 or 13 release for production. Laravel 9–11 compatibility
+is retained for upgrading and draining existing applications, not as security
+support for those frameworks. The [dependency security policy](resources/laravel-dependency-security-policy.json)
+records the remaining advisories and review dates. The Laravel 11 minimum
+includes its upstream TokenGuard fix; the advisory feed still includes that
+branch. Laravel 9/10 applications affected by the
+[TokenGuard advisory](https://github.com/laravel/framework/security/advisories/GHSA-f9x3-7vq9-cph6)
+must not expose token-guard authentication while upgrading. Keep Composer audits
+and application security updates enabled.
+
 ## Install
 
 ```bash

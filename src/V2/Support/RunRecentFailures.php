@@ -12,6 +12,8 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class RunRecentFailures
 {
+    private const MAX_COMPLETE_MESSAGE_STORAGE_BYTES = 90_000;
+
     /**
      * Read recent diagnostic rows and locate their retained supporting events.
      * This is not a complete failure/handled-state audit of durable history.
@@ -26,18 +28,34 @@ final class RunRecentFailures
 
         /** @var class-string<WorkflowFailure> $failureModel */
         $failureModel = ConfiguredV2Models::resolve('failure_model', WorkflowFailure::class);
-        $rows = (new $failureModel())->setConnection($run->getConnectionName())
+        $model = (new $failureModel())->setConnection($run->getConnectionName());
+        $connection = $model->getConnection();
+        $full = $connection->getQueryGrammar()
+            ->wrap('message_full');
+        $bytes = match ($connection->getDriverName()) {
+            'sqlite' => "LENGTH(CAST({$full} AS BLOB))",
+            'sqlsrv' => "DATALENGTH({$full})",
+            default => "OCTET_LENGTH({$full})",
+        };
+        $storageBudget = self::MAX_COMPLETE_MESSAGE_STORAGE_BYTES
+            * ($connection->getDriverName() === 'sqlsrv' ? 2 : 1);
+        $rows = $model
             ->newQuery()
             ->setEagerLoads([])
             ->where('workflow_run_id', $run->id)
             ->orderByDesc('created_at')
             ->orderByDesc('id')
             ->limit($limit + 1)
-            ->get([
+            ->select([
                 'id', 'workflow_run_id', 'source_kind', 'source_id', 'propagation_kind',
                 'failure_category', 'non_retryable', 'handled', 'exception_class',
                 'message', 'file', 'line', 'trace_preview', 'created_at',
-            ]);
+            ])
+            // Large canonical messages belong to detail/history reads. Keep
+            // this diagnostic list on the labelled compatibility preview
+            // without transferring every full payload into PHP first.
+            ->selectRaw("CASE WHEN {$bytes} <= ? THEN {$full} ELSE NULL END AS {$full}", [$storageBudget])
+            ->get();
         $hasMore = $rows->count() > $limit;
         $rows = $rows->take($limit);
         /** @var class-string<WorkflowHistoryEvent> $eventModel */
