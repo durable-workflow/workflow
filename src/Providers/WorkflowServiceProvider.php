@@ -19,6 +19,7 @@ use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2HistoryImportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
+use Workflow\Commands\V2RepairSearchDatetimesCommand;
 use Workflow\Commands\V2ReplayConformanceCommand;
 use Workflow\Commands\V2ReplaySimulateCommand;
 use Workflow\Commands\V2ReplayVerifyCommand;
@@ -189,6 +190,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2HistoryExportCommand::class,
             V2HistoryImportCommand::class,
             V2RepairPassCommand::class,
+            V2RepairSearchDatetimesCommand::class,
             V2RebuildProjectionsCommand::class,
             V2ReplayConformanceCommand::class,
             V2ReplaySimulateCommand::class,

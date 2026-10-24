@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "datetime-search-projection-history-repair",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": ["single-activity"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-08T10:34:50.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "SearchAttributesUpserted",
+      "payload": {
+        "sequence": 7,
+        "attributes": {"SubmittedAt": "2026-10-09T00:34:56.123456+14:00"},
+        "attribute_types": {"SubmittedAt": "datetime"},
+        "merged": {"SubmittedAt": "2026-10-09T00:34:56.123456+14:00"}
+      },
+      "recorded_at": "2026-10-08T10:34:56.123456Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [{"type": "schedule_activity"}]
+  }
+}

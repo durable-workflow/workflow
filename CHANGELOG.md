@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.12.0 - 2026-10-23
+
+- Preserve UTC instants and microseconds in datetime search attributes and
+  embedded visibility predicates, including values with non-UTC offsets.
+- Add `workflow:v2:repair-search-datetimes` to preview or explicitly repair
+  selected datetime projections from matching retained, typed history.
+- Bound derived timeline summaries by UTF-8 bytes so a large accepted activity
+  failure can be recorded without overflowing MySQL TEXT storage. Preserve the
+  full failure evidence and callback-authority recovery notice.
+
+## 2.11.4 - 2026-10-23
+
+- Preserve whole-valued floats and signed zero in CLI history-export JSON,
+  including nested memo projections. Untouched compact and pretty exports
+  retain their original canonical checksum and pass integrity verification.
+
+## 2.11.3 - 2026-10-23
+
+- Refuse dependency injection that would silently discard recorded activity
+  input before queued or local activity code runs. Record a typed attempt
+  failure and preserve the authored retry policy, original input and identity.
+- Record activity entry dependency-resolution failures through the normal
+  outcome path instead of leaving the attempt leased without an outcome.
+
+## 2.11.2 - 2026-10-23
+
+- Deliver unpinned activity tasks to eligible versioned workers during rolling
+  deployments. Preserve build pins, namespace and queue isolation, activity-type
+  routing, readiness and availability filters.
+
+## 2.11.1 - 2026-10-22
+
+- Preserve microsecond precision when selecting expired task leases, available
+  tasks and elapsed repair backoffs. A repair pass can select a task at its
+  recorded deadline without waiting for the next whole second.
+
+## 2.11.0 - 2026-10-22
+
+- Add the opt-in `WorkflowOptions::overlapReleaseAfter` delay for legacy
+  workflow, activity, signal and child-completion jobs contending on overlap
+  locks. Preserve the zero default, stored options, lock ownership and expiry.
+- Preserve the delay through child inheritance and continue-as-new. Queue
+  releases still count toward Laravel attempt limits.
+
 ## 2.10.2 - 2026-10-22
 
 - Preserve recorded activity lease expiry and worker deregistration in canonical

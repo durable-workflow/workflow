@@ -41,6 +41,8 @@ jobs:
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
       with:
         python-version: "3.13"
+    - name: Bootstrap patched pip trust
+      uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
     - name: Install policy dependencies
       run: "python -m pip install --only-binary :all: PyYAML==6.0.2"
     - name: Require centrally approved immutable action commits
@@ -393,6 +395,20 @@ jobs:
           tests/Unit/V2/EmbeddedSqliteTaskContentionTest.php \
           tests/Unit/V2/ProjectionSqliteContentionTest.php \
           --fail-on-warning --log-junit build/test-results/pr-database-queue-recovery.xml
+
+    - name: Run legacy overlap releases on a real database queue
+      env:
+        DB_CONNECTION: sqlite
+        DB_DATABASE: ${{ runner.temp }}/workflow-overlap-release.sqlite
+        CACHE_DRIVER: array
+        CACHE_STORE: array
+        QUEUE_CONNECTION: sync
+        REDIS_HOST: ''
+      run: |
+        touch "$DB_DATABASE"
+        vendor/bin/phpunit tests/Unit/WorkflowOverlapReleaseTest.php \
+          tests/Unit/WorkflowOptionsTest.php \
+          tests/Unit/V2/LegacyOverlapOptionsBoundaryTest.php --testdox --fail-on-warning
 
     - name: Run retained execution authority and process-loss controls
       run: >-
