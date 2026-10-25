@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Closure;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 use Workflow\Events\ActivityCompleted as LegacyActivityCompleted;
 use Workflow\Events\ActivityFailed as LegacyActivityFailed;
 use Workflow\Events\ActivityStarted as LegacyActivityStarted;
@@ -44,17 +45,20 @@ use Workflow\V2\Models\WorkflowRun;
 final class LifecycleEventDispatcher
 {
     /**
-     * @var list<Closure(): void>|null The events held back for the running transaction attempt.
+     * The events held back by each running transaction attempt, innermost last.
+     *
+     * @var list<list<Closure(): void>>
      */
-    private static ?array $collected = null;
+    private static array $collectors = [];
 
     /**
      * Run one transaction attempt's body and hold back the lifecycle events it
      * dispatches. Call it inside the DB::transaction() callback and pass the
      * returned events to {@see self::release()} after DB::transaction()
-     * returns. A refused, failed or retried attempt therefore dispatches
-     * nothing, and a committed one dispatches its events once. A body that runs
-     * inside a collecting attempt adds its events to that attempt.
+     * returns. Each call collects for its own attempt: if the body throws,
+     * its events are discarded, so a refused, failed or retried attempt
+     * dispatches nothing, even when an enclosing attempt catches the failure
+     * and commits.
      *
      * @template T
      * @param callable(): T $body
@@ -62,30 +66,41 @@ final class LifecycleEventDispatcher
      */
     public static function collect(callable $body): array
     {
-        if (self::$collected !== null) {
-            return [$body(), []];
-        }
-
-        self::$collected = [];
+        self::$collectors[] = [];
+        $depth = count(self::$collectors);
 
         try {
             $result = $body();
+        } catch (Throwable $error) {
+            array_splice(self::$collectors, $depth - 1);
 
-            return [$result, self::$collected];
-        } finally {
-            self::$collected = null;
+            throw $error;
         }
+
+        $events = self::$collectors[$depth - 1];
+        array_splice(self::$collectors, $depth - 1);
+
+        return [$result, $events];
     }
 
     /**
-     * Dispatch the events a committed attempt held back. Inside a caller's
-     * still-open transaction they wait for that transaction's commit.
+     * Release the events of an attempt whose transaction has committed. Inside
+     * an enclosing collecting attempt they join that attempt, and are
+     * dispatched or discarded with it. Otherwise, inside a caller's still-open
+     * transaction they wait for its commit, and outside any transaction they
+     * are dispatched now.
      *
      * @param list<Closure(): void> $events
      */
     public static function release(array $events): void
     {
         if ($events === []) {
+            return;
+        }
+
+        if (self::$collectors !== []) {
+            array_push(self::$collectors[count(self::$collectors) - 1], ...$events);
+
             return;
         }
 
@@ -376,8 +391,8 @@ final class LifecycleEventDispatcher
      */
     private static function emit(Closure $dispatch): void
     {
-        if (self::$collected !== null) {
-            self::$collected[] = $dispatch;
+        if (self::$collectors !== []) {
+            self::$collectors[count(self::$collectors) - 1][] = $dispatch;
 
             return;
         }

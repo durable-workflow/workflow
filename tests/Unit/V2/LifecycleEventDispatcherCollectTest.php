@@ -12,6 +12,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Events\WorkflowCompleted;
+use Workflow\V2\Events\WorkflowFailed;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\LifecycleEventDispatcher;
@@ -101,18 +102,93 @@ final class LifecycleEventDispatcherCollectTest extends TestCase
         Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
     }
 
-    public function testANestedCollectAddsItsEventsToTheOuterAttempt(): void
+    public function testANestedAttemptThatRollsBackPublishesNothingWhenTheOuterCommits(): void
+    {
+        Event::fake([WorkflowCompleted::class, WorkflowFailed::class]);
+        $run = $this->createRun();
+
+        [$result, $events] = DB::transaction(static fn (): array => LifecycleEventDispatcher::collect(
+            static function () use ($run): string {
+                LifecycleEventDispatcher::workflowCompleted($run);
+                try {
+                    DB::transaction(static fn (): array => LifecycleEventDispatcher::collect(static function () use (
+                        $run
+                    ): void {
+                        LifecycleEventDispatcher::workflowFailed($run, RuntimeException::class, 'nested');
+
+                        throw new RuntimeException('nested attempt rolled back');
+                    }));
+                } catch (RuntimeException) {
+                    // The outer attempt carries on and commits.
+                }
+
+                return 'outer committed';
+            }
+        ));
+        LifecycleEventDispatcher::release($events);
+
+        $this->assertSame('outer committed', $result);
+        Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
+        Event::assertNotDispatched(WorkflowFailed::class);
+    }
+
+    public function testARetriedNestedTransactionPublishesOnlyItsCommittedAttempt(): void
     {
         Event::fake([WorkflowCompleted::class]);
         $run = $this->createRun();
 
-        [, $events] = LifecycleEventDispatcher::collect(static function () use ($run): array {
-            return LifecycleEventDispatcher::collect(static fn () => LifecycleEventDispatcher::workflowCompleted($run));
-        });
+        [, $events] = DB::transaction(static fn (): array => LifecycleEventDispatcher::collect(
+            static function () use ($run): void {
+                for ($attempt = 1; ; $attempt++) {
+                    try {
+                        [, $nested] = DB::transaction(
+                            static fn (): array => LifecycleEventDispatcher::collect(static function () use (
+                                $run,
+                                $attempt
+                            ): void {
+                                LifecycleEventDispatcher::workflowCompleted($run);
+                                if ($attempt === 1) {
+                                    throw new RuntimeException('nested attempt failed');
+                                }
+                            })
+                        );
+                        LifecycleEventDispatcher::release($nested);
 
+                        return;
+                    } catch (RuntimeException) {
+                        // Retry the nested transaction.
+                    }
+                }
+            }
+        ));
+
+        // The committed nested attempt's event joined the outer attempt.
         Event::assertNotDispatched(WorkflowCompleted::class);
         $this->assertCount(1, $events);
         LifecycleEventDispatcher::release($events);
+        Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
+    }
+
+    public function testAnEnclosingAttemptThatFailsDiscardsItsNestedEvents(): void
+    {
+        Event::fake([WorkflowCompleted::class]);
+        $run = $this->createRun();
+
+        try {
+            LifecycleEventDispatcher::collect(static function () use ($run): void {
+                [, $nested] = LifecycleEventDispatcher::collect(
+                    static fn () => LifecycleEventDispatcher::workflowCompleted($run)
+                );
+                LifecycleEventDispatcher::release($nested);
+
+                throw new RuntimeException('outer attempt failed');
+            });
+        } catch (RuntimeException) {
+        }
+
+        Event::assertNotDispatched(WorkflowCompleted::class);
+        // Nothing is left collecting: a later dispatch is immediate.
+        LifecycleEventDispatcher::workflowCompleted($run);
         Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
     }
 
