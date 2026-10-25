@@ -7,9 +7,10 @@ namespace Workflow\V2\Support;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use InvalidArgumentException;
 use RuntimeException;
-use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 
-final class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
+final class FilesystemExternalPayloadStorage implements PredictableExternalPayloadStorageDriver
 {
     private string $prefix;
 
@@ -36,9 +37,17 @@ final class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDr
         $this->prefix = $this->normalizePrefix($prefix);
     }
 
+    /**
+     * Store the content under its hash. The content must match the hash, so
+     * a repeated put writes the same bytes to the same key (idempotent), and
+     * the disk's put replaces an object whole.
+     */
     public function put(string $data, string $sha256, string $codec): string
     {
         $this->validateSha256($sha256);
+        if (! hash_equals(strtolower($sha256), hash('sha256', $data))) {
+            throw new ExternalPayloadIntegrityException('External payload content does not match its sha256.');
+        }
         $key = $this->objectKey($sha256, $codec);
 
         if (! $this->disk->put($key, $data, $this->writeOptions)) {
@@ -46,6 +55,13 @@ final class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDr
         }
 
         return $this->objectUri($key);
+    }
+
+    public function uriFor(string $sha256, string $codec): string
+    {
+        $this->validateSha256($sha256);
+
+        return $this->objectUri($this->objectKey($sha256, $codec));
     }
 
     public function get(string $uri): string

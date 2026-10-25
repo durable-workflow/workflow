@@ -17,6 +17,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\HistoryPayloadJson;
 use Workflow\V2\Support\HistoryRecordedAt;
+use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\PendingSignalCloser;
@@ -118,13 +119,19 @@ class WorkflowHistoryEvent extends Model
                     ->findOrFail($run->id);
                 $now = now();
                 $sequence = self::nextSequenceForRun($lockedRun);
+                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel);
+                // A metered completion (#930) charges the event as stored,
+                // and the run row whose history position it advances.
+                $meter = HistoryTransactionMeter::current();
+                $meter?->chargeEvent($eventType->value, $storedPayload);
+                $meter?->chargeRows(1);
 
                 /** @var self $event */
                 $event = ConfiguredV2Models::query('history_event_model', self::class)->create([
                     'workflow_run_id' => $lockedRun->id,
                     'sequence' => $sequence,
                     'event_type' => $eventType->value,
-                    'payload' => self::snapshotPayload($payload, $taskModel, $commandModel),
+                    'payload' => $storedPayload,
                     'workflow_task_id' => $taskId,
                     'workflow_command_id' => $commandId,
                     'recorded_at' => $now,

@@ -6,10 +6,10 @@ namespace Workflow\V2\Support;
 
 use InvalidArgumentException;
 use RuntimeException;
-use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 
-final class LocalFilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
+final class LocalFilesystemExternalPayloadStorage implements PredictableExternalPayloadStorageDriver
 {
     private string $root;
 
@@ -35,26 +35,54 @@ final class LocalFilesystemExternalPayloadStorage implements ExternalPayloadStor
         $this->root = rtrim($resolved, DIRECTORY_SEPARATOR);
     }
 
+    /**
+     * Store the content under its hash, atomically and idempotently: the
+     * content must match the hash, an existing object must hold the same
+     * content, and a new one appears only complete (written aside, then
+     * renamed into place).
+     */
     public function put(string $data, string $sha256, string $codec): string
     {
         $this->validateSha256($sha256);
-        $codecSegment = $this->safeCodecSegment($codec);
-        $path = $this->root . DIRECTORY_SEPARATOR . $codecSegment . DIRECTORY_SEPARATOR . substr(
-            $sha256,
-            0,
-            2
-        ) . DIRECTORY_SEPARATOR . $sha256;
+        if (! hash_equals(strtolower($sha256), hash('sha256', $data))) {
+            throw new ExternalPayloadIntegrityException('External payload content does not match its sha256.');
+        }
+        $path = $this->pathFor($sha256, $codec);
         $directory = dirname($path);
 
         if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
             throw new RuntimeException(sprintf('Unable to create external payload directory [%s].', $directory));
         }
 
-        if (! is_file($path) && file_put_contents($path, $data, LOCK_EX) === false) {
+        if (is_file($path)) {
+            $existing = file_get_contents($path);
+            if ($existing === false || ! hash_equals(strtolower($sha256), hash('sha256', $existing))) {
+                throw new ExternalPayloadIntegrityException(sprintf(
+                    'Stored external payload [%s] does not match its sha256.',
+                    $path
+                ));
+            }
+
+            return self::pathToFileUri($path);
+        }
+
+        $temporary = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        if (file_put_contents($temporary, $data, LOCK_EX) === false || ! rename($temporary, $path)) {
+            if (is_file($temporary)) {
+                unlink($temporary);
+            }
+
             throw new RuntimeException(sprintf('Unable to write external payload [%s].', $path));
         }
 
         return self::pathToFileUri($path);
+    }
+
+    public function uriFor(string $sha256, string $codec): string
+    {
+        $this->validateSha256($sha256);
+
+        return self::pathToFileUri($this->pathFor($sha256, $codec));
     }
 
     public function get(string $uri): string
@@ -80,6 +108,12 @@ final class LocalFilesystemExternalPayloadStorage implements ExternalPayloadStor
         if (is_file($path)) {
             unlink($path);
         }
+    }
+
+    private function pathFor(string $sha256, string $codec): string
+    {
+        return $this->root . DIRECTORY_SEPARATOR . $this->safeCodecSegment($codec) . DIRECTORY_SEPARATOR
+            . substr($sha256, 0, 2) . DIRECTORY_SEPARATOR . $sha256;
     }
 
     private function pathFromUri(string $uri): string

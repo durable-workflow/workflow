@@ -39,6 +39,7 @@ use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -60,6 +61,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     public const POLL_BATCH_CAP = 100;
 
     public const AVAILABILITY_CEILING_SECONDS = 1;
+
+    /**
+     * The earliest timestamp every supported column type stores (MySQL
+     * TIMESTAMP's 1970-01-01T00:00:01Z), in Unix milliseconds.
+     */
+    private const EARLIEST_STORED_TIMESTAMP_MS = 1000;
 
     /**
      * Relations the history-projection role consumes for a workflow-bridge
@@ -1234,200 +1241,241 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ];
         }
 
-        return DB::transaction(function () use ($taskId, $parsed): array {
-            /** @var WorkflowTask|null $task */
-            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
-                ->lockForUpdate()
-                ->find($taskId);
+        // The whole completion runs under one history transaction meter
+        // (#930): every event, byte, row and staged external payload is
+        // charged as it is written, and a refusal rolls everything back,
+        // leaving the task's lease as it was.
+        try {
+            return DB::transaction(fn (): array => HistoryTransactionMeter::run(function () use (
+                $taskId,
+                $parsed,
+                $commands
+            ): array {
+                /** @var WorkflowTask|null $task */
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                    ->lockForUpdate()
+                    ->find($taskId);
 
-            if ($parsed === null && ($task === null || ! self::isSignalResumeTask($task))) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $task?->workflow_run_id,
-                    'run_status' => null,
-                    'created_task_ids' => [],
-                    'reason' => 'invalid_commands',
-                ];
-            }
-
-            if ($task === null || $task->task_type !== TaskType::Workflow) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => null,
-                    'run_status' => null,
-                    'created_task_ids' => [],
-                    'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
-                ];
-            }
-
-            $parsed ??= [
-                'non_terminal' => [],
-                'terminal' => null,
-            ];
-
-            if ($task->status !== TaskStatus::Leased) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $task->workflow_run_id,
-                    'run_status' => null,
-                    'created_task_ids' => [],
-                    'reason' => 'task_not_leased',
-                ];
-            }
-
-            /** @var WorkflowRun|null $run */
-            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($task->workflow_run_id);
-
-            if ($run === null) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $task->workflow_run_id,
-                    'run_status' => null,
-                    'created_task_ids' => [],
-                    'reason' => 'run_not_found',
-                ];
-            }
-
-            if ($run->status->isTerminal()) {
-                $task->forceFill([
-                    'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
-                    'lease_expires_at' => null,
-                ])->save();
-
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => 'run_already_closed',
-                ];
-            }
-
-            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => 'run_timed_out',
-                ];
-            }
-
-            if ($this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => 'run_cancelled',
-                ];
-            }
-
-            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
-            $createdTaskIds = [];
-            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
-            if ($scopeError !== null) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => $scopeError,
-                ];
-            }
-            $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
-
-            if ($invalidUpdateCommands !== null) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => $invalidUpdateCommands,
-                ];
-            }
-
-            if (! $this->selectionCancellationCommandsAreValid($run, $parsed['non_terminal'])) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => 'invalid_commands',
-                ];
-            }
-
-            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
-                return [
-                    'completed' => false,
-                    'task_id' => $taskId,
-                    'workflow_run_id' => $run->id,
-                    'run_status' => $run->status->value,
-                    'created_task_ids' => [],
-                    'reason' => 'invalid_commands',
-                ];
-            }
-
-            $this->recordAppliedSignalForSignalResume($run, $task);
-            $conditionSelectionResolution = $this->recordSatisfiedConditionWaitForSignalResume(
-                $run,
-                $task,
-                $parsed['non_terminal'],
-            );
-
-            foreach ($parsed['non_terminal'] as $command) {
-                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
-            }
-
-            $terminal = $parsed['terminal'];
-
-            // A signal may commit after the worker has read history. Give it
-            // an ordered delivery turn before accepting that worker's close.
-            if (in_array($terminal['type'] ?? null, ['complete_workflow', 'continue_as_new'], true)
-                && ! is_string($run->cancellation_request_command_id)
-                && PendingMessageTask::hasDeliverableSignal($run, self::workflowSignalIdForTask($task))) {
-                $terminal = null;
-            }
-
-            if ($terminal !== null) {
-                if ($terminal['type'] === 'continue_as_new') {
-                    $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);
-                } elseif ($terminal['type'] === 'complete_workflow') {
-                    $this->applyWorkflowCompletion($run, $task, $terminal);
-                } else {
-                    $this->applyWorkflowFailure($run, $task, $terminal);
+                if ($parsed === null && ($task === null || ! self::isSignalResumeTask($task))) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $task?->workflow_run_id,
+                        'run_status' => null,
+                        'created_task_ids' => [],
+                        'reason' => 'invalid_commands',
+                    ];
                 }
-            } else {
-                $this->markRunWaiting(
+
+                if ($task === null || $task->task_type !== TaskType::Workflow) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => null,
+                        'run_status' => null,
+                        'created_task_ids' => [],
+                        'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
+                    ];
+                }
+
+                $parsed ??= [
+                    'non_terminal' => [],
+                    'terminal' => null,
+                ];
+
+                if ($task->status !== TaskStatus::Leased) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $task->workflow_run_id,
+                        'run_status' => null,
+                        'created_task_ids' => [],
+                        'reason' => 'task_not_leased',
+                    ];
+                }
+
+                /** @var WorkflowRun|null $run */
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->find($task->workflow_run_id);
+
+                if ($run === null) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $task->workflow_run_id,
+                        'run_status' => null,
+                        'created_task_ids' => [],
+                        'reason' => 'run_not_found',
+                    ];
+                }
+
+                if ($run->status->isTerminal()) {
+                    $task->forceFill([
+                        'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                        'lease_expires_at' => null,
+                    ])->save();
+
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => 'run_already_closed',
+                    ];
+                }
+
+                // A run's deadline close is the server's own work on stored
+                // state, not the worker's commands, and nothing else closes
+                // a run whose task is open: it is never metered (#930).
+                if (HistoryTransactionMeter::unmetered(
+                    fn (): bool => $this->executor->timeoutIfDeadlineExpired($run, $task)
+                )) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => 'run_timed_out',
+                    ];
+                }
+
+                if (HistoryTransactionMeter::unmetered(
+                    fn (): bool => $this->executor->cancelIfCleanupDeadlineExpired($run, $task)
+                )) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => 'run_cancelled',
+                    ];
+                }
+
+                // The early whole-completion check (#930): after any deadline
+                // close, before the worker's first write; the lease stays.
+                if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => null,
+                        'created_task_ids' => [],
+                        'reason' => 'completion_budget_exceeded',
+                    ];
+                }
+
+                $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+                $createdTaskIds = [];
+                $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+                if ($scopeError !== null) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => $scopeError,
+                    ];
+                }
+                $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+
+                if ($invalidUpdateCommands !== null) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => $invalidUpdateCommands,
+                    ];
+                }
+
+                if (! $this->selectionCancellationCommandsAreValid($run, $parsed['non_terminal'])) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => 'invalid_commands',
+                    ];
+                }
+
+                if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => 'invalid_commands',
+                    ];
+                }
+
+                $this->recordAppliedSignalForSignalResume($run, $task);
+                $conditionSelectionResolution = $this->recordSatisfiedConditionWaitForSignalResume(
                     $run,
                     $task,
                     $parsed['non_terminal'],
-                    $createdTaskIds,
-                    $conditionSelectionResolution,
                 );
-            }
 
+                foreach ($parsed['non_terminal'] as $command) {
+                    $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+                }
+
+                $terminal = $parsed['terminal'];
+
+                // A signal may commit after the worker has read history. Give it
+                // an ordered delivery turn before accepting that worker's close.
+                if (in_array($terminal['type'] ?? null, ['complete_workflow', 'continue_as_new'], true)
+                    && ! is_string($run->cancellation_request_command_id)
+                    && PendingMessageTask::hasDeliverableSignal($run, self::workflowSignalIdForTask($task))) {
+                    $terminal = null;
+                }
+
+                if ($terminal !== null) {
+                    if ($terminal['type'] === 'continue_as_new') {
+                        $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);
+                    } elseif ($terminal['type'] === 'complete_workflow') {
+                        $this->applyWorkflowCompletion($run, $task, $terminal);
+                    } else {
+                        $this->applyWorkflowFailure($run, $task, $terminal);
+                    }
+                } else {
+                    $this->markRunWaiting(
+                        $run,
+                        $task,
+                        $parsed['non_terminal'],
+                        $createdTaskIds,
+                        $conditionSelectionResolution,
+                    );
+                }
+
+                return [
+                    'completed' => true,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => $createdTaskIds,
+                    'reason' => null,
+                ];
+            }));
+        } catch (HistoryTransactionLimitExceededException $refusal) {
             return [
-                'completed' => true,
+                'completed' => false,
                 'task_id' => $taskId,
-                'workflow_run_id' => $run->id,
-                'run_status' => $run->status->value,
-                'created_task_ids' => $createdTaskIds,
-                'reason' => null,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'created_task_ids' => [],
+                'reason' => self::meterRefusalReason($refusal),
+                'limit' => $refusal->dimension,
+                'message' => $refusal->getMessage(),
             ];
-        });
+        }
     }
 
     /**
@@ -1470,9 +1518,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         return null;
     }
 
-    /** @param list<array{type: string, ...}> $commands
+    /** @param list<array{type: string, ...}> $refusal
      * @return array<string, mixed>
      */
+    /**
+     * The completion refusal reason for a history transaction meter refusal:
+     * its own reason, or history_transaction_limit_exceeded for a limit.
+     */
+    private static function meterRefusalReason(HistoryTransactionLimitExceededException $refusal): string
+    {
+        return in_array($refusal->dimension, [
+            HistoryTransactionLimitExceededException::MEASURE_UNAVAILABLE,
+            HistoryTransactionLimitExceededException::STAGING_UNSUPPORTED,
+            HistoryTransactionLimitExceededException::STAGED_URI_MISMATCH,
+            HistoryTransactionLimitExceededException::TIMESTAMP_OUT_OF_RANGE,
+        ], true) ? $refusal->dimension : 'history_transaction_limit_exceeded';
+    }
+
     private function checkpointCommands(
         string $taskId,
         string $leaseOwner,
@@ -1534,205 +1596,211 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return $refused('task_not_found');
         }
 
-        return DB::transaction(function () use (
-            $snapshot,
-            $taskId,
-            $leaseOwner,
-            $workflowTaskAttempt,
-            $checkpointId,
-            $startSequence,
-            $parsed,
-            $fingerprint,
-            $refused,
-            $group,
-            $scopePrefix,
-            $checkpointName,
-        ): array {
-            /** @var WorkflowRun|null $run */
-            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($snapshot->workflow_run_id);
-            /** @var WorkflowTask|null $task */
-            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
-            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
-                return $refused('workflow_claim_not_found');
-            }
-            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
-                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
-                return $refused('workflow_claim_mismatch');
-            }
-            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
-                return $refused('workflow_claim_expired');
-            }
-            if ($run->status->isTerminal()) {
-                return $refused('run_closed');
-            }
-            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
-                return $refused('run_deadline_expired');
-            }
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $receiptKey = $scopePrefix ? 'portable_scope_checkpoint'
-                : ($group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint');
-            $receipt = $payload[$receiptKey] ?? null;
-            if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
-                if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
-                    || ($receipt['lease_owner'] ?? null) !== $leaseOwner
-                    || ($receipt['start_sequence'] ?? null) !== $startSequence
-                    || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
-                    return $refused($checkpointName . '_checkpoint_mismatch');
+        // Checkpointed commands are metered like a completion (#930); each
+        // retried transaction attempt starts a fresh meter and stage.
+        try {
+            return DB::transaction(fn (): array => HistoryTransactionMeter::run(function () use (
+                $snapshot,
+                $taskId,
+                $leaseOwner,
+                $workflowTaskAttempt,
+                $checkpointId,
+                $startSequence,
+                $parsed,
+                $fingerprint,
+                $refused,
+                $group,
+                $scopePrefix,
+                $checkpointName,
+            ): array {
+                /** @var WorkflowRun|null $run */
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->find($snapshot->workflow_run_id);
+                /** @var WorkflowTask|null $task */
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->lockForUpdate()->find($taskId);
+                if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                    return $refused('workflow_claim_not_found');
                 }
-                // This receipt proves prefix commit, not permission to start
-                // application code. Preparation still checks cancellation.
+                if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                    || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                    return $refused('workflow_claim_mismatch');
+                }
+                if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                    return $refused('workflow_claim_expired');
+                }
+                if ($run->status->isTerminal()) {
+                    return $refused('run_closed');
+                }
+                if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                    || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                    return $refused('run_deadline_expired');
+                }
+                $payload = is_array($task->payload) ? $task->payload : [];
+                $receiptKey = $scopePrefix ? 'portable_scope_checkpoint'
+                    : ($group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint');
+                $receipt = $payload[$receiptKey] ?? null;
+                if (is_array($receipt) && ($receipt['checkpoint_id'] ?? null) === $checkpointId) {
+                    if (($receipt['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+                        || ($receipt['lease_owner'] ?? null) !== $leaseOwner
+                        || ($receipt['start_sequence'] ?? null) !== $startSequence
+                        || ($receipt['fingerprint'] ?? null) !== $fingerprint) {
+                        return $refused($checkpointName . '_checkpoint_mismatch');
+                    }
+                    // This receipt proves prefix commit, not permission to start
+                    // application code. Preparation still checks cancellation.
+                    return [
+                        ...$receipt,
+                        'checkpointed' => true,
+                        'duplicate' => true,
+                        'reason' => null,
+                    ];
+                }
+                if ($run->cancellation_request_command_id !== null) {
+                    $delivery = $run->historyEvents()
+                        ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
+                        ->where('workflow_command_id', $run->cancellation_request_command_id)
+                        ->first();
+                    $cleanup = PortableLocalActivityCleanup::snapshot($run, [
+                        'request_id' => $run->cancellation_request_command_id,
+                        'delivery_history_event_id' => $delivery?->id,
+                    ], $startSequence);
+                    if ($cleanup === null) {
+                        // An atomic local group can prove scoped cleanup on every
+                        // member. Ordinary prefixes still need root delivery.
+                        if (! $group || $parsed['non_terminal'] === []) {
+                            return $refused('cancellation_requested');
+                        }
+                        foreach ($parsed['non_terminal'] as $offset => $command) {
+                            if ($command['type'] !== 'prepare_local_activity') {
+                                return $refused('cancellation_requested');
+                            }
+                            $memberCleanup = PortableLocalActivityCleanup::snapshot(
+                                $run,
+                                $command['cancellation_cleanup'] ?? null,
+                                $startSequence + $offset,
+                                $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                            );
+                            if (! PortableLocalActivityCleanup::belongsToRunRequest($run, $memberCleanup)) {
+                                return $refused('cancellation_requested');
+                            }
+                        }
+                    }
+                    if (now()->gte($run->cancellation_deadline_at)) {
+                        return $refused('cancellation_deadline_expired');
+                    }
+                }
+                $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
+                if ($sequence !== $startSequence) {
+                    return $refused($checkpointName . '_checkpoint_sequence_mismatch');
+                }
+                $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
+                if ($scopeError !== null) {
+                    return $refused($scopeError);
+                }
+                $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+                if ($invalidUpdate !== null) {
+                    return $refused($invalidUpdate);
+                }
+                if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
+                    return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
+                }
+                // Validate every local scope/cleanup member before creating any sibling.
+                foreach ($parsed['non_terminal'] as $offset => $command) {
+                    if ($command['type'] !== 'prepare_local_activity') {
+                        continue;
+                    }
+                    if (! CancellationScopeHistory::isRecordedBefore(
+                        $run,
+                        $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                        $sequence + $offset,
+                    )) {
+                        return $refused('local_activity_scope_not_recorded');
+                    }
+                    $cleanup = PortableLocalActivityCleanup::snapshot(
+                        $run,
+                        $command['cancellation_cleanup'] ?? null,
+                        $sequence + $offset,
+                        $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                    );
+                    if ((isset($command['cancellation_cleanup']) && $cleanup === null)
+                        || ($run->cancellation_request_command_id !== null
+                            && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup))
+                        || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']) && ! isset($cleanup['scope_id']))) {
+                        return $refused('local_activity_cleanup_authority_mismatch');
+                    }
+                    if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
+                        return $refused(isset($cleanup['scope_id']) ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired');
+                    }
+                    if (isset($cleanup['scope_id']) && now()->gte(
+                        PortableLocalActivityCleanup::currentDeadline($run, $cleanup)
+                    )) {
+                        return $refused('local_activity_cleanup_authority_expired');
+                    }
+                }
+                $this->recordAppliedSignalForSignalResume($run, $task);
+                $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+                $createdTaskIds = [];
+                $localActivities = [];
+                foreach ($parsed['non_terminal'] as $command) {
+                    if ($command['type'] === 'prepare_local_activity') {
+                        $execution = PortableLocalActivityPreparation::admitGroupMember(
+                            $run,
+                            $task,
+                            $sequence,
+                            [
+                                ...$command,
+                                'type' => 'record_local_activity',
+                            ],
+                            $checkpointId,
+                            $fingerprint
+                        );
+                        $localActivities[] = [
+                            'sequence' => $sequence,
+                            'activity_execution_id' => $execution->id,
+                        ];
+                        ++$sequence;
+                        continue;
+                    }
+                    $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+                }
+                // Command application can update task payload (for example signal
+                // consumption). Preserve that state rather than the old snapshot.
+                $payload = is_array($task->payload) ? $task->payload : [];
+                $receipt = [
+                    'checkpoint_id' => $checkpointId,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'workflow_task_attempt' => $workflowTaskAttempt,
+                    'lease_owner' => $leaseOwner,
+                    'lease_expires_at' => $task->lease_expires_at->toISOString(),
+                    'start_sequence' => $startSequence,
+                    'next_sequence' => $sequence,
+                    'fingerprint' => $fingerprint,
+                    'created_task_ids' => $createdTaskIds,
+                    'recorded_at' => now()
+                        ->toISOString(),
+                    ...($group ? [
+                        'local_activities' => $localActivities,
+                    ] : []),
+                ];
+                $task->forceFill([
+                    'payload' => [
+                        ...$payload,
+                        $receiptKey => $receipt,
+                    ],
+                ])->save();
+
                 return [
                     ...$receipt,
                     'checkpointed' => true,
-                    'duplicate' => true,
+                    'duplicate' => false,
                     'reason' => null,
                 ];
-            }
-            if ($run->cancellation_request_command_id !== null) {
-                $delivery = $run->historyEvents()
-                    ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)
-                    ->where('workflow_command_id', $run->cancellation_request_command_id)
-                    ->first();
-                $cleanup = PortableLocalActivityCleanup::snapshot($run, [
-                    'request_id' => $run->cancellation_request_command_id,
-                    'delivery_history_event_id' => $delivery?->id,
-                ], $startSequence);
-                if ($cleanup === null) {
-                    // An atomic local group can prove scoped cleanup on every
-                    // member. Ordinary prefixes still need root delivery.
-                    if (! $group || $parsed['non_terminal'] === []) {
-                        return $refused('cancellation_requested');
-                    }
-                    foreach ($parsed['non_terminal'] as $offset => $command) {
-                        if ($command['type'] !== 'prepare_local_activity') {
-                            return $refused('cancellation_requested');
-                        }
-                        $memberCleanup = PortableLocalActivityCleanup::snapshot(
-                            $run,
-                            $command['cancellation_cleanup'] ?? null,
-                            $startSequence + $offset,
-                            $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                        );
-                        if (! PortableLocalActivityCleanup::belongsToRunRequest($run, $memberCleanup)) {
-                            return $refused('cancellation_requested');
-                        }
-                    }
-                }
-                if (now()->gte($run->cancellation_deadline_at)) {
-                    return $refused('cancellation_deadline_expired');
-                }
-            }
-            $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
-            if ($sequence !== $startSequence) {
-                return $refused($checkpointName . '_checkpoint_sequence_mismatch');
-            }
-            $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
-            if ($scopeError !== null) {
-                return $refused($scopeError);
-            }
-            $invalidUpdate = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
-            if ($invalidUpdate !== null) {
-                return $refused($invalidUpdate);
-            }
-            if (! self::parallelCommandsMatchSequences($parsed['non_terminal'], $sequence, $run)) {
-                return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
-            }
-            // Validate every local scope/cleanup member before creating any sibling.
-            foreach ($parsed['non_terminal'] as $offset => $command) {
-                if ($command['type'] !== 'prepare_local_activity') {
-                    continue;
-                }
-                if (! CancellationScopeHistory::isRecordedBefore(
-                    $run,
-                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                    $sequence + $offset,
-                )) {
-                    return $refused('local_activity_scope_not_recorded');
-                }
-                $cleanup = PortableLocalActivityCleanup::snapshot(
-                    $run,
-                    $command['cancellation_cleanup'] ?? null,
-                    $sequence + $offset,
-                    $command['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                );
-                if ((isset($command['cancellation_cleanup']) && $cleanup === null)
-                    || ($run->cancellation_request_command_id !== null
-                        && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup))
-                    || ($run->cancellation_request_command_id === null && isset($command['cancellation_cleanup']) && ! isset($cleanup['scope_id']))) {
-                    return $refused('local_activity_cleanup_authority_mismatch');
-                }
-                if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
-                    return $refused(isset($cleanup['scope_id']) ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired');
-                }
-                if (isset($cleanup['scope_id']) && now()->gte(
-                    PortableLocalActivityCleanup::currentDeadline($run, $cleanup)
-                )) {
-                    return $refused('local_activity_cleanup_authority_expired');
-                }
-            }
-            $this->recordAppliedSignalForSignalResume($run, $task);
-            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
-            $createdTaskIds = [];
-            $localActivities = [];
-            foreach ($parsed['non_terminal'] as $command) {
-                if ($command['type'] === 'prepare_local_activity') {
-                    $execution = PortableLocalActivityPreparation::admitGroupMember(
-                        $run,
-                        $task,
-                        $sequence,
-                        [
-                            ...$command,
-                            'type' => 'record_local_activity',
-                        ],
-                        $checkpointId,
-                        $fingerprint
-                    );
-                    $localActivities[] = [
-                        'sequence' => $sequence,
-                        'activity_execution_id' => $execution->id,
-                    ];
-                    ++$sequence;
-                    continue;
-                }
-                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
-            }
-            // Command application can update task payload (for example signal
-            // consumption). Preserve that state rather than the old snapshot.
-            $payload = is_array($task->payload) ? $task->payload : [];
-            $receipt = [
-                'checkpoint_id' => $checkpointId,
-                'task_id' => $taskId,
-                'workflow_run_id' => $run->id,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'lease_owner' => $leaseOwner,
-                'lease_expires_at' => $task->lease_expires_at->toISOString(),
-                'start_sequence' => $startSequence,
-                'next_sequence' => $sequence,
-                'fingerprint' => $fingerprint,
-                'created_task_ids' => $createdTaskIds,
-                'recorded_at' => now()
-                    ->toISOString(),
-                ...($group ? [
-                    'local_activities' => $localActivities,
-                ] : []),
-            ];
-            $task->forceFill([
-                'payload' => [
-                    ...$payload,
-                    $receiptKey => $receipt,
-                ],
-            ])->save();
-
-            return [
-                ...$receipt,
-                'checkpointed' => true,
-                'duplicate' => false,
-                'reason' => null,
-            ];
-        }, 5);
+            }), 5);
+        } catch (HistoryTransactionLimitExceededException $refusal) {
+            return $refused(self::meterRefusalReason($refusal));
+        }
     }
 
     /**
@@ -4466,6 +4534,33 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? array_values($command['attempts'])
             : [];
         $now = now();
+        // The normalizer bounds every timing field (#930); the total the walk
+        // below subtracts is also checked, and its earliest timestamp must be
+        // one every supported column type stores, before anything is written.
+        $backdatedMs = 0;
+        foreach ($attempts as $index => $attempt) {
+            $heartbeats = is_array($attempt['heartbeats'] ?? null) ? $attempt['heartbeats'] : [];
+            $lastHeartbeat = $heartbeats[array_key_last($heartbeats)] ?? null;
+            $span = max(
+                is_array($lastHeartbeat) && is_int(
+                    $lastHeartbeat['elapsed_ms'] ?? null
+                ) ? $lastHeartbeat['elapsed_ms'] : 0,
+                is_int($attempt['duration_ms'] ?? null) ? $attempt['duration_ms'] : 0,
+            );
+            $backdatedMs = HistoryTransactionMeter::checkedAdd($backdatedMs, $span);
+            if ($index < count($attempts) - 1 && is_int($attempt['backoff_seconds'] ?? null)) {
+                $backdatedMs = HistoryTransactionMeter::checkedAdd(
+                    $backdatedMs,
+                    HistoryTransactionMeter::checkedMultiply($attempt['backoff_seconds'], 1000),
+                );
+            }
+        }
+        if ($now->getTimestampMs() - $backdatedMs < self::EARLIEST_STORED_TIMESTAMP_MS) {
+            throw HistoryTransactionLimitExceededException::refused(
+                HistoryTransactionLimitExceededException::TIMESTAMP_OUT_OF_RANGE,
+                'The local activity report reaches back before the earliest storable timestamp.',
+            );
+        }
         // Attempt reports carry elapsed durations rather than wall-clock
         // timestamps. Walk backward from completion so each attempt ends
         // before the following attempt's declared retry backoff.
@@ -4507,6 +4602,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $lastAttempt = $attempts[array_key_last($attempts)];
 
         /** @var ActivityExecution $execution */
+        HistoryTransactionMeter::current()?->chargeRows(1);
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
             'sequence' => $sequence,
@@ -4570,6 +4666,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 default => ActivityAttemptStatus::Failed,
             };
 
+            HistoryTransactionMeter::current()?->chargeRows(1);
             $attemptRecord = ActivityAttempt::query()->create([
                 'id' => $attemptId,
                 'workflow_run_id' => $run->id,
@@ -4720,6 +4817,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 : ($outcome === 'timed_out'
                     ? ActivityTimeoutException::class
                     : RuntimeException::class);
+            HistoryTransactionMeter::current()?->chargeRows(1);
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $run->id,
                 'source_kind' => 'activity_execution',

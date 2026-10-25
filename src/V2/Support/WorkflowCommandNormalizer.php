@@ -52,6 +52,30 @@ final class WorkflowCommandNormalizer
     public const MAX_LOCAL_ACTIVITY_HEARTBEATS = 1000;
 
     /**
+     * The longest attempt duration_ms or heartbeat elapsed_ms a local
+     * activity report may declare: seven days. Recording walks each attempt
+     * back from completion by its duration and the following backoff, so
+     * with at most {@see self::MAX_LOCAL_ACTIVITY_ATTEMPTS} attempts every
+     * derived timestamp stays within a few years of now, which every
+     * supported timestamp type can hold.
+     */
+    public const MAX_LOCAL_ACTIVITY_DURATION_MS = 604_800_000;
+
+    /**
+     * The longest retry backoff_seconds a local activity attempt report may
+     * declare: one day.
+     */
+    public const MAX_LOCAL_ACTIVITY_BACKOFF_SECONDS = 86_400;
+
+    /**
+     * The history events the early completion check counts for each command
+     * other than record_local_activity: one, a lower bound. Several commands
+     * and every terminal path record more, depending on stored state; the
+     * completion's history transaction meter charges those as written.
+     */
+    public const MIN_COMMAND_HISTORY_EVENTS = 1;
+
+    /**
      * @var list<string>
      */
     private const LOCAL_ACTIVITY_RETRY_POLICY_FIELDS = [
@@ -1268,6 +1292,86 @@ final class WorkflowCommandNormalizer
     }
 
     /**
+     * The history events a normalized record_local_activity command records:
+     * one scheduled event; per attempt a started event, its heartbeats and,
+     * before the next attempt, a retry event; and one terminal event.
+     *
+     * @param  array<string, mixed>  $command
+     */
+    public static function localActivityHistoryEvents(array $command): int
+    {
+        $attempts = is_array($command['attempts'] ?? null) ? array_values($command['attempts']) : [];
+        $events = 2 + max(0, count($attempts) - 1);
+        foreach ($attempts as $attempt) {
+            $heartbeats = is_array($attempt) && is_array($attempt['heartbeats'] ?? null) ? $attempt['heartbeats'] : [];
+            $events += 1 + count($heartbeats);
+        }
+
+        return $events;
+    }
+
+    /**
+     * The exact history-event preflight for a whole completion, before any
+     * write (#930). Each local activity counts its own events (see
+     * {@see self::localActivityHistoryEvents()}) and every other command at
+     * least {@see self::MIN_COMMAND_HISTORY_EVENTS}. This refuses the
+     * local-activity amplifier before any work; the transaction's history
+     * meter remains the authority for every event, byte and row written.
+     *
+     * @param  list<array<string, mixed>>  $normalized
+     * @return list<string> the refusals, empty when the completion fits
+     */
+    public static function completionBudgetErrors(array $normalized): array
+    {
+        $eventLimit = StructuralLimits::historyTransactionSizeLimit();
+        $rowLimit = StructuralLimits::historyTransactionRowsLimit();
+        $events = 0;
+        $rows = 0;
+        foreach ($normalized as $command) {
+            $local = is_array($command) && ($command['type'] ?? null) === 'record_local_activity';
+            $count = $local ? self::localActivityHistoryEvents($command) : self::MIN_COMMAND_HISTORY_EVENTS;
+            $events = HistoryTransactionMeter::checkedAdd($events, $count);
+            $rows = HistoryTransactionMeter::checkedAdd($rows, HistoryTransactionMeter::checkedMultiply($count, 2));
+            if ($local) {
+                $rows = HistoryTransactionMeter::checkedAdd($rows, self::localActivityRows($command));
+            }
+        }
+
+        $errors = [];
+        if ($eventLimit > 0 && $events > $eventLimit) {
+            $errors[] = sprintf(
+                'This completion would record more than %d history events; one workflow task completion may record at most %d.',
+                $eventLimit,
+                $eventLimit,
+            );
+        }
+        if ($rowLimit > 0 && $rows > $rowLimit) {
+            $errors[] = sprintf(
+                'This completion would write more than %d durable rows; one workflow task completion may write at most %d.',
+                $rowLimit,
+                $rowLimit,
+            );
+        }
+
+        return $errors;
+    }
+
+    /**
+     * The rows a normalized record_local_activity command writes besides its
+     * history (each event also writes the run's history position): the
+     * execution, each attempt, and a failure when it failed or timed out.
+     *
+     * @param  array<string, mixed>  $command
+     */
+    public static function localActivityRows(array $command): int
+    {
+        $attempts = is_array($command['attempts'] ?? null) ? count($command['attempts']) : 0;
+        $failure = in_array($command['outcome'] ?? null, ['failed', 'timed_out'], true) ? 1 : 0;
+
+        return 1 + $attempts + $failure;
+    }
+
+    /**
      * @param  array<string, mixed>  $command
      * @param  array<string, mixed>|null  $retryPolicy
      * @param  array<string, list<string>>  $errors
@@ -1428,6 +1532,13 @@ final class WorkflowCommandNormalizer
                     $errors["{$path}.duration_ms"] = [
                         'Local activity attempt duration_ms must be a non-negative integer.',
                     ];
+                } elseif ($rawAttempt['duration_ms'] > self::MAX_LOCAL_ACTIVITY_DURATION_MS) {
+                    $errors["{$path}.duration_ms"] = [
+                        sprintf(
+                            'Local activity attempt duration_ms must not exceed %d.',
+                            self::MAX_LOCAL_ACTIVITY_DURATION_MS,
+                        ),
+                    ];
                 } else {
                     $durationMs = $rawAttempt['duration_ms'];
                 }
@@ -1487,6 +1598,13 @@ final class WorkflowCommandNormalizer
                     $errors["{$path}.backoff_seconds"] = [
                         'Local activity attempt backoff_seconds must be a non-negative integer.',
                     ];
+                } elseif ($rawAttempt['backoff_seconds'] > self::MAX_LOCAL_ACTIVITY_BACKOFF_SECONDS) {
+                    $errors["{$path}.backoff_seconds"] = [
+                        sprintf(
+                            'Local activity attempt backoff_seconds must not exceed %d.',
+                            self::MAX_LOCAL_ACTIVITY_BACKOFF_SECONDS,
+                        ),
+                    ];
                 } else {
                     $backoffSeconds = $rawAttempt['backoff_seconds'];
                 }
@@ -1504,11 +1622,15 @@ final class WorkflowCommandNormalizer
                         ),
                     ];
                 }
-                if ($backoffSeconds === null) {
+                // A given value keeps its own refusal.
+                if (! array_key_exists('backoff_seconds', $rawAttempt)) {
                     $errors["{$path}.backoff_seconds"] = [
                         'A retried local activity attempt requires backoff_seconds.',
                     ];
-                } elseif (isset($backoffSchedule[$position]) && $backoffSchedule[$position] !== $backoffSeconds) {
+                } elseif ($backoffSeconds !== null
+                    && isset($backoffSchedule[$position])
+                    && $backoffSchedule[$position] !== $backoffSeconds
+                ) {
                     $errors["{$path}.backoff_seconds"] = [
                         'Local activity attempt backoff_seconds must match retry_policy.backoff_seconds.',
                     ];
@@ -1695,6 +1817,16 @@ final class WorkflowCommandNormalizer
             if (! is_int($elapsedMs) || $elapsedMs < 0) {
                 $errors["{$path}.elapsed_ms"] = [
                     'Local activity heartbeat elapsed_ms must be a non-negative integer.',
+                ];
+
+                continue;
+            }
+            if ($elapsedMs > self::MAX_LOCAL_ACTIVITY_DURATION_MS) {
+                $errors["{$path}.elapsed_ms"] = [
+                    sprintf(
+                        'Local activity heartbeat elapsed_ms must not exceed %d.',
+                        self::MAX_LOCAL_ACTIVITY_DURATION_MS,
+                    ),
                 ];
 
                 continue;

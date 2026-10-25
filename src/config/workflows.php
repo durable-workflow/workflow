@@ -275,6 +275,23 @@ return [
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
                 5000
             ),
+            // Hard per-transaction ceilings a workflow task completion's
+            // history meter enforces (#930); 0 disables a dimension.
+            'history_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                16777216
+            ),
+            'history_transaction_rows' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                20000
+            ),
+            'external_payload_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                16777216
+            ),
             'warning_threshold_percent' => (int) Env::dw(
                 'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
                 'WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
