@@ -58,6 +58,7 @@ use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConditionWaits;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -66,6 +67,7 @@ use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -84,6 +86,54 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testImportedChildLineageCorpusDoesNotAttachAnUnrelatedLaterRun(): void
+    {
+        $path = self::FIXTURE_DIR . '/imported-child-lineage-requires-owned-edge.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained imported-lineage evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+        $parent = $this->createRunFromFixture($fixture);
+        $bundle = HistoryExport::forRun($parent->fresh());
+        $this->assertCount(1, $bundle['links']['children']);
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+            'namespace' => 'lineage-import',
+        ])['status']);
+        $this->assertSame(0, WorkflowLink::query()->count());
+        $identity = $fixture['history'][2]['payload'];
+        WorkflowInstance::query()->create([
+            'id' => $identity['child_workflow_instance_id'],
+            'namespace' => 'lineage-import',
+            'workflow_type' => 'unrelated-later',
+            'workflow_class' => 'unrelated-later',
+            'current_run_id' => $identity['child_workflow_run_id'],
+            'run_count' => 1,
+        ]);
+        WorkflowRun::query()->create([
+            'id' => $identity['child_workflow_run_id'],
+            'workflow_instance_id' => $identity['child_workflow_instance_id'],
+            'namespace' => 'lineage-import',
+            'workflow_type' => 'unrelated-later',
+            'workflow_class' => 'unrelated-later',
+            'run_number' => 1,
+            'status' => RunStatus::Waiting,
+            'payload_codec' => $fixture['workflow']['payload_codec'],
+            'arguments' => Serializer::serialize([]),
+        ]);
+        $imported = WorkflowRun::query()->findOrFail($parent->id);
+        $this->assertNull(ChildRunHistory::childRunForSequence($imported, 1));
+        foreach ([RunDetailView::forRun($imported->fresh()), HistoryExport::forRun($imported->fresh())] as $view) {
+            $this->assertStringNotContainsString('unrelated-later', json_encode($view, JSON_THROW_ON_ERROR));
+        }
+    }
 
     public function testRetriedActivityCancellationCorpusKeepsTheCompletedTaskAndAcknowledgesTheLiveTask(): void
     {

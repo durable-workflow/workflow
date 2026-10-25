@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "imported-child-lineage-requires-owned-edge",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "embedded-history-import"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParentWaitingOnChildWorkflow",
+    "arguments": [5],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-10-25T12:00:00Z"},
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestTimerWorkflow",
+        "child_workflow_instance_id": "imported-lineage-child",
+        "child_workflow_run_id": "01J00000000000000000000001",
+        "child_call_id": "01J00000000000000000000002"
+      },
+      "recorded_at": "2026-10-25T12:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_instance_id": "imported-lineage-child",
+        "child_workflow_run_id": "01J00000000000000000000001",
+        "child_call_id": "01J00000000000000000000002"
+      },
+      "recorded_at": "2026-10-25T12:00:02Z"
+    }
+  ],
+  "history_import_metadata": {"memo": {}, "search_attributes": {}},
+  "expected": {"completed": false, "result": null, "commands": []}
+}

@@ -85,12 +85,13 @@ final class EmbeddedV2ImportContract
                 'activity_tasks' => 'pending activity executions and ready activity tasks remain claimable; running attempts are not importable',
                 'waits' => 'wait projections are rebuilt from typed history plus imported task/activity/timer rows',
                 'timers' => 'pending timers are copied with their fire_at timestamp and are visible to timer repair/recovery',
-                'lineage' => 'parent and child links from the bundle are copied as diagnostic lineage edges when identifiers are present',
+                'lineage' => 'parent and child edges are copied only when both endpoint run/instance pairs exist in the target namespace; missing endpoints remain in history without resolving later unrelated runs, and the counterpart bundle can materialize the edge',
             ],
             'failure_and_rollback' => [
                 'transaction' => 'all durable rows and projections are written in one database transaction',
+                'postgresql_transaction' => 'write imports own a serializable transaction and reject an existing caller transaction; serialization conflicts retry the complete transaction up to three attempts without changing session defaults',
                 'partial_or_interrupted_import' => 'no imported rows are committed when the transaction rolls back',
-                'retry_same_bundle' => 'returns already_imported when run_id and import_dedupe_key match',
+                'retry_same_bundle' => 'returns already_imported when namespace, import source, run_id and import_dedupe_key match',
                 'conflicting_existing_run' => 'rejected before writing any rows',
             ],
             'visibility_and_audit' => [

@@ -636,6 +636,12 @@ do not introduce new durable truth.
   version, payload codec, or compatibility marker the server does
   not declare support for, and `--dry-run` is the supported
   rehearsal mode for cutover audits.
+- Imported lineage resolves through edges whose run and instance endpoints
+  exist in the target namespace. Missing endpoints stay in the imported
+  history without attaching a later unrelated run. Importing the related
+  bundle can materialize the edge. PostgreSQL write imports must run outside
+  a caller transaction so the importer can own and retry its serializable
+  transaction. Preview imports do not write or change transaction isolation.
 - Cross-database import/export is the same `workflow:v2:history-export`
   / `workflow:v2:history-import` round trip with the language-neutral
   `avro` codec; the importer normalizes legacy `workflow-serializer-y`
