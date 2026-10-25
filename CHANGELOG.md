@@ -5,16 +5,21 @@
 - Bound `record_local_activity` timing fields (`duration_ms`, heartbeat
   `elapsed_ms`, `backoff_seconds`) and refuse a report whose walk back from
   completion leaves the storable timestamp range (#930).
-- Meter each workflow task completion: history events, history bytes, durable
-  rows and staged external payload bytes are hard structural limits
+- Meter each workflow task completion with hard structural limits on history
+  events, history bytes, metered rows and externalized payload bytes
   (`history_transaction_size`, `history_transaction_bytes`,
-  `history_transaction_rows`, `external_payload_transaction_bytes`). A refusal
-  rolls the whole completion back and keeps the task's lease. A run's deadline
-  close is never metered.
-- Stage externalized payloads in completions under a predictable,
-  content-addressed URI (`PredictableExternalPayloadStorageDriver`), and store
-  them only after the completion passes every limit. The built-in drivers
-  verify content hashes and store objects atomically.
+  `history_transaction_rows`, `external_payload_transaction_bytes`). Metered
+  rows are history events and local activity records for now; other command
+  writes are not counted yet. A refusal rolls the whole completion back and
+  keeps the task's lease. A run's deadline close is never metered. The limits
+  appear in the structural limit snapshot.
+- Dispatch lifecycle events from completions only after the completion
+  commits, so a refused or retried completion dispatches none.
+- Add the optional `PredictableExternalPayloadStorageDriver` interface. A
+  driver that implements it has payloads staged and stored only after the
+  completion passes every limit. The built-in local driver implements it, and
+  now stores objects atomically after checking their length and hash. Other
+  drivers, including the filesystem driver, keep storing payloads as before.
 
 ## 2.13.1 - 2026-10-24
 

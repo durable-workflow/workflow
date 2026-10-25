@@ -1246,11 +1246,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         // charged as it is written, and a refusal rolls everything back,
         // leaving the task's lease as it was.
         try {
-            return DB::transaction(fn (): array => HistoryTransactionMeter::run(function () use (
-                $taskId,
-                $parsed,
-                $commands
-            ): array {
+            return self::meteredTransaction(function () use ($taskId, $parsed, $commands): array {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -1463,7 +1459,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'created_task_ids' => $createdTaskIds,
                     'reason' => null,
                 ];
-            }));
+            });
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return [
                 'completed' => false,
@@ -1518,9 +1514,29 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         return null;
     }
 
-    /** @param list<array{type: string, ...}> $refusal
-     * @return array<string, mixed>
+    /**
+     * Run one metered transaction (#930): each attempt gets a fresh history
+     * transaction meter, and the lifecycle events its body dispatches are
+     * held back until the transaction has committed, so a refused, failed or
+     * retried attempt dispatches none.
+     *
+     * @template T
+     * @param callable(HistoryTransactionMeter): T $body
+     * @return T
      */
+    private static function meteredTransaction(callable $body, int $attempts = 1): mixed
+    {
+        [$result, $events] = DB::transaction(
+            static fn (): array => LifecycleEventDispatcher::collect(
+                static fn (): mixed => HistoryTransactionMeter::run($body)
+            ),
+            $attempts,
+        );
+        LifecycleEventDispatcher::release($events);
+
+        return $result;
+    }
+
     /**
      * The completion refusal reason for a history transaction meter refusal:
      * its own reason, or history_transaction_limit_exceeded for a limit.
@@ -1529,8 +1545,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     {
         return in_array($refusal->dimension, [
             HistoryTransactionLimitExceededException::MEASURE_UNAVAILABLE,
-            HistoryTransactionLimitExceededException::STAGING_UNSUPPORTED,
             HistoryTransactionLimitExceededException::STAGED_URI_MISMATCH,
+            HistoryTransactionLimitExceededException::STAGED_URI_COLLISION,
             HistoryTransactionLimitExceededException::TIMESTAMP_OUT_OF_RANGE,
         ], true) ? $refusal->dimension : 'history_transaction_limit_exceeded';
     }
@@ -1599,7 +1615,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         // Checkpointed commands are metered like a completion (#930); each
         // retried transaction attempt starts a fresh meter and stage.
         try {
-            return DB::transaction(fn (): array => HistoryTransactionMeter::run(function () use (
+            return self::meteredTransaction(function () use (
                 $snapshot,
                 $taskId,
                 $leaseOwner,
@@ -1797,7 +1813,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'duplicate' => false,
                     'reason' => null,
                 ];
-            }), 5);
+            }, 5);
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return $refused(self::meterRefusalReason($refusal));
         }

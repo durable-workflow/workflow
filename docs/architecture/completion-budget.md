@@ -1,9 +1,11 @@
 # Workflow Task Completion Budget
 
 A workflow task completion is one database transaction. It applies a worker's
-commands and everything they cause. Issue #930 bounds that transaction, so a
-valid completion can neither drive timestamp arithmetic out of range nor write
-an unbounded amount of history, rows or external payload data.
+commands and everything they cause. The completion budget bounds that
+transaction, so a valid completion can neither drive timestamp arithmetic out
+of range nor write an unbounded amount of history or external payload data.
+Rows are bounded for the write sites listed under Phases; the rest follow in
+Phase B.
 
 ## Timing fields of `record_local_activity`
 
@@ -52,10 +54,10 @@ retried attempt starts over with an empty stage.
   It also charges two rows: the event and the run position it advances. If the
   payload cannot be encoded, the completion fails closed with
   `history_transaction_measure_unavailable`.
-- **Rows.** A write site charges the rows its statement will affect before
-  the statement runs. Phase A charges every history write and every local
-  activity row. Phase B charges the state-driven cascades and the other
-  command paths (see below).
+- **Rows.** A metered write site charges the rows its statement will affect
+  before the statement runs. Phase A meters every history write and every
+  local activity row. Other command writes are not counted yet; Phase B
+  charges them (see below).
 - **Refusal.** A charge past a limit throws
   `HistoryTransactionLimitExceededException`. That trips the meter: any later
   charge, and the end of the body, throw again. Code that catches the
@@ -65,60 +67,79 @@ retried attempt starts over with an empty stage.
   survives, and the task keeps its lease and expiry. The bridge answers
   `completed: false` with `reason: history_transaction_limit_exceeded` and
   `limit` naming the dimension.
+- **Lifecycle events.** Public lifecycle events (workflow completed, failed or
+  started by continue-as-new, activity failed, failure recorded) report
+  committed state. Inside a metered transaction they are held back and
+  dispatched once, after the transaction commits. A refused attempt, a failed
+  staged put, a failed commit and a retried attempt dispatch none of them.
 
 ## Limits
 
 All of these are hard `StructuralLimits`. A value of 0 disables that
-dimension.
+dimension. `StructuralLimits::snapshot()` publishes each one, so the health
+check, operator metrics and backend capability reports show them.
 
 | Config (`workflows.v2.structural_limits.*`) | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `history_transaction_size` | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | 5,000 | History events one completion may write |
 | `history_transaction_bytes` | `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | 16 MiB | History bytes one completion may write |
-| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 20,000 | Durable rows one completion may insert, update, upsert or delete |
-| `external_payload_transaction_bytes` | `DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES` | 16 MiB | Raw payload bytes one completion may stage for external storage |
-| `payload_size_bytes` (existing) | `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES` | 2 MiB | Each raw payload staged for external storage |
+| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 20,000 | Metered rows one completion may write. Phase A counts history events with their run positions, and local activity rows. |
+| `external_payload_transaction_bytes` | `DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES` | 16 MiB | Raw payload bytes one completion may externalize |
+| `payload_size_bytes` (existing) | `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES` | 2 MiB | Each raw payload externalized |
 
-When `history_transaction_rows` is 0, the row dimension is off. The cascades a
-completion can trigger are then bounded only by the pending-count limits
-(Workflow #933).
+Until Phase B lands, `history_transaction_rows` does not bound the rows of
+other command writes or the cascades they trigger. The pending-count limits
+bound those.
 
 `HistoryBudget`'s continue-as-new thresholds stay advisory. They recommend
 continue-as-new and never refuse a write.
 
-## External payloads: staged, stored only after admission
+## External payloads
 
 A database rollback cannot undo an object stored in external payload storage.
-Inside a metered completion, externalization does not store anything:
+Every payload a metered completion externalizes is first checked against
+`payload_size_bytes` and charged to `external_payload_transaction_bytes`.
+Every occurrence counts, even when identical content will be stored once.
+What happens next depends on the driver.
 
-1. The raw payload is checked against `payload_size_bytes` and charged to
-   `external_payload_transaction_bytes` before hashing. Every occurrence
-   counts, even when identical content will be stored once.
-2. The driver must implement `PredictableExternalPayloadStorageDriver`.
-   `uriFor($sha256, $codec)` returns the URI `put()` will return for that
-   content. The payload is registered in the meter's stage, and the final
-   stored envelope, with the predicted URI, is written to rows and history.
-   The meter therefore measures the exact bytes that commit.
+**Drivers that predict their URI** implement
+`PredictableExternalPayloadStorageDriver`. Their payloads are staged, and
+stored only after the completion is admitted:
+
+1. `uriFor($sha256, $codec)` returns the URI `put()` will return for that
+   content. The payload is registered in the meter's stage under its driver
+   and URI, and the final stored envelope, with the predicted URI, is written
+   to rows and history. The meter therefore measures the exact bytes that
+   commit.
+2. If the same driver predicts one URI for different content, hash or codec,
+   the completion is refused with `external_payload_staged_uri_collision`.
+   Two drivers that predict the same URI keep separate entries.
 3. After the body has passed every limit, still inside the transaction and
    before commit, the stage stores each object in order. Each `put()` must
    return its predicted URI. A mismatch fails with
    `external_payload_staged_uri_mismatch`, and any failure rolls back.
 
-**Refusals.** A limit refusal happens before the stage is flushed, so it
-stores nothing. A driver that cannot predict URIs is refused, before any put,
-with `external_payload_staging_unsupported`. Payloads below the
-externalization threshold are unaffected.
+A limit refusal happens before the stage is flushed, so it stores nothing.
 
-**Built-in drivers.** Both built-in drivers derive the URI from the content
-alone. Their `put()` verifies the content against its SHA-256, is idempotent,
-and makes an object appear only complete (the local driver writes it aside,
-then renames it into place).
+The interface requires `put()` to return exactly `uriFor()`, refuse content
+that does not match its SHA-256, never leave a partial or corrupt object at
+the URI, and be idempotent. The built-in local driver implements it. It keeps
+an existing object only if its length and hash match. Otherwise it writes the
+content aside, checks the exact length and hash, and renames it into place.
 
-**Orphans.** If the stage flush or the commit fails after some objects are
-stored, those objects stay. Content-addressed objects may be shared, so a
-rollback never deletes them. The exposure is bounded by
-`external_payload_transaction_bytes`, and reachability-based retention collects
-unreferenced objects.
+**Other drivers** implement only `ExternalPayloadStorageDriver`, as before.
+The built-in Laravel filesystem driver is one of them, since a filesystem disk
+does not guarantee an atomic write. These drivers keep storing each payload
+when it is externalized, after its bytes are charged. If the completion is
+then refused or rolled back, the objects it stored stay, unreferenced. The
+exposure is bounded by `external_payload_transaction_bytes` per transaction
+attempt. To store nothing on refusal, implement `uriFor()` and the guarantees
+above.
+
+**Orphans.** If a stage flush or commit fails after some objects are stored,
+those objects stay. Content-addressed objects may be shared, so a rollback
+never deletes them. Reading a payload checks its size and hash against the
+reference, and reachability-based retention collects unreferenced objects.
 
 ## A run's deadline close
 
@@ -138,7 +159,9 @@ refusing every completion.
 - the exact local-activity early check;
 - the writer-level event and byte meter on every path, checkpoints included;
 - history and local-activity row charges;
-- staged external payloads with the raw-byte limits;
+- the raw external payload byte limits, with staging for drivers that predict
+  their URI;
+- lifecycle events held back until commit;
 - the unmetered deadline close.
 
 **Phase B** charges every remaining write site before its statement runs:
@@ -152,7 +175,9 @@ refusing every completion.
 - memo and search-attribute writes.
 
 Each bulk site reads at most the remaining rows plus one before it decides.
-The row-limit contract is complete only when Phase B lands.
+The row limit bounds a whole completion only when Phase B lands.
 
-Phase B depends on Workflow #931 (service-operation authority), #932 (no
-sleeps inside the transaction) and #933 (external-worker pending-count limits).
+Phase B also depends on three separate fixes: service operations taking their
+namespace and caller identity from the server instead of the worker, no
+sleeps inside the completion transaction, and pending-count limits on
+external-worker completions.

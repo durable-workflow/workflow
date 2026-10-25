@@ -10,10 +10,11 @@ use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
 
 /**
- * An in-memory external payload policy for #930: every namespace stores
- * payloads above the threshold through one driver that records each put.
- * A predictable driver derives its URI from the content; an unpredictable
- * one cannot be staged.
+ * An in-memory external payload policy for completion budget tests: every
+ * namespace stores payloads above the threshold through one driver that
+ * records each put. A predictable driver derives its URI from the content and
+ * can be told to fail its puts; an unpredictable one implements only the
+ * original driver interface and returns a fresh URI from each put.
  */
 final class RecordingExternalPayloadStorage implements ExternalPayloadStoragePolicy
 {
@@ -26,6 +27,8 @@ final class RecordingExternalPayloadStorage implements ExternalPayloadStoragePol
      * @var array<string, string>
      */
     public array $objects = [];
+
+    public bool $failPuts = false;
 
     private readonly ExternalPayloadStorageDriver $driver;
 
@@ -48,6 +51,10 @@ final class RecordingExternalPayloadStorage implements ExternalPayloadStoragePol
 
                 public function put(string $data, string $sha256, string $codec): string
                 {
+                    if ($this->recorder->failPuts) {
+                        throw new RuntimeException('put failed');
+                    }
+
                     return $this->recorder->record($data, $sha256, $codec, $this->uriFor($sha256, $codec));
                 }
 

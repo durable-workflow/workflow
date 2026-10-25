@@ -24,10 +24,14 @@ enum StructuralLimitKind: string
     /** A single workflow task would write more history bytes than allowed. */
     case HistoryTransactionBytes = 'history_transaction_bytes';
 
-    /** A single workflow task would write more durable rows than allowed. */
+    /**
+     * A single workflow task would write more metered rows than allowed: the
+     * rows its history events and local activity records write. Other command
+     * writes are not counted yet.
+     */
     case HistoryTransactionRows = 'history_transaction_rows';
 
-    /** A single workflow task would stage more raw external payload bytes than allowed. */
+    /** A single workflow task would externalize more raw payload bytes than allowed. */
     case ExternalPayloadTransactionBytes = 'external_payload_transaction_bytes';
 
     /** Indexed search-attribute metadata exceeds the size ceiling. */

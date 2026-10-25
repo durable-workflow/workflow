@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use RuntimeException;
 use Tests\Fixtures\V2\RecordingExternalPayloadStorage;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -16,6 +19,9 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Events\ActivityFailed;
+use Workflow\V2\Events\FailureRecorded;
+use Workflow\V2\Events\WorkflowCompleted;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -323,7 +329,7 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
     /**
      * Workflow #930: a local activity's externalized payloads are staged and
      * stored only once the completion is admitted; a refused completion
-     * stores nothing, and a driver that cannot predict its URI refuses.
+     * stores nothing.
      */
     public function testExternalizedLocalActivityPayloadsAreStoredOnlyAfterAdmission(): void
     {
@@ -363,15 +369,147 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
             'memory://avro/' . hash('sha256', $command['arguments']),
             $envelope['external_storage']['uri'] ?? null
         );
+    }
 
-        $unpredictable = new RecordingExternalPayloadStorage(predictable: false);
-        $this->app->instance(ExternalPayloadStoragePolicy::class, $unpredictable);
+    /**
+     * A driver that implements only the original interface keeps working: it
+     * stores each payload when it is externalized, after the payload's raw
+     * bytes are charged, so a refused completion stores at most that limit.
+     */
+    public function testADriverWithoutUriPredictionKeepsStoringWithinTheByteLimit(): void
+    {
+        $storage = new RecordingExternalPayloadStorage(predictable: false);
+        $this->app->instance(ExternalPayloadStoragePolicy::class, $storage);
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $command = [
+            ...$this->localActivity(0),
+            'arguments' => Serializer::serialize([str_repeat('argument ', 20)]),
+            'result' => Serializer::serialize(str_repeat('result ', 20)),
+        ];
+
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $accepted = $bridge->complete($task->id, [$command]);
+        $this->assertTrue($accepted['completed'], json_encode($accepted, JSON_THROW_ON_ERROR));
+        $this->assertCount(2, $storage->puts);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $uri = ExternalPayloads::storedEnvelope(
+            (string) $execution->getRawOriginal('arguments')
+        )['external_storage']['uri'] ?? null;
+        $this->assertSame($command['arguments'], $storage->objects[$uri] ?? null);
+
+        // Room for the arguments only: the result is refused before its put.
+        config([
+            'workflows.v2.structural_limits.external_payload_transaction_bytes' => strlen($command['arguments']),
+        ]);
+        $storage->puts = [];
         $otherRun = $this->createWaitingRun();
         $otherTask = $this->createLeasedTask($otherRun);
-        $unstaged = $bridge->complete($otherTask->id, [$command]);
-        $this->assertSame('external_payload_staging_unsupported', $unstaged['reason']);
-        $this->assertSame([], $unpredictable->puts);
+        $refused = $bridge->complete($otherTask->id, [$command]);
+        $this->assertSame('history_transaction_limit_exceeded', $refused['reason']);
+        $this->assertSame('external_payload_transaction_bytes', $refused['limit']);
+        $this->assertSame([hash('sha256', $command['arguments'])], array_column($storage->puts, 'sha256'));
         $this->assertNothingRecorded($otherRun);
+    }
+
+    /**
+     * Lifecycle events report committed state. A completion refused after a
+     * local activity failed dispatches none; once accepted, each event is
+     * dispatched exactly once.
+     */
+    public function testLifecycleEventsAreDispatchedOnlyAfterTheCompletionCommits(): void
+    {
+        Event::fake([ActivityFailed::class, FailureRecorded::class, WorkflowCompleted::class]);
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $before = $this->leaseOf($task);
+        $commands = [$this->failedLocalActivity(), [
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize(str_repeat('large result ', 20_000)),
+        ]];
+
+        // The local activity's events fit; the completion's large result does not.
+        config([
+            'workflows.v2.structural_limits.history_transaction_bytes' => 100_000,
+        ]);
+        $refused = $bridge->complete($task->id, $commands);
+
+        $this->assertSame('history_transaction_limit_exceeded', $refused['reason']);
+        $this->assertSame('history_transaction_bytes', $refused['limit']);
+        Event::assertNotDispatched(ActivityFailed::class);
+        Event::assertNotDispatched(FailureRecorded::class);
+        Event::assertNotDispatched(WorkflowCompleted::class);
+        $this->assertNothingRecorded($run);
+        $this->assertSame($before, $this->leaseOf($task));
+
+        config([
+            'workflows.v2.structural_limits.history_transaction_bytes' => null,
+        ]);
+        $accepted = $bridge->complete($task->id, $commands);
+
+        $this->assertTrue($accepted['completed'], json_encode($accepted, JSON_THROW_ON_ERROR));
+        Event::assertDispatchedTimes(ActivityFailed::class, 1);
+        Event::assertDispatchedTimes(FailureRecorded::class, 1);
+        Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
+    }
+
+    public function testLifecycleListenersRunAfterTheCompletionTransactionCloses(): void
+    {
+        $levels = [];
+        Event::listen(WorkflowCompleted::class, static function () use (&$levels): void {
+            $levels[] = DB::transactionLevel();
+        });
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+
+        $accepted = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize('done'),
+        ]]);
+
+        $this->assertTrue($accepted['completed'], json_encode($accepted, JSON_THROW_ON_ERROR));
+        $this->assertSame([0], $levels);
+    }
+
+    /**
+     * A staged payload whose put fails rolls the completion back after its
+     * body dispatched lifecycle events; none of them is dispatched.
+     */
+    public function testAFailedStagedPutDispatchesNoLifecycleEvent(): void
+    {
+        Event::fake([WorkflowCompleted::class]);
+        $storage = new RecordingExternalPayloadStorage();
+        $storage->failPuts = true;
+        $this->app->instance(ExternalPayloadStoragePolicy::class, $storage);
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $before = $this->leaseOf($task);
+        $commands = [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize(str_repeat('externalized result ', 4)),
+        ]];
+
+        try {
+            $bridge->complete($task->id, $commands);
+            $this->fail('A failed staged put was accepted.');
+        } catch (RuntimeException $error) {
+            $this->assertSame('put failed', $error->getMessage());
+        }
+
+        Event::assertNotDispatched(WorkflowCompleted::class);
+        $this->assertSame([], $storage->puts);
+        $this->assertNothingRecorded($run);
+        $this->assertSame($before, $this->leaseOf($task));
+        $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
+
+        $storage->failPuts = false;
+        $accepted = $bridge->complete($task->id, $commands);
+
+        $this->assertTrue($accepted['completed'], json_encode($accepted, JSON_THROW_ON_ERROR));
+        $this->assertCount(1, $storage->puts);
+        Event::assertDispatchedTimes(WorkflowCompleted::class, 1);
     }
 
     /**
@@ -465,7 +603,8 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
         ]);
         $run = $this->createWaitingRun();
         $run->forceFill([
-            'execution_deadline_at' => now()->subMinute(),
+            'execution_deadline_at' => now()
+                ->subMinute(),
         ])->save();
         foreach (range(1, 3) as $sequence) {
             WorkflowTimer::query()->create([
@@ -509,6 +648,27 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
             ]],
             'execution_mode' => 'local',
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function failedLocalActivity(): array
+    {
+        $command = [
+            ...$this->localActivity(0),
+            'outcome' => 'failed',
+            'message' => 'gave up',
+        ];
+        $command['attempts'][0] = [
+            'attempt_number' => 1,
+            'outcome' => 'failed',
+            'message' => 'gave up',
+            'heartbeats' => [],
+        ];
+        unset($command['result']);
+
+        return $command;
     }
 
     /**

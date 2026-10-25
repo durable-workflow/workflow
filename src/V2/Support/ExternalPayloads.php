@@ -49,16 +49,16 @@ final class ExternalPayloads
         }
 
         $canonicalCodec = CodecRegistry::canonicalize($codec);
-        // In a metered workflow task completion (#930) the object is staged
-        // under its predicted URI and stored only once the completion has
-        // passed every limit; a driver that cannot predict refuses.
+        // In a metered workflow task completion, a driver that predicts its
+        // URI has the object staged and stored only once the completion has
+        // passed every limit. Any other driver stores it now, as before, after
+        // its raw bytes are charged; a completion refused later leaves that
+        // object unreferenced.
         $meter = HistoryTransactionMeter::current();
-        if ($meter !== null) {
-            if (! $driver instanceof PredictableExternalPayloadStorageDriver) {
-                $meter->refuseUnstageable();
-            }
+        if ($meter !== null && $driver instanceof PredictableExternalPayloadStorageDriver) {
             $reference = $meter->stage($driver, $payload, $canonicalCodec);
         } else {
+            $meter?->chargeUnstaged(strlen($payload));
             $reference = ExternalPayloadStorage::store($driver, $payload, $canonicalCodec);
         }
 

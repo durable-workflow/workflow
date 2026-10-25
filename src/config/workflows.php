@@ -275,8 +275,10 @@ return [
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
                 5000
             ),
-            // Hard per-transaction ceilings a workflow task completion's
-            // history meter enforces (#930); 0 disables a dimension.
+            // Hard ceilings for one workflow task completion; 0 disables a
+            // dimension. history_transaction_rows counts the rows history
+            // events and local activity records write; other command writes
+            // are not counted yet.
             'history_transaction_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',

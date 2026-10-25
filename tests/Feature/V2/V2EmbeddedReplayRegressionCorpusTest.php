@@ -10,9 +10,12 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
+use Tests\Fixtures\V2\TestGreetingActivity;
+use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
@@ -415,6 +418,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'portable-local-activity-attempt-timeline-replay') {
                 $this->assertPortableLocalActivityAttemptTimelineReplay($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'portable-local-activity-timing-caps-cold-replay') {
+                $this->assertLocalActivityTimingCapsBoundTheRecordedWalk($fixture);
             }
 
             if (($fixture['id'] ?? null) === 'portable-local-activity-failure-avro-cold-replay') {
@@ -1469,6 +1476,136 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($expectedClosedAt, $importedAttempts->pluck('closed_at')
             ->map(static fn (Carbon $timestamp): string => $timestamp->toJSON())
             ->all());
+    }
+
+    /**
+     * The longest local activity timings a worker may report record exactly
+     * the attempt walk this fixture replays, and one past any of them is
+     * refused before anything is written.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertLocalActivityTimingCapsBoundTheRecordedWalk(array $fixture): void
+    {
+        $report = $fixture['local_activity_report'];
+        $expected = [];
+        foreach ($fixture['history'] as $event) {
+            $attempt = $event['payload']['activity_attempt'] ?? null;
+            if (is_array($attempt)) {
+                $expected[$attempt['attempt_number']] = [
+                    $attempt['started_at'] ?? null,
+                    $attempt['last_heartbeat_at'] ?? null,
+                    $attempt['closed_at'] ?? null,
+                ];
+            }
+        }
+        ksort($expected);
+        $command = static fn (array $attempts): array => [
+            'type' => 'record_local_activity',
+            'activity_type' => TestGreetingActivity::class,
+            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
+            'payload_codec' => 'avro',
+            'outcome' => 'completed',
+            'attempts' => $attempts,
+            'retry_policy' => [
+                'max_attempts' => count($attempts),
+            ],
+            'execution_mode' => 'local',
+        ];
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+
+        Carbon::setTestNow($report['completed_at']);
+
+        try {
+            [$run, $task] = $this->leasedLocalActivityRun();
+            $accepted = $bridge->complete($task->id, [$command($report['attempts'])]);
+            $this->assertTrue($accepted['completed'] ?? false, json_encode($accepted, JSON_THROW_ON_ERROR));
+            $recorded = [];
+            $attempts = ActivityAttempt::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('attempt_number')
+                ->get();
+            foreach ($attempts as $attempt) {
+                $recorded[$attempt->attempt_number] = [
+                    $attempt->started_at?->toJSON(),
+                    $attempt->last_heartbeat_at?->toJSON(),
+                    $attempt->closed_at?->toJSON(),
+                ];
+            }
+            $this->assertSame($expected, $recorded);
+
+            foreach ($report['one_over'] as $case) {
+                $over = $command($report['attempts']);
+                data_set($over, $case['field'], $case['value']);
+                $errors = [];
+                try {
+                    WorkflowCommandNormalizer::normalize([$over]);
+                } catch (ValidationException $refusal) {
+                    $errors = $refusal->errors();
+                }
+                $this->assertSame(
+                    ["commands.0.{$case['field']}"],
+                    array_keys($errors),
+                    "{$case['field']} one past its cap must be refused by that field alone."
+                );
+
+                [$run, $task] = $this->leasedLocalActivityRun();
+                $refused = $bridge->complete($task->id, [$over]);
+
+                $this->assertFalse($refused['completed'] ?? true, "{$case['field']} one past its cap was accepted.");
+                $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+                $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask}
+     */
+    private function leasedLocalActivityRun(): array
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestLocalActivityWorkflow::class,
+            'workflow_type' => TestLocalActivityWorkflow::class,
+            'run_count' => 1,
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestLocalActivityWorkflow::class,
+            'workflow_type' => TestLocalActivityWorkflow::class,
+            'status' => RunStatus::Waiting,
+            'arguments' => Serializer::serializeWithCodec('avro', ['Ada']),
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Leased,
+            'attempt_count' => 1,
+            'payload' => [],
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'timing-caps-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        return [$run, $task];
     }
 
     /**

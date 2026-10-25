@@ -12,7 +12,7 @@ use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
 use Workflow\V2\Support\HistoryTransactionMeter;
 
 /**
- * Workflow #930: the whole-transaction meter of a workflow task completion.
+ * The whole-transaction meter of a workflow task completion.
  */
 final class HistoryTransactionMeterTest extends NonDatabaseTestCase
 {
@@ -234,18 +234,100 @@ final class HistoryTransactionMeterTest extends NonDatabaseTestCase
         $this->assertCount(1, $failing->puts);
     }
 
-    public function testAnUnstageableDriverIsRefusedAndMetersDoNotNest(): void
+    public function testOneUriForDifferentPayloadsFailsClosedAndStoresNothing(): void
     {
-        try {
-            HistoryTransactionMeter::run(static fn (HistoryTransactionMeter $meter) => $meter->refuseUnstageable());
-            $this->fail('An unstageable payload was accepted.');
-        } catch (HistoryTransactionLimitExceededException $refusal) {
-            $this->assertSame(HistoryTransactionLimitExceededException::STAGING_UNSUPPORTED, $refusal->dimension);
+        foreach ([
+            [['first', 'avro'], ['second', 'avro']],
+            [['same', 'avro'], ['same', 'json']],
+        ] as [$first, $second]) {
+            $colliding = new RecordingPredictableDriver(collide: true);
+            try {
+                HistoryTransactionMeter::run(static function (HistoryTransactionMeter $meter) use (
+                    $colliding,
+                    $first,
+                    $second
+                ): void {
+                    $meter->stage($colliding, ...$first);
+                    $meter->stage($colliding, ...$second);
+                });
+                $this->fail('One predicted URI was accepted for two different payloads.');
+            } catch (HistoryTransactionLimitExceededException $refusal) {
+                $this->assertSame(HistoryTransactionLimitExceededException::STAGED_URI_COLLISION, $refusal->dimension);
+            }
+            $this->assertSame([], $colliding->puts);
         }
-        $this->assertNull(HistoryTransactionMeter::current());
 
+        // The same payload staged twice through one driver is one object.
+        $colliding = new RecordingPredictableDriver(collide: true);
+        HistoryTransactionMeter::run(static function (HistoryTransactionMeter $meter) use ($colliding): void {
+            $meter->stage($colliding, 'same', 'avro');
+            $meter->stage($colliding, 'same', 'avro');
+        });
+        $this->assertCount(1, $colliding->puts);
+    }
+
+    public function testTwoDriversPredictingOneUriEachStoreTheirObject(): void
+    {
+        $left = new RecordingPredictableDriver(collide: true);
+        $right = new RecordingPredictableDriver(collide: true);
+
+        HistoryTransactionMeter::run(static function (HistoryTransactionMeter $meter) use ($left, $right): void {
+            $meter->stage($left, 'left', 'avro');
+            $meter->stage($right, 'right', 'avro');
+        });
+
+        $this->assertSame([hash('sha256', 'left')], array_column($left->puts, 'sha256'));
+        $this->assertSame([hash('sha256', 'right')], array_column($right->puts, 'sha256'));
+    }
+
+    public function testUnstagedPayloadsAreChargedAgainstTheSameLimits(): void
+    {
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 10,
+            'workflows.v2.structural_limits.external_payload_transaction_bytes' => 20,
+        ]);
+
+        $used = HistoryTransactionMeter::run(static function (HistoryTransactionMeter $meter): int {
+            $meter->chargeUnstaged(10);
+            $meter->chargeUnstaged(10);
+
+            return $meter->used()[HistoryTransactionMeter::STAGED_BYTES];
+        });
+        $this->assertSame(20, $used);
+
+        foreach ([[11], [10, 10, 1]] as $sizes) {
+            try {
+                HistoryTransactionMeter::run(static function (HistoryTransactionMeter $meter) use ($sizes): void {
+                    foreach ($sizes as $size) {
+                        $meter->chargeUnstaged($size);
+                    }
+                });
+                $this->fail('An unstaged payload past a limit was accepted.');
+            } catch (HistoryTransactionLimitExceededException $refusal) {
+                $this->assertSame(
+                    $sizes === [11] ? HistoryTransactionMeter::PAYLOAD_SIZE : HistoryTransactionMeter::STAGED_BYTES,
+                    $refusal->dimension
+                );
+            }
+        }
+    }
+
+    public function testMetersDoNotNest(): void
+    {
         $this->expectException(LogicException::class);
         HistoryTransactionMeter::run(static fn () => HistoryTransactionMeter::run(static fn () => null));
+    }
+
+    public function testAFailedRunLeavesNoCurrentMeter(): void
+    {
+        try {
+            HistoryTransactionMeter::run(static function (): void {
+                throw new RuntimeException('body failed');
+            });
+        } catch (RuntimeException) {
+        }
+
+        $this->assertNull(HistoryTransactionMeter::current());
     }
 }
 
@@ -261,7 +343,8 @@ final class TestCaseAssert
 }
 
 /**
- * A content-addressed driver that records every put.
+ * A content-addressed driver that records every put. A colliding driver
+ * predicts one URI for every payload.
  */
 final class RecordingPredictableDriver implements PredictableExternalPayloadStorageDriver
 {
@@ -272,13 +355,14 @@ final class RecordingPredictableDriver implements PredictableExternalPayloadStor
 
     public function __construct(
         private readonly bool $lie = false,
-        private readonly ?int $failAfter = null
+        private readonly ?int $failAfter = null,
+        private readonly bool $collide = false
     ) {
     }
 
     public function uriFor(string $sha256, string $codec): string
     {
-        return "memory://{$codec}/{$sha256}";
+        return $this->collide ? 'memory://one-uri' : "memory://{$codec}/{$sha256}";
     }
 
     public function put(string $data, string $sha256, string $codec): string

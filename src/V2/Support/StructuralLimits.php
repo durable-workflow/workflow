@@ -133,9 +133,10 @@ final class StructuralLimits
     }
 
     /**
-     * Durable rows one workflow task completion may insert, update, upsert
-     * or delete. 0 disables the check; the pending-count limits still bound
-     * the cascades a completion can touch.
+     * Metered rows one workflow task completion may write: each history event
+     * and the run position it advances, and each local activity execution,
+     * attempt and failure row. Other command writes are not counted yet. 0
+     * disables the check.
      */
     public static function historyTransactionRowsLimit(): int
     {
@@ -143,9 +144,9 @@ final class StructuralLimits
     }
 
     /**
-     * Raw payload bytes one workflow task completion may stage for external
-     * storage, each occurrence counted even when objects deduplicate. 0
-     * disables the check; the per-payload size limit still applies.
+     * Raw payload bytes one workflow task completion may externalize, each
+     * occurrence counted even when objects deduplicate. 0 disables the
+     * check; the per-payload size limit still applies.
      */
     public static function externalPayloadTransactionBytesLimit(): int
     {
@@ -556,6 +557,9 @@ final class StructuralLimits
             'memo_size_bytes' => self::memoSizeLimit(),
             'search_attribute_size_bytes' => self::searchAttributeSizeLimit(),
             'history_transaction_size' => self::historyTransactionSizeLimit(),
+            'history_transaction_bytes' => self::historyTransactionBytesLimit(),
+            'history_transaction_rows' => self::historyTransactionRowsLimit(),
+            'external_payload_transaction_bytes' => self::externalPayloadTransactionBytesLimit(),
             'warning_threshold_percent' => self::warningThresholdPercent(),
         ];
     }

@@ -14,11 +14,12 @@ use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
  * The whole-transaction budget of one workflow task completion (#930).
  *
  * History is charged where it is written ({@see \Workflow\V2\Models\WorkflowHistoryEvent::record()}):
- * one event and its bytes as {@see HistoryBudget} measures them. Each write
- * site charges the rows it will affect before its statement runs. Raw
- * external payload bytes are charged before staging, and staged objects are
- * stored only by {@see self::flush()}, after the completion has passed every
- * limit and before it commits, so a refused completion stores nothing.
+ * one event and its bytes as {@see HistoryBudget} measures them. Write sites
+ * that are metered charge the rows they will affect before their statement
+ * runs. Raw external payload bytes are charged before each payload is staged
+ * or stored. Staged objects are stored only by {@see self::flush()}, after
+ * the completion has passed every limit and before it commits, so a refused
+ * completion stores none of them.
  *
  * A meter belongs to one database transaction attempt: {@see self::run()}
  * gives every attempt a fresh meter and discards it with that attempt. A
@@ -56,6 +57,8 @@ final class HistoryTransactionMeter
     ];
 
     /**
+     * Staged objects keyed by driver instance and predicted URI.
+     *
      * @var array<string, array{driver: PredictableExternalPayloadStorageDriver, data: string, sha256: string, codec: string, uri: string}>
      */
     private array $stage = [];
@@ -224,8 +227,10 @@ final class HistoryTransactionMeter
 
     /**
      * Stage an externalizable payload: the per-payload limit and the raw
-     * staged-byte limit are charged first (each occurrence counts), then the
-     * object is registered under its predicted URI for {@see self::flush()}.
+     * external payload byte limit are charged first (each occurrence counts),
+     * then the object is registered under its driver and predicted URI for
+     * {@see self::flush()}. The same driver predicting the same URI for other
+     * content, hash or codec fails closed.
      */
     public function stage(
         PredictableExternalPayloadStorageDriver $driver,
@@ -233,35 +238,41 @@ final class HistoryTransactionMeter
         string $codec
     ): ExternalPayloadReference {
         $size = strlen($data);
-        $payloadLimit = StructuralLimits::payloadSizeLimit();
-        if ($payloadLimit > 0 && $size > $payloadLimit) {
-            $this->trip(HistoryTransactionLimitExceededException::over(self::PAYLOAD_SIZE, $size, $payloadLimit));
-        }
-        $this->charge(self::STAGED_BYTES, $size);
+        $this->chargePayload($size);
 
         $sha256 = hash('sha256', $data);
         $uri = $driver->uriFor($sha256, $codec);
-        $this->stage[$uri] ??= [
-            'driver' => $driver,
-            'data' => $data,
-            'sha256' => $sha256,
-            'codec' => $codec,
-            'uri' => $uri,
-        ];
+        // The stage holds the driver, so its object id stays unique while staged.
+        $key = spl_object_id($driver) . "\0" . $uri;
+        $staged = $this->stage[$key] ?? null;
+        if ($staged === null) {
+            $this->stage[$key] = [
+                'driver' => $driver,
+                'data' => $data,
+                'sha256' => $sha256,
+                'codec' => $codec,
+                'uri' => $uri,
+            ];
+        } elseif (! hash_equals($staged['sha256'], $sha256)
+            || $staged['codec'] !== $codec
+            || ! hash_equals($staged['data'], $data)) {
+            $this->trip(HistoryTransactionLimitExceededException::refused(
+                HistoryTransactionLimitExceededException::STAGED_URI_COLLISION,
+                'The external payload driver predicted one URI for different payloads.',
+            ));
+        }
 
         return new ExternalPayloadReference(uri: $uri, sha256: $sha256, sizeBytes: $size, codec: $codec);
     }
 
     /**
-     * Refuse a payload that needs external storage through a driver that
-     * cannot predict its URI.
+     * Charge a payload that a driver without URI prediction stores during the
+     * completion: the per-payload and raw external payload byte limits apply
+     * before the driver's put, as for a staged payload.
      */
-    public function refuseUnstageable(): never
+    public function chargeUnstaged(int $size): void
     {
-        $this->trip(HistoryTransactionLimitExceededException::refused(
-            HistoryTransactionLimitExceededException::STAGING_UNSUPPORTED,
-            'The configured external payload driver cannot store payloads after a completion is admitted.',
-        ));
+        $this->chargePayload($size);
     }
 
     /**
@@ -280,7 +291,7 @@ final class HistoryTransactionMeter
      */
     private function flush(): void
     {
-        foreach ($this->stage as $uri => $entry) {
+        foreach ($this->stage as $entry) {
             try {
                 $stored = $entry['driver']->put($entry['data'], $entry['sha256'], $entry['codec']);
             } catch (Throwable $error) {
@@ -288,7 +299,7 @@ final class HistoryTransactionMeter
 
                 throw $error;
             }
-            if ($stored !== $uri) {
+            if ($stored !== $entry['uri']) {
                 $this->stage = [];
                 $this->trip(HistoryTransactionLimitExceededException::refused(
                     HistoryTransactionLimitExceededException::STAGED_URI_MISMATCH,
@@ -297,6 +308,16 @@ final class HistoryTransactionMeter
             }
         }
         $this->stage = [];
+    }
+
+    private function chargePayload(int $size): void
+    {
+        $this->refuseIfTripped();
+        $payloadLimit = StructuralLimits::payloadSizeLimit();
+        if ($payloadLimit > 0 && $size > $payloadLimit) {
+            $this->trip(HistoryTransactionLimitExceededException::over(self::PAYLOAD_SIZE, $size, $payloadLimit));
+        }
+        $this->charge(self::STAGED_BYTES, $size);
     }
 
     private function charge(string $dimension, int $amount): void

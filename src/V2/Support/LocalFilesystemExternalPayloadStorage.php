@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Closure;
 use InvalidArgumentException;
 use RuntimeException;
 use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
@@ -13,8 +14,21 @@ final class LocalFilesystemExternalPayloadStorage implements PredictableExternal
 {
     private string $root;
 
-    public function __construct(string $root)
+    /**
+     * @var Closure(string, string): (int|false)
+     */
+    private Closure $writeFile;
+
+    /**
+     * @param (Closure(string, string): (int|false))|null $writeFile Writes a temporary object file and returns
+     *        the bytes written; defaults to file_put_contents(). Tests replace it to prove that an incomplete or
+     *        corrupt write is never moved into place.
+     */
+    public function __construct(string $root, ?Closure $writeFile = null)
     {
+        $this->writeFile = $writeFile
+            ?? static fn (string $path, string $data): int|false => file_put_contents($path, $data, LOCK_EX);
+
         $resolved = realpath($root);
 
         if ($resolved === false) {
@@ -36,10 +50,11 @@ final class LocalFilesystemExternalPayloadStorage implements PredictableExternal
     }
 
     /**
-     * Store the content under its hash, atomically and idempotently: the
-     * content must match the hash, an existing object must hold the same
-     * content, and a new one appears only complete (written aside, then
-     * renamed into place).
+     * Store the content under its hash. The content must match the hash. An
+     * existing object is kept only if it holds exactly this content; a new,
+     * partial or corrupt one is replaced by a copy written aside, checked for
+     * its exact length and hash, and renamed into place. The object therefore
+     * appears only whole, and a repeated put leaves the same object.
      */
     public function put(string $data, string $sha256, string $codec): string
     {
@@ -54,25 +69,27 @@ final class LocalFilesystemExternalPayloadStorage implements PredictableExternal
             throw new RuntimeException(sprintf('Unable to create external payload directory [%s].', $directory));
         }
 
-        if (is_file($path)) {
-            $existing = file_get_contents($path);
-            if ($existing === false || ! hash_equals(strtolower($sha256), hash('sha256', $existing))) {
-                throw new ExternalPayloadIntegrityException(sprintf(
-                    'Stored external payload [%s] does not match its sha256.',
-                    $path
-                ));
-            }
-
+        if ($this->holds($path, $sha256, strlen($data))) {
             return self::pathToFileUri($path);
         }
 
         $temporary = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
-        if (file_put_contents($temporary, $data, LOCK_EX) === false || ! rename($temporary, $path)) {
+
+        try {
+            $written = ($this->writeFile)($temporary, $data);
+            if ($written !== strlen($data) || ! $this->holds($temporary, $sha256, strlen($data))) {
+                throw new ExternalPayloadIntegrityException(sprintf(
+                    'External payload [%s] was not written completely.',
+                    $path
+                ));
+            }
+            if (! rename($temporary, $path)) {
+                throw new RuntimeException(sprintf('Unable to write external payload [%s].', $path));
+            }
+        } finally {
             if (is_file($temporary)) {
                 unlink($temporary);
             }
-
-            throw new RuntimeException(sprintf('Unable to write external payload [%s].', $path));
         }
 
         return self::pathToFileUri($path);
@@ -108,6 +125,20 @@ final class LocalFilesystemExternalPayloadStorage implements PredictableExternal
         if (is_file($path)) {
             unlink($path);
         }
+    }
+
+    /**
+     * Whether the file holds exactly the content with this length and hash.
+     */
+    private function holds(string $path, string $sha256, int $size): bool
+    {
+        clearstatcache(true, $path);
+        if (! is_file($path) || filesize($path) !== $size) {
+            return false;
+        }
+        $actual = hash_file('sha256', $path);
+
+        return $actual !== false && hash_equals(strtolower($sha256), $actual);
     }
 
     private function pathFor(string $sha256, string $codec): string
