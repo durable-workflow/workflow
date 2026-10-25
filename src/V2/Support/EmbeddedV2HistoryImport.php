@@ -998,6 +998,8 @@ final class EmbeddedV2HistoryImport
             self::rejectOpenLeases($bundle, $errors);
         }
 
+        $errors = [...$errors, ...EmbeddedV2ImportMessageReferences::errors($bundle)];
+
         return [
             'eligible' => $errors === [],
             'errors' => $errors,
