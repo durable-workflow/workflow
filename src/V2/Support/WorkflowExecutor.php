@@ -5969,14 +5969,16 @@ final class WorkflowExecutor
                 : CodecRegistry::defaultCodec());
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $serializedRequest = Serializer::serializeWithCodec($payloadCodec, $call->requestPayload);
+        $options = $this->serviceOperationControlPlaneOptions(
+            $run,
+            $sequence,
+            $call,
+            $payloadCodec,
+            $serializedRequest
+        );
         $storedRequest = ExternalPayloads::externalizeForNamespace($serializedRequest, $payloadCodec, $namespace);
         $surface = $this->serviceControlPlane()
-            ->execute(
-                $call->endpointName,
-                $call->serviceName,
-                $call->operationName,
-                $this->serviceOperationControlPlaneOptions($run, $sequence, $call, $payloadCodec, $serializedRequest),
-            );
+            ->execute($call->endpointName, $call->serviceName, $call->operationName, $options);
         $eventType = self::serviceOperationEventTypeForSurface($surface);
 
         $event = WorkflowHistoryEvent::record(
@@ -6001,6 +6003,7 @@ final class WorkflowExecutor
         string $serializedRequest,
     ): array {
         $options = $call->options?->toCommandOptions() ?? [];
+        $options['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
         $metadata = is_array($options['metadata'] ?? null) ? $options['metadata'] : [];
         $metadata = [
             'caller_sdk_language' => 'workflow-php',
@@ -6009,8 +6012,11 @@ final class WorkflowExecutor
             'workflow_sequence' => $sequence,
         ] + $metadata;
 
-        return array_filter([
-            'namespace' => self::nonEmptyString($options['namespace'] ?? null) ?? $run->namespace,
+        return WorkflowServiceOperationAuthority::options($run, $options + [
+            'endpoint_name' => $call->endpointName,
+            'service_name' => $call->serviceName,
+            'operation_name' => $call->operationName,
+        ]) + array_filter([
             'arguments' => $call->requestPayload,
             'payload_blob' => $serializedRequest,
             'payload_codec' => $payloadCodec,
@@ -6022,7 +6028,6 @@ final class WorkflowExecutor
             'wait_timeout_seconds' => is_int($options['wait_timeout_seconds'] ?? null)
                 ? $options['wait_timeout_seconds']
                 : null,
-            'caller_namespace' => self::nonEmptyString($options['caller_namespace'] ?? null) ?? $run->namespace,
             'caller_workflow_instance_id' => $run->workflow_instance_id,
             'caller_workflow_run_id' => $run->id,
             'target_workflow_instance_id' => self::nonEmptyString($options['target_workflow_instance_id'] ?? null),
@@ -6038,11 +6043,6 @@ final class WorkflowExecutor
             'duplicate_start_policy' => self::nonEmptyString($options['duplicate_start_policy'] ?? null),
             'metadata' => $metadata,
             'request_payload_reference' => self::nonEmptyString($options['request_payload_reference'] ?? null),
-            'principal_subject' => self::nonEmptyString($options['principal_subject'] ?? null),
-            'principal_method' => self::nonEmptyString($options['principal_method'] ?? null),
-            'principal_roles' => is_array($options['principal_roles'] ?? null) ? $options['principal_roles'] : null,
-            'principal_tenant' => self::nonEmptyString($options['principal_tenant'] ?? null),
-            'principal_claims' => is_array($options['principal_claims'] ?? null) ? $options['principal_claims'] : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
 

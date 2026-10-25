@@ -352,6 +352,54 @@ of the five reasons, and a Cancelled call MUST carry
 `ServiceCallFailureReason::Cancellation` even though its terminal
 status is Cancelled rather than Failed.
 
+## Workflow operation authority
+
+Workflow service operations require a host binding for
+`Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer`. The default binding
+refuses them with `service_operation_authority_invalid`. This applies to embedded
+execution and external worker completions, including retained-claim prefixes.
+Upgrade the host binding before accepting service-operation work.
+
+An authorizer receives the locked caller run and normalized command intent.
+It must validate the requested target scope against trusted host/run context,
+then return a `ServiceCallPrincipal` derived from that context. It must not
+reconstruct authority from the command's principal fields or metadata. It is an
+authorization check, so it must not reserve admission budgets or perform
+external effects; a transaction retry or preflight may invoke it again.
+
+An embedded host that explicitly trusts its own workflow code to invoke
+services within each run's namespace can opt into the provided workload policy:
+
+```php
+$app->bind(
+    \Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer::class,
+    \Workflow\V2\Support\RunServiceOperationAuthorizer::class,
+);
+```
+
+That policy permits only the run's namespace. Its principal is
+`workflow:<run-id>`, method `workflow`, with no roles, tenant or claims. It does
+not satisfy a catalog policy that requires privileged roles. A server with
+authenticated workers instead binds an authorizer that checks its current
+authentication/namespace policy and returns the authenticated worker principal.
+Authorized cross-namespace routing remains possible through that trusted host
+binding; a worker's requested `namespace` alone grants no permission.
+
+Caller namespace and workflow run/instance identity always come from the locked
+run. A mismatched non-null `caller_namespace` or non-null `principal_*` override
+is refused before applying sibling commands. Unknown fields do not grant
+authority. Explicit null run namespaces stay null even when the process has a
+configured default namespace.
+
+An explicit `service_call_id` or an existing idempotency-key match must bind to
+the same caller namespace, run and instance, the authorized target namespace,
+and the exact endpoint/service/operation names. Existing rows are checked under
+locks before replay or dispatch. A missing or foreign explicit call, or a
+foreign key match, refuses the worker turn with `service_call_not_owned` and
+leaves the lease and durable rows unchanged. New default idempotency keys are
+checked by the same rule. Server adapters retain their current-policy replay
+checks before handing the call to Core.
+
 ## Observability surface
 
 The observability surface for a cross-namespace service call MUST be

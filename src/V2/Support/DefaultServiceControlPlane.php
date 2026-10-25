@@ -121,9 +121,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         $call ??= $this->newCall();
         $principal = $this->principal($options);
-        $callerNamespace = $this->namespaceOption($options, 'caller_namespace')
-            ?? ($call instanceof WorkflowServiceCall ? $this->stringFrom($call->caller_namespace) : null)
-            ?? $this->configuredNamespace();
+        $callerNamespace = array_key_exists('caller_namespace', $options)
+            ? $this->namespaceOption($options, 'caller_namespace')
+            : (($call instanceof WorkflowServiceCall ? $this->stringFrom($call->caller_namespace) : null)
+                ?? $this->configuredNamespace());
 
         if ($call->accepted_at === null) {
             $this->stampPending(
@@ -467,9 +468,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function targetNamespace(array $options): ?string
     {
-        return $this->namespaceOption($options, 'target_namespace')
-            ?? $this->namespaceOption($options, 'namespace')
-            ?? $this->configuredNamespace();
+        foreach (['target_namespace', 'namespace'] as $field) {
+            if (array_key_exists($field, $options)) {
+                return $this->namespaceOption($options, $field);
+            }
+        }
+
+        return $this->configuredNamespace();
     }
 
     /**

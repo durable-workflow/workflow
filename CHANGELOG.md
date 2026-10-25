@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Require a trusted host authorizer for workflow service operations. Refuse
+  worker-supplied principal overrides, foreign caller namespaces and service
+  call IDs or idempotency keys owned by another run, instance or operation.
+  Preserve explicit embedded null namespaces instead of using ambient config.
+- Service-operation hosts must bind `WorkflowServiceOperationAuthorizer` before
+  upgrading. The default refuses service operations; explicitly trusted embedded
+  hosts can opt into `RunServiceOperationAuthorizer` for same-namespace calls
+  with an unprivileged workflow principal. Authenticated servers supply their
+  own current principal and authorize requested target scope.
+
 ## 2.13.1 - 2026-10-24
 
 - Cancel the live task when a retried activity receives cooperative cancellation.

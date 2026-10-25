@@ -15,6 +15,7 @@ use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
@@ -26,7 +27,9 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\RunServiceOperationAuthorizer;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -39,6 +42,7 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->app->instance(WorkflowServiceOperationAuthorizer::class, new RunServiceOperationAuthorizer());
         Carbon::setTestNow('2026-10-08 17:10:00');
         Queue::fake();
         config()
@@ -107,6 +111,10 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
         $this->assertCount(1, $service->executions);
         $request = Serializer::serializeWithCodec('avro', ExecutorServiceOperationWorkflow::REQUEST);
         $expectedOptions = [
+            'principal' => (new ServiceCallPrincipal(
+                subject: 'workflow:' . $run->id,
+                method: 'workflow'
+            ))->toAuditArray(),
             'namespace' => 'service-caller',
             'arguments' => ExecutorServiceOperationWorkflow::REQUEST,
             'payload_blob' => $request,
@@ -128,6 +136,8 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
                 'wait_for' => 'accepted',
             ];
         }
+        $this->assertInstanceOf(ServiceCallPrincipal::class, $service->executions[0][3]['principal']);
+        $service->executions[0][3]['principal'] = $service->executions[0][3]['principal']->toAuditArray();
         $this->assertSame(
             $this->ordered(['billing', 'invoices', 'create', $expectedOptions]),
             $this->ordered($service->executions[0])
