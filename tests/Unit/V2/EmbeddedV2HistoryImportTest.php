@@ -116,6 +116,69 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         }
     }
 
+    public function testTheTransactionalInstanceLookupRechecksNamespaceAfterPreflight(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => 'tenant-a',
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+        ]);
+        $afterTransfer = null;
+        $transferred = false;
+        DB::listen(function ($query) use (&$transferred, &$afterTransfer, $bundle): void {
+            if ($transferred || DB::transactionLevel() !== 0
+                || ! str_contains($query->sql, 'select') || ! str_contains($query->sql, 'workflow_instances')) {
+                return;
+            }
+            // The result of the preflight read is already materialized. A
+            // concurrent transfer must not authorize attaching to its old scope.
+            $transferred = true;
+            WorkflowInstance::query()->whereKey($bundle['workflow']['instance_id'])->update([
+                'namespace' => 'tenant-b',
+            ]);
+            $afterTransfer = $this->workflowStateSnapshot();
+        });
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertTrue($transferred);
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.write_failed', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($afterTransfer, $this->workflowStateSnapshot());
+    }
+
+    public function testItCanImportANewRunIntoAnExistingInstanceInTheSameNamespace(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => 'tenant-a',
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+        ]);
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertSame('imported', $report['status']);
+        $this->assertSame(0, $report['rows']['workflow_instances']);
+        $this->assertSame(1, $report['rows']['workflow_runs']);
+        $instance = WorkflowInstance::query()->findOrFail($bundle['workflow']['instance_id']);
+        $this->assertSame('tenant-a', $instance->namespace);
+        $this->assertSame(7, (int) $instance->run_count);
+        $this->assertSame($bundle['workflow']['run_id'], $instance->current_run_id);
+    }
+
     public function testContractPublishesImportRulesAndAuditMarkers(): void
     {
         $manifest = EmbeddedV2ImportContract::manifest();
