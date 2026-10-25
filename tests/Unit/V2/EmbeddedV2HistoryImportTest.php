@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -40,6 +41,81 @@ use Workflow\V2\Support\RunUpdateView;
 
 final class EmbeddedV2HistoryImportTest extends TestCase
 {
+    #[DataProvider('namespaceConflicts')]
+    public function testItNeverTreatsAnotherNamespacesRunAsAnIdempotentImport(
+        ?string $target,
+        ?string $existing,
+        bool $dryRun
+    ): void {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = $target;
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        WorkflowRun::query()->update([
+            'namespace' => $existing,
+        ]);
+        WorkflowInstance::query()->update([
+            'namespace' => $existing,
+        ]);
+        $before = $this->workflowStateSnapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.run_id_conflict', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    #[DataProvider('namespaceConflicts')]
+    public function testItNeverAttachesAnImportedRunToAnotherNamespacesInstance(
+        ?string $target,
+        ?string $existing,
+        bool $dryRun
+    ): void {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = $target;
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => $existing,
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+            'current_run_id' => (string) Str::ulid(),
+        ]);
+        $before = $this->workflowStateSnapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains(
+            'target.instance_namespace_conflict',
+            array_column($report['eligibility']['errors'], 'rule')
+        );
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public static function namespaceConflicts(): iterable
+    {
+        foreach ([
+            'named' => ['tenant-a', 'tenant-b'],
+            'null-target' => [null, 'tenant-b'],
+            'null-existing' => ['tenant-a', null],
+        ] as $label => [$target, $existing]) {
+            foreach ([false, true] as $dryRun) {
+                yield $label . ($dryRun ? '-preview' : '-write') => [$target, $existing, $dryRun];
+            }
+        }
+    }
+
     public function testContractPublishesImportRulesAndAuditMarkers(): void
     {
         $manifest = EmbeddedV2ImportContract::manifest();
@@ -599,6 +675,23 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         );
         $this->assertNull($fallbackUpdate['name']);
         $this->assertSame([], $fallbackUpdate['validation_errors']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workflowStateSnapshot(): array
+    {
+        $snapshot = [];
+        foreach (['workflow_instances', 'workflow_runs', 'workflow_tasks', 'workflow_history_events',
+            'workflow_commands', 'workflow_signal_records', 'workflow_updates', 'workflow_links',
+            'activity_executions', 'activity_attempts', 'workflow_run_timers', 'workflow_failures',
+            'workflow_run_summaries', 'workflow_run_waits', 'workflow_run_timeline_entries',
+            'workflow_run_lineage_entries', 'workflow_run_timer_entries', 'workflow_memos', 'workflow_search_attributes'] as $table) {
+            $snapshot[$table] = DB::table($table)->get()->map(static fn (object $row): array => (array) $row)->all();
+        }
+
+        return $snapshot;
     }
 
     /**

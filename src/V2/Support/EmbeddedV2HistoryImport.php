@@ -146,7 +146,12 @@ final class EmbeddedV2HistoryImport
             ];
         }
 
-        $existing = self::existingRunOutcome($workflow['run_id'], self::stringValue($bundle['dedupe_key'] ?? null));
+        $namespace = self::stringValue($workflow['namespace'] ?? null);
+        $existing = self::existingRunOutcome(
+            $workflow['run_id'],
+            self::stringValue($bundle['dedupe_key'] ?? null),
+            $namespace
+        );
 
         if ($existing['status'] === 'already_imported') {
             return [
@@ -164,6 +169,20 @@ final class EmbeddedV2HistoryImport
                     $eligibility,
                     'target.run_id_conflict',
                     'A workflow run with this run_id already exists and was not imported from the same bundle.',
+                ),
+                'rows' => self::emptyRows(),
+            ];
+        }
+
+        $instance = WorkflowInstance::query()->find($workflow['instance_id']);
+        if ($instance instanceof WorkflowInstance && $instance->namespace !== $namespace) {
+            return [
+                ...$base,
+                'status' => 'rejected',
+                'eligibility' => self::withEligibilityError(
+                    $eligibility,
+                    'target.instance_namespace_conflict',
+                    'A workflow instance with this instance_id already exists outside the target namespace.',
                 ),
                 'rows' => self::emptyRows(),
             ];
@@ -240,6 +259,7 @@ final class EmbeddedV2HistoryImport
 
         /** @var WorkflowInstance|null $instance */
         $instance = WorkflowInstance::query()
+            ->where('namespace', $namespace)
             ->lockForUpdate()
             ->find($instanceId);
 
@@ -1184,7 +1204,7 @@ final class EmbeddedV2HistoryImport
     /**
      * @return array{status: string}
      */
-    private static function existingRunOutcome(?string $runId, ?string $dedupeKey): array
+    private static function existingRunOutcome(?string $runId, ?string $dedupeKey, ?string $namespace): array
     {
         if ($runId === null) {
             return [
@@ -1202,7 +1222,8 @@ final class EmbeddedV2HistoryImport
         }
 
         if (
-            $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
+            $run->namespace === $namespace
+            && $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
             && is_string($run->import_dedupe_key)
             && $run->import_dedupe_key === $dedupeKey
         ) {

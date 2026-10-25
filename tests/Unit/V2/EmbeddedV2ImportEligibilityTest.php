@@ -168,7 +168,9 @@ final class EmbeddedV2ImportEligibilityTest extends TestCase
         $original = $bundle;
 
         for ($delivery = 0; $delivery < 2; ++$delivery) {
-            $report = EmbeddedV2HistoryImport::import($bundle);
+            $report = EmbeddedV2HistoryImport::import($bundle, [
+                'namespace' => 'import-tests',
+            ]);
             $this->assertSame('rejected', $report['status']);
             $this->assertContains('target.write_failed', array_column($report['eligibility']['errors'], 'rule'));
             $this->assertSame(0, array_sum($report['rows']));
