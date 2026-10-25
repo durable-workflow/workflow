@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-service-operation-host-authority",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusWaitingCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {
+      "sequence": 2,
+      "event_type": "ServiceCallStarted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "authority-recorded-call",
+        "endpoint_name": "php-service",
+        "service_name": "greeter",
+        "operation_name": "greet",
+        "status": "started",
+        "operation_mode": "sync",
+        "wait_for": "completed",
+        "service_call": {"service_call_id": "authority-recorded-call", "status": "started"}
+      }
+    }
+  ],
+  "authority": {
+    "commands": [
+      {"type": "start_timer", "delay_seconds": 60},
+      {
+        "type": "start_service_operation",
+        "endpoint_name": "billing",
+        "service_name": "invoices",
+        "operation_name": "create",
+        "namespace": "foreign",
+        "caller_namespace": "foreign",
+        "principal_subject": "administrator",
+        "principal_roles": ["admin"]
+      }
+    ],
+    "reason": "service_operation_authority_invalid"
+  },
+  "expected": {"completed": false, "result": null, "commands": []}
+}

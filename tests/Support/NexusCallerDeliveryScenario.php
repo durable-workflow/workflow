@@ -17,14 +17,17 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -34,6 +37,44 @@ use Workflow\V2\WorkflowStub;
 
 trait NexusCallerDeliveryScenario
 {
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    protected function assertNexusWorkerCannotSupplyAuthority(array $fixture): void
+    {
+        $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        try {
+            $workflow = WorkflowStub::make($fixture['workflow']['type'], 'authority-corpus-caller', 'caller');
+            $this->assertTrue($workflow->attemptStart(...$fixture['workflow']['arguments'])->accepted());
+            $task = WorkflowTask::query()->where('workflow_run_id', $workflow->runId())->sole();
+            $bridge = $this->app->make(WorkflowTaskBridge::class);
+            $this->assertTrue($bridge->claimStatus($task->id, 'authority-corpus-worker')['claimed']);
+            $models = [WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class, WorkflowTimer::class,
+                WorkflowCommand::class, WorkflowHistoryEvent::class, WorkflowRunSummary::class, WorkflowServiceCall::class];
+            $snapshot = static function () use ($models): array {
+                $rows = [];
+                foreach ($models as $model) {
+                    $rows[$model] = $model::query()->orderBy('id')->get()->map(
+                        static fn ($row): array => $row->getRawOriginal(),
+                    )->all();
+                }
+                return $rows;
+            };
+            $before = $snapshot();
+            $result = $bridge->complete($task->id, $fixture['authority']['commands']);
+            $this->assertFalse($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+            $this->assertSame($fixture['authority']['reason'], $result['reason']);
+            $this->assertSame($before, $snapshot());
+        } finally {
+            config([
+                'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
+            ]);
+        }
+    }
+
     /**
      * @param array<string, mixed> $fixture
      */
