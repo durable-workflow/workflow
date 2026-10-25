@@ -385,6 +385,16 @@ authentication/namespace policy and returns the authenticated worker principal.
 Authorized cross-namespace routing remains possible through that trusted host
 binding; a worker's requested `namespace` alone grants no permission.
 
+Policies used for existing workflow-call replay must provide
+`authorizeReplay(ServiceBoundaryRequest): ServiceBoundaryDecision`; the optional
+`ServiceBoundaryReplayPolicy` interface declares this contract. The default
+policy checks current authorization and circuit state without reserving rate
+or concurrency capacity. Existing compatible host methods work without adopting
+the interface. A custom policy without this pure check fails closed with
+`service_operation_replay_authority_unavailable`; implement the hook as part of
+the host upgrade. Cached checkpoint receipts require the same current check,
+including after catalog policy changes or replacement.
+
 Caller namespace and workflow run/instance identity always come from the locked
 run. A mismatched non-null `caller_namespace` or non-null `principal_*` override
 is refused before applying sibling commands. Unknown fields do not grant
@@ -399,6 +409,28 @@ foreign key match, refuses the worker turn with `service_call_not_owned` and
 leaves the lease and durable rows unchanged. New default idempotency keys are
 checked by the same rule. Server adapters retain their current-policy replay
 checks before handing the call to Core.
+
+The run, service call and catalog models must use the completion's database
+connection. A separate connection is refused before sibling writes with
+`service_operation_storage_connection_mismatch`; separate transactions cannot
+provide the atomic refusal contract.
+
+Keyed calls use a unique SHA-256 digest of the exact target namespace (including
+null), catalog names and opaque key. The full scope is still compared after
+lookup; a digest or database collation match never grants authority. Creation
+uses a savepoint, then locks and reauthorizes the canonical row if another
+transaction wins. Explicit call IDs obey the same keyed-call invariant.
+
+Apply the nullable `idempotency_scope_hash` expansion before starting upgraded
+writers. It does not backfill existing calls: an existing candidate must pass
+current caller, catalog and policy checks before it can claim the key. Conflicting
+legacy rows are refused rather than reassigned. Stop or drain older service-call
+writers before relying on concurrent deduplication, since they do not populate
+the digest. Retaining the column and index supports code rollback without
+discarding canonical claims. The migration uses a short metadata-lock timeout
+and online index creation on PostgreSQL and MySQL; retry a refused migration
+after removing the lock contention. No production migration has been qualified
+by the source tests alone.
 
 ## Observability surface
 

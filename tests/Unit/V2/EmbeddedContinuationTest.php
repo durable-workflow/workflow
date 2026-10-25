@@ -35,7 +35,9 @@ use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -49,6 +51,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -1321,6 +1324,20 @@ final class EmbeddedContinuationTest extends TestCase
 
     private function registerNexusService(int &$starts): WorkflowRun
     {
+        $this->app->instance(
+            WorkflowServiceOperationAuthorizer::class,
+            new class() implements WorkflowServiceOperationAuthorizer {
+                public function authorize(WorkflowRun $run, array $command): ServiceCallPrincipal
+                {
+                    if ($run->namespace !== 'continuation-test' || ($command['namespace'] ?? null) !== 'service'
+                        || [$command['endpoint_name'], $command['service_name'], $command['operation_name']]
+                            !== ['php-service', 'greeter', 'greet']) {
+                        throw new ServiceOperationAuthorizationException();
+                    }
+                    return new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow');
+                }
+            }
+        );
         $instance = WorkflowInstance::query()->create([
             'namespace' => 'service',
             'workflow_type' => 'nexus.service',

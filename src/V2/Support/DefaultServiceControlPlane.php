@@ -17,6 +17,7 @@ use Workflow\V2\Enums\ServiceCallFailureReason;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -60,12 +61,30 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         CodecRegistry::canonicalize($this->stringOption($options, 'payload_codec'));
 
         $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
+        $key = $this->stringOption($options, 'idempotency_key');
+        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+            ->getModel()
+            ->getConnection();
+        if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
+            return $connection->transaction(fn (): array => $this->execute(
+                $endpointName,
+                $serviceName,
+                $operationName,
+                $options,
+            ));
+        }
 
         $idempotent = $explicitCallId === null
             ? $this->idempotentCall($namespace, $endpointKey, $serviceKey, $operationKey, $options)
             : null;
 
         if ($idempotent !== null) {
+            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+            $idempotent = ServiceCallIdempotency::save(
+                $idempotent,
+                [$namespace, $endpointKey, $serviceKey, $operationKey, $key]
+            );
+            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
             return $this->serialize($idempotent) + [
                 'accepted' => $this->acceptedShape($idempotent),
                 'idempotent_replay' => true,
@@ -74,9 +93,23 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         $call = $this->existingCall($explicitCallId, $namespace);
+        if ($call instanceof WorkflowServiceCall) {
+            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+        }
         if ($call instanceof WorkflowServiceCall && $namespace === null) {
             $namespace = $this->stringFrom($call->target_namespace)
                 ?? $this->stringFrom($call->namespace);
+        }
+        if ($call instanceof WorkflowServiceCall && is_string($call->idempotency_key)
+            && $call->idempotency_key !== '') {
+            if ($key !== null && $key !== $call->idempotency_key) {
+                throw new ServiceOperationAuthorizationException('service_call_idempotency_scope_conflict');
+            }
+            $scope = [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key];
+            $canonical = ServiceCallIdempotency::find($scope) ?? $call;
+            $this->authorizeWorkflowCall($canonical, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+            $call = ServiceCallIdempotency::save($canonical, $scope);
+            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
         }
 
         if ($explicitCallId !== null && ! $call instanceof WorkflowServiceCall) {
@@ -137,7 +170,23 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $principal,
                 $options,
             );
-            $call->save();
+            if (is_string($call->idempotency_key) && $call->idempotency_key !== '') {
+                $candidate = $call;
+                $call = ServiceCallIdempotency::save(
+                    $call,
+                    [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key]
+                );
+                if (! $call->is($candidate)) {
+                    $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+                    return $this->serialize($call) + [
+                        'accepted' => $this->acceptedShape($call),
+                        'idempotent_replay' => true,
+                        'reason' => null,
+                    ];
+                }
+            } else {
+                $call->save();
+            }
         }
 
         $endpoint = $this->endpoint($namespace, $endpointKey);
@@ -548,7 +597,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $query->where('namespace', $namespace);
         }
 
-        return $query->first();
+        return $query->lockForUpdate()
+            ->first();
     }
 
     /**
@@ -590,17 +640,35 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             return null;
         }
 
-        $model = ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class);
+        return ServiceCallIdempotency::find([$namespace, $endpointName, $serviceName, $operationName, $key]);
+    }
 
-        return $model::query()
-            ->where('target_namespace', $namespace)
-            ->where('endpoint_name', $endpointName)
-            ->where('service_name', $serviceName)
-            ->where('operation_name', $operationName)
-            ->where('idempotency_key', $key)
-            ->oldest('created_at')
-            ->oldest('id')
-            ->first();
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function authorizeWorkflowCall(
+        WorkflowServiceCall $call,
+        ?string $namespace,
+        string $endpoint,
+        string $service,
+        string $operation,
+        array $options,
+    ): void {
+        $run = $this->stringOption($options, 'caller_workflow_run_id');
+        $instance = $this->stringOption($options, 'caller_workflow_instance_id');
+        if ($run === null && $instance === null) {
+            return;
+        }
+        WorkflowServiceOperationAuthority::authorizeExistingCall($call, $this->principal($options), [
+            'namespace' => $namespace,
+            'caller_namespace' => array_key_exists('caller_namespace', $options)
+                ? $this->namespaceOption($options, 'caller_namespace') : $this->configuredNamespace(),
+            'caller_workflow_instance_id' => $instance,
+            'caller_workflow_run_id' => $run,
+            'endpoint_name' => $endpoint,
+            'service_name' => $service,
+            'operation_name' => $operation,
+        ], $this->boundaryPolicy());
     }
 
     /**

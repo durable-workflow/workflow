@@ -6003,7 +6003,9 @@ final class WorkflowExecutor
         string $serializedRequest,
     ): array {
         $options = $call->options?->toCommandOptions() ?? [];
-        $options['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
+        if (! isset($options['service_call_id'])) {
+            $options['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
+        }
         $metadata = is_array($options['metadata'] ?? null) ? $options['metadata'] : [];
         $metadata = [
             'caller_sdk_language' => 'workflow-php',
@@ -6021,8 +6023,7 @@ final class WorkflowExecutor
             'payload_blob' => $serializedRequest,
             'payload_codec' => $payloadCodec,
             'service_call_id' => self::nonEmptyString($options['service_call_id'] ?? null),
-            'idempotency_key' => self::nonEmptyString($options['idempotency_key'] ?? null)
-                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'idempotency_key' => self::nonEmptyString($options['idempotency_key'] ?? null),
             'mode_override' => self::nonEmptyString($options['mode_override'] ?? null),
             'wait_for' => self::nonEmptyString($options['wait_for'] ?? null),
             'wait_timeout_seconds' => is_int($options['wait_timeout_seconds'] ?? null)
