@@ -10,6 +10,7 @@ use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloadStorage;
@@ -148,6 +149,105 @@ final class ExternalPayloadStorageTest extends TestCase
         $this->expectExceptionMessage('outside the local storage root');
 
         $driver->get('file:///etc/passwd');
+    }
+
+    public function testLocalDriverNeverMovesAnIncompleteOrCorruptWriteIntoPlace(): void
+    {
+        $root = $this->makeStorageRoot();
+        $data = 'encoded-payload';
+        $sha256 = hash('sha256', $data);
+        $writers = [
+            'short write' => static fn (string $path, string $content): int|false => file_put_contents(
+                $path,
+                substr($content, 0, 5)
+            ),
+            'short write reported whole' => static function (string $path, string $content): int {
+                file_put_contents($path, substr($content, 0, 5));
+
+                return strlen($content);
+            },
+            'same length, wrong bytes' => static fn (string $path, string $content): int|false => file_put_contents(
+                $path,
+                strrev($content)
+            ),
+            'failed write' => static fn (string $path, string $content): int|false => false,
+        ];
+
+        foreach ($writers as $case => $writer) {
+            $driver = new LocalFilesystemExternalPayloadStorage($root, $writer);
+            try {
+                $driver->put($data, $sha256, 'avro');
+                $this->fail("{$case}: the incomplete write was accepted.");
+            } catch (ExternalPayloadIntegrityException $error) {
+                $this->assertStringContainsString('was not written completely', $error->getMessage(), $case);
+            }
+            $path = $this->pathFromFileUri($driver->uriFor($sha256, 'avro'));
+            $this->assertFileDoesNotExist($path, $case);
+            $this->assertSame([], glob(dirname($path) . '/*.tmp') ?: [], $case);
+        }
+    }
+
+    public function testLocalDriverKeepsAMatchingObjectAndReplacesAPartialOrCorruptOne(): void
+    {
+        $root = $this->makeStorageRoot();
+        $data = 'encoded-payload';
+        $sha256 = hash('sha256', $data);
+        $writes = 0;
+        $driver = new LocalFilesystemExternalPayloadStorage(
+            $root,
+            static function (string $path, string $content) use (&$writes): int|false {
+                $writes++;
+
+                return file_put_contents($path, $content);
+            }
+        );
+
+        $uri = $driver->put($data, $sha256, 'avro');
+        $this->assertSame($driver->uriFor($sha256, 'avro'), $uri);
+        $this->assertSame(1, $writes);
+        $path = $this->pathFromFileUri($uri);
+
+        // Idempotent: a matching object is kept as it is.
+        $this->assertSame($uri, $driver->put($data, $sha256, 'avro'));
+        $this->assertSame(1, $writes);
+
+        foreach (['encoded-pay', 'encoded-payloae'] as $damaged) {
+            file_put_contents($path, $damaged);
+            $this->assertSame($uri, $driver->put($data, $sha256, 'avro'));
+            $this->assertSame($data, file_get_contents($path));
+        }
+        $this->assertSame(3, $writes);
+        $this->assertSame([], glob(dirname($path) . '/*.tmp') ?: []);
+    }
+
+    public function testLocalDriverRefusesContentThatDoesNotMatchItsHash(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $sha256 = hash('sha256', 'other-payload');
+
+        try {
+            $driver->put('encoded-payload', $sha256, 'avro');
+            $this->fail('Content that does not match its hash was stored.');
+        } catch (ExternalPayloadIntegrityException) {
+        }
+
+        $this->assertFileDoesNotExist($this->pathFromFileUri($driver->uriFor($sha256, 'avro')));
+    }
+
+    public function testOnlyTheLocalDriverPromisesPredictableAtomicStorage(): void
+    {
+        $root = $this->makeStorageRoot();
+
+        $this->assertInstanceOf(
+            PredictableExternalPayloadStorageDriver::class,
+            new LocalFilesystemExternalPayloadStorage($root)
+        );
+        // A filesystem disk does not guarantee an atomic write, so this driver
+        // keeps the original interface and stores payloads as before.
+        $this->assertNotInstanceOf(
+            PredictableExternalPayloadStorageDriver::class,
+            new FilesystemExternalPayloadStorage($this->makeDisk($root), 's3', 'workflow-payloads')
+        );
     }
 
     public function testFilesystemDriverStoresFetchesAndDeletesVerifiedBytes(): void
