@@ -5003,7 +5003,7 @@ final class WorkflowExecutor
             ->lockForUpdate()
             ->get();
 
-        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        /** @var array<string, array{parent_workflow_instance_id: string, parent_workflow_run_id: string, parent_sequence: int|null, child_call_id?: string|null}> $parentReferences */
         $parentReferences = [];
 
         foreach ($parentLinks as $parentLink) {
@@ -5014,13 +5014,14 @@ final class WorkflowExecutor
             $parentSequence = self::intValue($parentLink->sequence);
 
             $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_instance_id' => $parentLink->parent_workflow_instance_id,
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
                 'parent_sequence' => $parentSequence
                     ?? ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
             ];
         }
 
-        if ($parentReferences === []) {
+        if ($parentReferences === [] && ! ImportedLineageReferences::imported($childRun)) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
@@ -5031,15 +5032,24 @@ final class WorkflowExecutor
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = WorkflowRun::query()
+                ->where('namespace', $childRun->namespace)
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
-            if ($parentRun === null || in_array($parentRun->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
+            if ($parentRun === null || $parentRun->workflow_instance_id !== $parentReference['parent_workflow_instance_id']
+                || ! ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $childRun,
+                    $parentReference['parent_sequence'],
+                    $parentReference['child_call_id'] ?? null,
+                    true
+                )
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)) {
                 continue;
             }
 

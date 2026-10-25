@@ -20,6 +20,13 @@ final class EmbeddedV2ImportLineage
     {
         $errors = [];
         foreach (self::references($bundle, $workflow) as [$runId, $instanceId]) {
+            if ($runId === ($workflow['run_id'] ?? null)) {
+                $errors[] = [
+                    'rule' => 'references.lineage_self_reference',
+                    'message' => 'A workflow run cannot be its own parent, child or continuation.',
+                ];
+                continue;
+            }
             [, $error] = self::endpoint($workflow['namespace'] ?? null, $runId, $instanceId, $lock);
             if ($error !== null) {
                 $errors[] = $error;
@@ -29,8 +36,15 @@ final class EmbeddedV2ImportLineage
         return $errors;
     }
 
-    public static function existingEndpoint(?string $namespace, string $runId, string $instanceId): ?WorkflowRun
-    {
+    public static function existingEndpoint(
+        ?string $namespace,
+        string $runId,
+        string $instanceId,
+        string $originRunId
+    ): ?WorkflowRun {
+        if ($runId === $originRunId) {
+            throw new InvalidArgumentException('A workflow run cannot be its own parent, child or continuation.');
+        }
         [$run, $error] = self::endpoint($namespace, $runId, $instanceId, true);
         if ($error !== null) {
             throw new InvalidArgumentException($error['message']);

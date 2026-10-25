@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitting;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -15,16 +16,23 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
+use Workflow\V2\Support\EmbeddedV2ImportContract;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\ImportedLineageReferences;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunLineageView;
+use Workflow\V2\Support\WorkflowExecutor;
+use Workflow\V2\WorkflowStub;
 
 final class EmbeddedV2HistoryImportLineageTest extends TestCase
 {
@@ -321,6 +329,268 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                 yield $selected . '/' . $namespace => [$selected, $namespace];
             }
         }
+    }
+
+    #[DataProvider('selfLineageReferences')]
+    public function testSelfLineageIsRejectedWithoutChangingTheStore(string $reference, bool $dryRun): void
+    {
+        $bundle = $this->sourcePair()['parent'];
+        $ownRun = $bundle['workflow']['run_id'];
+        $ownInstance = $bundle['workflow']['instance_id'];
+        if (in_array($reference, ['parents', 'children'], true)) {
+            $link = $bundle['links']['children'][0];
+            foreach (['parent', 'child'] as $direction) {
+                $link[$direction . '_workflow_run_id'] = $ownRun;
+                $link[$direction . '_workflow_instance_id'] = $ownInstance;
+            }
+            $bundle['links'] = [
+                'parents' => [],
+                'children' => [],
+            ];
+            $bundle['links'][$reference] = [$link];
+        } elseif ($reference === 'started-parent') {
+            $bundle['history_events'][0]['payload']['parent_workflow_run_id'] = $ownRun;
+            $bundle['history_events'][0]['payload']['parent_workflow_instance_id'] = $ownInstance;
+        } elseif ($reference === 'continued-from') {
+            $bundle['history_events'][0]['payload']['continued_from_run_id'] = $ownRun;
+        } elseif (in_array($reference, ['scheduled-child', 'started-child'], true)) {
+            $index = $reference === 'scheduled-child' ? 1 : 2;
+            $bundle['history_events'][$index]['payload']['child_workflow_run_id'] = $ownRun;
+            $bundle['history_events'][$index]['payload']['child_workflow_instance_id'] = $ownInstance;
+        } else {
+            $event = $bundle['history_events'][2];
+            $event['id'] = (string) Str::ulid();
+            $event['sequence']++;
+            $event['type'] = $reference;
+            $event['payload'] = $reference === 'WorkflowContinuedAsNew'
+                ? [
+                    'continued_to_run_id' => $ownRun,
+                ]
+                : [
+                    ...$event['payload'],
+                    'child_workflow_run_id' => $ownRun,
+                    'child_workflow_instance_id' => $ownInstance,
+                ];
+            $bundle['history_events'][] = $event;
+            $bundle['workflow']['last_history_sequence'] = $event['sequence'];
+        }
+        $bundle = $this->reseal($bundle);
+        $this->clearState();
+        $this->createRun('unrelated-existing', (string) Str::ulid(), 'tenant-b', 'unrelated-existing');
+        $before = $this->snapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'namespace' => 'tenant-a',
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains(
+            'references.lineage_self_reference',
+            array_column($report['eligibility']['errors'], 'rule')
+        );
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->snapshot());
+    }
+
+    public static function selfLineageReferences(): iterable
+    {
+        foreach (['parents', 'children', 'started-parent', 'continued-from', 'WorkflowContinuedAsNew',
+            'scheduled-child', 'started-child', 'ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled',
+            'ChildRunTerminated'] as $reference) {
+            foreach ([false, true] as $preview) {
+                yield $reference . ($preview ? '/preview' : '/write') => [$reference, $preview];
+            }
+        }
+    }
+
+    public function testImportedLineageResolverDoesNotAuthorizeItsOwnRun(): void
+    {
+        $run = new WorkflowRun([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => 'self-instance',
+            'namespace' => 'tenant-a',
+            'import_source' => EmbeddedV2ImportContract::IMPORT_SOURCE,
+        ]);
+        $this->assertFalse(ImportedLineageReferences::allows($run, $run));
+    }
+
+    #[DataProvider('parentResumePaths')]
+    public function testImportedChildClosureCannotResumeAnUnrelatedLaterParent(
+        string $path,
+        string $namespace,
+        bool $counterpart
+    ): void {
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles['child'], [
+            'namespace' => 'tenant-a',
+        ])['status']);
+        if ($counterpart) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles['parent'], [
+                'namespace' => 'tenant-a',
+            ])['status']);
+            $parent = WorkflowRun::query()->findOrFail($bundles['parent']['workflow']['run_id']);
+            $observed = [$parent];
+        } else {
+            $identity = $bundles['parent']['workflow'];
+            $parent = $this->createRun(
+                $identity['instance_id'],
+                $identity['run_id'],
+                $namespace,
+                $identity['workflow_type']
+            );
+            $otherChild = $this->createRun('unrelated-child', (string) Str::ulid(), $namespace, 'unrelated-child');
+            $call = (string) Str::ulid();
+            $payload = [
+                'sequence' => 1,
+                'child_call_id' => $call,
+                'workflow_link_id' => $call,
+                'child_workflow_instance_id' => $otherChild->workflow_instance_id,
+                'child_workflow_run_id' => $otherChild->id,
+                'child_workflow_type' => 'unrelated-child',
+            ];
+            WorkflowHistoryEvent::record($parent, HistoryEventType::WorkflowStarted, []);
+            WorkflowHistoryEvent::record($parent, HistoryEventType::ChildWorkflowScheduled, $payload);
+            WorkflowHistoryEvent::record($parent, HistoryEventType::ChildRunStarted, $payload);
+            WorkflowLink::query()->create([
+                'id' => $call,
+                'link_type' => 'child_workflow',
+                'sequence' => 1,
+                'parent_workflow_instance_id' => $parent->workflow_instance_id,
+                'parent_workflow_run_id' => $parent->id,
+                'child_workflow_instance_id' => $otherChild->workflow_instance_id,
+                'child_workflow_run_id' => $otherChild->id,
+            ]);
+            $observed = [$parent, $otherChild];
+        }
+        $child = WorkflowRun::query()->findOrFail($bundles['child']['workflow']['run_id']);
+        $this->assertSame(
+            $counterpart ? 1 : 0,
+            WorkflowLink::query()->where('child_workflow_run_id', $child->id)->count()
+        );
+        $before = $this->ownedState($observed);
+
+        if ($path === 'operator') {
+            $this->assertTrue(WorkflowStub::loadRun($child->id)->attemptCancel('imported child closure')->accepted());
+        } else {
+            $child->forceFill([
+                'run_deadline_at' => now()
+                    ->subSecond(),
+            ])->save();
+            $task = WorkflowTask::query()->create([
+                'workflow_run_id' => $child->id,
+                'namespace' => $child->namespace,
+                'task_type' => TaskType::Workflow,
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'imported-child-worker',
+                'attempt_count' => 1,
+                'lease_expires_at' => now()
+                    ->addMinute(),
+                'available_at' => now(),
+                'payload' => [],
+            ]);
+            $this->assertTrue(
+                DB::transaction(static fn (): bool => (new WorkflowExecutor())->timeoutIfDeadlineExpired(
+                    $child->fresh(),
+                    $task
+                ))
+            );
+        }
+
+        $this->assertTrue($child->fresh()->status->isTerminal());
+        if ($counterpart) {
+            $this->assertSame(1, $parent->historyEvents()->where('payload->child_workflow_run_id', $child->id)
+                ->whereIn(
+                    'event_type',
+                    [HistoryEventType::ChildRunCancelled->value, HistoryEventType::ChildRunFailed->value]
+                )->count());
+            $this->assertSame(1, $parent->tasks()->where('task_type', TaskType::Workflow)->count());
+        } else {
+            $this->assertSame($before, $this->ownedState($observed));
+        }
+    }
+
+    public static function parentResumePaths(): iterable
+    {
+        foreach (['operator', 'worker'] as $path) {
+            foreach (['tenant-a', 'tenant-b'] as $namespace) {
+                yield $path . '/' . $namespace . '/unrelated-later' => [$path, $namespace, false];
+            }
+            yield $path . '/counterpart-import' => [$path, 'tenant-a', true];
+        }
+    }
+
+    /** @param list<WorkflowRun> $runs
+     * @return array<string, mixed>
+     */
+    private function ownedState(array $runs): array
+    {
+        $ids = array_map(static fn (WorkflowRun $run): string => $run->id, $runs);
+        $instances = array_map(static fn (WorkflowRun $run): string => $run->workflow_instance_id, $runs);
+        $state = [];
+        foreach (self::TABLES as $table) {
+            $query = DB::table($table);
+            if ($table === 'workflow_instances') {
+                $query->whereIn('id', $instances);
+            } elseif ($table === 'workflow_runs' || $table === 'workflow_run_summaries') {
+                $query->whereIn('id', $ids);
+            } elseif ($table === 'workflow_links') {
+                $query->where(
+                    static fn ($builder) => $builder->whereIn(
+                        'parent_workflow_run_id',
+                        $ids
+                    )->orWhereIn('child_workflow_run_id', $ids)
+                );
+            } else {
+                $query->whereIn('workflow_run_id', $ids);
+            }
+            $state[$table] = $query->get()->map(static fn (object $row): array => (array) $row)->all();
+        }
+
+        return $state;
+    }
+
+    /** @param array<string, mixed> $bundle
+     * @return array<string, mixed>
+     */
+    private function reseal(array $bundle): array
+    {
+        unset($bundle['integrity']);
+        $canonical = static function (mixed $value) use (&$canonical): mixed {
+            if (! is_array($value)) {
+                return $value;
+            }
+            foreach ($value as $key => $entry) {
+                $value[$key] = $canonical($entry);
+            }
+            if (! array_is_list($value)) {
+                ksort($value, SORT_STRING);
+            }
+
+            return $value;
+        };
+        $bundle['integrity'] = [
+            'canonicalization' => 'json-recursive-ksort-v1',
+            'checksum_algorithm' => 'sha256',
+            'checksum' => hash(
+                'sha256',
+                json_encode(
+                    $canonical($bundle),
+                    JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+                )
+            ),
+            'signature_algorithm' => null,
+            'signature' => null,
+            'key_id' => null,
+        ];
+
+        return $bundle;
     }
 
     /**

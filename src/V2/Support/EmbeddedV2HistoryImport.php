@@ -763,7 +763,7 @@ final class EmbeddedV2HistoryImport
             if ($parentInstance === null || $parentRun === null) {
                 continue;
             }
-            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $parentRun, $parentInstance);
+            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $parentRun, $parentInstance, $runId);
             if ($related === null) {
                 continue;
             }
@@ -793,7 +793,7 @@ final class EmbeddedV2HistoryImport
             if ($childInstance === null || $childRun === null) {
                 continue;
             }
-            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $childRun, $childInstance);
+            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $childRun, $childInstance, $runId);
             if ($related === null) {
                 continue;
             }
