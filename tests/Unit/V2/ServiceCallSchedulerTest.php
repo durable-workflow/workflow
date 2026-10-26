@@ -112,8 +112,8 @@ final class ServiceCallSchedulerTest extends TestCase
                 return $instanceId === 'accepted-target'
                     && $name === 'approve'
                     && WorkflowServiceCall::query()->getModel()->getConnection()->transactionLevel() === 1
-                    && $options['wait_for'] === 'completed'
-                    && $options['wait_timeout_seconds'] === 60;
+                    && $options['wait_for'] === 'accepted'
+                    && ! array_key_exists('wait_timeout_seconds', $options);
             })
             ->andReturn([
                 'accepted' => true,

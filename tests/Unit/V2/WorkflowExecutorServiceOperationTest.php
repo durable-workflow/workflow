@@ -30,6 +30,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\RunServiceOperationAuthorizer;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\ServiceOperationResult;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -138,8 +139,11 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
         }
         $this->assertInstanceOf(ServiceCallPrincipal::class, $service->executions[0][3]['principal']);
         $service->executions[0][3]['principal'] = $service->executions[0][3]['principal']->toAuditArray();
+        $this->assertTrue(ServiceCallScheduler::hasAfterCommitAuthority($service->executions[0][3]));
         $this->assertSame(
-            $this->ordered(['billing', 'invoices', 'create', $expectedOptions]),
+            $this->ordered(
+                ['billing', 'invoices', 'create', ServiceCallScheduler::withAfterCommitAuthority($expectedOptions)]
+            ),
             $this->ordered($service->executions[0])
         );
         $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->whereIn('event_type', [
