@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Queue;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -463,6 +464,7 @@ final class LinkedServiceCallCloserTest extends TestCase
 
     public function testEmbeddedCallerWaitsAndThenReplaysTheActualServiceResult(): void
     {
+        Queue::fake();
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);

@@ -16,6 +16,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -226,7 +227,9 @@ trait NexusCallerDeliveryScenario
             $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
             $this->assertNull($workflow->refresh()->output());
             $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
-            $this->assertSame('started', $call->status);
+            $this->assertSame('accepted', $call->status);
+            $this->app->call([new RunServiceCall($call->id), 'handle']);
+            $this->assertSame('started', $call->refresh()->status);
 
             if ($deadlinePolicy !== null) {
                 $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());

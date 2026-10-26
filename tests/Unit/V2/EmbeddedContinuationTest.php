@@ -39,6 +39,7 @@ use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -865,7 +866,7 @@ final class EmbeddedContinuationTest extends TestCase
             'child' => [HistoryEventType::ChildWorkflowScheduled, 'child-value'],
             'condition' => [HistoryEventType::ConditionWaitOpened, true],
             'continue' => [HistoryEventType::WorkflowContinuedAsNew, 'continued'],
-            'nexus' => [HistoryEventType::ServiceCallStarted, [
+            'nexus' => [HistoryEventType::ServiceOperationScheduled, [
                 'integer' => 9007199254740993,
                 'optional' => null,
                 'unicode' => 'Nexus λ',
@@ -926,6 +927,11 @@ final class EmbeddedContinuationTest extends TestCase
             ->map->getRawOriginal()
             ->all();
         $this->workOnce();
+        if ($serviceRun !== null) {
+            $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+            $this->assertSame('accepted', $call->status);
+            $this->app->call([new RunServiceCall($call->id), 'handle']);
+        }
         $this->assertNotEmpty($atWrite);
         $this->assertSame([2], array_values(array_unique($atWrite)));
         $this->assertSame(0, app(WorkflowContinuationCache::class)->snapshot()['entries']);
@@ -965,11 +971,12 @@ final class EmbeddedContinuationTest extends TestCase
         $this->assertCount(1, $events->where('event_type', HistoryEventType::ActivityCompleted));
         if ($serviceRun !== null) {
             $this->assertSame(1, $backendStarts);
-            $this->assertCount(1, $events->where('event_type', HistoryEventType::ServiceCallStarted));
+            $this->assertCount(1, $events->where('event_type', HistoryEventType::ServiceOperationScheduled));
+            $this->assertCount(0, $events->where('event_type', HistoryEventType::ServiceCallStarted));
             $this->assertCount(1, $events->where('event_type', HistoryEventType::ServiceCallCompleted));
             $this->assertSame(
                 2,
-                $events->firstWhere('event_type', HistoryEventType::ServiceCallStarted)->payload['sequence']
+                $events->firstWhere('event_type', HistoryEventType::ServiceOperationScheduled)->payload['sequence']
             );
             $this->assertSame(
                 2,
