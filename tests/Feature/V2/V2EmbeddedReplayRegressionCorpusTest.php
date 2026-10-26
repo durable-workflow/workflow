@@ -187,7 +187,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $history = $run->historyEvents()
                     ->get()
                     ->toArray();
-                $lastWorkflowTask = $run->tasks()->where('task_type', TaskType::Workflow)
+                $lastWorkflowTask = $run->tasks()
+                    ->where('task_type', TaskType::Workflow)
                     ->latest('created_at')
                     ->firstOrFail()
                     ->id;
