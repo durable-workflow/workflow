@@ -33,6 +33,7 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ServiceCallAttemptClaim;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
@@ -348,6 +349,24 @@ final class ServiceCallSchedulerTest extends TestCase
         $secondIdentity = ServiceCallEffectIdentity::forCurrentClaim($second);
         $this->assertInstanceOf(ServiceCallEffectIdentity::class, $secondIdentity);
         $this->assertSame($firstIdentity->storageToken(), $secondIdentity->storageToken());
+        $differentEffectToken = $secondIdentity->storageToken() === 'service-call-v1:' . str_repeat('f', 64)
+            ? 'service-call-v1:' . str_repeat('e', 64)
+            : 'service-call-v1:' . str_repeat('f', 64);
+        $forged = new ServiceCallAttemptClaim(
+            call: $second->call,
+            operation: $second->operation,
+            request: $second->request,
+            options: $second->options,
+            attempt: $second->attempt,
+            maxAttempts: $second->maxAttempts,
+            generation: $second->generation,
+            token: $second->token,
+            catalogRevision: $second->catalogRevision,
+            policyRevision: $second->policyRevision,
+            effectToken: $differentEffectToken,
+        );
+        $this->assertFalse(ServiceCallScheduler::ownsClaim($forged));
+        $this->assertNull(ServiceCallEffectIdentity::forCurrentClaim($forged));
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
         $workflows = Mockery::mock(WorkflowControlPlane::class);

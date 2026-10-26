@@ -312,10 +312,15 @@ final class ServiceCallScheduler
         WorkflowServiceCallDispatch $dispatch,
         ServiceCallAttemptClaim $claim,
     ): bool {
+        $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
+        $effectToken = $options[self::EFFECT_TOKEN_OPTION] ?? null;
+
         return $dispatch->state === self::STATE_CLAIMED
             && $dispatch->attempt === $claim->attempt
             && $dispatch->claim_generation === $claim->generation
-            && hash_equals((string) $dispatch->claim_token, $claim->token);
+            && hash_equals((string) $dispatch->claim_token, $claim->token)
+            && is_string($effectToken)
+            && hash_equals($effectToken, $claim->effectToken());
     }
 
     public static function ownsClaim(ServiceCallAttemptClaim $claim): bool

@@ -281,6 +281,62 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $this->assertNull($signal->request_id);
     }
 
+    public function testLowLevelCommandRequestIdCannotReserveAnActualOpaqueEffectToken(): void
+    {
+        $workflow = $this->waitingWorkflow('low-level-opaque-effect-injection');
+        $identity = $this->currentClaimIdentity($workflow);
+        $instance = WorkflowInstance::query()->findOrFail($workflow->id());
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $effectToken = $identity->storageToken();
+        $context = [
+            'request' => [
+                'request_id' => $effectToken,
+            ],
+            'service_call' => [
+                'idempotency_key' => $identity->commandContext()['idempotency_key'],
+            ],
+        ];
+
+        $start = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Start->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $effectToken,
+        ]);
+        $update = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Update->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $effectToken,
+        ]);
+        $signal = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $effectToken,
+        ]);
+
+        $this->assertNull($start->request_id);
+        $this->assertStringStartsWith('update-v1:', $update->request_id);
+        $this->assertNotSame($effectToken, $update->request_id);
+        $this->assertNull($signal->request_id);
+
+        $legitimate = (new DefaultWorkflowControlPlane())->update($workflow->id(), 'change', [
+            'arguments' => ['legitimate'],
+            'wait_for' => 'accepted',
+            ServiceCallEffectIdentity::OPTION => $identity,
+        ]);
+
+        $this->assertTrue($legitimate['accepted']);
+        $this->assertSame(1, WorkflowUpdate::query()->count());
+        $legitimateCommand = WorkflowCommand::query()
+            ->where('workflow_instance_id', $workflow->id())
+            ->where('command_type', CommandType::Update->value)
+            ->where('request_id', $effectToken)
+            ->sole();
+        $this->assertSame($effectToken, $legitimateCommand->request_id);
+    }
+
     public function testEffectCommittedBeforeClaimReacquisitionKeepsOneOpaqueReceipt(): void
     {
         $workflow = $this->waitingWorkflow('reacquired-effect-update');
