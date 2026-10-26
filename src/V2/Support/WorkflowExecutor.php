@@ -3763,8 +3763,30 @@ final class WorkflowExecutor
             ->get();
 
         $parentRunsToProject = [];
+        $trustedParentReference = null;
 
         foreach ($parentChildLinks as $parentChildLink) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = is_string($parentChildLink->parent_workflow_run_id)
+                && $parentChildLink->parent_workflow_run_id !== ''
+                ? WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->find($parentChildLink->parent_workflow_run_id)
+                : null;
+            $requiresImportedEdge = ImportedLineageReferences::imported($run)
+                || ($parentRun instanceof WorkflowRun && ImportedLineageReferences::imported($parentRun));
+            if ($requiresImportedEdge && (! $parentRun instanceof WorkflowRun
+                || ! is_int($parentChildLink->sequence)
+                || ! ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $run,
+                    $parentChildLink->sequence,
+                    $childCallId,
+                    true,
+                ))) {
+                continue;
+            }
+
             $continuedChildLink = WorkflowLink::query()->create([
                 'link_type' => 'child_workflow',
                 'sequence' => $parentChildLink->sequence,
@@ -3777,20 +3799,18 @@ final class WorkflowExecutor
                 'parent_close_policy' => $parentChildLink->parent_close_policy,
             ]);
 
-            if (
-                ! is_string($parentChildLink->parent_workflow_run_id)
-                || $parentChildLink->parent_workflow_run_id === ''
-            ) {
-                continue;
+            if (ImportedLineageReferences::imported($run) && $parentRun instanceof WorkflowRun
+                && is_int($parentChildLink->sequence) && $trustedParentReference === null) {
+                $trustedParentReference = [
+                    'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+                    'parent_workflow_run_id' => $parentRun->id,
+                    'parent_sequence' => $parentChildLink->sequence,
+                ];
             }
-
-            /** @var WorkflowRun|null $parentRun */
-            $parentRun = WorkflowRun::query()
-                ->lockForUpdate()
-                ->find($parentChildLink->parent_workflow_run_id);
 
             if (
                 ! $parentRun instanceof WorkflowRun
+                || ! is_int($parentChildLink->sequence)
                 || in_array($parentRun->status, [
                     RunStatus::Completed,
                     RunStatus::Failed,
@@ -3840,7 +3860,9 @@ final class WorkflowExecutor
             ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
-        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+        $parentReference = ImportedLineageReferences::imported($run)
+            ? $trustedParentReference
+            : ChildRunHistory::parentReferenceForRun($run);
 
         $continuedMemo = AvroValueJsonProjection::project($continuedRun->typedMemos());
         $continuedSearchAttributes = $continuedRun->typedSearchAttributes();

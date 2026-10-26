@@ -15,7 +15,11 @@ use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Type;
+use function Workflow\V2\continueAsNew;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -32,6 +36,8 @@ use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunLineageView;
 use Workflow\V2\Support\WorkflowExecutor;
+use Workflow\V2\Workflow;
+
 use Workflow\V2\WorkflowStub;
 
 final class EmbeddedV2HistoryImportLineageTest extends TestCase
@@ -397,7 +403,7 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
     {
         foreach (['parents', 'children', 'started-parent', 'continued-from', 'WorkflowContinuedAsNew',
             'scheduled-child', 'started-child', 'ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled',
-            'ChildRunTerminated'] as $reference) {
+            'ChildRunTerminated', 'ChildRunTimedOut'] as $reference) {
             foreach ([false, true] as $preview) {
                 yield $reference . ($preview ? '/preview' : '/write') => [$reference, $preview];
             }
@@ -524,6 +530,184 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
             }
             yield $path . '/counterpart-import' => [$path, 'tenant-a', true];
         }
+    }
+
+    #[DataProvider('importedContinuationPaths')]
+    public function testImportedChildContinuationRetainsOnlyAnOwnedParentEdge(
+        string $path,
+        string $parentNamespace,
+        bool $counterpart,
+    ): void {
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles['child'], [
+            'namespace' => 'tenant-a',
+        ])['status']);
+        if ($counterpart) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles['parent'], [
+                'namespace' => 'tenant-a',
+            ])['status']);
+            $parent = WorkflowRun::query()->findOrFail($bundles['parent']['workflow']['run_id']);
+            $observed = [$parent];
+        } else {
+            $identity = $bundles['parent']['workflow'];
+            $parent = $this->createRun(
+                $identity['instance_id'],
+                $identity['run_id'],
+                $parentNamespace,
+                $identity['workflow_type'],
+            );
+            $otherChild = $this->createRun(
+                'unrelated-continuation-child',
+                (string) Str::ulid(),
+                $parentNamespace,
+                'unrelated-continuation-child',
+            );
+            $call = (string) Str::ulid();
+            $payload = [
+                'sequence' => 1,
+                'child_call_id' => $call,
+                'workflow_link_id' => $call,
+                'child_workflow_instance_id' => $otherChild->workflow_instance_id,
+                'child_workflow_run_id' => $otherChild->id,
+                'child_workflow_type' => 'unrelated-continuation-child',
+            ];
+            WorkflowHistoryEvent::record($parent, HistoryEventType::WorkflowStarted, []);
+            WorkflowHistoryEvent::record($parent, HistoryEventType::ChildWorkflowScheduled, $payload);
+            WorkflowHistoryEvent::record($parent, HistoryEventType::ChildRunStarted, $payload);
+            WorkflowLink::query()->create([
+                'id' => $call,
+                'link_type' => 'child_workflow',
+                'sequence' => 1,
+                'parent_workflow_instance_id' => $parent->workflow_instance_id,
+                'parent_workflow_run_id' => $parent->id,
+                'child_workflow_instance_id' => $otherChild->workflow_instance_id,
+                'child_workflow_run_id' => $otherChild->id,
+            ]);
+            $observed = [$parent, $otherChild];
+        }
+        $child = WorkflowRun::query()->findOrFail($bundles['child']['workflow']['run_id']);
+        $child->forceFill([
+            'workflow_class' => ImportedLineageContinuationWorkflow::class,
+            'workflow_type' => 'imported-lineage-continuation-workflow',
+            'arguments' => Serializer::serializeWithCodec($child->payload_codec, [true]),
+        ])->save();
+        $child->instance->forceFill([
+            'workflow_class' => ImportedLineageContinuationWorkflow::class,
+            'workflow_type' => 'imported-lineage-continuation-workflow',
+        ])->save();
+        $before = $this->ownedState($observed);
+
+        $continued = $this->continueImportedChild($child, $path);
+        $this->closeContinuedRun($continued);
+
+        $this->assertSame(RunStatus::Completed, $continued->fresh()->status);
+        if (! $counterpart) {
+            $this->assertSame($before, $this->ownedState($observed));
+            $started = $continued->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->oldest('sequence')
+                ->first();
+            $this->assertNull($started?->payload['parent_workflow_run_id'] ?? null);
+            $this->assertSame(0, WorkflowLink::query()
+                ->where('parent_workflow_run_id', $parent->id)
+                ->where('child_workflow_run_id', $continued->id)
+                ->count());
+
+            return;
+        }
+        $this->assertSame(1, WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parent->id)
+            ->where('child_workflow_run_id', $continued->id)
+            ->where('link_type', 'child_workflow')
+            ->count());
+        $started = $continued->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->oldest('sequence')
+            ->first();
+        $this->assertSame($parent->id, $started?->payload['parent_workflow_run_id'] ?? null);
+        $this->assertSame(1, $parent->historyEvents()
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->where('payload->child_workflow_run_id', $continued->id)
+            ->count());
+        $this->assertSame(1, $parent->tasks()->where('task_type', TaskType::Workflow->value)->count());
+    }
+
+    /**
+     * @return iterable<string, array{string, string, bool}>
+     */
+    public static function importedContinuationPaths(): iterable
+    {
+        foreach (['bridge', 'executor'] as $path) {
+            yield $path . '/same-namespace-unrelated' => [$path, 'tenant-a', false];
+            yield $path . '/cross-namespace-unrelated' => [$path, 'tenant-b', false];
+            yield $path . '/counterpart-import' => [$path, 'tenant-a', true];
+        }
+    }
+
+    private function continueImportedChild(WorkflowRun $child, string $path): WorkflowRun
+    {
+        $task = $this->leasedTask($child, 'imported-continuation-' . $path);
+        if ($path === 'bridge') {
+            $result = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, [[
+                'type' => 'continue_as_new',
+                'workflow_type' => ImportedLineageContinuationWorkflow::class,
+                'arguments' => Serializer::serializeWithCodec($child->payload_codec, [false]),
+                'payload_codec' => $child->payload_codec,
+            ]]);
+            $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        } else {
+            DB::transaction(static fn (): ?WorkflowTask => (new WorkflowExecutor())->run(
+                $child->fresh(),
+                $task->fresh(),
+            ));
+        }
+
+        return WorkflowRun::query()
+            ->where('workflow_instance_id', $child->workflow_instance_id)
+            ->whereKeyNot($child->id)
+            ->sole();
+    }
+
+    private function closeContinuedRun(WorkflowRun $continued): void
+    {
+        $task = $continued->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'continued-run-closer',
+            'attempt_count' => 1,
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        DB::transaction(static fn (): ?WorkflowTask => (new WorkflowExecutor())->run(
+            $continued->fresh(),
+            $task->fresh(),
+        ));
+    }
+
+    private function leasedTask(WorkflowRun $run, string $owner): WorkflowTask
+    {
+        return WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => $owner,
+            'attempt_count' => 1,
+            'lease_expires_at' => now()
+                ->addMinute(),
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
     }
 
     /** @param list<WorkflowRun> $runs
@@ -693,5 +877,14 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         }
 
         return $result;
+    }
+}
+
+#[Type('imported-lineage-continuation-workflow')]
+final class ImportedLineageContinuationWorkflow extends Workflow
+{
+    public function handle(bool $continue): mixed
+    {
+        return $continue ? continueAsNew(false) : 'continued child completed';
     }
 }
