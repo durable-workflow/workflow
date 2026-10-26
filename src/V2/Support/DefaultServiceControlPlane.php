@@ -1536,7 +1536,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         if (($result['accepted'] ?? false) === true) {
             $commandId = $this->stringFrom($result['workflow_command_id'] ?? null);
 
-            $this->markStarted(
+            $completed = $this->markCompleted(
                 $call,
                 ServiceCallBindingKind::WorkflowSignal->value,
                 $commandId ?? $signalName,
@@ -1548,7 +1548,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     'control_plane' => $this->publicResult($result),
                 ],
                 $claim,
+                [
+                    'codec' => $call->payload_codec,
+                    'blob' => Serializer::serializeWithCodec($call->payload_codec, null),
+                ],
             );
+            if ($completed) {
+                $this->releaseBoundaryAdmission($request);
+            }
 
             return [
                 'accepted' => true,

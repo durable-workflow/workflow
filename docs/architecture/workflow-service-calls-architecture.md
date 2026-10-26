@@ -351,6 +351,26 @@ One reconciliation read follows at most 32 continuation hops. The existing
 repair pass resumes longer chains, within its normal candidate and queue/run
 scope limits. No polling client is required to finish that reconciliation.
 
+### Workflow binding completion
+
+| Binding | Successful completion | While awaiting completion |
+|---------|-----------------------|---------------------------|
+| WorkflowRun | The final run in its canonical continuation chain completes, preserving its result. | The call remains Started; run failure, timeout, cancellation and the original call deadline retain their typed outcomes. |
+| WorkflowUpdate | The accepted update records its actual `UpdateCompleted` result. | Accepted-only admission remains Started; later completion/failure is delivered by history, including a completion committed before the call records its update link. |
+| WorkflowSignal | The signal's durable command receipt is accepted; the result is Avro null. | Completion confirms receipt. The target may still be waiting and the signal may still be Received rather than Applied. |
+| WorkflowQuery | The host returns the query result. | Host query admission and worker-wait budgets apply; typed query failure closes the call without waiting for workflow completion. |
+
+Update failure/rejection closes only the linked operation; it does not require
+the target workflow itself to finish. The immutable update id follows an
+instance-scoped update handed to a continued run. Results preserve null, false,
+zero, empty and nested values, and use the same inline/external storage
+contract for all completing bindings. The reserved `nexus_result` representation
+is replaced atomically rather than recursively merged with old result metadata.
+JSON argument lists and Avro-encoded argument lists deliver the same values to
+the target and its durable command receipt. Opaque serialized argument
+references resolve in the target service request's namespace; caller namespace
+policy metadata grants no storage authority.
+
 ## Deadline, cancellation, retry, and idempotency
 
 Every operation declares the policies it accepts at the contract
