@@ -27,6 +27,8 @@ final class ServiceCallEffectIdentityTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config()
+            ->set('queue.default', 'redis');
         Queue::fake();
     }
 

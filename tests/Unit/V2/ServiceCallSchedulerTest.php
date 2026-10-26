@@ -45,6 +45,8 @@ final class ServiceCallSchedulerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config()
+            ->set('queue.default', 'redis');
         Carbon::setTestNow('2026-10-26T01:30:00Z');
         Queue::fake();
         $workflow = WorkflowStub::make(ServiceSchedulerCallerWorkflow::class, 'scheduler-caller', 'caller');
