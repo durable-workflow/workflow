@@ -229,7 +229,13 @@ does not change the durable schedule. `TaskWatchdog` republishes due schedules,
 lost dispatches, and expired claims. Operators may tune
 `workflows.v2.service_call_dispatch.claim_lease_seconds` and
 `repair_after_seconds`; disabling the repair pass while scheduled calls exist
-violates the liveness contract.
+violates the liveness contract. The dispatch table intentionally has no fixed
+foreign key because the service-call model and table are configurable. The same
+repair pass removes only dispatches whose configured call is missing and whose
+age exceeds `orphan_grace_seconds` (one hour by default and as an enforced
+minimum), in deterministic, bounded primary-key batches. It rechecks absence
+and age in the delete query so a concurrently restored or custom-model call is
+not removed.
 
 A runnable attempt claims in one database transaction and in a fixed lock order:
 service-call row, dispatch row, current caller-run row, endpoint, service, then
@@ -240,7 +246,11 @@ cancellation request, re-runs
 authorized catalog and policy revisions. Authority is current at claim time;
 the actual handler kind, binding and target reference remain the immutable
 accepted snapshot. A later catalog edit may revoke a call but cannot redirect
-an already accepted call to a different handler.
+an already accepted call to a different handler. When an activity or carrier
+binding does not provide its target id, the first authorized claim creates that
+id and persists it in the dispatch row in the same generation/token-fenced
+transaction. Lease replacement reuses the persisted id; stale generations
+cannot replace it.
 
 An explicit authorization refusal terminally rejects the call before any
 effect. A transient policy or storage failure is not an authorization decision:
@@ -251,10 +261,20 @@ receives the stable identity
 `workflow-service-call:<service-call-id>:attempt:<attempt>`. Handler adapters
 MUST propagate or otherwise enforce that identity because a lease may expire
 after an effect began and at-least-once recovery may invoke the attempt again.
+The built-in workflow start, update, and signal adapters consume it as their
+durable command request identity, so a repeated attempt returns the original
+command/effect receipt rather than creating another effect. Activity and carrier
+bindings currently resolve and persist a stable target reference without
+launching an external effect in this control plane; a future execution lane must
+consume the same attempt identity.
 Only the worker holding the current generation and token may persist handler
 progress or complete the attempt. Retry backoff is stored in `available_at`; no
 worker thread sleeps while holding a call, caller, catalog, or workflow-task
-lock.
+lock. Immediately before invoking an effect, the worker rechecks current claim
+ownership, the call deadline, and the caller run's terminal/cancellation state;
+a stale worker exits without touching the replacement claim, while a terminal
+call, expired deadline, or closed/cancelling caller completes the dispatch
+without invoking the handler.
 
 `ServiceOperationScheduled.workflow_resume_on_admission` records the authored
 delivery decision separately from the scheduler's internal accepted-only

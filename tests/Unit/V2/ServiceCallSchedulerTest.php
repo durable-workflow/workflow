@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Attributes\Type;
@@ -239,6 +242,20 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame(3_600, $call->metadata['service_call_attempts'][0]['scheduled_backoff_seconds']);
         Queue::assertPushed(RunServiceCall::class, static fn (RunServiceCall $job): bool =>
             $job->serviceCallId === $call->id);
+
+        Carbon::setTestNow(now()->addHour());
+        $finalClaim = ServiceCallScheduler::claim($call->id);
+        $this->assertNotNull($finalClaim);
+        $workflows->shouldReceive('update')
+            ->once()
+            ->andThrow(new RuntimeException('final update failure'));
+        (new DefaultServiceControlPlane($workflows))->executeScheduledAttempt($finalClaim);
+
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, $dispatch->fresh()->state);
+        $call->refresh();
+        $this->assertSame(ServiceCallStatus::Failed->value, $call->status);
+        $this->assertCount(2, $call->metadata['service_call_attempts']);
+        $this->assertFalse($call->metadata['service_call_attempts'][1]['retry_scheduled']);
     }
 
     public function testFinalScheduledFailureReleasesBoundaryAdmission(): void
@@ -299,6 +316,10 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertNotNull($second);
         $this->assertSame($first->generation + 1, $second->generation);
         $this->assertNotSame($first->token, $second->token);
+        $this->assertSame(
+            $first->options['service_call_idempotency_key'],
+            $second->options['service_call_idempotency_key'],
+        );
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
         $workflows = Mockery::mock(WorkflowControlPlane::class);
@@ -310,6 +331,18 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame($second->generation, $dispatch->claim_generation);
         $this->assertSame($second->token, $dispatch->claim_token);
         $this->assertSame(ServiceCallStatus::Accepted->value, $call->fresh()->status);
+    }
+
+    public function testAnUnexpiredClaimCannotBeClaimedConcurrently(): void
+    {
+        $this->catalog();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $first = ServiceCallScheduler::claim($call->id);
+
+        $this->assertNotNull($first);
+        $this->assertNull(ServiceCallScheduler::claim($call->id));
+        $this->assertSame($first->token, WorkflowServiceCallDispatch::query()->sole()->claim_token);
     }
 
     public function testRepairReenqueuesALostDueDispatch(): void
@@ -390,6 +423,34 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
     }
 
+    public function testRemovedCatalogOperationFailsTheCallBeforeEffect(): void
+    {
+        $operation = $this->catalog();
+        $this->schedule();
+        $operation->delete();
+
+        $this->assertNull(ServiceCallScheduler::claim(WorkflowServiceCall::query()->sole()->id));
+        $call = WorkflowServiceCall::query()->sole();
+        $this->assertSame(ServiceCallStatus::Failed->value, $call->status);
+        $this->assertSame('service_call_not_owned', $call->outcome_reason);
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
+    }
+
+    public function testIncompleteAcceptedAuthorityFailsClosedBeforeEffect(): void
+    {
+        $this->catalog();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $call->forceFill([
+            'caller_principal_method' => null,
+        ])->save();
+
+        $this->assertNull(ServiceCallScheduler::claim($call->id));
+        $this->assertSame(ServiceCallStatus::Failed->value, $call->fresh()->status);
+        $this->assertSame('service_operation_replay_authority_incomplete', $call->fresh()->outcome_reason);
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
+    }
+
     public function testTransientReplayPolicyFailureRollsBackClaimForRepair(): void
     {
         $this->catalog();
@@ -467,6 +528,174 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
     }
 
+    public function testCancellationAfterClaimStillFencesTheEffect(): void
+    {
+        $this->catalog();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $claim = ServiceCallScheduler::claim($call->id);
+        $this->assertNotNull($claim);
+        $request = WorkflowStub::loadRun($this->run->id)
+            ->attemptRequestCancellation('cancel after claim', 30);
+        $this->assertTrue($request->accepted());
+
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldNotReceive('update');
+        (new DefaultServiceControlPlane($workflows))->executeScheduledAttempt($claim);
+
+        $this->assertSame(ServiceCallStatus::Cancelled->value, $call->fresh()->status);
+        $this->assertSame('caller_cancellation_requested', $call->fresh()->outcome_reason);
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
+    }
+
+    public function testTerminalCallerAfterClaimStillFencesTheEffect(): void
+    {
+        $this->catalog();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $claim = ServiceCallScheduler::claim($call->id);
+        $this->assertNotNull($claim);
+        $this->run->forceFill([
+            'status' => RunStatus::Completed->value,
+            'closed_at' => now(),
+        ])->save();
+
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldNotReceive('update');
+        (new DefaultServiceControlPlane($workflows))->executeScheduledAttempt($claim);
+
+        $this->assertSame(ServiceCallStatus::Cancelled->value, $call->fresh()->status);
+        $this->assertSame('caller_run_terminal', $call->fresh()->outcome_reason);
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
+    }
+
+    public function testDeadlineAfterClaimStillFencesTheEffect(): void
+    {
+        $this->catalog();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $claim = ServiceCallScheduler::claim($call->id);
+        $this->assertNotNull($claim);
+        $call->forceFill([
+            'call_deadline_at' => now()
+                ->subSecond(),
+        ])->save();
+
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldNotReceive('update');
+        (new DefaultServiceControlPlane($workflows))->executeScheduledAttempt($claim);
+
+        $this->assertSame(ServiceCallStatus::Failed->value, $call->fresh()->status);
+        $this->assertSame(ServiceCallOutcome::TimedOut, $call->fresh()->outcome);
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, WorkflowServiceCallDispatch::query()->sole()->state);
+    }
+
+    public static function generatedTargetReferences(): iterable
+    {
+        yield 'workflow start' => [ServiceCallBindingKind::WorkflowRun, 'workflow_instance_id', false];
+        yield 'activity' => [ServiceCallBindingKind::ActivityExecution, 'activity_execution_id', true];
+        yield 'carrier' => [ServiceCallBindingKind::InvocableCarrierRequest, 'carrier_request_id', true];
+    }
+
+    #[DataProvider('generatedTargetReferences')]
+    public function testGeneratedEffectTargetIsFrozenAcrossCrashRedelivery(
+        ServiceCallBindingKind $kind,
+        string $option,
+        bool $generatedAtClaim,
+    ): void {
+        $operation = $this->catalog();
+        $operation->forceFill([
+            'handler_binding_kind' => $kind->value,
+            'handler_binding' => [],
+            'handler_target_reference' => $kind === ServiceCallBindingKind::WorkflowRun
+                ? ServiceSchedulerTargetWorkflow::class
+                : null,
+        ])->save();
+        $this->schedule();
+        $call = WorkflowServiceCall::query()->sole();
+        $scheduled = WorkflowServiceCallDispatch::query()->sole();
+        if ($generatedAtClaim) {
+            $this->assertArrayNotHasKey($option, $scheduled->dispatch_options);
+        } else {
+            $this->assertIsString($scheduled->dispatch_options[$option] ?? null);
+        }
+        $first = ServiceCallScheduler::claim($call->id);
+        $this->assertNotNull($first);
+        $target = $first->options[$option] ?? null;
+        $this->assertIsString($target);
+        $this->assertNotSame('', $target);
+        $this->assertSame($target, $scheduled->fresh()->dispatch_options[$option]);
+        WorkflowServiceCallDispatch::query()->whereKey($call->id)->update([
+            'claim_expires_at' => now()
+                ->subSecond(),
+        ]);
+
+        $replacement = ServiceCallScheduler::claim($call->id);
+
+        $this->assertNotNull($replacement);
+        $this->assertSame($target, $replacement->options[$option]);
+        $this->assertSame(
+            ServiceCallScheduler::attemptIdentity($call->id, 1),
+            $replacement->options['service_call_idempotency_key'],
+        );
+        $this->assertFalse(ServiceCallScheduler::completeAttempt($first, [], false, null));
+        $this->assertSame($target, $scheduled->fresh()->dispatch_options[$option]);
+    }
+
+    public function testRepairUsesConfiguredCallRelationAndDeletesOnlyAnAgedBoundedBatchOfOrphans(): void
+    {
+        config()->set('workflows.v2.service_call_dispatch.orphan_grace_seconds', 0);
+        $this->catalog();
+        $this->schedule();
+        $live = WorkflowServiceCallDispatch::query()->sole();
+        $live->forceFill([
+            'created_at' => now()
+                ->subHours(2),
+        ])->save();
+        foreach ([
+            '01JAZZZZZZZZZZZZZZZZZZZZZ1' => now()
+                ->subHours(2),
+            '01JAZZZZZZZZZZZZZZZZZZZZZ2' => now()
+                ->subHours(2),
+            '01JAZZZZZZZZZZZZZZZZZZZZZ3' => now()
+                ->subMinutes(30),
+        ] as $id => $createdAt) {
+            WorkflowServiceCallDispatch::query()->create([
+                'service_call_id' => $id,
+                'state' => ServiceCallScheduler::STATE_SCHEDULED,
+                'dispatch_options' => [],
+                'attempt' => 1,
+                'max_attempts' => 1,
+                'available_at' => now(),
+                'claim_generation' => 0,
+                'created_at' => $createdAt,
+                'updated_at' => $createdAt,
+            ]);
+        }
+        Schema::create('scheduler_configured_service_calls', static function (Blueprint $table): void {
+            $table->string('id', 26)
+                ->primary();
+        });
+        DB::table('scheduler_configured_service_calls')
+            ->insert([
+                'id' => $live->service_call_id,
+            ]);
+        config()
+            ->set('workflows.v2.service_call_model', SchedulerConfiguredServiceCall::class);
+
+        $this->assertSame(1, ServiceCallScheduler::cleanupOrphans(1));
+        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ1')->exists());
+        $this->assertSame(1, ServiceCallScheduler::cleanupOrphans(1));
+        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ2')->exists());
+        $this->assertSame(0, ServiceCallScheduler::cleanupOrphans(1));
+        $this->assertSame(0, ServiceCallScheduler::cleanupOrphans(1));
+        $this->assertTrue($live->fresh()->exists);
+        $this->assertTrue(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ3')->exists());
+    }
+
     private function schedule(?DefaultServiceBoundaryPolicy $policy = null): array
     {
         /** @var WorkflowControlPlane&MockInterface $workflows */
@@ -538,4 +767,18 @@ final class ServiceSchedulerCallerWorkflow extends Workflow
     {
         return 'done';
     }
+}
+
+#[Type('service-scheduler-target')]
+final class ServiceSchedulerTargetWorkflow extends Workflow
+{
+    public function handle(): string
+    {
+        return 'target';
+    }
+}
+
+final class SchedulerConfiguredServiceCall extends WorkflowServiceCall
+{
+    protected $table = 'scheduler_configured_service_calls';
 }

@@ -214,6 +214,7 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertSame(50, config('workflows.v2.update_wait.poll_interval_milliseconds'));
         $this->assertSame(60, config('workflows.v2.service_call_dispatch.claim_lease_seconds'));
         $this->assertSame(5, config('workflows.v2.service_call_dispatch.repair_after_seconds'));
+        $this->assertSame(3600, config('workflows.v2.service_call_dispatch.orphan_grace_seconds'));
         $this->assertSame(300, config('workflows.v2.workflow_task_lease_seconds'));
         $this->assertSame(3, config('workflows.v2.task_repair.redispatch_after_seconds'));
         $this->assertSame(5, config('workflows.v2.task_repair.loop_throttle_seconds'));

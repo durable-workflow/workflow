@@ -12,6 +12,9 @@ return new class() extends WorkflowMigration {
     public function up(): void
     {
         Schema::create(self::TABLE, static function (Blueprint $table): void {
+            // The service-call model/table is configurable, so a fixed foreign
+            // key would reject supported custom storage. Repair passes remove
+            // old missing-call dispatches in bounded primary-key batches instead.
             $table->string('service_call_id', 26)
                 ->primary();
             $table->string('state', 32);

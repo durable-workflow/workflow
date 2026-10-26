@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 use Throwable;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallFailureReason;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
@@ -28,6 +29,8 @@ final class ServiceCallScheduler
     public const STATE_CLAIMED = 'claimed';
 
     public const STATE_COMPLETED = 'completed';
+
+    private const MIN_ORPHAN_GRACE_SECONDS = 3_600;
 
     /**
      * @param array<string, mixed> $options
@@ -187,8 +190,11 @@ final class ServiceCallScheduler
             $generation = (int) $dispatch->claim_generation + 1;
             $token = hash('sha256', (string) Str::uuid());
             $now = now();
+            $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
+            $options = self::withClaimTargetIdentifiers($options);
             $dispatch->forceFill([
                 'state' => self::STATE_CLAIMED,
+                'dispatch_options' => $options,
                 'claim_generation' => $generation,
                 'claim_token' => $token,
                 'claimed_at' => $now,
@@ -200,7 +206,6 @@ final class ServiceCallScheduler
                 'last_error' => null,
             ])->save();
 
-            $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
             $options['service_call_id'] = $call->id;
             $options['service_call_attempt'] = $dispatch->attempt;
             $options['service_call_max_attempts'] = $dispatch->max_attempts;
@@ -308,7 +313,25 @@ final class ServiceCallScheduler
             WorkflowServiceCall $call,
             WorkflowServiceCallDispatch $dispatch,
         ) use ($claim): bool {
-            return ! self::terminal($call) && self::ownsLockedClaim($dispatch, $claim);
+            if (self::terminal($call) || ! self::ownsLockedClaim($dispatch, $claim)) {
+                return false;
+            }
+            if (ServiceCallDeadline::expireLocked($call, now())) {
+                self::completeDispatch($dispatch);
+
+                return false;
+            }
+
+            $run = self::lockedCallerRun($call);
+            if (! $run instanceof WorkflowRun
+                || $run->status->isTerminal()
+                || is_string($run->cancellation_request_command_id)) {
+                self::cancelForTerminalCaller($call, $dispatch, $run);
+
+                return false;
+            }
+
+            return true;
         }) === true;
     }
 
@@ -379,6 +402,7 @@ final class ServiceCallScheduler
         ?string $connection = null,
         ?string $queue = null,
     ): array {
+        self::cleanupOrphans($limit);
         $ids = self::dueIds($limit, $runIds, $instanceId, $connection, $queue);
         $report = [
             'candidates' => count($ids),
@@ -400,6 +424,29 @@ final class ServiceCallScheduler
         }
 
         return $report;
+    }
+
+    public static function cleanupOrphans(int $limit): int
+    {
+        $cutoff = now()
+            ->subSeconds(self::orphanGraceSeconds())
+            ->utc()
+            ->format('Y-m-d H:i:s.u');
+        $ids = self::dispatchQuery()
+            ->whereDoesntHave('call')
+            ->where('created_at', '<=', $cutoff)
+            ->orderBy('service_call_id')
+            ->limit(max(1, $limit))
+            ->pluck('service_call_id')
+            ->all();
+
+        return $ids === []
+            ? 0
+            : self::dispatchQuery()
+                ->whereKey($ids)
+                ->whereDoesntHave('call')
+                ->where('created_at', '<=', $cutoff)
+                ->delete();
     }
 
     public static function attemptIdentity(string $serviceCallId, int $attempt): string
@@ -518,7 +565,7 @@ final class ServiceCallScheduler
             && is_string($run->cancellation_request_command_id);
         $reason = $cancellationRequested ? 'caller_cancellation_requested' : 'caller_run_terminal';
         $message = $cancellationRequested
-            ? 'Caller workflow cancellation was requested before the service-call attempt was claimed.'
+            ? 'Caller workflow cancellation was requested before the service-call effect was invoked.'
             : ($run instanceof WorkflowRun
                 ? sprintf('Caller workflow run is terminal (%s).', $run->status->value)
                 : 'Caller workflow authority is unavailable.');
@@ -646,13 +693,60 @@ final class ServiceCallScheduler
         }
         $persisted['wait_for'] = UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
         $persisted['accepted_handler_binding_kind'] = $operation->handler_binding_kind;
-        $persisted['accepted_handler_binding'] = is_array($operation->handler_binding)
-            ? $operation->handler_binding
-            : [];
+        $binding = is_array($operation->handler_binding) ? $operation->handler_binding : [];
+        $persisted['accepted_handler_binding'] = $binding;
         $persisted['accepted_handler_target_reference'] = $operation->handler_target_reference;
         $persisted['accepted_operation_mode'] = $operation->operation_mode;
 
+        $kind = ServiceCallBindingKind::tryFromHandlerBindingKind((string) $operation->handler_binding_kind);
+        if ($kind === ServiceCallBindingKind::WorkflowRun
+            && ! self::hasString($binding, ['workflow_instance_id', 'instance_id'])
+            && ! self::hasString($persisted, ['workflow_instance_id'])) {
+            $persisted['workflow_instance_id'] = (string) Str::ulid();
+        }
+
         return $persisted;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private static function withClaimTargetIdentifiers(array $options): array
+    {
+        $binding = is_array($options['accepted_handler_binding'] ?? null)
+            ? $options['accepted_handler_binding']
+            : [];
+        $kind = ServiceCallBindingKind::tryFromHandlerBindingKind(
+            (string) ($options['accepted_handler_binding_kind'] ?? ''),
+        );
+        if ($kind === ServiceCallBindingKind::ActivityExecution
+            && ! self::hasString($binding, ['activity_execution_id'])
+            && ! self::hasString($options, ['activity_execution_id'])) {
+            $options['activity_execution_id'] = (string) Str::ulid();
+        }
+        if ($kind === ServiceCallBindingKind::InvocableCarrierRequest
+            && ! self::hasString($binding, ['carrier_request_id'])
+            && ! self::hasString($options, ['carrier_request_id'])) {
+            $options['carrier_request_id'] = (string) Str::ulid();
+        }
+
+        return $options;
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param list<string> $keys
+     */
+    private static function hasString(array $values, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if (is_string($values[$key] ?? null) && trim($values[$key]) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -697,6 +791,14 @@ final class ServiceCallScheduler
     private static function repairAfterSeconds(): int
     {
         return max(1, (int) config('workflows.v2.service_call_dispatch.repair_after_seconds', 5));
+    }
+
+    private static function orphanGraceSeconds(): int
+    {
+        return max(
+            self::MIN_ORPHAN_GRACE_SECONDS,
+            (int) config('workflows.v2.service_call_dispatch.orphan_grace_seconds', 3_600),
+        );
     }
 
     /**

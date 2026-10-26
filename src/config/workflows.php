@@ -233,6 +233,11 @@ return [
                 'WORKFLOW_V2_SERVICE_CALL_REPAIR_AFTER_SECONDS',
                 5
             ),
+            'orphan_grace_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                3600
+            ),
         ],
         'guardrails' => [
             'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
