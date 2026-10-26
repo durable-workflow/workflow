@@ -333,6 +333,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'workflow-service-operation-host-authority') {
+                $this->clearWorkflowState();
+                $this->assertNexusWorkerCannotSupplyAuthority($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'nexus-waiting-caller-terminal-delivery') {
                 $this->clearWorkflowState();
                 $this->assertWaitingNexusCallerReceivesResult(

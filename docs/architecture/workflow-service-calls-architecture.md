@@ -206,6 +206,97 @@ The contract is symmetric: a Sync caller always has the same
 durable record as an Async caller. Sync mode is a delivery preference
 on top of the durable record, never an alternative to it.
 
+## Durable scheduling, claims, and retries
+
+A service operation authored by a workflow is accepted inside the workflow-task
+completion transaction, but its handler effect is not executed there. That
+transaction may only persist the accepted `workflow_service_calls` row, the
+immutable accepted handler-binding snapshot, a
+`workflow_service_call_dispatches` row, and a `ServiceOperationScheduled`
+history event. It MUST NOT invoke a workflow/activity/carrier handler, enqueue
+work before commit, wait for an update result, or sleep for retry backoff.
+
+`workflow_service_call_dispatches` is the durable scheduler record. Its state is
+`scheduled`, `claimed`, or `completed`; `attempt`, `max_attempts`, and
+`available_at` carry the retry schedule. `claim_generation` plus `claim_token`
+form the compare-and-swap fence. `dispatch_attempted_at`,
+`repair_available_at`, and `claim_expires_at` make a lost enqueue or crashed
+worker discoverable by the normal v2 repair pass.
+
+The completion transaction registers queue publication for after commit. Queue
+delivery is at least once, so an enqueue failure, duplicate job, or worker crash
+does not change the durable schedule. `TaskWatchdog` republishes due schedules,
+lost dispatches, and expired claims. Operators may tune
+`workflows.v2.service_call_dispatch.claim_lease_seconds` and
+`repair_after_seconds`; disabling the repair pass while scheduled calls exist
+violates the liveness contract. The dispatch table intentionally has no fixed
+foreign key because the service-call model and table are configurable. The same
+repair pass removes only dispatches whose configured call is missing and whose
+age exceeds `orphan_grace_seconds` (one hour by default and as an enforced
+minimum), in deterministic primary-key batches capped at 100 rows. It rechecks
+absence and age in the delete query so a concurrently restored or custom-model
+call is not removed.
+
+A runnable attempt claims in one database transaction and in a fixed lock order:
+service-call row, dispatch row, current caller-run row, endpoint, service, then
+operation. The claim reconstructs the principal recorded when the call was
+accepted, checks that the current caller is still active and has no cooperative
+cancellation request, re-runs
+`authorizeReplay()` against the current catalog policy, and stores hashes of the
+authorized catalog and policy revisions. Authority is current at claim time;
+the actual handler kind, binding and target reference remain the immutable
+accepted snapshot. A later catalog edit may revoke a call but cannot redirect
+an already accepted call to a different handler. When an activity or carrier
+binding does not provide its target id, the first authorized claim creates that
+id and persists it in the dispatch row in the same generation/token-fenced
+transaction. Lease replacement reuses the persisted id; stale generations
+cannot replace it.
+
+An explicit authorization refusal terminally rejects the call before any
+effect. A transient policy or storage failure is not an authorization decision:
+the claim transaction rolls back and leaves the durable schedule repairable.
+
+The handler effect runs only after that claim transaction commits. Every attempt
+receives the stable identity
+`workflow-service-call:<service-call-id>:attempt:<attempt>`. Handler adapters
+MUST propagate or otherwise enforce that identity because a lease may expire
+after an effect began and at-least-once recovery may invoke the attempt again.
+The built-in workflow start, update, and signal adapters receive a reserved,
+in-memory capability issued only after the current attempt claim passes its
+generation/token fence. Its opaque, scheduler-generated command token is stable
+across claim generations for one attempt and changes for the next retry attempt.
+The capability cannot be serialized or meaningfully debugged, and only its
+non-secret audit identity is retained in command context. Raw public options,
+command context, and low-level request ids cannot reserve the scheduler token.
+A repeated or crash-reacquired attempt therefore returns the original
+command/effect receipt rather than creating another effect. Activity and carrier
+bindings currently resolve and persist a stable target reference without
+launching an external effect in this control plane; a future execution lane must
+consume the same attempt identity.
+Only the worker holding the current generation and token may persist handler
+progress or complete the attempt. Retry backoff is stored in `available_at`; no
+worker thread sleeps while holding a call, caller, catalog, or workflow-task
+lock. Immediately before invoking an effect, the worker rechecks current claim
+ownership, the call deadline, and the caller run's terminal/cancellation state;
+a stale worker exits without touching the replacement claim, while a terminal
+call, expired deadline, or closed/cancelling caller completes the dispatch
+without invoking the handler.
+
+`ServiceOperationScheduled.workflow_resume_on_admission` records the authored
+delivery decision separately from the scheduler's internal accepted-only
+dispatch. `true` lets an explicit accepted/async caller resume on the scheduled
+event. `false` keeps a synchronous caller suspended until a terminal
+`ServiceCallCompleted`, `ServiceCallFailed`, or `ServiceCallCancelled` event is
+delivered and remains the authority for cooperative cancellation ownership. The
+internal `wait_for=accepted` surface MUST NOT by itself resume a synchronous
+workflow or erase its authored completion wait.
+
+All service-operation wait-time inputs are bounded to 60 seconds. Direct calls
+made outside a workflow completion transaction may still use the existing
+inline control-plane path, but they receive the same bound. Inside a completion
+transaction the handler-facing wait is always `accepted`, and any longer wait
+is represented by durable history and a later workflow task.
+
 ## Linked target references
 
 Every accepted call carries a `resolved_binding_kind` (matching the
@@ -352,6 +443,86 @@ of the five reasons, and a Cancelled call MUST carry
 `ServiceCallFailureReason::Cancellation` even though its terminal
 status is Cancelled rather than Failed.
 
+## Workflow operation authority
+
+Workflow service operations require a host binding for
+`Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer`. The default binding
+refuses them with `service_operation_authority_invalid`. This applies to embedded
+execution and external worker completions, including retained-claim prefixes.
+Upgrade the host binding before accepting service-operation work.
+
+An authorizer receives the locked caller run and normalized command intent.
+It must validate the requested target scope against trusted host/run context,
+then return a `ServiceCallPrincipal` derived from that context. It must not
+reconstruct authority from the command's principal fields or metadata. It is an
+authorization check, so it must not reserve admission budgets or perform
+external effects; a transaction retry or preflight may invoke it again.
+
+An embedded host that explicitly trusts its own workflow code to invoke
+services within each run's namespace can opt into the provided workload policy:
+
+```php
+$app->bind(
+    \Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer::class,
+    \Workflow\V2\Support\RunServiceOperationAuthorizer::class,
+);
+```
+
+That policy permits only the run's namespace. Its principal is
+`workflow:<run-id>`, method `workflow`, with no roles, tenant or claims. It does
+not satisfy a catalog policy that requires privileged roles. A server with
+authenticated workers instead binds an authorizer that checks its current
+authentication/namespace policy and returns the authenticated worker principal.
+Authorized cross-namespace routing remains possible through that trusted host
+binding; a worker's requested `namespace` alone grants no permission.
+
+Policies used for existing workflow-call replay must provide
+`authorizeReplay(ServiceBoundaryRequest): ServiceBoundaryDecision`; the optional
+`ServiceBoundaryReplayPolicy` interface declares this contract. The default
+policy checks current authorization and circuit state without reserving rate
+or concurrency capacity. Existing compatible host methods work without adopting
+the interface. A custom policy without this pure check fails closed with
+`service_operation_replay_authority_unavailable`; implement the hook as part of
+the host upgrade. Cached checkpoint receipts require the same current check,
+including after catalog policy changes or replacement.
+
+Caller namespace and workflow run/instance identity always come from the locked
+run. A mismatched non-null `caller_namespace` or non-null `principal_*` override
+is refused before applying sibling commands. Unknown fields do not grant
+authority. Explicit null run namespaces stay null even when the process has a
+configured default namespace.
+
+An explicit `service_call_id` or an existing idempotency-key match must bind to
+the same caller namespace, run and instance, the authorized target namespace,
+and the exact endpoint/service/operation names. Existing rows are checked under
+locks before replay or dispatch. A missing or foreign explicit call, or a
+foreign key match, refuses the worker turn with `service_call_not_owned` and
+leaves the lease and durable rows unchanged. New default idempotency keys are
+checked by the same rule. Server adapters retain their current-policy replay
+checks before handing the call to Core.
+
+The run, service call and catalog models must use the completion's database
+connection. A separate connection is refused before sibling writes with
+`service_operation_storage_connection_mismatch`; separate transactions cannot
+provide the atomic refusal contract.
+
+Keyed calls use a unique SHA-256 digest of the exact target namespace (including
+null), catalog names and opaque key. The full scope is still compared after
+lookup; a digest or database collation match never grants authority. Creation
+uses a savepoint, then locks and reauthorizes the canonical row if another
+transaction wins. Explicit call IDs obey the same keyed-call invariant.
+
+Apply the nullable `idempotency_scope_hash` expansion before starting upgraded
+writers. It does not backfill existing calls: an existing candidate must pass
+current caller, catalog and policy checks before it can claim the key. Conflicting
+legacy rows are refused rather than reassigned. Stop or drain older service-call
+writers before relying on concurrent deduplication, since they do not populate
+the digest. Retaining the column and index supports code rollback without
+discarding canonical claims. The migration uses a short metadata-lock timeout
+and online index creation on PostgreSQL and MySQL; retry a refused migration
+after removing the lock contention. No production migration has been qualified
+by the source tests alone.
+
 ## Observability surface
 
 The observability surface for a cross-namespace service call MUST be
@@ -386,6 +557,10 @@ render:
   `payload_codec`);
 - the **timing** (`accepted_at`, `started_at`, `completed_at`,
   `failed_at`, `cancelled_at`).
+- when a handler attempt is pending, the **dispatch state** (`state`,
+  `attempt`, `max_attempts`, `available_at`), current claim generation and
+  lease expiry, last authorized catalog/policy revisions, and next repair time
+  from `workflow_service_call_dispatches`.
 
 No part of the observability surface MAY require raw transport
 logs. The transport that carried the call between namespaces is an
@@ -397,6 +572,9 @@ The following components are bound by this contract:
 
 - `WorkflowServiceCall` model — the Eloquent surface over
   `workflow_service_calls`.
+- `WorkflowServiceCallDispatch` model — the durable schedule, attempt lease,
+  authorization revision and repair surface over
+  `workflow_service_call_dispatches`.
 - `WorkflowServiceOperation` — defines the contract-layer policies
   every accepted call snaps.
 - `WorkflowServiceEndpoint` — owns admission of calls in a target
@@ -436,8 +614,12 @@ them is permitted to rely on transport-only state.
 
 `tests/Unit/V2/ServiceExecutionContractTest.php` verifies the
 machine-readable service execution manifest against the runtime enums,
-control-plane interface, and durable record fields. Migration and model
-tests verify the persisted service-call shape.
+control-plane interface, and durable call/dispatch record fields.
+`ServiceCallSchedulerTest` covers commit/rollback, lost enqueue, expired
+claims, stale claim fencing, current-policy revocation, transient-policy
+rollback, immutable bindings, admission release, deadlines, terminal callers,
+the 60-second ingress bound and persisted backoff without lock-held sleep.
+Migration and model tests verify the persisted service-call shape.
 
 ## Changing this contract
 

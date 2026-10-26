@@ -18,7 +18,10 @@ final class ServiceCallWorkflowDelivery
 {
     public static function forAdmission(WorkflowRun $run, WorkflowHistoryEvent $event): void
     {
-        if ($event->event_type !== HistoryEventType::ServiceCallStarted
+        if (! in_array($event->event_type, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true)
             || ! is_string($event->payload['service_call_id'] ?? null)) {
             return;
         }
@@ -65,7 +68,10 @@ final class ServiceCallWorkflowDelivery
 
                 $startedEvents = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
                     ->where('workflow_run_id', $caller->id)
-                    ->where('event_type', HistoryEventType::ServiceCallStarted->value)
+                    ->whereIn('event_type', [
+                        HistoryEventType::ServiceOperationScheduled->value,
+                        HistoryEventType::ServiceCallStarted->value,
+                    ])
                     ->where('payload->service_call_id', $locked->id)
                     ->orderBy('sequence')
                     ->get();
@@ -75,11 +81,13 @@ final class ServiceCallWorkflowDelivery
                     }
                     $payload = $started->payload ?? [];
                     $surface = is_array($payload['service_call'] ?? null) ? $payload['service_call'] : [];
-                    if (! is_int($payload['sequence'] ?? null)
-                        || ($payload['operation_mode'] ?? null) === 'async'
-                        || ($payload['wait_for'] ?? null) === 'accepted'
-                        || ($surface['operation_mode'] ?? null) === 'async'
-                        || ($surface['wait_for'] ?? null) === 'accepted') {
+                    $resumesOnAdmission = $started->event_type === HistoryEventType::ServiceOperationScheduled
+                        ? ($payload['workflow_resume_on_admission'] ?? false) === true
+                        : (($payload['operation_mode'] ?? null) === 'async'
+                            || ($payload['wait_for'] ?? null) === 'accepted'
+                            || ($surface['operation_mode'] ?? null) === 'async'
+                            || ($surface['wait_for'] ?? null) === 'accepted');
+                    if (! is_int($payload['sequence'] ?? null) || $resumesOnAdmission) {
                         continue;
                     }
 
@@ -151,7 +159,10 @@ final class ServiceCallWorkflowDelivery
         /** @var WorkflowHistoryEvent|null $started */
         $started = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->where('workflow_run_id', $run->id)
-            ->where('event_type', HistoryEventType::ServiceCallStarted->value)
+            ->whereIn('event_type', [
+                HistoryEventType::ServiceOperationScheduled->value,
+                HistoryEventType::ServiceCallStarted->value,
+            ])
             ->find($taskPayload['service_call_started_history_event_id']);
         if ($call === null || ! self::isTerminal($call) || $started === null
             || ($started->payload['service_call_id'] ?? null) !== $call->id

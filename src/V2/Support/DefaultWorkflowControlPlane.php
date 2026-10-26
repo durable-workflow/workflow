@@ -392,6 +392,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $priority = TaskPriority::normalize($options['priority'] ?? null);
         $fairnessKey = TaskFairnessKey::normalize($options['fairness_key'] ?? null);
         $fairnessWeight = TaskFairnessKey::normalizeWeight($options['fairness_weight'] ?? null);
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
+        $serviceCallToken = ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? null
+            : $serviceCallIdentity->storageToken();
 
         $workflowClass = $resolvedClass ?? $workflowType;
         $externalFingerprint = is_string($options['external_workflow_definition_fingerprint'] ?? null)
@@ -427,6 +431,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $priority,
             $fairnessKey,
             $fairnessWeight,
+            $serviceCallToken,
             &$command,
             &$task,
             &$instance,
@@ -436,6 +441,21 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $instance = null;
 
             $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId, $namespace);
+
+            if ($serviceCallToken !== null) {
+                /** @var WorkflowCommand|null $existing */
+                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                    ->where('workflow_instance_id', $instance->id)
+                    ->where('command_type', CommandType::Start->value)
+                    ->where('request_id', $serviceCallToken)
+                    ->lockForUpdate()
+                    ->first();
+                if ($existing instanceof WorkflowCommand) {
+                    $command = $existing;
+
+                    return;
+                }
+            }
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
             CurrentRunResolver::syncPointer($instance, $currentRun);
@@ -1327,11 +1347,16 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
      */
     private function commandContext(array $options): CommandContext
     {
-        $commandContext = $options['command_context'] ?? null;
-
-        return $commandContext instanceof CommandContext
-            ? $commandContext
+        $commandContext = ($options['command_context'] ?? null) instanceof CommandContext
+            ? $options['command_context']
             : CommandContext::controlPlane();
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
+
+        return ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? $commandContext
+            : $commandContext->with([
+                'service_call' => $serviceCallIdentity->commandContext(),
+            ]);
     }
 
     private function configuredWorkflowValidationMessage(string $workflowType): ?string

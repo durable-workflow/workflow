@@ -900,6 +900,16 @@ final class WorkflowCommandNormalizer
                     $index,
                     $errors,
                 );
+                if ($waitTimeoutSeconds !== null
+                    && $waitTimeoutSeconds > UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS) {
+                    $errors["commands.{$index}.wait_timeout_seconds"] = [
+                        'Workflow task command field [wait_timeout_seconds] must not exceed '
+                        . UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS
+                        . ' seconds.',
+                    ];
+
+                    continue;
+                }
 
                 $normalized[] = array_filter([
                     'type' => $type,

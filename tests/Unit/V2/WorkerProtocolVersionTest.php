@@ -19,7 +19,7 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
 
     public function testVersionTracksServiceOperationCommandShape(): void
     {
-        $this->assertSame('1.20', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.21', WorkerProtocolVersion::VERSION);
         $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }
@@ -379,6 +379,12 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertSame('start_service_operation', $shape['type']);
         $this->assertSame('non_terminal_command', $shape['category']);
         $this->assertSame('1.13', $shape['minimum_protocol_version']);
+        $this->assertSame(60, $shape['wait_timeout_seconds']['maximum']);
+        $this->assertSame(
+            WorkerProtocolVersion::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION,
+            $shape['durable_scheduler']['minimum_protocol_version'],
+        );
+        $this->assertSame('ServiceOperationScheduled', $shape['durable_scheduler']['admission_event']);
         $this->assertSame(
             ['type', 'endpoint_name', 'service_name', 'operation_name', 'request_payload'],
             $shape['required_fields'],

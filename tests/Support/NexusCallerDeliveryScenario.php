@@ -10,20 +10,28 @@ use Symfony\Component\Uid\Ulid;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
@@ -34,9 +42,48 @@ trait NexusCallerDeliveryScenario
     /**
      * @param array<string, mixed> $fixture
      */
+    protected function assertNexusWorkerCannotSupplyAuthority(array $fixture): void
+    {
+        $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        try {
+            $workflow = WorkflowStub::make($fixture['workflow']['type'], 'authority-corpus-caller', 'caller');
+            $this->assertTrue($workflow->attemptStart(...$fixture['workflow']['arguments'])->accepted());
+            $task = WorkflowTask::query()->where('workflow_run_id', $workflow->runId())->sole();
+            $bridge = $this->app->make(WorkflowTaskBridge::class);
+            $this->assertTrue($bridge->claimStatus($task->id, 'authority-corpus-worker')['claimed']);
+            $models = [WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class, WorkflowTimer::class,
+                WorkflowCommand::class, WorkflowHistoryEvent::class, WorkflowRunSummary::class, WorkflowServiceCall::class];
+            $snapshot = static function () use ($models): array {
+                $rows = [];
+                foreach ($models as $model) {
+                    $rows[$model] = $model::query()->orderBy('id')->get()->map(
+                        static fn ($row): array => $row->getRawOriginal(),
+                    )->all();
+                }
+                return $rows;
+            };
+            $before = $snapshot();
+            $result = $bridge->complete($task->id, $fixture['authority']['commands']);
+            $this->assertFalse($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+            $this->assertSame($fixture['authority']['reason'], $result['reason']);
+            $this->assertSame($before, $snapshot());
+        } finally {
+            config([
+                'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
+            ]);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
     protected function assertNexusCallerSdkAttribution(array $fixture): void
     {
         $previous = $this->app->make(ServiceControlPlane::class);
+        $previousAuthority = $this->installNexusServiceAuthority();
         $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
@@ -96,6 +143,9 @@ trait NexusCallerDeliveryScenario
                 'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
             ]);
             $this->app->instance(ServiceControlPlane::class, $previous);
+            if ($previousAuthority !== null) {
+                $this->app->instance(WorkflowServiceOperationAuthorizer::class, $previousAuthority);
+            }
         }
     }
 
@@ -113,6 +163,7 @@ trait NexusCallerDeliveryScenario
     ): void {
         $previousDispatchMode = config('workflows.v2.task_dispatch_mode');
         $previousControlPlane = $this->app->make(ServiceControlPlane::class);
+        $previousAuthority = $this->installNexusServiceAuthority();
         $previousNow = Carbon::getTestNow();
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
@@ -177,7 +228,13 @@ trait NexusCallerDeliveryScenario
             $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
             $this->assertNull($workflow->refresh()->output());
             $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
-            $this->assertSame('started', $call->status);
+            if (version_compare(WorkerProtocolVersion::VERSION, '1.21', '<')) {
+                $this->assertSame('started', $call->status);
+            } else {
+                $this->assertSame('accepted', $call->status);
+                $this->app->call([new RunServiceCall($call->id), 'handle']);
+                $this->assertSame('started', $call->refresh()->status);
+            }
 
             if ($deadlinePolicy !== null) {
                 $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());
@@ -243,6 +300,35 @@ trait NexusCallerDeliveryScenario
                 'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
             ]);
             $this->app->instance(ServiceControlPlane::class, $previousControlPlane);
+            if ($previousAuthority !== null) {
+                $this->app->instance(WorkflowServiceOperationAuthorizer::class, $previousAuthority);
+            }
         }
+    }
+
+    private function installNexusServiceAuthority(): ?object
+    {
+        // The retained consumer also runs against the pre-authorizer base.
+        if (! interface_exists(WorkflowServiceOperationAuthorizer::class)) {
+            return null;
+        }
+        $previous = $this->app->make(WorkflowServiceOperationAuthorizer::class);
+        $this->app->instance(
+            WorkflowServiceOperationAuthorizer::class,
+            new class() implements WorkflowServiceOperationAuthorizer {
+                public function authorize(WorkflowRun $run, array $command): ServiceCallPrincipal
+                {
+                    $target = $command['namespace'] ?? $run->namespace;
+                    $operation = [$command['endpoint_name'], $command['service_name'], $command['operation_name']];
+                    $allowed = ($target === 'caller' && $operation === ['billing', 'invoices', 'create'])
+                        || ($target === 'service' && $operation === ['php-service', 'greeter', 'greet']);
+                    if ($run->namespace !== 'caller' || ! $allowed) {
+                        throw new ServiceOperationAuthorizationException();
+                    }
+                    return new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow');
+                }
+            }
+        );
+        return $previous;
     }
 }

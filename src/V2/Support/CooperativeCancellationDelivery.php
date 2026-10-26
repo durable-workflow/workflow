@@ -307,6 +307,7 @@ final class CooperativeCancellationDelivery
                 HistoryEventType::ConditionWaitOpened => 'condition',
                 HistoryEventType::SignalWaitOpened => 'signal',
                 HistoryEventType::ChildWorkflowScheduled => 'child',
+                HistoryEventType::ServiceOperationScheduled,
                 HistoryEventType::ServiceCallStarted => 'service_operation',
                 HistoryEventType::TimerScheduled => match ($event->payload['timer_kind'] ?? null) {
                     'condition_timeout' => 'condition',
@@ -341,6 +342,7 @@ final class CooperativeCancellationDelivery
                 HistoryEventType::ActivityScheduled => 'activity',
                 HistoryEventType::TimerScheduled => 'timer',
                 HistoryEventType::ChildWorkflowScheduled => 'child_workflow',
+                HistoryEventType::ServiceOperationScheduled,
                 HistoryEventType::ServiceCallStarted => 'service_operation',
                 HistoryEventType::ConditionWaitOpened, HistoryEventType::SignalWaitOpened => '',
                 default => null,

@@ -40,6 +40,7 @@ use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -1366,6 +1367,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
                 $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
                 $createdTaskIds = [];
+                $serviceError = $this->serviceOperationAuthorityError($run, $parsed['non_terminal'], $sequence);
+                if ($serviceError !== null) {
+                    return [
+                        'completed' => false,
+                        'task_id' => $taskId,
+                        'workflow_run_id' => $run->id,
+                        'run_status' => $run->status->value,
+                        'created_task_ids' => [],
+                        'reason' => $serviceError,
+                    ];
+                }
                 $scopeError = $this->validateCancellationScopeMembership($run, $parsed['non_terminal'], $sequence);
                 if ($scopeError !== null) {
                     return [
@@ -1460,6 +1472,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             });
+        } catch (ServiceOperationAuthorizationException $refusal) {
+            return [
+                'completed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'created_task_ids' => [],
+                'reason' => $refusal->getMessage(),
+            ];
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return [
                 'completed' => false,
@@ -1652,6 +1673,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
                     return $refused('run_deadline_expired');
                 }
+                $serviceError = $this->serviceOperationAuthorityError($run, $parsed['non_terminal'], $startSequence);
+                if ($serviceError !== null) {
+                    return $refused($serviceError);
+                }
                 $payload = is_array($task->payload) ? $task->payload : [];
                 $receiptKey = $scopePrefix ? 'portable_scope_checkpoint'
                     : ($group ? 'portable_local_group_checkpoint' : 'portable_local_checkpoint');
@@ -1814,6 +1839,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             }, 5);
+        } catch (ServiceOperationAuthorizationException $refusal) {
+            return $refused($refusal->getMessage());
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return $refused(self::meterRefusalReason($refusal));
         }
@@ -3606,17 +3633,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $options = $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec);
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $requestPayload = isset($command['request_payload']) && is_string($command['request_payload'])
             ? ExternalPayloads::externalizeForNamespace($command['request_payload'], $payloadCodec, $namespace)
             : null;
         $surface = $this->serviceControlPlane()
-            ->execute(
-                $command['endpoint_name'],
-                $command['service_name'],
-                $command['operation_name'],
-                $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec),
-            );
+            ->execute($command['endpoint_name'], $command['service_name'], $command['operation_name'], $options);
 
         $eventType = self::serviceOperationEventTypeForSurface($surface);
         $event = WorkflowHistoryEvent::record($run, $eventType, $this->serviceOperationEventPayload(
@@ -3624,6 +3647,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $sequence,
             $command,
             $surface,
+            $eventType,
             $requestPayload,
             $payloadCodec,
         ), $task);
@@ -3664,6 +3688,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         string $payloadCodec,
     ): array {
+        if (! isset($command['service_call_id'])) {
+            $command['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
+        }
         $metadata = is_array($command['metadata'] ?? null) ? $command['metadata'] : [];
         $metadata = [
             'caller_sdk_language' => self::metadataString($metadata, 'caller_sdk_language') ?? 'workflow-php',
@@ -3672,20 +3699,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_sequence' => $sequence,
         ] + $metadata;
 
-        return array_filter([
-            'namespace' => self::nonEmptyString($command['namespace'] ?? null) ?? $run->namespace,
+        return WorkflowServiceOperationAuthority::options($run, $command) + array_filter([
             'arguments' => $this->serviceOperationRequestArguments($command, $payloadCodec),
             'payload_blob' => self::nonEmptyString($command['request_payload'] ?? null),
             'payload_codec' => $payloadCodec,
             'service_call_id' => self::nonEmptyString($command['service_call_id'] ?? null),
-            'idempotency_key' => self::nonEmptyString($command['idempotency_key'] ?? null)
-                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'idempotency_key' => self::nonEmptyString($command['idempotency_key'] ?? null),
             'mode_override' => self::nonEmptyString($command['mode_override'] ?? null),
             'wait_for' => self::nonEmptyString($command['wait_for'] ?? null),
             'wait_timeout_seconds' => is_int($command['wait_timeout_seconds'] ?? null)
                 ? $command['wait_timeout_seconds']
                 : null,
-            'caller_namespace' => self::nonEmptyString($command['caller_namespace'] ?? null) ?? $run->namespace,
             'caller_workflow_instance_id' => $run->workflow_instance_id,
             'caller_workflow_run_id' => $run->id,
             'target_workflow_instance_id' => self::nonEmptyString($command['target_workflow_instance_id'] ?? null),
@@ -3701,12 +3725,30 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'duplicate_start_policy' => self::nonEmptyString($command['duplicate_start_policy'] ?? null),
             'metadata' => $metadata,
             'request_payload_reference' => self::nonEmptyString($command['request_payload_reference'] ?? null),
-            'principal_subject' => self::nonEmptyString($command['principal_subject'] ?? null),
-            'principal_method' => self::nonEmptyString($command['principal_method'] ?? null),
-            'principal_roles' => is_array($command['principal_roles'] ?? null) ? $command['principal_roles'] : null,
-            'principal_tenant' => self::nonEmptyString($command['principal_tenant'] ?? null),
-            'principal_claims' => is_array($command['principal_claims'] ?? null) ? $command['principal_claims'] : null,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private function serviceOperationAuthorityError(WorkflowRun $run, array $commands, int $sequence): ?string
+    {
+        try {
+            foreach ($commands as $command) {
+                if ($command['type'] === 'start_service_operation') {
+                    if (! isset($command['service_call_id'])) {
+                        $command['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
+                    }
+                    WorkflowServiceOperationAuthority::options($run, $command);
+                }
+                if ($command['type'] !== 'cancel_selection_operation') {
+                    ++$sequence;
+                }
+            }
+        } catch (ServiceOperationAuthorizationException $exception) {
+            return $exception->getMessage();
+        }
+        return null;
     }
 
     /**
@@ -3738,6 +3780,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
     {
+        if (($surface['retry_scheduled'] ?? false) === true) {
+            return HistoryEventType::ServiceOperationScheduled;
+        }
+
         $status = self::nonEmptyString($surface['status'] ?? null);
 
         return match ($status) {
@@ -3759,8 +3805,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         array $surface,
     ): bool {
-        if ($eventType !== HistoryEventType::ServiceCallStarted) {
+        if (! in_array($eventType, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true)) {
             return true;
+        }
+
+        if ($eventType === HistoryEventType::ServiceOperationScheduled) {
+            return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
+                || self::nonEmptyString($command['mode_override'] ?? null) === 'async'
+                || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
         }
 
         return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
@@ -3779,6 +3834,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array $command,
         array $surface,
+        HistoryEventType $eventType,
         ?string $requestPayload,
         string $payloadCodec,
     ): array {
@@ -3809,6 +3865,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ?? self::nonEmptyString($command['mode_override'] ?? null),
             'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
                 ?? self::nonEmptyString($command['wait_for'] ?? null),
+            'workflow_resume_on_admission' => $eventType === HistoryEventType::ServiceOperationScheduled
+                ? self::serviceOperationEventIsWorkflowVisible($eventType, $command, $surface)
+                : null,
             'status' => self::nonEmptyString($surface['status'] ?? null),
             'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
             'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),
@@ -6653,6 +6712,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         if (($command['wait_timeout_seconds'] ?? null) !== null && $waitTimeoutSeconds === null) {
+            return null;
+        }
+
+        if ($waitTimeoutSeconds !== null
+            && $waitTimeoutSeconds > UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS) {
             return null;
         }
 

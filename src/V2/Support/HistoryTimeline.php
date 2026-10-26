@@ -436,6 +436,7 @@ final class HistoryTimeline
             HistoryEventType::ChildCancellationRequested,
             HistoryEventType::ChildCancellationResolved,
             HistoryEventType::ChildRunTerminated => 'child',
+            HistoryEventType::ServiceOperationScheduled,
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
             HistoryEventType::ServiceCallFailed,
@@ -536,6 +537,10 @@ final class HistoryTimeline
                 : sprintf('Child workflow %s failed: %s.', $childLabel, $message),
             HistoryEventType::ChildRunCancelled => sprintf('Child workflow %s cancelled.', $childLabel),
             HistoryEventType::ChildRunTerminated => sprintf('Child workflow %s terminated.', $childLabel),
+            HistoryEventType::ServiceOperationScheduled => sprintf(
+                'Service operation %s scheduled.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
             HistoryEventType::ServiceCallStarted => sprintf(
                 'Service operation %s started.',
                 self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
@@ -1282,6 +1287,7 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
+            HistoryEventType::ServiceOperationScheduled,
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
             HistoryEventType::ServiceCallFailed,

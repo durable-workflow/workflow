@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Require a trusted host authorizer for workflow service operations. Refuse
+  worker-supplied principal overrides, foreign caller namespaces and service
+  call IDs or idempotency keys owned by another run, instance or operation.
+  Preserve explicit embedded null namespaces instead of using ambient config.
+- Service-operation hosts must bind `WorkflowServiceOperationAuthorizer` before
+  upgrading. The default refuses service operations; explicitly trusted embedded
+  hosts can opt into `RunServiceOperationAuthorizer` for same-namespace calls
+  with an unprivileged workflow principal. Authenticated servers supply their
+  own current principal and authorize requested target scope.
+- Recheck current service-call replay policy without reserving fresh admission
+  capacity, including cached checkpoint receipts. Custom policies must provide
+  the pure `authorizeReplay` hook.
+- Serialize keyed service-call creation with a unique canonical scope digest.
+  Reauthorize the actual locked row after a concurrent insert or uniqueness
+  conflict. Apply the nullable schema expansion and drain older writers before
+  relying on concurrent deduplication.
 - Bound `record_local_activity` timing fields (`duration_ms`, heartbeat
   `elapsed_ms`, `backoff_seconds`) and refuse a report whose walk back from
   completion leaves the storable timestamp range (#930).

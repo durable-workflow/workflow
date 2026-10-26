@@ -203,6 +203,31 @@ list, command-kind map, generated identity prefixes, path rules, or structural
 size checks; compatible grammar evolution belongs in the Workflow package and
 is consumed through those methods.
 
+### Durable service-operation scheduling
+
+Worker protocol `1.21` adds the `ServiceOperationScheduled` history event for a
+workflow-authored service call whose effect will run after the completion
+transaction commits. Its payload uses the same service-call identity, address,
+codec and result-surface fields as `ServiceCallStarted`, plus the required
+boolean `workflow_resume_on_admission`. A `false` value is durable evidence that
+the workflow remains blocked for a terminal service-call event even though the
+scheduler's internal handler wait is `accepted`.
+
+Hosts must not synthesize `ServiceCallStarted` before a handler attempt is
+claimed. They must version-gate the new scheduled-event behavior at
+`WorkerProtocolVersion::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION`
+and keep workers below that floor away from histories that require the event.
+The original `start_service_operation` command remains available from its 1.13
+floor; the scheduled execution semantics require 1.21.
+
+`WorkflowServiceCallDispatch` is a documented persisted model. Its table and
+state/attempt/claim/revision/repair fields are additive schema and observability
+surface. `ServiceCallScheduler`, `ServiceCallAttemptClaim`, and the
+`RunServiceCall` job are internal execution helpers: their PHP method and
+constructor signatures are not covered by the public semver guarantee. The
+machine-readable durable-record and scheduling rules are published by
+`ServiceExecutionContract`.
+
 ## Activity attempt authority
 
 An activity task's authority ends at its current lease expiry or an applicable

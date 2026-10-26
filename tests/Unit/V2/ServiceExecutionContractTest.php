@@ -12,6 +12,7 @@ use Workflow\V2\Enums\ServiceCallFailureReason;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Support\ServiceExecutionContract;
 
 /**
@@ -195,7 +196,7 @@ final class ServiceExecutionContractTest extends TestCase
         $manifest = ServiceExecutionContract::manifest();
 
         $this->assertSame(
-            ['endpoints', 'services', 'operations', 'calls'],
+            ['endpoints', 'services', 'operations', 'calls', 'dispatches'],
             array_keys($manifest['durable_records']),
         );
         $this->assertSame(
@@ -204,6 +205,14 @@ final class ServiceExecutionContractTest extends TestCase
         );
         $this->assertContains('resolved_binding_kind', $manifest['durable_records']['calls']['link_fields']);
         $this->assertContains('resolved_target_reference', $manifest['observability']['guaranteed_fields']);
+        $dispatch = $manifest['durable_records']['dispatches'];
+        $this->assertSame(WorkflowServiceCallDispatch::class, $dispatch['model']);
+        $this->assertSame('workflow_service_call_dispatches', $dispatch['table']);
+        $this->assertSame(['scheduled', 'claimed', 'completed'], $dispatch['states']);
+        $this->assertSame(
+            ['claim_generation', 'claim_token', 'claimed_at', 'claim_expires_at'],
+            $dispatch['claim_fence_fields']
+        );
     }
 
     public function testExecutionRulesRequireDurableCallIdAndFailClosedUnknownBindings(): void
@@ -212,6 +221,10 @@ final class ServiceExecutionContractTest extends TestCase
 
         $this->assertStringContainsString('durable service-call id', $rules['durable_call_id']);
         $this->assertStringContainsString('fail closed', $rules['unknown_binding_kind']);
+        $this->assertStringContainsString('does not execute a handler', $rules['transaction_dispatch']);
+        $this->assertStringContainsString('current catalog', $rules['claim_authority']);
+        $this->assertStringContainsString('generation and token', $rules['attempt_fence']);
+        $this->assertStringContainsString('at least once', $rules['repair_delivery']);
         $this->assertStringContainsString('Raw transport logs are diagnostic only', $rules['transport_logs']);
     }
 }

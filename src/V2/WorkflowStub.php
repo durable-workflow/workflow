@@ -73,6 +73,7 @@ use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\SqliteTransaction;
@@ -2703,7 +2704,15 @@ final class WorkflowStub
     {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'] ?? [];
-        $command = UpdateRequestIdentity::find($instance, $context);
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        $command = $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->where('workflow_instance_id', $instance->id)
+                ->where('command_type', CommandType::Update->value)
+                ->where('request_id', $serviceCallIdentity->storageToken())
+                ->lockForUpdate()
+                ->first()
+            : UpdateRequestIdentity::find($instance, $context);
 
         if (! $command instanceof WorkflowCommand) {
             return [null, null];
@@ -2879,6 +2888,25 @@ final class WorkflowStub
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
+
+            $serviceCallIdentity = ServiceCallEffectIdentity::fromContext(
+                $this->resolvedCommandContext()
+                    ->attributes()['context'],
+            );
+            if ($serviceCallIdentity !== null) {
+                /** @var WorkflowCommand|null $existing */
+                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                    ->where('workflow_instance_id', $instance->id)
+                    ->where('command_type', CommandType::Signal->value)
+                    ->where('request_id', $serviceCallIdentity->storageToken())
+                    ->lockForUpdate()
+                    ->first();
+                if ($existing instanceof WorkflowCommand) {
+                    $command = $existing;
+
+                    return;
+                }
+            }
 
             $target = $this->signalRunOrRejection($instance, $name, $arguments, $payloadCodec);
             if ($target instanceof WorkflowCommand) {

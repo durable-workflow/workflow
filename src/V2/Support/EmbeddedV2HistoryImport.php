@@ -52,6 +52,7 @@ final class EmbeddedV2HistoryImport
         'ActivityCompleted' => ['result'],
         'ChildRunCompleted' => ['output', 'result'],
         'MemoUpserted' => ['entries', 'merged'],
+        'ServiceOperationScheduled' => ['request_payload', 'response_payload'],
         'ServiceCallStarted' => ['request_payload', 'response_payload'],
         'ServiceCallCompleted' => ['request_payload', 'response_payload'],
         'ServiceCallFailed' => ['request_payload', 'response_payload'],
@@ -97,6 +98,7 @@ final class EmbeddedV2HistoryImport
      * @var list<string>
      */
     private const SERVICE_CALL_EVENT_TYPES = [
+        'ServiceOperationScheduled',
         'ServiceCallStarted',
         'ServiceCallCompleted',
         'ServiceCallFailed',

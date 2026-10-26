@@ -1627,6 +1627,7 @@ final class WorkflowFiberRunner
             'ChildRunFailed',
             'ChildRunCancelled',
             'ChildRunTerminated',
+            'ServiceOperationScheduled',
             'ServiceCallStarted',
             'ServiceCallCompleted',
             'ServiceCallFailed',
@@ -2201,6 +2202,7 @@ final class WorkflowFiberRunner
             $type = self::eventType($event);
 
             if (! in_array($type, [
+                'ServiceOperationScheduled',
                 'ServiceCallStarted',
                 'ServiceCallCompleted',
                 'ServiceCallFailed',
@@ -2252,8 +2254,8 @@ final class WorkflowFiberRunner
                     self::serviceOperationResponsePayload($payload, $fallbackCodec, $namespace),
                 ),
                 'recorded_at' => $recordedAt,
-                'admission_visible' => $type === 'ServiceCallStarted'
-                    ? self::serviceOperationStartedPayloadIsVisible($payload, $surface)
+                'admission_visible' => in_array($type, ['ServiceOperationScheduled', 'ServiceCallStarted'], true)
+                    ? self::serviceOperationStartedPayloadIsVisible($type, $payload, $surface)
                     : true,
             ];
         }
@@ -2276,8 +2278,17 @@ final class WorkflowFiberRunner
      * @param array<string, mixed> $payload
      * @param array<string, mixed> $surface
      */
-    private static function serviceOperationStartedPayloadIsVisible(array $payload, array $surface): bool
-    {
+    private static function serviceOperationStartedPayloadIsVisible(
+        string $type,
+        array $payload,
+        array $surface,
+    ): bool {
+        if ($type === 'ServiceOperationScheduled') {
+            return ($payload['workflow_resume_on_admission'] ?? null) === true
+                || self::stringValue($payload['operation_mode'] ?? null) === 'async'
+                || self::stringValue($surface['operation_mode'] ?? null) === 'async';
+        }
+
         return self::stringValue($payload['wait_for'] ?? null) === 'accepted'
             || self::stringValue($payload['operation_mode'] ?? null) === 'async'
             || self::stringValue($surface['wait_for'] ?? null) === 'accepted'
@@ -2315,7 +2326,7 @@ final class WorkflowFiberRunner
         $open = [];
 
         foreach ($historyEvents as $event) {
-            if (self::eventType($event) !== 'ServiceCallStarted') {
+            if (! in_array(self::eventType($event), ['ServiceOperationScheduled', 'ServiceCallStarted'], true)) {
                 continue;
             }
 

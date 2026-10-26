@@ -41,6 +41,9 @@ interface MatchingRole
      *     service_call_timeout_candidates?: int,
      *     service_call_timeouts_enforced?: int,
      *     service_call_timeout_failures?: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates?: int,
+     *     service_call_dispatches_enqueued?: int,
+     *     service_call_dispatch_failures?: list<array{call_id: string, message: string}>
      * }
      */
     public function runPass(

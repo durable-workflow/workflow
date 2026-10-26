@@ -13,6 +13,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -23,6 +24,8 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\RunServiceOperationAuthorizer;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -38,6 +41,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->app->instance(WorkflowServiceOperationAuthorizer::class, new RunServiceOperationAuthorizer());
         Carbon::setTestNow('2026-10-08T02:00:00Z');
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
@@ -130,6 +134,9 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertSameJsonObject($surface, $event->payload['response_or_failure_surface']);
         $this->assertSame($this->run->id, $event->payload['caller_workflow_run_id']);
         $this->assertSame($payload, $event->payload['request_payload']);
+        if ($eventType === HistoryEventType::ServiceOperationScheduled) {
+            $this->assertSame($resume, $event->payload['workflow_resume_on_admission']);
+        }
         $response = $surface['response_payload'] ?? $surface['result'] ?? null;
         if ($response === null) {
             $this->assertArrayNotHasKey('response_payload', $event->payload);
@@ -273,6 +280,31 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         yield 'surface async mode' => [$started + [
             'operation_mode' => 'async',
         ], [], HistoryEventType::ServiceCallStarted, true, null, null];
+        $scheduled = $base + [
+            'status' => 'accepted',
+            'outcome' => 'accepted',
+            'operation_mode' => 'sync',
+            'wait_for' => 'accepted',
+            'retry_scheduled' => true,
+        ];
+        yield 'scheduled sync call remains blocked' => [
+            $scheduled, [], HistoryEventType::ServiceOperationScheduled, false, null, null,
+        ];
+        yield 'scheduled authored accepted wait resumes' => [
+            $scheduled, [
+                'wait_for' => 'accepted',
+            ], HistoryEventType::ServiceOperationScheduled, true, null, null,
+        ];
+        yield 'scheduled async operation resumes' => [
+            array_replace($scheduled, [
+                'operation_mode' => 'async',
+            ]),
+            [],
+            HistoryEventType::ServiceOperationScheduled,
+            true,
+            null,
+            null,
+        ];
     }
 
     public function testServiceOptionsPreserveTypedValuesAndAuthoritativeCallerMetadata(): void
@@ -304,9 +336,8 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         ];
         $payload = Serializer::serialize($arguments);
         $options = [
-            'namespace' => 'billing',
-            'caller_namespace' => 'finance',
-            'service_call_id' => 'requested-service-call',
+            'namespace' => 'caller',
+            'caller_namespace' => 'caller',
             'idempotency_key' => 'invoice-request-42',
             'mode_override' => ' SYNC ',
             'wait_for' => ' COMPLETED ',
@@ -327,13 +358,6 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
             ],
             'duplicate_start_policy' => 'return_existing_active',
             'request_payload_reference' => 'invoice-request-reference',
-            'principal_subject' => 'user:billing-clerk',
-            'principal_method' => 'token',
-            'principal_roles' => ['invoice:create', 'invoice:read'],
-            'principal_tenant' => 'customer-a',
-            'principal_claims' => [
-                'approved' => false,
-            ],
             'metadata' => [
                 'caller_sdk_language' => 'sdk-python',
                 'caller_workflow_instance_id' => 'forged-owner',
@@ -368,7 +392,13 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
             'service_sdk_language' => 'rust',
             'trace_id' => 'trace-42',
         ];
+        $this->assertInstanceOf(ServiceCallPrincipal::class, $forwarded['principal']);
+        $forwarded['principal'] = $forwarded['principal']->toAuditArray();
         $expected += [
+            'principal' => (new ServiceCallPrincipal(
+                subject: 'workflow:' . $this->run->id,
+                method: 'workflow'
+            ))->toAuditArray(),
             'arguments' => $arguments,
             'payload_blob' => $payload,
             'payload_codec' => 'avro',
@@ -519,7 +549,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         foreach ([
             'mode_override' => ['queued', 42],
             'wait_for' => ['applied', []],
-            'wait_timeout_seconds' => [-1, 1.5, '0'],
+            'wait_timeout_seconds' => [-1, 1.5, '0', 61],
         ] as $field => $values) {
             foreach ($values as $value) {
                 yield $field . ' ' . json_encode($value, JSON_THROW_ON_ERROR) => [[

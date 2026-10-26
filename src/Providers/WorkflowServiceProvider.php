@@ -43,6 +43,7 @@ use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
@@ -63,6 +64,7 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\DenyWorkflowServiceOperationAuthorizer;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
@@ -132,6 +134,10 @@ final class WorkflowServiceProvider extends ServiceProvider
         );
 
         $this->app->singletonIf(ServiceControlPlane::class, DefaultServiceControlPlane::class);
+        $this->app->singletonIf(
+            WorkflowServiceOperationAuthorizer::class,
+            DenyWorkflowServiceOperationAuthorizer::class
+        );
 
         $this->app->singletonIf(SchedulerRole::class, DefaultSchedulerRole::class);
 

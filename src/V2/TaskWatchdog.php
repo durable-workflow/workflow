@@ -21,11 +21,13 @@ use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
+use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -86,6 +88,9 @@ final class TaskWatchdog
      *     service_call_timeout_candidates: int,
      *     service_call_timeouts_enforced: int,
      *     service_call_timeout_failures: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates: int,
+     *     service_call_dispatches_enqueued: int,
+     *     service_call_dispatch_failures: list<array{call_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -213,6 +218,17 @@ final class TaskWatchdog
                 ];
             }
         }
+
+        $serviceCallDispatch = ServiceCallScheduler::repairDue(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue,
+        );
+        $report['service_call_dispatch_candidates'] = $serviceCallDispatch['candidates'];
+        $report['service_call_dispatches_enqueued'] = $serviceCallDispatch['enqueued'];
+        $report['service_call_dispatch_failures'] = $serviceCallDispatch['failures'];
 
         $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
             TaskRepairPolicy::scanLimit(),
@@ -430,6 +446,9 @@ final class TaskWatchdog
      *     service_call_timeout_candidates: int,
      *     service_call_timeouts_enforced: int,
      *     service_call_timeout_failures: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates: int,
+     *     service_call_dispatches_enqueued: int,
+     *     service_call_dispatch_failures: list<array{call_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -465,6 +484,9 @@ final class TaskWatchdog
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
         ];
     }
 
@@ -531,6 +553,8 @@ final class TaskWatchdog
                 new WorkflowRun(),
                 new WorkflowRunSummary(),
                 new ActivityExecution(),
+                new WorkflowServiceCall(),
+                new WorkflowServiceCallDispatch(),
             ] as $model) {
                 // The models honour workflows.storage.connection; ask that connection,
                 // not the application default, whether their tables exist.
