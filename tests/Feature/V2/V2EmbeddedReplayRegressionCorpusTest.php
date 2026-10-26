@@ -37,6 +37,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -44,6 +45,7 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -56,6 +58,7 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\CancellationScopeDelivery;
@@ -322,6 +325,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'external-worker-pending-count-limit-rollback') {
+                $this->assertExternalWorkerPendingCountLimitRollsBackCompletion($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'embedded-local-activity-retry-queue-delivery') {
                 $this->assertEmbeddedLocalRetryQueuesItsOriginalTask($fixture);
                 continue;
@@ -564,6 +572,81 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertExternalWorkerPendingCountLimitRollsBackCompletion(array $fixture): void
+    {
+        $cases = $fixture['external_worker_pending_counts'];
+        $limitKeys = array_map(
+            static fn (array $case): string => "workflows.v2.structural_limits.{$case['limit']}",
+            $cases,
+        );
+        $previous = array_combine(
+            $limitKeys,
+            array_map(static fn (string $key): mixed => config($key), $limitKeys),
+        );
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+
+        try {
+            foreach ($cases as $case) {
+                $this->clearWorkflowState();
+                config($previous);
+                config([
+                    "workflows.v2.structural_limits.{$case['limit']}" => 1,
+                ]);
+                $run = $this->createRunFromFixture($fixture);
+                /** @var WorkflowTask $task */
+                $task = $run->tasks()
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->sole();
+                $task->forceFill([
+                    'status' => TaskStatus::Leased->value,
+                    'lease_owner' => 'regression-corpus-worker',
+                    'lease_expires_at' => now()
+                        ->addMinutes(5),
+                ])->save();
+                $leasedTask = $task->fresh()
+                    ->getRawOriginal();
+                $before = self::pendingCountDurableState($run);
+
+                try {
+                    $bridge->complete($task->id, [$case['command'], $case['command']]);
+                    $this->fail("Two pending {$case['command']['type']} commands passed a limit of one.");
+                } catch (StructuralLimitExceededException $exception) {
+                    $this->assertSame($case['limit'], $exception->limitKind->value);
+                    $this->assertSame(1, $exception->currentValue);
+                    $this->assertSame(1, $exception->configuredLimit);
+                }
+
+                $this->assertSame($before, self::pendingCountDurableState($run));
+                $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+                $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            }
+        } finally {
+            config($previous);
+        }
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function pendingCountDurableState(WorkflowRun $run): array
+    {
+        return [
+            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_attempts' => ActivityAttempt::query()->count(),
+            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
+            'instances' => WorkflowInstance::query()->count(),
+            'runs' => WorkflowRun::query()->count(),
+            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+        ];
     }
 
     /**
