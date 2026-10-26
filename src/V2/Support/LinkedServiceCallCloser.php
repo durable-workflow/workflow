@@ -60,8 +60,10 @@ final class LinkedServiceCallCloser
                 ServiceCallOutcome::Cancelled,
                 'cancelled_at',
             ],
-            HistoryEventType::WorkflowFailed, HistoryEventType::WorkflowTerminated => [
-                ServiceCallStatus::Failed, ServiceCallOutcome::HandlerFailed, 'failed_at',
+            HistoryEventType::WorkflowFailed, HistoryEventType::WorkflowTerminated, HistoryEventType::WorkflowTimedOut => [
+                ServiceCallStatus::Failed,
+                ServiceCallOutcome::HandlerFailed,
+                'failed_at',
             ],
             default => null,
         };
@@ -148,6 +150,7 @@ final class LinkedServiceCallCloser
             HistoryEventType::WorkflowFailed->value,
             HistoryEventType::WorkflowCancelled->value,
             HistoryEventType::WorkflowTerminated->value,
+            HistoryEventType::WorkflowTimedOut->value,
         ];
     }
 }

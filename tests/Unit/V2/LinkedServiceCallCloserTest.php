@@ -773,6 +773,7 @@ final class LinkedServiceCallCloserTest extends TestCase
             [HistoryEventType::WorkflowFailed, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
             [HistoryEventType::WorkflowCancelled, 'cancelled', ServiceCallOutcome::Cancelled, 'cancelled_at'],
             [HistoryEventType::WorkflowTerminated, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
+            [HistoryEventType::WorkflowTimedOut, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
         ] as [$type, $status, $outcome, $timestamp]) {
             $run = $this->createRun();
             $call = $this->createCall($run);
@@ -792,6 +793,29 @@ final class LinkedServiceCallCloserTest extends TestCase
             $this->assertSame('service stopped', $view['failure_message']);
             $this->assertArrayNotHasKey('result_envelope', $view);
         }
+    }
+
+    public function testLinkedWorkflowTimeoutBeforeAdmissionIsReconciledOnceWithItsTypedCause(): void
+    {
+        $run = $this->createRun();
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowTimedOut, [
+            'exception_class' => \Workflow\V2\Exceptions\WorkflowTimeoutException::class,
+            'message' => 'Workflow run timeout elapsed.',
+            'timeout_kind' => 'run',
+        ]);
+        $call = $this->createCall($run);
+        LinkedServiceCallCloser::reconcile($call);
+        $this->assertSame('failed', $call->status);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed, $call->outcome);
+        $this->assertTrue($event->recorded_at->equalTo($call->failed_at));
+        $this->assertSame(
+            \Workflow\V2\Exceptions\WorkflowTimeoutException::class,
+            $call->outcome_metadata['service_error_type']
+        );
+        $this->assertSame('Workflow run timeout elapsed.', $call->failure_message);
+        $before = $call->getRawOriginal();
+        LinkedServiceCallCloser::reconcile($call);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
     }
 
     public function testUnrelatedNamespaceRunInstanceAndBindingRemainOpen(): void

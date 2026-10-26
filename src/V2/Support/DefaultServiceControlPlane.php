@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -2272,18 +2273,39 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'namespace' => $call->target_namespace,
         ];
 
-        $arguments = $this->arrayOption($options, 'arguments') ?: $this->arrayAt($binding, 'arguments');
-        if ($arguments !== []) {
-            $commandOptions['arguments'] = $arguments;
-        }
-
-        foreach (['payload_codec', 'payload_blob', 'wait_for', 'wait_timeout_seconds',
+        foreach (['payload_codec', 'wait_for', 'wait_timeout_seconds',
             'service_call_id', 'service_call_attempt', 'service_call_max_attempts'] as $key) {
             $value = $options[$key] ?? $binding[$key] ?? null;
 
             if ($value !== null) {
                 $commandOptions[$key] = $value;
             }
+        }
+        $callerArguments = $options['arguments'] ?? $options['payload_blob'] ?? null;
+        $arguments = $callerArguments ?? $binding['arguments'] ?? $binding['payload_blob'] ?? [];
+        $codec = CodecRegistry::canonicalize($commandOptions['payload_codec'] ?? $call->payload_codec);
+        if (is_string($arguments)) {
+            // Serialized input belongs to the service request's namespace.
+            // caller_namespace is a policy identity, not a storage authority.
+            $blob = ExternalPayloads::resolveStoredPayload($arguments, $codec, $call->target_namespace);
+            $commandOptions['payload_blob'] = $arguments;
+            $arguments = Serializer::unserializeWithCodec($codec, $blob);
+            if (! is_array($arguments)) {
+                throw ValidationException::withMessages([
+                    'arguments' => ['Workflow arguments must decode to an array.'],
+                ]);
+            }
+        } elseif (is_array($arguments)
+            && (($options['payload_blob'] ?? $binding['payload_blob'] ?? null) !== null)) {
+            // An explicit argument list overrides catalog defaults. Keep the
+            // receipt and stored signal payload derived from that same value.
+            $commandOptions['payload_blob'] = Serializer::serializeWithCodec($codec, $arguments);
+        }
+        if (is_array($arguments) && ($arguments !== [] || $callerArguments !== null || array_key_exists(
+            'arguments',
+            $binding
+        ))) {
+            $commandOptions['arguments'] = $arguments;
         }
         $effectIdentity = ServiceCallEffectIdentity::fromOptions($options);
         if ($effectIdentity instanceof ServiceCallEffectIdentity) {
@@ -2676,6 +2698,12 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     {
         $base = $this->arrayValue($metadata);
         $extra ??= [];
+
+        // A result has one representation; merging can retain a stale inline
+        // blob beside a new external reference (or the reverse).
+        if (array_key_exists('nexus_result', $extra)) {
+            unset($base['nexus_result']);
+        }
 
         if ($base === [] && $extra === []) {
             return null;
