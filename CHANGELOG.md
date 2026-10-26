@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.14.0 - 2026-10-26
+
 - Require a trusted host authorizer for workflow service operations. Refuse
   worker-supplied principal overrides, foreign caller namespaces and service
   call IDs or idempotency keys owned by another run, instance or operation.
@@ -18,6 +20,11 @@
   Reauthorize the actual locked row after a concurrent insert or uniqueness
   conflict. Apply the nullable schema expansion and drain older writers before
   relying on concurrent deduplication.
+- Move service-operation execution, synchronous waits and retry backoff outside
+  the workflow completion transaction. Persist a durable dispatch before commit,
+  enqueue it only after commit, cap synchronous waits at 60 seconds and repair
+  lost or expired claims while preserving one opaque effect identity across
+  crash redelivery.
 - Bound `record_local_activity` timing fields (`duration_ms`, heartbeat
   `elapsed_ms`, `backoff_seconds`) and refuse a report whose walk back from
   completion leaves the storable timestamp range (#930).
