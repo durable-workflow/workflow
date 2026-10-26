@@ -4,17 +4,69 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Connection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Tests\Fixtures\V2\TestRetainedSignalWritesWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunWaitProjector;
+use Workflow\V2\Support\RunWaitView;
+use Workflow\V2\WorkflowStub;
 
 final class RunWaitProjectionWritesTest extends TestCase
 {
+    public function testRealWorkflowProgressDoesNotRewriteResolvedWaits(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        Queue::fake();
+        $this->travelTo(Carbon::parse('2026-10-26T12:00:00Z'));
+        $workflow = WorkflowStub::make(TestRetainedSignalWritesWorkflow::class);
+        $workflow->start(17);
+        $run = $workflow->run();
+        $this->assertInstanceOf(WorkflowRun::class, $run);
+        $this->drainTasks($run);
+
+        for ($step = 1; $step <= 17; $step++) {
+            $before = $this->rows($run);
+            $this->travel(10)
+                ->seconds();
+            $queries = $this->capture(function () use ($workflow, $step, $run): void {
+                $workflow->signal('advance', $step);
+                $this->drainTasks($run);
+            });
+            $after = $this->rows($run);
+            $this->assertCount(min(17, $step + 1), $after);
+
+            foreach ($before as $id => $row) {
+                if ($row['status'] === 'resolved') {
+                    $this->assertSame($row, $after[$id], 'Retained wait changed at signal ' . $step);
+                }
+            }
+
+            if (in_array($step, [1, 8, 16, 17], true)) {
+                // Signal acceptance and task completion update the selected
+                // wait twice. The retained count must not increase the writes.
+                $this->assertSame(2, $this->updateCount($queries));
+                $snapshot = RunWaitProjector::snapshotForRun($run->fresh());
+                $this->assertSame('workflow_run_waits', $snapshot['source']);
+                $this->assertSame(
+                    array_column(RunWaitView::forRun($run->fresh()), 'id'),
+                    array_column($snapshot['waits'], 'id'),
+                );
+            }
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(range(1, 17), $workflow->output());
+    }
+
     public function testJsonObjectKeyOrderDoesNotDirtyAnUnchangedWait(): void
     {
         $row = new WorkflowRunWait();
@@ -84,6 +136,30 @@ final class RunWaitProjectionWritesTest extends TestCase
         $this->assertTrue($row->isDirty('opened_at'));
     }
 
+    public function testEquivalenceKeepsNullsAndConfiguredCastSemantics(): void
+    {
+        $row = new WorkflowRunWait();
+        $row->setRawAttributes([
+            'payload' => null,
+        ], true);
+        $row->payload = [];
+        $this->assertTrue($row->isDirty('payload'));
+        $row->payload = null;
+        $this->assertFalse($row->isDirty('payload'));
+        $row->mergeCasts([
+            'payload' => 'string',
+            'opened_at' => 'string',
+        ]);
+        $row->setRawAttributes([
+            'payload' => '{"a":1,"b":2}',
+            'opened_at' => '2026-10-26 12:00:00',
+        ], true);
+        $row->payload = '{"b":2,"a":1}';
+        $row->opened_at = '2026-10-26 12:00:00.000000';
+        $this->assertTrue($row->isDirty('payload'));
+        $this->assertTrue($row->isDirty('opened_at'));
+    }
+
     public function testUnchangedRetainedRowsIssueNoUpdatesAfterStorageReordersJson(): void
     {
         $this->travelTo(Carbon::parse('2026-10-26T12:00:00Z'));
@@ -130,7 +206,9 @@ final class RunWaitProjectionWritesTest extends TestCase
         $before = $this->rows($run);
         $this->assertSame(
             ['signal:current', 'signal:old', 'signal:cancelled'],
-            $run->fresh()->waits->pluck('wait_id')->all()
+            $run->fresh()
+                ->waits->pluck('wait_id')
+                ->all()
         );
         $this->travel(10)
             ->seconds();
@@ -179,6 +257,110 @@ final class RunWaitProjectionWritesTest extends TestCase
         $this->assertSame('Model hook changed this field', $run->fresh()->waits->first()->summary);
     }
 
+    public function testLegacyPositionsRemainReadableBeforeAndAfterReprojection(): void
+    {
+        $run = $this->runFixture();
+        $resolved = $this->wait('signal:resolved', 0, 'resolved');
+        $open = $this->wait('signal:open', 1, 'open');
+        $cancelled = $this->wait('signal:cancelled', 2, 'cancelled');
+        $waits = [$open, $resolved, $cancelled];
+        RunWaitProjector::project($run, $waits);
+
+        // Published versions store the display rank, including status priority.
+        foreach ($waits as $position => $wait) {
+            WorkflowRunWait::query()->where('workflow_run_id', $run->id)
+                ->where('wait_id', $wait['id'])
+                ->update([
+                    'position' => $position,
+                ]);
+        }
+        $before = $this->rows($run);
+        $queries = $this->capture(fn () => $this->assertSame(
+            array_column($waits, 'id'),
+            $run->fresh()
+                ->waits->pluck('wait_id')
+                ->all(),
+        ));
+        $this->assertSame(0, $this->updateCount($queries));
+        $this->assertSame($before, $this->rows($run));
+
+        RunWaitProjector::project($run->fresh(), $waits);
+        $queries = $this->capture(static fn () => RunWaitProjector::project($run->fresh(), $waits));
+        $this->assertSame(0, $this->updateCount($queries));
+        $this->assertSame(array_column($waits, 'id'), $run->fresh()->waits->pluck('wait_id')->all());
+    }
+
+    public function testDisplayOrderingPreservesTimestampTiesAndMissingTimes(): void
+    {
+        $run = $this->runFixture();
+        $a = $this->wait('signal:a', 0, 'resolved');
+        $z = $this->wait('signal:z', 0, 'resolved');
+        $a['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000400Z');
+        $z['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000100Z');
+        $this->assertSame($a['opened_at']->getTimestampMs(), $z['opened_at']->getTimestampMs());
+        $missing = $this->wait('signal:missing', 1, 'resolved');
+        $missing['opened_at'] = null;
+        $open = $this->wait('signal:open', 2, 'open');
+        RunWaitProjector::project($run, [$open, $a, $z, $missing]);
+
+        // The canonical view uses millisecond precision, then the wait id.
+        $this->assertSame(
+            ['signal:open', 'signal:a', 'signal:z', 'signal:missing'],
+            $run->fresh()
+                ->waits->pluck('wait_id')
+                ->all(),
+        );
+        $this->assertSame(
+            ['signal:a', 'signal:z', 'signal:open', 'signal:missing'],
+            WorkflowRunWait::query()->where('workflow_run_id', $run->id)
+                ->orderBy('position')
+                ->pluck('wait_id')
+                ->all(),
+        );
+    }
+
+    public function testConcurrentInsertFromAnotherConnectionRetainsWaitIdentityAndChanges(): void
+    {
+        $run = $this->runFixture();
+        $waits = [$this->wait('signal:raced', 1, 'open')];
+        $id = hash('sha256', $run->id . '|signal:raced');
+        config()
+            ->set('database.connections.wait-writer', $run->getConnection()->getConfig());
+        $raced = false;
+        WorkflowRunWait::saving(static function (WorkflowRunWait $row) use ($id, &$raced): void {
+            if ($row->exists || $row->id !== $id || $raced) {
+                return;
+            }
+
+            $raced = true;
+            // The candidate has already observed absence. An independent
+            // connection commits the competing insert before its save.
+            DB::connection('wait-writer')->table($row->getTable())->insert(
+                array_replace($row->getAttributes(), [
+                    'summary' => 'Competing writer',
+                    'created_at' => now()
+                        ->format('Y-m-d H:i:s.u'),
+                    'updated_at' => now()
+                        ->format('Y-m-d H:i:s.u'),
+                ]),
+            );
+        });
+
+        try {
+            $row = RunWaitProjector::project($run, $waits)[0];
+        } finally {
+            WorkflowRunWait::flushEventListeners();
+            DB::purge('wait-writer');
+        }
+
+        $this->assertTrue($raced);
+        $this->assertSame($id, $row->id);
+        $this->assertSame($waits[0]['summary'], $row->fresh()->summary);
+        $this->assertSame(1, WorkflowRunWait::query()->where('workflow_run_id', $run->id)->count());
+        $queries = $this->capture(static fn () => RunWaitProjector::project($run->fresh(), $waits));
+        $this->assertSame(0, $this->updateCount($queries));
+    }
+
     public function testMissingRowsAreRecreatedAndRealChangesRollBack(): void
     {
         $run = $this->runFixture();
@@ -203,6 +385,51 @@ final class RunWaitProjectionWritesTest extends TestCase
         $this->assertSame($before, $this->rows($run));
     }
 
+    public function testNoopAndChangedWritesUseTheConfiguredStorageConnection(): void
+    {
+        $run = $this->runFixture();
+        $storage = $run->getConnection();
+        $default = DB::getDefaultConnection();
+        $previousStorage = config('workflows.storage.connection');
+        config()
+            ->set('database.connections.wait-application', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+            ]);
+        config()
+            ->set('workflows.storage.connection', $storage->getName());
+        DB::setDefaultConnection('wait-application');
+
+        try {
+            $this->assertFalse(DB::connection()->getSchemaBuilder()->hasTable('workflow_run_waits'));
+            $waits = [$this->wait('signal:stored', 1, 'resolved')];
+            RunWaitProjector::project($run, $waits);
+            $before = $this->rows($run);
+            $queries = $this->capture(static fn () => RunWaitProjector::project($run->fresh(), $waits), $storage);
+            $this->assertSame(0, $this->updateCount($queries));
+            $this->assertSame($before, $this->rows($run));
+            $storage->beginTransaction();
+            try {
+                $waits[0]['summary'] = 'Changed on storage connection';
+                $queries = $this->capture(
+                    static fn () => RunWaitProjector::project($run->fresh(), $waits),
+                    $storage,
+                );
+                $this->assertSame(1, $this->updateCount($queries));
+                $this->assertSame($waits[0]['summary'], $run->fresh()->waits->first()->summary);
+            } finally {
+                $storage->rollBack();
+            }
+            $this->assertSame($before, $this->rows($run));
+        } finally {
+            DB::setDefaultConnection($default);
+            config()
+                ->set('workflows.storage.connection', $previousStorage);
+            DB::purge('wait-application');
+        }
+    }
+
     private function runFixture(): WorkflowRun
     {
         $instance = WorkflowInstance::query()->create([
@@ -220,6 +447,23 @@ final class RunWaitProjectionWritesTest extends TestCase
             'workflow_type' => $instance->workflow_type,
             'status' => 'running',
         ]);
+    }
+
+    private function drainTasks(WorkflowRun $run): void
+    {
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $task = WorkflowTask::query()->where('workflow_run_id', $run->id)
+                ->where('status', 'ready')
+                ->first();
+            if ($task === null) {
+                return;
+            }
+
+            app()
+                ->call([new RunWorkflowTask($task->id), 'handle']);
+        }
+
+        $this->fail('Workflow tasks exceeded the fixture drain bound.');
     }
 
     /**
@@ -259,9 +503,9 @@ final class RunWaitProjectionWritesTest extends TestCase
     /**
      * @return list<array<string, mixed>>
      */
-    private function capture(callable $operation): array
+    private function capture(callable $operation, ?Connection $connection = null): array
     {
-        $connection = DB::connection();
+        $connection ??= DB::connection();
         $connection->flushQueryLog();
         $connection->enableQueryLog();
         try {
