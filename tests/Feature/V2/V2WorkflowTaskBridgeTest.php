@@ -5205,12 +5205,19 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($this->bridge->complete($first->id, [$command])['completed']);
 
         $task = $this->createLeasedTask($run->fresh());
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
         $durable = static fn (): array => [
-            WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
-            ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
-            WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
-            WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
-            WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_attempts' => ActivityAttempt::query()->count(),
+            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
+            'instances' => WorkflowInstance::query()->count(),
+            'runs' => WorkflowRun::query()->count(),
+            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
         ];
         $before = $durable();
 
@@ -5224,6 +5231,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         }
 
         $this->assertSame($before, $durable());
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
         $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
 
         // At a limit of two, the same command is admitted.
