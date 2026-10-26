@@ -3469,6 +3469,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array &$createdTaskIds,
     ): int {
+        // The embedded executor's pending-count limit holds for external
+        // workers too (#933), checked before anything is written.
+        StructuralLimits::guardPendingActivities($run);
         $activityType = $command['activity_type'];
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
@@ -3567,6 +3570,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array &$createdTaskIds
     ): int {
+        StructuralLimits::guardPendingTimers($run);
         $delaySeconds = max(0, (int) ($command['delay_seconds'] ?? 0));
         $fireAt = now()
             ->addSeconds($delaySeconds);
@@ -4345,6 +4349,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array &$createdTaskIds,
     ): int {
+        StructuralLimits::guardPendingChildren($run);
         $workflowType = $command['workflow_type'];
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']

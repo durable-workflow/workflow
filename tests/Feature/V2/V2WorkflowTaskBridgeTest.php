@@ -44,6 +44,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityAttempt;
@@ -5186,6 +5187,69 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                 $this->assertArrayNotHasKey('failed_step_kind', $failureEvent->payload);
             }
         }
+    }
+
+    /**
+     * External workers meet the embedded executor's pending-count limits
+     * (#933): a command past the limit refuses the whole completion, and
+     * nothing of it is written.
+     */
+    #[DataProvider('pendingCountCommands')]
+    public function testCompleteRefusesAPendingCountPastItsLimitWithoutWriting(string $limit, array $command): void
+    {
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 1,
+        ]);
+        $run = $this->createWaitingRun();
+        $first = $this->createLeasedTask($run);
+        $this->assertTrue($this->bridge->complete($first->id, [$command])['completed']);
+
+        $task = $this->createLeasedTask($run->fresh());
+        $durable = static fn (): array => [
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+        ];
+        $before = $durable();
+
+        try {
+            $this->bridge->complete($task->id, [$command]);
+            $this->fail("A second pending {$command['type']} passed a limit of one.");
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame($limit, $exception->limitKind->value);
+            $this->assertSame(1, $exception->currentValue);
+            $this->assertSame(1, $exception->configuredLimit);
+        }
+
+        $this->assertSame($before, $durable());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+        // At a limit of two, the same command is admitted.
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 2,
+        ]);
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+    }
+
+    public static function pendingCountCommands(): iterable
+    {
+        yield 'activity' => [
+            'pending_activity_count', [
+                'type' => 'schedule_activity',
+                'activity_type' => 'bridge-activity',
+            ]];
+        yield 'timer' => [
+            'pending_timer_count', [
+                'type' => 'start_timer',
+                'delay_seconds' => 60,
+            ]];
+        yield 'child workflow' => [
+            'pending_child_count', [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'bridge-child',
+            ]];
     }
 
     public function testCompleteRejectsNonLeasedTask(): void
