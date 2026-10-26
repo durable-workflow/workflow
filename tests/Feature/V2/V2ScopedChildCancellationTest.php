@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -26,6 +28,8 @@ use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\EmbeddedV2HistoryImport;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ScopedChildCancellation;
 use Workflow\V2\Support\ScopedChildCancellationDelivery;
@@ -49,6 +53,148 @@ final class V2ScopedChildCancellationTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    #[DataProvider('importedCounterparts')]
+    public function testImportedPreparationCannotCaptureAnUnrelatedLaterChild(bool $counterpart): void
+    {
+        [$run, $task, $scope, $member, $target] = $this->importedPair($counterpart);
+        $before = $target->fresh()
+            ->getAttributes();
+        $refused = false;
+        try {
+            $request = CancellationScopeRequests::request($run, $scope, '1.20', 30);
+            $prepared = app(DefaultWorkflowTaskBridge::class)->prepareCancellationScopeDelivery(
+                $task->id,
+                $task->lease_owner,
+                $task->attempt_count,
+                $scope,
+                $request->payload['request_id'],
+                4,
+                'child',
+                protocolVersion: '1.20'
+            );
+            if (! $prepared['prepared']) {
+                $this->assertSame('cancellation_scope_child_target_mismatch', $prepared['reason']);
+                $refused = true;
+            } else {
+                ScopedChildCancellationDelivery::request(
+                    $run,
+                    $task,
+                    $member['child_call_id'],
+                    $scope,
+                    $prepared['request_id'],
+                    '1.20'
+                );
+            }
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_child_target_mismatch', $error->getMessage());
+            $refused = true;
+        }
+        if ($counterpart) {
+            $this->assertFalse($refused);
+            $this->assertNotNull($target->fresh()->cancellation_request_command_id);
+        } else {
+            $this->assertTrue($refused, 'An unrelated later run cannot become a scoped cancellation target.');
+            $this->assertSame($before, $target->fresh()->getAttributes());
+            $this->assertSame(0, $target->commands()->count());
+        }
+    }
+
+    public static function importedCounterparts(): iterable
+    {
+        yield 'unrelated later child' => [false];
+        yield 'counterpart import' => [true];
+    }
+
+    #[DataProvider('importedEdgeChanges')]
+    public function testImportedScopedRequestRechecksItsExactEdge(string $change, string $actor): void
+    {
+        [$run, $task, $scope, $member, $target] = $this->importedPair(true);
+        $prepared = $this->prepare($run, $task, $scope);
+        $link = WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->where(
+            'child_workflow_run_id',
+            $target->id
+        )->sole();
+        if ($change === 'missing') {
+            $link->delete();
+        } elseif ($change === 'reversed') {
+            $link->forceFill([
+                'parent_workflow_run_id' => $target->id,
+                'parent_workflow_instance_id' => $target->workflow_instance_id,
+                'child_workflow_run_id' => $run->id,
+                'child_workflow_instance_id' => $run->workflow_instance_id,
+            ])->save();
+        } elseif ($change !== 'owned') {
+            $link->forceFill(match ($change) {
+                'type' => [
+                    'link_type' => 'continue_as_new',
+                ],
+                'sequence' => [
+                    'sequence' => 99,
+                ],
+                'call' => [
+                    'id' => (string) Str::ulid(),
+                ],
+                'parent-instance' => [
+                    'parent_workflow_instance_id' => $target->workflow_instance_id,
+                ],
+                'child-instance' => [
+                    'child_workflow_instance_id' => $run->workflow_instance_id,
+                ],
+            })->save();
+        }
+        $before = $target->fresh()
+            ->getAttributes();
+        $refused = false;
+        try {
+            if ($actor === 'delivery') {
+                ScopedChildCancellationDelivery::request(
+                    $run,
+                    $task,
+                    $member['child_call_id'],
+                    $scope,
+                    $prepared['request_id'],
+                    '1.20'
+                );
+            } else {
+                WorkflowStub::loadRun($target->id)->attemptRequestCancellationFromScope(
+                    $run->id,
+                    $scope,
+                    $prepared['preparation_history_event_id'],
+                    $member['child_call_id']
+                );
+            }
+        } catch (LogicException $error) {
+            $this->assertSame('cancellation_scope_child_target_mismatch', $error->getMessage());
+            $refused = true;
+        }
+        if ($change === 'owned') {
+            $this->assertFalse($refused);
+            $this->assertNotNull($target->fresh()->cancellation_request_command_id);
+        } else {
+            $this->assertTrue($refused, 'Imported scope effects must revalidate the directed call edge.');
+            $this->assertSame($before, $target->fresh()->getAttributes());
+            $this->assertSame(0, $target->commands()->count());
+        }
+    }
+
+    public static function importedEdgeChanges(): iterable
+    {
+        foreach ([
+            'missing',
+            'reversed',
+            'type',
+            'sequence',
+            'call',
+            'parent-instance',
+            'child-instance',
+            'owned',
+        ] as $change) {
+            foreach (['delivery', 'direct'] as $actor) {
+                yield $change . '/' . $actor => [$change, $actor];
+            }
+        }
     }
 
     public function testPreparationFreezesAllPoliciesWithoutTouchingChildrenSiblingsOrShields(): void
@@ -814,6 +960,88 @@ final class V2ScopedChildCancellationTest extends TestCase
         $this->assertSame($context->requestId, $receipt['request_id']);
         $this->assertTrue($receipt['ready']);
         ScopedChildCancellation::assertReady(CancellationScopeDelivery::prepared($run->fresh(), $scope), $run->fresh());
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask, string, array<string, mixed>, WorkflowRun}
+     */
+    private function importedPair(bool $counterpart): array
+    {
+        [$run, $task, $scope] = $this->tree();
+        $member = $this->child($run, $task, $scope, 4);
+        $sourceChild = WorkflowRun::query()->findOrFail($member['child_workflow_run_id']);
+        $task->forceFill([
+            'status' => TaskStatus::Ready,
+            'leased_at' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+        $parentBundle = HistoryExport::forRun($run->fresh());
+        $childBundle = HistoryExport::forRun($sourceChild->fresh());
+        foreach ([
+            'workflow_run_summaries',
+            'workflow_run_waits',
+            'workflow_run_timeline_entries',
+            'workflow_run_timer_entries',
+            'workflow_run_lineage_entries',
+            'workflow_search_attributes',
+            'workflow_memos',
+            'workflow_history_events',
+            'workflow_tasks',
+            'activity_attempts',
+            'activity_executions',
+            'workflow_run_timers',
+            'workflow_failures',
+            'workflow_child_calls',
+            'workflow_links',
+            'workflow_signal_records',
+            'workflow_updates',
+            'workflow_commands',
+            'workflow_runs',
+            'workflow_instances',
+        ] as $table) {
+            DB::table($table)->delete();
+        }
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($parentBundle, [
+            'namespace' => 'imported-scope',
+        ])['status']);
+        if ($counterpart) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($childBundle, [
+                'namespace' => 'imported-scope',
+            ])['status']);
+        } else {
+            WorkflowInstance::query()->create([
+                'id' => $member['child_workflow_instance_id'],
+                'namespace' => 'imported-scope',
+                'workflow_type' => 'unrelated-later',
+                'workflow_class' => TestSignalWorkflow::class,
+                'current_run_id' => $member['child_workflow_run_id'],
+                'run_count' => 1,
+            ]);
+            $late = WorkflowRun::query()->create([
+                'id' => $member['child_workflow_run_id'],
+                'workflow_instance_id' => $member['child_workflow_instance_id'],
+                'namespace' => 'imported-scope',
+                'workflow_type' => 'unrelated-later',
+                'workflow_class' => TestSignalWorkflow::class,
+                'status' => 'waiting',
+                'run_number' => 1,
+                'payload_codec' => 'avro',
+                'arguments' => Serializer::serialize([]),
+            ]);
+            WorkflowHistoryEvent::record($late, HistoryEventType::WorkflowStarted, []);
+        }
+        $parent = WorkflowRun::query()->findOrFail($run->id);
+        $claim = WorkflowTask::query()->findOrFail($task->id);
+        $claim->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'imported-scope-worker',
+            'attempt_count' => 2,
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ])->save();
+
+        return [$parent, $claim, $scope, $member, WorkflowRun::query()->findOrFail($member['child_workflow_run_id'])];
     }
 
     /**

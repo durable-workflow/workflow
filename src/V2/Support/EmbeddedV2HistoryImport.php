@@ -146,7 +146,12 @@ final class EmbeddedV2HistoryImport
             ];
         }
 
-        $existing = self::existingRunOutcome($workflow['run_id'], self::stringValue($bundle['dedupe_key'] ?? null));
+        $namespace = self::stringValue($workflow['namespace'] ?? null);
+        $existing = self::existingRunOutcome(
+            $workflow['run_id'],
+            self::stringValue($bundle['dedupe_key'] ?? null),
+            $namespace
+        );
 
         if ($existing['status'] === 'already_imported') {
             return [
@@ -169,6 +174,20 @@ final class EmbeddedV2HistoryImport
             ];
         }
 
+        $instance = WorkflowInstance::query()->find($workflow['instance_id']);
+        if ($instance instanceof WorkflowInstance && $instance->namespace !== $namespace) {
+            return [
+                ...$base,
+                'status' => 'rejected',
+                'eligibility' => self::withEligibilityError(
+                    $eligibility,
+                    'target.instance_namespace_conflict',
+                    'A workflow instance with this instance_id already exists outside the target namespace.',
+                ),
+                'rows' => self::emptyRows(),
+            ];
+        }
+
         if ($dryRun) {
             return [
                 ...$base,
@@ -177,13 +196,33 @@ final class EmbeddedV2HistoryImport
             ];
         }
 
+        if (DB::connection()->getDriverName() === 'pgsql' && DB::transactionLevel() !== 0) {
+            return [
+                ...$base,
+                'status' => 'rejected',
+                'eligibility' => self::withEligibilityError(
+                    $eligibility,
+                    'target.transaction_in_progress',
+                    'PostgreSQL history import must run outside an existing transaction so its serializable transaction can be retried safely.',
+                ),
+                'rows' => self::emptyRows(),
+            ];
+        }
+
         $importId = self::stringValue($options['import_id'] ?? null) ?? (string) Str::ulid();
         $importedAt = now();
 
         try {
             $rows = DB::transaction(static function () use ($bundle, $workflow, $importId, $importedAt): array {
+                if (DB::connection()->getDriverName() === 'pgsql') {
+                    // Row locks cannot lock a missing endpoint on PostgreSQL.
+                    // Serializable predicate checks prevent reciprocal imports
+                    // from both committing without seeing the other's run.
+                    DB::statement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+                }
+
                 return self::writeBundle($bundle, $workflow, $importId, $importedAt);
-            });
+            }, 3);
         } catch (Throwable $throwable) {
             return [
                 ...$base,
@@ -217,6 +256,10 @@ final class EmbeddedV2HistoryImport
         string $importId,
         CarbonInterface $importedAt,
     ): array {
+        $lineageErrors = EmbeddedV2ImportLineage::errors($bundle, $workflow, true);
+        if ($lineageErrors !== []) {
+            throw new InvalidArgumentException($lineageErrors[0]['message']);
+        }
         $rows = self::emptyRows();
         $namespace = self::stringValue($workflow['namespace'] ?? null);
         $runStatus = RunStatus::from($workflow['status']);
@@ -240,6 +283,7 @@ final class EmbeddedV2HistoryImport
 
         /** @var WorkflowInstance|null $instance */
         $instance = WorkflowInstance::query()
+            ->where('namespace', $namespace)
             ->lockForUpdate()
             ->find($instanceId);
 
@@ -319,7 +363,7 @@ final class EmbeddedV2HistoryImport
         $rows['activity_attempts'] += self::writeActivityAttempts($bundle, $runId);
         $rows['workflow_run_timers'] += self::writeTimers($bundle, $runId);
         $rows['workflow_failures'] += self::writeFailures($bundle, $runId);
-        $rows['workflow_links'] += self::writeLinks($bundle, $runId, $instanceId);
+        $rows['workflow_links'] += self::writeLinks($bundle, $runId, $instanceId, $namespace);
         $rows['workflow_memos'] += self::writeMemos($workflow, $runId, $instanceId, $historySequence);
         $rows['workflow_search_attributes'] += self::writeSearchAttributes(
             $workflow,
@@ -707,7 +751,7 @@ final class EmbeddedV2HistoryImport
         return $count;
     }
 
-    private static function writeLinks(array $bundle, string $runId, string $instanceId): int
+    private static function writeLinks(array $bundle, string $runId, string $instanceId, ?string $namespace): int
     {
         $links = self::arrayValue($bundle['links'] ?? null);
         $count = 0;
@@ -719,8 +763,12 @@ final class EmbeddedV2HistoryImport
             if ($parentInstance === null || $parentRun === null) {
                 continue;
             }
+            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $parentRun, $parentInstance, $runId);
+            if ($related === null) {
+                continue;
+            }
 
-            $count += self::insertLink([
+            $inserted = self::insertLink([
                 'id' => self::ulidValue($link['id'] ?? null) ?? (string) Str::ulid(),
                 'link_type' => self::stringValue($link['type'] ?? null) ?? 'parent',
                 'sequence' => self::intValue($link['sequence'] ?? null),
@@ -731,7 +779,11 @@ final class EmbeddedV2HistoryImport
                 'is_primary_parent' => (bool) ($link['is_primary_parent'] ?? false),
                 'created_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
                 'updated_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
-            ]) ? 1 : 0;
+            ]);
+            if ($inserted) {
+                $count++;
+                RunSummaryProjector::project($related->fresh() ?? $related);
+            }
         }
 
         foreach (self::listValue($links['children'] ?? null) as $link) {
@@ -741,8 +793,12 @@ final class EmbeddedV2HistoryImport
             if ($childInstance === null || $childRun === null) {
                 continue;
             }
+            $related = EmbeddedV2ImportLineage::existingEndpoint($namespace, $childRun, $childInstance, $runId);
+            if ($related === null) {
+                continue;
+            }
 
-            $count += self::insertLink([
+            $inserted = self::insertLink([
                 'id' => self::ulidValue($link['id'] ?? null) ?? (string) Str::ulid(),
                 'link_type' => self::stringValue($link['type'] ?? null) ?? 'child',
                 'sequence' => self::intValue($link['sequence'] ?? null),
@@ -753,7 +809,11 @@ final class EmbeddedV2HistoryImport
                 'is_primary_parent' => (bool) ($link['is_primary_parent'] ?? false),
                 'created_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
                 'updated_at' => self::timestamp($link['created_at'] ?? null) ?? now(),
-            ]) ? 1 : 0;
+            ]);
+            if ($inserted) {
+                $count++;
+                RunSummaryProjector::project($related->fresh() ?? $related);
+            }
         }
 
         return $count;
@@ -978,6 +1038,9 @@ final class EmbeddedV2HistoryImport
             self::rejectOpenLeases($bundle, $errors);
         }
 
+        $errors = [...$errors, ...EmbeddedV2ImportMessageReferences::errors($bundle)];
+        $errors = [...$errors, ...EmbeddedV2ImportLineage::errors($bundle, $workflow)];
+
         return [
             'eligible' => $errors === [],
             'errors' => $errors,
@@ -1184,7 +1247,7 @@ final class EmbeddedV2HistoryImport
     /**
      * @return array{status: string}
      */
-    private static function existingRunOutcome(?string $runId, ?string $dedupeKey): array
+    private static function existingRunOutcome(?string $runId, ?string $dedupeKey, ?string $namespace): array
     {
         if ($runId === null) {
             return [
@@ -1202,7 +1265,8 @@ final class EmbeddedV2HistoryImport
         }
 
         if (
-            $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
+            $run->namespace === $namespace
+            && $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
             && is_string($run->import_dedupe_key)
             && $run->import_dedupe_key === $dedupeKey
         ) {

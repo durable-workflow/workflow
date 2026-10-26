@@ -2132,6 +2132,17 @@ final class WorkflowStub
                 }
                 $member = $scopePreparation === null ? null : collect($scopePreparation->childMembers)
                     ->firstWhere('child_call_id', $scopeTarget['child_call_id']);
+                if ((\Workflow\V2\Support\ImportedLineageReferences::imported($scopeParent)
+                    || \Workflow\V2\Support\ImportedLineageReferences::imported($run))
+                    && ($member === null || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                        $scopeParent,
+                        $run,
+                        $member['sequence'],
+                        $scopeTarget['child_call_id'],
+                        true
+                    ))) {
+                    throw new LogicException('cancellation_scope_child_target_mismatch');
+                }
                 if ($scopePreparation === null || $scopePreparation->historyEventId !== $scopeTarget['preparation_history_event_id']
                     || $member === null || $member['child_workflow_instance_id'] !== $instance->id
                     || $member['child_workflow_run_id'] !== $run->id || $member['cancellation_policy'] === 'abandon'
@@ -5187,7 +5198,7 @@ final class WorkflowStub
             ->lockForUpdate()
             ->get();
 
-        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        /** @var array<string, array{parent_workflow_instance_id: string, parent_workflow_run_id: string, parent_sequence: int|null, child_call_id?: string|null}> $parentReferences */
         $parentReferences = [];
 
         foreach ($parentLinks as $parentLink) {
@@ -5196,6 +5207,7 @@ final class WorkflowStub
             }
 
             $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_instance_id' => $parentLink->parent_workflow_instance_id,
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
                 'parent_sequence' => is_int($parentLink->sequence)
                     ? $parentLink->sequence
@@ -5203,7 +5215,7 @@ final class WorkflowStub
             ];
         }
 
-        if ($parentReferences === []) {
+        if ($parentReferences === [] && ! \Workflow\V2\Support\ImportedLineageReferences::imported($childRun)) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
@@ -5214,15 +5226,24 @@ final class WorkflowStub
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = self::runQuery()
+                ->where('namespace', $childRun->namespace)
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
-            if ($parentRun === null || in_array($parentRun->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
+            if ($parentRun === null || $parentRun->workflow_instance_id !== $parentReference['parent_workflow_instance_id']
+                || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $childRun,
+                    $parentReference['parent_sequence'],
+                    $parentReference['child_call_id'] ?? null,
+                    true
+                )
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)) {
                 continue;
             }
 

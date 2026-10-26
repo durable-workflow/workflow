@@ -96,7 +96,14 @@ final class ScopedChildCancellationDelivery
                     $member['child_workflow_run_id']
                 );
                 if ($child === null || $child->workflow_instance_id !== $member['child_workflow_instance_id']
-                    || $child->namespace !== $parent->namespace) {
+                    || $child->namespace !== $parent->namespace
+                    || ! ImportedLineageReferences::allowsChild(
+                        $parent,
+                        $child,
+                        $member['sequence'],
+                        $childCallId,
+                        true
+                    )) {
                     throw new LogicException('cancellation_scope_child_target_mismatch');
                 }
                 $base = self::base($parent, $preparation, $member);
