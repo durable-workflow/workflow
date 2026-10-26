@@ -4066,6 +4066,7 @@ final class WorkflowExecutor
         $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+        LifecycleEventDispatcher::workflowCancelled($run, CooperativeCancellationDelivery::context($run)?->reason);
     }
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
