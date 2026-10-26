@@ -336,6 +336,21 @@ reference. A second handler binding for the same call (for example
 when the caller retries with a different idempotency key) is a new
 service-call row with its own durable id.
 
+A WorkflowRun binding follows the logical execution through canonical
+`WorkflowContinuedAsNew` history. Its current linked run and resolved target
+reference advance only to the declared next run, in the same namespace,
+instance and workflow type, with the next run number. Selecting an instance's
+current run or an unrelated redrive is insufficient. The call id, acceptance
+time and original call deadline remain unchanged. The first run and latest
+continuation event remain inspectable in call metadata. Continuation keeps the
+call open; the final run's completion, cancellation or typed failure closes it.
+A linked workflow timeout is a typed handler failure; expiry of the call's own
+deadline remains the `timed_out` outcome and takes precedence once reached.
+
+One reconciliation read follows at most 32 continuation hops. The existing
+repair pass resumes longer chains, within its normal candidate and queue/run
+scope limits. No polling client is required to finish that reconciliation.
+
 ## Deadline, cancellation, retry, and idempotency
 
 Every operation declares the policies it accepts at the contract
@@ -377,6 +392,14 @@ Every one of these policies is visible at the contract layer: a CLI
 or Waterline surface inspecting the call row can render the snapped
 deadline, cancellation, retry, and idempotency policy without
 consulting the live operation registry.
+
+For the built-in `propagate_to_linked_workflow` cancellation option, propagation
+is best-effort and its public receipt is retained in `metadata.linked_cancel`.
+A propagation exception records `workflow_cancel_exception` and its exception
+type while still applying the local cancellation. A linked terminal event or
+the original call deadline that wins during propagation is preserved, together
+with its result/failure and the propagation receipt. A later duplicate cannot
+replace that terminal outcome or send another propagation request.
 
 ## Reference-based payload storage
 
