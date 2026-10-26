@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "cooperative-cleanup-terminal-notification",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestCooperativeRetryCleanupWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-26T00:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-10-26T00:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "CooperativeCancellationRequested",
+      "payload": {
+        "workflow_command_id": "corpus-cancel",
+        "command_type": "request_cancellation",
+        "reason": "original application cancellation reason"
+      },
+      "recorded_at": "2026-10-26T00:00:02Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerCancelled",
+      "payload": {"sequence": 1},
+      "recorded_at": "2026-10-26T00:00:03Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "CooperativeCancellationDelivered",
+      "payload": {"workflow_command_id": "corpus-cancel", "sequence": 1, "call_kind": "timer"},
+      "recorded_at": "2026-10-26T00:00:03Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "corpus-cleanup-activity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRetryActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRetryActivity"
+      },
+      "recorded_at": "2026-10-26T00:00:04Z"
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []},
+  "terminal_notification": {
+    "commands": ["cooperative", "cancel", "terminate"],
+    "reason": "original application cancellation reason",
+    "cleanup_timeout_seconds": 60,
+    "cleanup_retry_delay_seconds": 6,
+    "cleanup_memo": {"cleanup": "Hello, cleanup!"}
+  }
+}
