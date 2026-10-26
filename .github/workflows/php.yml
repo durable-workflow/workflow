@@ -780,6 +780,20 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
+    - name: Run service scheduling and completion contracts
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/DefaultServiceControlPlaneWorkflowBindingTest.php
+        tests/Unit/V2/ServiceCallEffectIdentityTest.php
+        tests/Unit/V2/WebhookInputValidationTest.php
+        tests/Unit/V2/WorkflowExecutorServiceOperationTest.php
+        tests/Unit/V2/DefaultWorkflowTaskBridgeServiceOperationTest.php
+        tests/Unit/V2/ServiceCallSchedulerTest.php
+        --fail-on-warning --log-junit build/test-results/pr-smoke-service-scheduling.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Upload pull-request MySQL smoke timing report
       if: ${{ always() && github.server_url == 'https://github.com' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7

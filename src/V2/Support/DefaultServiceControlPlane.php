@@ -1387,6 +1387,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $commandOptions['wait_for'] ??= $call->operation_mode === ServiceCallOperationMode::Sync->value
             ? 'completed'
             : 'accepted';
+        if ($call->getConnection()->transactionLevel() > 0) {
+            $commandOptions['wait_for'] = UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
+            unset($commandOptions['wait_timeout_seconds']);
+        }
 
         try {
             $result = $this->workflows()

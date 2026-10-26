@@ -442,7 +442,7 @@ final class ServiceCallEffectIdentityTest extends TestCase
             'handler_target_reference' => 'change',
         ]);
         $control = new DefaultServiceControlPlane(new DefaultWorkflowControlPlane());
-        DB::transaction(static fn (): array => $control->execute('billing', 'effects', 'apply', [
+        $options = ServiceCallScheduler::withAfterCommitAuthority([
             'namespace' => 'billing',
             'caller_namespace' => $run->namespace,
             'caller_workflow_instance_id' => $caller->id(),
@@ -451,7 +451,8 @@ final class ServiceCallEffectIdentityTest extends TestCase
             'idempotency_key' => 'effect-identity-' . $caller->id(),
             'wait_for' => 'completed',
             'wait_timeout_seconds' => 60,
-        ]));
+        ]);
+        DB::transaction(static fn (): array => $control->execute('billing', 'effects', 'apply', $options));
         $claim = ServiceCallScheduler::claim(WorkflowServiceCall::query()->sole()->id);
         $this->assertNotNull($claim);
         $identity = ServiceCallEffectIdentity::forCurrentClaim($claim);
