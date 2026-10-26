@@ -38,6 +38,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     private const WORKFLOW_QUERY_HANDLER_BINDING = 'workflow.v2.service_control_plane.workflow_query_handler';
 
+    private ?ServiceCallAttemptClaim $scheduledClaim = null;
+
     public function __construct(
         private ?WorkflowControlPlane $workflowControlPlane = null,
         private ?ServiceBoundaryPolicy $boundaryPolicy = null,
@@ -54,6 +56,11 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         string $operationName,
         array $options = []
     ): array {
+        if (array_key_exists('wait_timeout_seconds', $options)) {
+            $options['wait_timeout_seconds'] = UpdateWaitPolicy::serviceOperationTimeoutSeconds(
+                $options['wait_timeout_seconds'],
+            );
+        }
         $namespace = $this->targetNamespace($options);
         $endpointKey = $this->contractName($endpointName);
         $serviceKey = $this->contractName($serviceName);
@@ -288,15 +295,65 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $handler = $this->dispatchHandler($call, $operation, $boundaryRequest, $options);
+        $scheduled = $this->shouldScheduleHandler($call);
+        $handler = $scheduled
+            ? $this->scheduleHandler($call, $operation, $options)
+            : $this->dispatchHandler($call, $operation, $boundaryRequest, $options);
         $call->refresh();
 
-        return $this->serialize($call) + [
+        return $this->serialize($call) + ($scheduled ? [
+            'wait_for' => UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
+            'retry_scheduled' => true,
+        ] : []) + [
             'accepted' => $this->acceptedShape($call),
             'idempotent_replay' => false,
             'handler' => $handler,
             'reason' => $this->isFailed($call) ? ($call->outcome_reason ?? 'handler_failed') : null,
         ];
+    }
+
+    public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
+    {
+        if (! ServiceCallScheduler::ownsClaim($claim)) {
+            return;
+        }
+
+        $this->scheduledClaim = $claim;
+        try {
+            $startedAt = now();
+            $result = $this->dispatchHandlerAttempt(
+                $claim->call,
+                $claim->operation,
+                $claim->request,
+                $claim->options,
+                $claim->attempt,
+                $claim->maxAttempts,
+            );
+            $claim->call->refresh();
+            $retry = $this->shouldRetryServiceCall($result, $claim->attempt, $claim->maxAttempts);
+            $backoff = $retry
+                ? $this->serviceCallBackoffSeconds($claim->call->retry_policy, $claim->attempt)
+                : null;
+            $recorded = ServiceCallScheduler::completeAttempt(
+                $claim,
+                $this->serviceCallAttemptEntry(
+                    $claim->call,
+                    $result,
+                    $claim->attempt,
+                    $startedAt,
+                    $retry,
+                    $backoff,
+                ),
+                $retry,
+                $backoff,
+            );
+            $claim->call->refresh();
+            if ($recorded && ! $retry && $this->isFailed($claim->call)) {
+                $this->releaseBoundaryAdmission($claim->request);
+            }
+        } finally {
+            $this->scheduledClaim = null;
+        }
     }
 
     /**
@@ -966,6 +1023,36 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     /**
      * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function scheduleHandler(
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+        array $options,
+    ): array {
+        $maxAttempts = $this->maxServiceCallAttempts($call->retry_policy);
+        ServiceCallScheduler::schedule($call, $operation, $options, $maxAttempts);
+
+        return [
+            'accepted' => true,
+            'kind' => $call->resolved_binding_kind,
+            'wait_for' => UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
+            'retry_scheduled' => true,
+            'service_call_attempt' => 1,
+            'service_call_max_attempts' => $maxAttempts,
+        ];
+    }
+
+    private function shouldScheduleHandler(WorkflowServiceCall $call): bool
+    {
+        return is_string($call->caller_workflow_run_id)
+            && $call->caller_workflow_run_id !== ''
+            && $call->getConnection()
+                ->transactionLevel() > 0;
+    }
+
+    /**
+     * @param array<string, mixed> $options
      * @return array<string, mixed>|null
      */
     private function dispatchHandlerAttempt(
@@ -1292,6 +1379,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $commandOptions['wait_for'] ??= $call->operation_mode === ServiceCallOperationMode::Sync->value
             ? 'completed'
             : 'accepted';
+        if ($call->getConnection()->transactionLevel() > 0) {
+            $commandOptions['wait_for'] = UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
+            unset($commandOptions['wait_timeout_seconds']);
+        }
 
         try {
             $result = $this->workflows()
@@ -1319,7 +1410,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
 
             if (($result['update_status'] ?? null) === 'completed') {
-                $this->markCompleted(
+                $completed = $this->markCompleted(
                     $call,
                     ServiceCallBindingKind::WorkflowUpdate->value,
                     $updateId ?? $updateName,
@@ -1328,7 +1419,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $updateId,
                     $metadata,
                 );
-                $this->releaseBoundaryAdmission($request);
+                if ($completed) {
+                    $this->releaseBoundaryAdmission($request);
+                }
             } else {
                 $this->markStarted(
                     $call,
@@ -1501,7 +1594,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         if (($result['success'] ?? false) === true) {
             $runId = $this->stringFrom($result['run_id'] ?? null);
 
-            $this->markCompleted(
+            $completed = $this->markCompleted(
                 $call,
                 ServiceCallBindingKind::WorkflowQuery->value,
                 $runId ?? $instanceId,
@@ -1513,7 +1606,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     'control_plane' => $this->publicResult($result),
                 ],
             );
-            $this->releaseBoundaryAdmission($request);
+            if ($completed) {
+                $this->releaseBoundaryAdmission($request);
+            }
 
             return [
                 'accepted' => true,
@@ -1612,6 +1707,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'activity_execution_id' => $activityExecutionId,
             'activity_class' => $activityClass,
             'activity_type' => $activityType,
+            'service_call_idempotency_key' => $options['service_call_idempotency_key'] ?? null,
         ];
 
         foreach (['connection', 'queue'] as $key) {
@@ -1679,6 +1775,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $metadata = [
             'carrier_request_id' => $carrierRequestId,
             'carrier_endpoint' => $carrierEndpoint,
+            'service_call_idempotency_key' => $options['service_call_idempotency_key'] ?? null,
         ];
 
         if ($carrierHandler !== null) {
@@ -1733,27 +1830,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
     ): void {
-        $call->resolved_binding_kind = $bindingKind;
-        $call->resolved_target_reference = $targetReference;
-        $call->linked_workflow_instance_id = $instanceId;
-        $call->linked_workflow_run_id = $runId;
-        $call->linked_workflow_update_id = $updateId;
-        $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
-        $call->save();
-    }
-
-    /**
-     * @param array<string, mixed> $metadata
-     */
-    private function markStarted(
-        WorkflowServiceCall $call,
-        string $bindingKind,
-        string $targetReference,
-        ?string $instanceId,
-        ?string $runId,
-        ?string $updateId,
-        array $metadata,
-    ): void {
         $call->getConnection()
             ->transaction(function () use (
                 $call,
@@ -1768,6 +1844,53 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
+                if (! $this->scheduledClaimOwnsLockedCall($locked)
+                    || ServiceCallDeadline::expireLocked($locked, now())
+                    || $this->isTerminal($locked)) {
+                    return;
+                }
+                $locked->resolved_binding_kind = $bindingKind;
+                $locked->resolved_target_reference = $targetReference;
+                $locked->linked_workflow_instance_id = $instanceId;
+                $locked->linked_workflow_run_id = $runId;
+                $locked->linked_workflow_update_id = $updateId;
+                $locked->metadata = $this->mergeMetadata($locked->metadata, $metadata);
+                $locked->save();
+            });
+        $call->refresh();
+    }
+
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    private function markStarted(
+        WorkflowServiceCall $call,
+        string $bindingKind,
+        string $targetReference,
+        ?string $instanceId,
+        ?string $runId,
+        ?string $updateId,
+        array $metadata,
+    ): bool {
+        $recorded = false;
+        $call->getConnection()
+            ->transaction(function () use (
+                $call,
+                $bindingKind,
+                $targetReference,
+                $instanceId,
+                $runId,
+                $updateId,
+                $metadata,
+                &$recorded,
+            ): void {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if (! $this->scheduledClaimOwnsLockedCall($locked)) {
+                    return;
+                }
                 ServiceCallDeadline::expireLocked($locked, now());
                 $locked->resolved_binding_kind ??= $bindingKind;
                 if (! $this->isTerminal($locked)
@@ -1794,9 +1917,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 }
 
                 $locked->save();
+                $recorded = true;
             });
         $call->refresh();
-        LinkedServiceCallCloser::reconcile($call);
+        if ($recorded) {
+            LinkedServiceCallCloser::reconcile($call);
+        }
+
+        return $recorded;
     }
 
     /**
@@ -1810,7 +1938,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $runId,
         ?string $updateId,
         array $metadata,
-    ): void {
+    ): bool {
+        $recorded = false;
         $call->getConnection()
             ->transaction(function () use (
                 $call,
@@ -1820,12 +1949,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $runId,
                 $updateId,
                 $metadata,
+                &$recorded,
             ): void {
                 /** @var WorkflowServiceCall $locked */
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
-                if (ServiceCallDeadline::expireLocked($locked, now()) || $this->isTerminal($locked)) {
+                if (! $this->scheduledClaimOwnsLockedCall($locked)
+                    || ServiceCallDeadline::expireLocked($locked, now()) || $this->isTerminal($locked)) {
                     return;
                 }
                 $call = $locked;
@@ -1847,8 +1978,11 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->failure_message = null;
                 $call->save();
                 ServiceCallWorkflowDelivery::enqueue($call);
+                $recorded = true;
             });
         $call->refresh();
+
+        return $recorded;
     }
 
     /**
@@ -1878,6 +2012,15 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
+                if (! $this->scheduledClaimOwnsLockedCall($locked)) {
+                    return [
+                        'accepted' => false,
+                        'kind' => $locked->resolved_binding_kind,
+                        'reason' => 'stale_service_call_claim',
+                        'message' => 'The scheduled service-call claim is no longer current.',
+                        'retry_scheduled' => false,
+                    ];
+                }
                 if (ServiceCallDeadline::expireLocked($locked, now()) || $this->isTerminal($locked)) {
                     return [
                         'accepted' => false,
@@ -2042,6 +2185,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $startOptions['payload_codec'] = $call->payload_codec;
         }
 
+        foreach (['service_call_id', 'service_call_attempt', 'service_call_max_attempts',
+            'service_call_idempotency_key'] as $key) {
+            if (array_key_exists($key, $options)) {
+                $startOptions[$key] = $options[$key];
+            }
+        }
+
         return $startOptions;
     }
 
@@ -2061,7 +2211,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $commandOptions['arguments'] = $arguments;
         }
 
-        foreach (['payload_codec', 'payload_blob', 'wait_for', 'wait_timeout_seconds'] as $key) {
+        foreach (['payload_codec', 'payload_blob', 'wait_for', 'wait_timeout_seconds',
+            'service_call_id', 'service_call_attempt', 'service_call_max_attempts',
+            'service_call_idempotency_key'] as $key) {
             $value = $options[$key] ?? $binding[$key] ?? null;
 
             if ($value !== null) {
@@ -2070,6 +2222,26 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         return $commandOptions;
+    }
+
+    private function scheduledClaimOwnsLockedCall(WorkflowServiceCall $call): bool
+    {
+        if (! $this->scheduledClaim instanceof ServiceCallAttemptClaim) {
+            return true;
+        }
+        if ($call->id !== $this->scheduledClaim->call->id) {
+            return false;
+        }
+
+        /** @var \Workflow\V2\Models\WorkflowServiceCallDispatch|null $dispatch */
+        $dispatch = ConfiguredV2Models::query(
+            'service_call_dispatch_model',
+            \Workflow\V2\Models\WorkflowServiceCallDispatch::class,
+        )->lockForUpdate()
+            ->find($call->id);
+
+        return $dispatch instanceof \Workflow\V2\Models\WorkflowServiceCallDispatch
+            && ServiceCallScheduler::ownsLockedClaim($dispatch, $this->scheduledClaim);
     }
 
     /**

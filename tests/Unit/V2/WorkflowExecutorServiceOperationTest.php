@@ -143,6 +143,7 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
             $this->ordered($service->executions[0])
         );
         $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->whereIn('event_type', [
+            HistoryEventType::ServiceOperationScheduled->value,
             HistoryEventType::ServiceCallStarted->value,
             HistoryEventType::ServiceCallCompleted->value,
             HistoryEventType::ServiceCallFailed->value,
@@ -192,6 +193,9 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
                 'operation_mode' => 'async',
                 'wait_for' => 'accepted',
             ];
+        }
+        if ($eventType === HistoryEventType::ServiceOperationScheduled) {
+            $expectedPayload['workflow_resume_on_admission'] = ! $waiting;
         }
         if ($failure !== null) {
             $exception = [
@@ -293,6 +297,23 @@ final class WorkflowExecutorServiceOperationTest extends TestCase
             'operation_mode' => 'async',
             'wait_for' => 'accepted',
         ], [], null, HistoryEventType::ServiceCallStarted, false, null];
+        yield 'scheduled sync admission waits for terminal history' => [[
+            'status' => 'accepted',
+            'outcome' => 'accepted',
+            'operation_mode' => 'sync',
+            'wait_for' => 'accepted',
+            'retry_scheduled' => true,
+        ], [], null, HistoryEventType::ServiceOperationScheduled, true, null];
+        yield 'scheduled authored async admission resumes' => [[
+            'status' => 'accepted',
+            'outcome' => 'accepted',
+            'operation_mode' => 'async',
+            'wait_for' => 'accepted',
+            'retry_scheduled' => true,
+        ], [
+            'modeOverride' => 'async',
+            'waitFor' => 'accepted',
+        ], null, HistoryEventType::ServiceOperationScheduled, false, null];
         yield 'explicit accepted admission' => [[
             'status' => 'accepted',
             'outcome' => 'accepted',

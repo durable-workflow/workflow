@@ -10,6 +10,8 @@ final class UpdateWaitPolicy
 {
     public const COMPLETION_TIMEOUT_SECONDS = 10;
 
+    public const MAX_COMPLETION_TIMEOUT_SECONDS = 60;
+
     public const POLL_INTERVAL_MILLISECONDS = 50;
 
     public const WAIT_FOR_ACCEPTED = 'accepted';
@@ -20,9 +22,12 @@ final class UpdateWaitPolicy
 
     public static function completionTimeoutSeconds(): int
     {
-        return self::configuredPositiveInt(
-            'workflows.v2.update_wait.completion_timeout_seconds',
-            self::COMPLETION_TIMEOUT_SECONDS,
+        return min(
+            self::configuredPositiveInt(
+                'workflows.v2.update_wait.completion_timeout_seconds',
+                self::COMPLETION_TIMEOUT_SECONDS,
+            ),
+            self::MAX_COMPLETION_TIMEOUT_SECONDS,
         );
     }
 
@@ -88,12 +93,51 @@ final class UpdateWaitPolicy
         }
 
         if ((is_int($value) || (is_string($value) && ctype_digit($value))) && (int) $value >= 1) {
-            return (int) $value;
+            $seconds = (int) $value;
+
+            if ($seconds <= self::MAX_COMPLETION_TIMEOUT_SECONDS) {
+                return $seconds;
+            }
+
+            throw ValidationException::withMessages([
+                'wait_timeout_seconds' => [
+                    'The wait_timeout_seconds field must not exceed '
+                    . self::MAX_COMPLETION_TIMEOUT_SECONDS
+                    . ' seconds.',
+                ],
+            ]);
         }
 
         throw ValidationException::withMessages([
             'wait_timeout_seconds' => ['The wait_timeout_seconds field must be a positive integer.'],
         ]);
+    }
+
+    public static function serviceOperationTimeoutSeconds(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_int($value) || $value < 0) {
+            throw ValidationException::withMessages([
+                'wait_timeout_seconds' => [
+                    'The wait_timeout_seconds field must be a non-negative integer when provided.',
+                ],
+            ]);
+        }
+
+        if ($value > self::MAX_COMPLETION_TIMEOUT_SECONDS) {
+            throw ValidationException::withMessages([
+                'wait_timeout_seconds' => [
+                    'The wait_timeout_seconds field must not exceed '
+                    . self::MAX_COMPLETION_TIMEOUT_SECONDS
+                    . ' seconds.',
+                ],
+            ]);
+        }
+
+        return $value;
     }
 
     private static function configuredPositiveInt(string $key, int $default): int

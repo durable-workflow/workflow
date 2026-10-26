@@ -55,6 +55,26 @@ final class QueryStateReplayerServiceOperationTest extends TestCase
         ];
     }
 
+    public function testScheduledSyncCallDoesNotResumeFromInternalAcceptedDispatch(): void
+    {
+        $run = $this->createRun('sync');
+        $this->appendEvent($run, HistoryEventType::ServiceOperationScheduled, [
+            'operation_mode' => 'sync',
+            'wait_for' => 'accepted',
+            'workflow_resume_on_admission' => false,
+            'service_call' => [
+                'operation_mode' => 'sync',
+                'wait_for' => 'accepted',
+            ],
+        ] + $this->servicePayload());
+
+        $this->assertReadOnlyState($run, [
+            'stage' => 'waiting-for-service',
+            'result' => null,
+            'failure' => null,
+        ], ServiceOperationCall::class, 1);
+    }
+
     #[DataProvider('visibleAdmissions')]
     public function testAcceptedAdmissionRestoresAQueryableResult(string $mode, array $metadata): void
     {

@@ -134,6 +134,9 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertSameJsonObject($surface, $event->payload['response_or_failure_surface']);
         $this->assertSame($this->run->id, $event->payload['caller_workflow_run_id']);
         $this->assertSame($payload, $event->payload['request_payload']);
+        if ($eventType === HistoryEventType::ServiceOperationScheduled) {
+            $this->assertSame($resume, $event->payload['workflow_resume_on_admission']);
+        }
         $response = $surface['response_payload'] ?? $surface['result'] ?? null;
         if ($response === null) {
             $this->assertArrayNotHasKey('response_payload', $event->payload);
@@ -277,6 +280,31 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         yield 'surface async mode' => [$started + [
             'operation_mode' => 'async',
         ], [], HistoryEventType::ServiceCallStarted, true, null, null];
+        $scheduled = $base + [
+            'status' => 'accepted',
+            'outcome' => 'accepted',
+            'operation_mode' => 'sync',
+            'wait_for' => 'accepted',
+            'retry_scheduled' => true,
+        ];
+        yield 'scheduled sync call remains blocked' => [
+            $scheduled, [], HistoryEventType::ServiceOperationScheduled, false, null, null,
+        ];
+        yield 'scheduled authored accepted wait resumes' => [
+            $scheduled, [
+                'wait_for' => 'accepted',
+            ], HistoryEventType::ServiceOperationScheduled, true, null, null,
+        ];
+        yield 'scheduled async operation resumes' => [
+            array_replace($scheduled, [
+                'operation_mode' => 'async',
+            ]),
+            [],
+            HistoryEventType::ServiceOperationScheduled,
+            true,
+            null,
+            null,
+        ];
     }
 
     public function testServiceOptionsPreserveTypedValuesAndAuthoritativeCallerMetadata(): void
@@ -521,7 +549,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         foreach ([
             'mode_override' => ['queued', 42],
             'wait_for' => ['applied', []],
-            'wait_timeout_seconds' => [-1, 1.5, '0'],
+            'wait_timeout_seconds' => [-1, 1.5, '0', 61],
         ] as $field => $values) {
             foreach ($values as $value) {
                 yield $field . ' ' . json_encode($value, JSON_THROW_ON_ERROR) => [[

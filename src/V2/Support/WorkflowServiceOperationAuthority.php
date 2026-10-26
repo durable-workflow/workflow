@@ -14,6 +14,7 @@ use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 
@@ -34,6 +35,7 @@ final class WorkflowServiceOperationAuthority
         }
         foreach ([
             ['service_call_model', WorkflowServiceCall::class],
+            ['service_call_dispatch_model', WorkflowServiceCallDispatch::class],
             ['service_endpoint_model', WorkflowServiceEndpoint::class],
             ['service_model', WorkflowService::class],
             ['service_operation_model', WorkflowServiceOperation::class],

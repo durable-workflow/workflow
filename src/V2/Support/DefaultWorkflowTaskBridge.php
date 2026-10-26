@@ -3647,6 +3647,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $sequence,
             $command,
             $surface,
+            $eventType,
             $requestPayload,
             $payloadCodec,
         ), $task);
@@ -3779,6 +3780,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
     {
+        if (($surface['retry_scheduled'] ?? false) === true) {
+            return HistoryEventType::ServiceOperationScheduled;
+        }
+
         $status = self::nonEmptyString($surface['status'] ?? null);
 
         return match ($status) {
@@ -3800,8 +3805,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         array $surface,
     ): bool {
-        if ($eventType !== HistoryEventType::ServiceCallStarted) {
+        if (! in_array($eventType, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true)) {
             return true;
+        }
+
+        if ($eventType === HistoryEventType::ServiceOperationScheduled) {
+            return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
+                || self::nonEmptyString($command['mode_override'] ?? null) === 'async'
+                || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
         }
 
         return self::nonEmptyString($command['wait_for'] ?? null) === 'accepted'
@@ -3820,6 +3834,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array $command,
         array $surface,
+        HistoryEventType $eventType,
         ?string $requestPayload,
         string $payloadCodec,
     ): array {
@@ -3850,6 +3865,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ?? self::nonEmptyString($command['mode_override'] ?? null),
             'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
                 ?? self::nonEmptyString($command['wait_for'] ?? null),
+            'workflow_resume_on_admission' => $eventType === HistoryEventType::ServiceOperationScheduled
+                ? self::serviceOperationEventIsWorkflowVisible($eventType, $command, $surface)
+                : null,
             'status' => self::nonEmptyString($surface['status'] ?? null),
             'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
             'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),
@@ -6694,6 +6712,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         if (($command['wait_timeout_seconds'] ?? null) !== null && $waitTimeoutSeconds === null) {
+            return null;
+        }
+
+        if ($waitTimeoutSeconds !== null
+            && $waitTimeoutSeconds > UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS) {
             return null;
         }
 

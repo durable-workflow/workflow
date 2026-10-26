@@ -167,7 +167,7 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
     }
 
     #[DataProvider('updateOutcomes')]
-    public function testUpdateBindingPreservesOptionsAndDurableOutcomeWithoutRedispatch(
+    public function testUpdateBindingDoesNotWaitForCompletionInsideTheIdempotencyTransaction(
         ServiceCallOperationMode $mode,
         bool $completed,
         bool $returnedIdentity,
@@ -245,8 +245,7 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
             'arguments' => $arguments,
             'payload_codec' => 'avro',
             'payload_blob' => $payload,
-            'wait_for' => $mode === ServiceCallOperationMode::Sync ? 'completed' : 'accepted',
-            'wait_timeout_seconds' => 0,
+            'wait_for' => 'accepted',
         ], $forwarded[2]);
 
         $call = WorkflowServiceCall::query()->sole();
@@ -307,6 +306,45 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
             $this->assertSame($completed ? [$status->value] : [], $policy->releasedStatuses);
         }
         $this->assertSame($catalogBefore, $operation->fresh()->getRawOriginal());
+        Queue::assertNothingPushed();
+    }
+
+    public function testUpdateBindingCanWaitForCompletionOutsideATransaction(): void
+    {
+        $this->catalog(ServiceCallBindingKind::WorkflowUpdate, ServiceCallOperationMode::Sync, [
+            'workflow_instance_id' => 'bound-invoice-owner',
+            'update_name' => 'approve',
+        ]);
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('update')
+            ->once()
+            ->withArgs(static function (string $instanceId, string $name, array $options): bool {
+                $thisConnection = WorkflowServiceCall::query()->getModel()->getConnection();
+
+                return $instanceId === 'bound-invoice-owner'
+                    && $name === 'approve'
+                    && $thisConnection->transactionLevel() === 0
+                    && $options['wait_for'] === 'completed'
+                    && $options['wait_timeout_seconds'] === 5;
+            })
+            ->andReturn([
+                'accepted' => true,
+                'update_status' => 'completed',
+                'workflow_instance_id' => 'bound-invoice-owner',
+                'run_id' => 'returned-run',
+                'update_id' => 'returned-update',
+            ]);
+
+        $result = (new DefaultServiceControlPlane($workflows))->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'wait_timeout_seconds' => 5,
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Completed->value, $result['outcome']);
         Queue::assertNothingPushed();
     }
 

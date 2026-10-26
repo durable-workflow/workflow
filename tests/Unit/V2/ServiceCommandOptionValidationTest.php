@@ -5,13 +5,23 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\NonDatabaseTestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class ServiceCommandOptionValidationTest extends NonDatabaseTestCase
 {
+    public function testTypedOptionsRejectAWaitAboveTheProtocolMaximum(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Service operation wait timeout must not exceed 60 seconds.');
+
+        new ServiceOperationOptions(waitTimeoutSeconds: 61);
+    }
+
     public function testServiceMetadataAndPrincipalOptionsRetainTheirTypedValues(): void
     {
         $base = $this->command();
@@ -164,6 +174,13 @@ final class ServiceCommandOptionValidationTest extends NonDatabaseTestCase
                 ],
             ]];
         }
+        yield 'wait exceeds maximum' => [[
+            'wait_timeout_seconds' => 61,
+        ], [
+            'commands.1.wait_timeout_seconds' => [
+                'Workflow task command field [wait_timeout_seconds] must not exceed 60 seconds.',
+            ],
+        ]];
         foreach ([
             'string' => 'reader',
             'boolean' => false,

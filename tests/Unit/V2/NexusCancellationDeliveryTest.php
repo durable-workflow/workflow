@@ -19,6 +19,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowRun;
@@ -93,6 +94,10 @@ final class NexusCancellationDeliveryTest extends TestCase
             $this->runTask($initial);
         }
         $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $caller->runId())->sole();
+        $this->assertSame('accepted', $call->status);
+        $this->assertNull($call->linked_workflow_run_id);
+        $this->runServiceCall($call);
+        $call->refresh();
         $this->assertSame('started', $call->status);
         // Changing the catalog cannot revoke the original call's stored policy.
         WorkflowServiceOperation::query()->update([
@@ -178,6 +183,12 @@ final class NexusCancellationDeliveryTest extends TestCase
             1,
             $caller->run()
                 ->historyEvents()
+                ->where('event_type', HistoryEventType::ServiceOperationScheduled->value)->count()
+        );
+        $this->assertSame(
+            0,
+            $caller->run()
+                ->historyEvents()
                 ->where('event_type', HistoryEventType::ServiceCallStarted->value)->count()
         );
         $this->assertSame(
@@ -225,6 +236,8 @@ final class NexusCancellationDeliveryTest extends TestCase
         $caller->start('world');
         $this->runTask($this->ready($caller));
         $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $caller->runId())->sole();
+        $this->runServiceCall($call);
+        $call->refresh();
         $this->assertSame('returned_existing_active', $call->metadata['control_plane']['outcome']);
         $this->assertSame($target->runId(), $call->linked_workflow_run_id);
         $result = $caller->attemptRequestCancellation('caller cleanup', 30);
@@ -258,6 +271,29 @@ final class NexusCancellationDeliveryTest extends TestCase
         $this->assertSame($request->requestId, $delivery->payload['workflow_command_id']);
     }
 
+    public function testCancellationAfterAdmissionButBeforeClaimStartsNoTarget(): void
+    {
+        $this->catalog();
+        $caller = WorkflowStub::make(TestNexusWaitingCallerWorkflow::class, 'nexus-caller', 'caller');
+        $caller->start('world');
+        $this->runTask($this->ready($caller));
+        $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $caller->runId())->sole();
+        $this->assertSame('accepted', $call->status);
+        $this->assertNull($call->linked_workflow_run_id);
+
+        $request = $caller->attemptRequestCancellation('cancel before scheduled effect', 30);
+        $this->assertTrue($request->accepted());
+        $this->runServiceCall($call);
+        $this->assertSame('cancelled', $call->refresh()->status);
+        $this->assertSame('caller_cancellation_requested', $call->outcome_reason);
+        $this->assertSame(0, WorkflowRun::query()->where('namespace', 'service')->count());
+        $this->assertSame(1, $caller->run()->tasks()->where('status', TaskStatus::Ready->value)->count());
+
+        $this->runTask($this->ready($caller));
+        $this->assertSame(RunStatus::Cancelled, $caller->run()->fresh()->status);
+        $this->assertSame(0, WorkflowRun::query()->where('namespace', 'service')->count());
+    }
+
     public function testIndependentTargetRequestRefusesANewCallerRootBeforeCommit(): void
     {
         $this->catalog();
@@ -265,6 +301,8 @@ final class NexusCancellationDeliveryTest extends TestCase
         $caller->start('world');
         $this->runTask($this->ready($caller));
         $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $caller->runId())->sole();
+        $this->runServiceCall($call);
+        $call->refresh();
         $target = WorkflowStub::loadRun($call->linked_workflow_run_id);
         $original = $target->requestCancellation('independent owner', 20)
             ->cancellationContext();
@@ -322,5 +360,10 @@ final class NexusCancellationDeliveryTest extends TestCase
     {
         $job = $task->task_type === TaskType::Timer ? new RunTimerTask($task->id) : new RunWorkflowTask($task->id);
         $this->app->call([$job, 'handle']);
+    }
+
+    private function runServiceCall(WorkflowServiceCall $call): void
+    {
+        $this->app->call([new RunServiceCall($call->id), 'handle']);
     }
 }
