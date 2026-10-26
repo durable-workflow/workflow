@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.14.1 - 2026-10-26
+
+- Enforce pending activity, timer and child-workflow limits on external-worker
+  task completions before any command writes. An over-limit batch now rolls
+  back completely and retains the workflow task lease without durable changes
+  (#933).
+
 ## 2.14.0 - 2026-10-26
 
 - Require a trusted host authorizer for workflow service operations. Refuse
