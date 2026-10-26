@@ -15,6 +15,7 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -22,6 +23,7 @@ use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -36,6 +38,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\ServiceCallDeadline;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallView;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\ServiceOperationOptions;
@@ -456,6 +459,7 @@ final class LinkedServiceCallCloserTest extends TestCase
                 'workflow_run_id' => $service->id,
             ]);
         $this->registerWorkflowService();
+        $this->registerTrustedServiceOperationHost();
         $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($control));
         $workflow = WorkflowStub::make(NexusWaitingCallerWorkflow::class, 'waiting-caller', 'caller');
         $this->assertTrue($workflow->attemptStart()->accepted());
@@ -995,6 +999,25 @@ final class LinkedServiceCallCloserTest extends TestCase
             'handler_binding_kind' => ServiceCallBindingKind::WorkflowRun->value,
             'handler_target_reference' => 'nexus.service',
         ]);
+    }
+
+    private function registerTrustedServiceOperationHost(): void
+    {
+        $this->app->instance(
+            WorkflowServiceOperationAuthorizer::class,
+            new class() implements WorkflowServiceOperationAuthorizer {
+                public function authorize(WorkflowRun $run, array $command): ServiceCallPrincipal
+                {
+                    if ($run->namespace !== 'caller' || ($command['namespace'] ?? null) !== 'service'
+                        || [$command['endpoint_name'], $command['service_name'], $command['operation_name']]
+                            !== ['php-service', 'greeter', 'greet']) {
+                        throw new ServiceOperationAuthorizationException();
+                    }
+
+                    return new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow');
+                }
+            }
+        );
     }
 
     private function createRun(string $namespace = 'service'): WorkflowRun

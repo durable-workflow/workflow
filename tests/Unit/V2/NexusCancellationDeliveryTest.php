@@ -11,20 +11,24 @@ use Tests\Fixtures\V2\TestNexusCancellationTargetWorkflow;
 use Tests\Fixtures\V2\TestNexusWaitingCallerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\WorkflowStub;
@@ -40,6 +44,21 @@ final class NexusCancellationDeliveryTest extends TestCase
             'workflows.v2.compatibility.current' => 'build-a',
             'workflows.v2.compatibility.supported' => ['build-a'],
         ]);
+        $this->app->instance(
+            WorkflowServiceOperationAuthorizer::class,
+            new class() implements WorkflowServiceOperationAuthorizer {
+                public function authorize(WorkflowRun $run, array $command): ServiceCallPrincipal
+                {
+                    if ($run->namespace !== 'caller' || ($command['namespace'] ?? null) !== 'service'
+                        || [$command['endpoint_name'], $command['service_name'], $command['operation_name']]
+                            !== ['php-service', 'greeter', 'greet']) {
+                        throw new ServiceOperationAuthorizationException();
+                    }
+
+                    return new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow');
+                }
+            }
+        );
         Carbon::setTestNow('2026-10-12T08:00:00Z');
     }
 
