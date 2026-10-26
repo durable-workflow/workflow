@@ -5207,19 +5207,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $task = $this->createLeasedTask($run->fresh());
         $leasedTask = $task->fresh()
             ->getRawOriginal();
-        $durable = static fn (): array => [
-            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
-            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
-            'activity_attempts' => ActivityAttempt::query()->count(),
-            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
-            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
-            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
-            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
-            'instances' => WorkflowInstance::query()->count(),
-            'runs' => WorkflowRun::query()->count(),
-            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
-        ];
-        $before = $durable();
+        $before = self::pendingCountDurableState($run);
 
         try {
             $this->bridge->complete($task->id, [$command]);
@@ -5230,7 +5218,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $this->assertSame(1, $exception->configuredLimit);
         }
 
-        $this->assertSame($before, $durable());
+        $this->assertSame($before, self::pendingCountDurableState($run));
         $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
         $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
 
@@ -5239,6 +5227,36 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             "workflows.v2.structural_limits.{$limit}" => 2,
         ]);
         $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+    }
+
+    /**
+     * A limit refusal on the second command rolls back the first command too,
+     * including every child row created before its sibling reaches the guard.
+     */
+    #[DataProvider('pendingCountCommands')]
+    public function testCompleteRollsBackTheWholeBatchPastAPendingCountLimit(string $limit, array $command): void
+    {
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 1,
+        ]);
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [$command, $command]);
+            $this->fail("Two pending {$command['type']} commands passed a limit of one.");
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame($limit, $exception->limitKind->value);
+            $this->assertSame(1, $exception->currentValue);
+            $this->assertSame(1, $exception->configuredLimit);
+        }
+
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
     }
 
     public static function pendingCountCommands(): iterable
@@ -12416,6 +12434,25 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             [['projectRun', $run->id], ['projectRun', $link->child_workflow_run_id]],
             $customRole->calls,
         );
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function pendingCountDurableState(WorkflowRun $run): array
+    {
+        return [
+            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_attempts' => ActivityAttempt::query()->count(),
+            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
+            'instances' => WorkflowInstance::query()->count(),
+            'runs' => WorkflowRun::query()->count(),
+            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+        ];
     }
 
     /**
