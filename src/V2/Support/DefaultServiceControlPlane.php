@@ -403,32 +403,47 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $metadata = $this->arrayValue($call->metadata);
+        $linkedCancel = null;
 
         if (
             ($this->arrayValue($call->cancellation_policy)['propagate_to_linked_workflow'] ?? false) === true
             && is_string($call->linked_workflow_instance_id)
             && $call->linked_workflow_instance_id !== ''
         ) {
-            $result = $this->workflows()
-                ->cancel($call->linked_workflow_instance_id, [
-                    'namespace' => $call->target_namespace,
-                    'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
-                ]);
-
-            $metadata['linked_cancel'] = $this->publicResult($result);
+            try {
+                $result = $this->workflows()
+                    ->cancel($call->linked_workflow_instance_id, [
+                        'namespace' => $call->target_namespace,
+                        'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
+                    ]);
+                $linkedCancel = $this->publicResult($result);
+            } catch (Throwable $exception) {
+                $linkedCancel = [
+                    'accepted' => false,
+                    'reason' => 'workflow_cancel_exception',
+                    'exception_type' => get_class($exception),
+                ];
+            }
         }
 
         $cancelled = $call->getConnection()
-            ->transaction(function () use ($call, $metadata, $options): bool {
+            ->transaction(function () use ($call, $linkedCancel, $options): bool {
                 /** @var WorkflowServiceCall $locked */
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
+                if ($linkedCancel !== null) {
+                    $metadata = $this->arrayValue($locked->metadata);
+                    $metadata['linked_cancel'] = $linkedCancel;
+                    $locked->metadata = $metadata;
+                }
                 if (ServiceCallDeadline::expireLocked($locked, now())) {
                     return false;
                 }
                 if ($this->isTerminal($locked)) {
+                    if ($locked->isDirty('metadata')) {
+                        $locked->save();
+                    }
                     return $locked->status === ServiceCallStatus::Cancelled->value;
                 }
                 $call = $locked;
@@ -441,7 +456,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->outcome_metadata = [
                     'failure_reason' => ServiceCallFailureReason::Cancellation->value,
                 ];
-                $call->metadata = $metadata === [] ? null : $metadata;
                 $call->cancelled_at ??= $now;
                 $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
                 $call->save();

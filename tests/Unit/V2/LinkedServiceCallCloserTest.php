@@ -818,6 +818,147 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertSame($before, $call->fresh()->getRawOriginal());
     }
 
+    #[DataProvider('cancellationTerminalWinners')]
+    public function testLinkedCancellationKeepsItsReceiptAndTheTerminalWinner(HistoryEventType $terminal): void
+    {
+        $run = $this->createRun();
+        $call = $this->createCall($run, [
+            'cancellation_policy' => [
+                'propagate_to_linked_workflow' => true,
+            ],
+            'metadata' => [
+                'trace' => 'keep-me',
+            ],
+        ]);
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('cancel')
+            ->once()
+            ->andReturnUsing(static function () use ($run, $terminal): array {
+                $payload = $terminal === HistoryEventType::WorkflowCompleted
+                    ? [
+                        'output' => Serializer::serializeWithCodec('avro', false),
+                        'payload_codec' => 'avro',
+                    ]
+                    : [
+                        'message' => 'target won',
+                    ];
+                WorkflowHistoryEvent::record($run, $terminal, $payload);
+                return [
+                    'accepted' => true,
+                    'command_id' => 'linked-cancel',
+                    'result' => 'private-result',
+                ];
+            });
+        $control = new DefaultServiceControlPlane($workflows);
+        $result = $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $call->refresh();
+        $this->assertSame($terminal === HistoryEventType::WorkflowCancelled, $result['accepted']);
+        $this->assertSame(match ($terminal) {
+            HistoryEventType::WorkflowCancelled => 'cancelled',
+            HistoryEventType::WorkflowCompleted => 'completed',
+            default => 'failed',
+        }, $call->status);
+        $this->assertSame('keep-me', $call->metadata['trace']);
+        $this->assertNotEmpty($call->metadata['linked_terminal_event_id']);
+        $this->assertSame([
+            'accepted' => true,
+            'command_id' => 'linked-cancel',
+        ], $call->metadata['linked_cancel']);
+        if ($terminal === HistoryEventType::WorkflowCompleted) {
+            $this->assertSame(Serializer::serializeWithCodec('avro', false), $call->metadata['nexus_result']['blob']);
+        }
+        $before = $call->getRawOriginal();
+        $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    public static function cancellationTerminalWinners(): iterable
+    {
+        foreach ([
+            HistoryEventType::WorkflowCompleted,
+            HistoryEventType::WorkflowCancelled,
+            HistoryEventType::WorkflowFailed,
+        ] as $terminal) {
+            yield $terminal->value => [$terminal];
+        }
+    }
+
+    public function testLinkedCancellationFailureIsTypedWithoutLosingTheLocalCancellation(): void
+    {
+        $run = $this->createRun();
+        $call = $this->createCall($run, [
+            'cancellation_policy' => [
+                'propagate_to_linked_workflow' => true,
+            ],
+        ]);
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('cancel')
+            ->once()
+            ->andThrow(new RuntimeException('private backend detail'));
+        $control = new DefaultServiceControlPlane($workflows);
+        $result = $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertTrue($result['accepted']);
+        $call->refresh();
+        $this->assertSame('cancelled', $call->status);
+        $this->assertSame([
+            'accepted' => false,
+            'reason' => 'workflow_cancel_exception',
+            'exception_type' => RuntimeException::class,
+        ], $call->metadata['linked_cancel']);
+        $before = $call->getRawOriginal();
+        $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    public function testDeadlineStillWinsWhileLinkedCancellationIsInFlight(): void
+    {
+        Carbon::setTestNow('2026-10-11T10:00:00.123456Z');
+        try {
+            $run = $this->createRun();
+            $deadline = now()
+                ->addSecond();
+            $call = $this->createCall($run, [
+                'cancellation_policy' => [
+                    'propagate_to_linked_workflow' => true,
+                ],
+                'call_deadline_at' => $deadline,
+            ]);
+            $workflows = Mockery::mock(WorkflowControlPlane::class);
+            $workflows->shouldReceive('cancel')
+                ->once()
+                ->andReturnUsing(static function () use ($run, $deadline): array {
+                    Carbon::setTestNow($deadline);
+                    WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCancelled, [
+                        'message' => 'late cancellation',
+                    ]);
+                    return [
+                        'accepted' => true,
+                    ];
+                });
+            $result = (new DefaultServiceControlPlane($workflows))->cancelCall($call->id, [
+                'namespace' => 'service',
+            ]);
+            $this->assertFalse($result['accepted']);
+            $call->refresh();
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
+            $this->assertSame([
+                'accepted' => true,
+            ], $call->metadata['linked_cancel']);
+            $this->assertTrue($deadline->equalTo($call->failed_at));
+            $this->assertNull($call->cancelled_at);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testUnrelatedNamespaceRunInstanceAndBindingRemainOpen(): void
     {
         $run = $this->createRun();
