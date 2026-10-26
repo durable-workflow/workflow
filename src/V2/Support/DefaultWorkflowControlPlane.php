@@ -1229,19 +1229,19 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ->lockForUpdate()
             ->findOrFail($instanceId);
 
+        if ($instance->namespace !== $namespace) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be reused with a different namespace.',
+                $instanceId,
+            ));
+        }
+
         if ($instance->workflow_type !== $workflowType) {
             throw new LogicException(sprintf(
                 'Workflow instance [%s] is reserved for durable type [%s] and cannot be reused for [%s].',
                 $instanceId,
                 $instance->workflow_type,
                 $workflowType,
-            ));
-        }
-
-        if ($instance->namespace !== $namespace) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] cannot be reused with a different namespace.',
-                $instanceId,
             ));
         }
 

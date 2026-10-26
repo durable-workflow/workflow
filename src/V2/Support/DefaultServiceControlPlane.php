@@ -9,6 +9,7 @@ use DateTimeInterface;
 use Illuminate\Support\Str;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -1428,6 +1429,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $updateId,
                     $metadata,
                     $claim,
+                    $this->workflowResultEnvelope($result, $call),
                 );
                 if ($completed) {
                     $this->releaseBoundaryAdmission($request);
@@ -1626,6 +1628,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     'control_plane' => $this->publicResult($result),
                 ],
                 $claim,
+                $this->workflowResultEnvelope($result, $call),
             );
             if ($completed) {
                 $this->releaseBoundaryAdmission($request);
@@ -1971,6 +1974,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
         ?ServiceCallAttemptClaim $claim,
+        ?array $resultEnvelope = null,
     ): bool {
         $recorded = false;
         $call->getConnection()
@@ -1983,6 +1987,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $updateId,
                 $metadata,
                 $claim,
+                $resultEnvelope,
                 &$recorded,
             ): void {
                 /** @var WorkflowServiceCall $locked */
@@ -2005,6 +2010,25 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->linked_workflow_instance_id = $instanceId;
                 $call->linked_workflow_run_id = $runId;
                 $call->linked_workflow_update_id = $updateId;
+                if ($resultEnvelope !== null) {
+                    $codec = $resultEnvelope['codec'];
+                    if (is_string($resultEnvelope['blob'] ?? null)) {
+                        $metadata['nexus_result'] = [
+                            'codec' => $codec,
+                            'blob' => $resultEnvelope['blob'],
+                        ];
+                        $call->output_payload_reference = null;
+                    } elseif (is_array($resultEnvelope['external_storage'] ?? null)) {
+                        $reference = $resultEnvelope['external_storage'];
+                        $call->output_payload_reference = $reference['uri'];
+                        unset($reference['uri']);
+                        $metadata['nexus_result'] = [
+                            'codec' => $codec,
+                            'external_reference' => $reference,
+                        ];
+                    }
+                    $call->payload_codec = $codec;
+                }
                 $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
                 $call->started_at ??= now();
                 $call->completed_at ??= now();
@@ -2209,11 +2233,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             }
         }
 
-        $arguments = $this->stringOption($options, 'arguments')
-            ?? $this->stringOption($options, 'payload_blob')
-            ?? $this->bindingString($binding, ['arguments', 'payload_blob']);
+        $arguments = $options['arguments'] ?? $options['payload_blob']
+            ?? $binding['arguments'] ?? $binding['payload_blob'] ?? null;
 
-        if ($arguments !== null) {
+        if (is_array($arguments)) {
+            $arguments = Serializer::serializeWithCodec($call->payload_codec, $arguments);
+        }
+
+        if (is_string($arguments)) {
             $startOptions['arguments'] = $arguments;
         }
 
@@ -2286,6 +2313,38 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         return $dispatch instanceof \Workflow\V2\Models\WorkflowServiceCallDispatch
             && ServiceCallScheduler::ownsLockedClaim($dispatch, $claim);
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @return array{codec: string, blob?: string, external_storage?: array<string, mixed>}|null
+     */
+    private function workflowResultEnvelope(array $result, WorkflowServiceCall $call): ?array
+    {
+        $envelope = $result['result_envelope'] ?? null;
+        if (is_array($envelope)) {
+            $codec = CodecRegistry::canonicalize($envelope['codec'] ?? $call->payload_codec);
+            if (is_string($envelope['blob'] ?? null)) {
+                return [
+                    'codec' => $codec,
+                    'blob' => $envelope['blob'],
+                ];
+            }
+            if (is_string($envelope['external_storage']['uri'] ?? null)) {
+                return [
+                    'codec' => $codec,
+                    'external_storage' => $envelope['external_storage'],
+                ];
+            }
+        }
+        if (array_key_exists('result', $result)) {
+            $codec = CodecRegistry::canonicalize($call->payload_codec);
+            return [
+                'codec' => $codec,
+                'blob' => Serializer::serializeWithCodec($codec, $result['result']),
+            ];
+        }
+        return null;
     }
 
     /**

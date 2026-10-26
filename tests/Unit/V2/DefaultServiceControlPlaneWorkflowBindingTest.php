@@ -27,6 +27,7 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
+use Workflow\V2\Support\ServiceCallResultEnvelope;
 
 final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
 {
@@ -41,6 +42,127 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    #[DataProvider('completedWorkflowValues')]
+    public function testCompletedWorkflowBindingsRetainResultsOutsidePublicControlMetadata(
+        ServiceCallBindingKind $kind,
+        mixed $value,
+        bool $external,
+    ): void {
+        $this->catalog($kind, ServiceCallOperationMode::Sync, [
+            'workflow_instance_id' => 'result-owner',
+        ], 'answer');
+        $blob = Serializer::serializeWithCodec('avro', $value);
+        $envelope = $external ? [
+            'codec' => 'avro',
+            'external_storage' => [
+                'uri' => 'fixture://result',
+                'codec' => 'avro',
+                'sha256' => hash('sha256', $blob),
+                'size_bytes' => strlen($blob),
+            ],
+        ] : [
+            'codec' => 'avro',
+            'blob' => $blob,
+        ];
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive($kind === ServiceCallBindingKind::WorkflowQuery ? 'query' : 'update')
+            ->once()
+            ->andReturn([
+                'accepted' => true,
+                'success' => true,
+                'update_status' => 'completed',
+                'result' => $value,
+                'result_envelope' => $envelope,
+            ]);
+        $control = new DefaultServiceControlPlane($workflows);
+        $response = $control->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+        ]);
+        $this->assertSame('completed', $response['status']);
+        $call = WorkflowServiceCall::query()->sole();
+        $this->assertEquals($envelope, ServiceCallResultEnvelope::fromCall($call));
+        $this->assertArrayNotHasKey('result', $call->metadata['control_plane']);
+        $this->assertArrayNotHasKey('result_envelope', $call->metadata['control_plane']);
+        $this->assertSame($external ? 'fixture://result' : null, $call->output_payload_reference);
+        $before = $call->getRawOriginal();
+        $control->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'service_call_id' => $call->id,
+        ]);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    public static function completedWorkflowValues(): iterable
+    {
+        foreach ([ServiceCallBindingKind::WorkflowQuery, ServiceCallBindingKind::WorkflowUpdate] as $kind) {
+            foreach ([
+                null, false, 0, '', [
+                    'answer' => ['Ω', null, 9223372036854775807],
+                ]] as $index => $value) {
+                yield $kind->value . '-' . $index => [$kind, $value, false];
+            }
+            yield $kind->value . '-external' => [$kind, [
+                'large' => str_repeat('Ω', 2048),
+            ], true];
+        }
+    }
+
+    public function testWorkflowStartRetainsJsonListArguments(): void
+    {
+        $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Async, [
+            'workflow_type' => 'sdk.bound-order',
+            'queue' => 'orders',
+        ]);
+        $result = (new DefaultServiceControlPlane())->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'arguments' => [7, 'order Ω', null],
+        ]);
+        $this->assertTrue($result['accepted']);
+        $run = \Workflow\V2\Models\WorkflowRun::query()->findOrFail($result['linked_workflow_run_id']);
+        $this->assertIsString($run->arguments);
+        $this->assertSame(
+            [7, 'order Ω', null],
+            Serializer::unserializeWithCodec($run->payload_codec, $run->arguments)
+        );
+    }
+
+    #[DataProvider('foreignWorkflowTypes')]
+    public function testWorkflowStartRefusesForeignNamespaceBeforeDisclosingItsType(string $foreignType): void
+    {
+        $foreign = \Workflow\V2\Models\WorkflowInstance::query()->create([
+            'id' => 'foreign-order',
+            'namespace' => 'private-owner',
+            'workflow_type' => $foreignType,
+            'workflow_class' => $foreignType,
+            'run_count' => 0,
+        ]);
+        $before = $foreign->fresh()
+            ->getRawOriginal();
+        $this->catalog(ServiceCallBindingKind::WorkflowRun, ServiceCallOperationMode::Async, [
+            'workflow_type' => 'sdk.bound-order',
+            'workflow_instance_id' => $foreign->id,
+            'queue' => 'orders',
+        ]);
+        $result = (new DefaultServiceControlPlane())->execute('billing', 'invoices', 'approve', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'billing',
+        ]);
+        $this->assertFalse($result['accepted']);
+        $this->assertSame(
+            'Workflow instance [foreign-order] cannot be reused with a different namespace.',
+            $result['message']
+        );
+        $this->assertSame($before, $foreign->fresh()->getRawOriginal());
+        $this->assertStringNotContainsString('secret.foreign-type', json_encode($result, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('secret.foreign-type', WorkflowServiceCall::query()->sole()->toJson());
+    }
+
+    public static function foreignWorkflowTypes(): iterable
+    {
+        yield 'same type' => ['sdk.bound-order'];
+        yield 'different type' => ['secret.foreign-type'];
     }
 
     public function testDeferredDispatchAndDuplicatesRetainTheOriginalDeadlineAfterCatalogEdits(): void
