@@ -26,6 +26,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunServiceOperationAuthorizer;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -70,6 +71,74 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         WorkerCompatibilityFleet::clear();
         BridgeServiceOperationProbeWorkflow::$calls = 0;
         parent::tearDown();
+    }
+
+    #[DataProvider('serviceSchedulerProtocols')]
+    public function testServiceSchedulerOptionIsVersionGated(string $protocolVersion, bool $scheduled): void
+    {
+        $service = new BridgeServiceControlPlaneProbe([
+            'service_call_id' => 'version-gated-call',
+            'accepted' => true,
+            'status' => 'completed',
+            'result' => 'done',
+        ]);
+        $this->app->instance(ServiceControlPlane::class, $service);
+        $command = [
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+            'request_payload' => Serializer::serialize([
+                'invoice_id' => 42,
+            ]),
+            'payload_codec' => 'avro',
+        ];
+
+        $result = $this->bridge->complete($this->task->id, [$command], $protocolVersion);
+
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $this->assertCount(1, $service->executions);
+        $options = $service->executions[0][3];
+        $this->assertSame($scheduled, ServiceCallScheduler::hasAfterCommitAuthority($options));
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function serviceSchedulerProtocols(): iterable
+    {
+        yield 'protocol 1.20 preserves inline execution' => ['1.20', false];
+        yield 'protocol 1.21 enables durable scheduling' => ['1.21', true];
+    }
+
+    public function testInvalidCompletionProtocolIsRejectedBeforeAnyWrite(): void
+    {
+        $service = new BridgeServiceControlPlaneProbe([
+            'service_call_id' => 'must-not-execute',
+            'accepted' => true,
+            'status' => 'completed',
+        ]);
+        $this->app->instance(ServiceControlPlane::class, $service);
+        $before = $this->records();
+
+        $result = $this->bridge->complete($this->task->id, [[
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+            'request_payload' => Serializer::serialize([
+                'invoice_id' => 42,
+            ]),
+            'payload_codec' => 'avro',
+        ]], '1.21.0');
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('invalid_protocol_version', $result['reason']);
+        $this->assertSame([], $result['created_task_ids']);
+        $this->assertSame($before, $this->records());
+        $this->assertSame([], $service->executions);
+        $this->assertSame(TaskStatus::Leased, $this->task->fresh()->status);
+        Queue::assertNothingPushed();
     }
 
     /**
@@ -381,7 +450,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
         $this->assertCount(1, $service->executions);
         $forwarded = $service->executions[0][3];
-        $expected = $options;
+        $expected = ServiceCallScheduler::withAfterCommitAuthority($options);
         $expected['mode_override'] = 'sync';
         $expected['wait_for'] = 'completed';
         $expected['metadata'] = [

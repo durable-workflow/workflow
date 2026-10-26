@@ -293,7 +293,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $scheduled = $this->shouldScheduleHandler($call);
+        $scheduled = $this->shouldScheduleHandler($call, $options);
         $handler = $scheduled
             ? $this->scheduleHandler($call, $operation, $options)
             : $this->dispatchHandler($call, $operation, $boundaryRequest, $options);
@@ -1033,9 +1033,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ];
     }
 
-    private function shouldScheduleHandler(WorkflowServiceCall $call): bool
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function shouldScheduleHandler(WorkflowServiceCall $call, array $options): bool
     {
-        return is_string($call->caller_workflow_run_id)
+        return ServiceCallScheduler::hasAfterCommitAuthority($options)
+            && is_string($call->caller_workflow_run_id)
             && $call->caller_workflow_run_id !== ''
             && $call->getConnection()
                 ->transactionLevel() > 0;
@@ -1383,10 +1387,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $commandOptions['wait_for'] ??= $call->operation_mode === ServiceCallOperationMode::Sync->value
             ? 'completed'
             : 'accepted';
-        if ($call->getConnection()->transactionLevel() > 0) {
-            $commandOptions['wait_for'] = UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
-            unset($commandOptions['wait_timeout_seconds']);
-        }
 
         try {
             $result = $this->workflows()

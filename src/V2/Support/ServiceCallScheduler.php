@@ -30,11 +30,34 @@ final class ServiceCallScheduler
 
     public const STATE_COMPLETED = 'completed';
 
+    private const AFTER_COMMIT_OPTION = '__schedule_service_call_after_commit';
+
     private const MIN_ORPHAN_GRACE_SECONDS = 3_600;
 
     private const ORPHAN_CLEANUP_BATCH_CAP = 100;
 
     private const EFFECT_TOKEN_OPTION = '__service_call_effect_token';
+
+    private static ?object $afterCommitAuthority = null;
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public static function withAfterCommitAuthority(array $options): array
+    {
+        $options[self::AFTER_COMMIT_OPTION] = self::afterCommitAuthority();
+
+        return $options;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    public static function hasAfterCommitAuthority(array $options): bool
+    {
+        return ($options[self::AFTER_COMMIT_OPTION] ?? null) === self::afterCommitAuthority();
+    }
 
     /**
      * @param array<string, mixed> $options
@@ -45,6 +68,7 @@ final class ServiceCallScheduler
         array $options,
         int $maxAttempts,
     ): void {
+        unset($options[self::AFTER_COMMIT_OPTION]);
         self::assertSharedConnection($call);
         $dispatch = self::dispatchQuery()
             ->lockForUpdate()
@@ -468,6 +492,11 @@ final class ServiceCallScheduler
     public static function attemptIdentity(string $serviceCallId, int $attempt): string
     {
         return sprintf('workflow-service-call:%s:attempt:%d', $serviceCallId, $attempt);
+    }
+
+    private static function afterCommitAuthority(): object
+    {
+        return self::$afterCommitAuthority ??= new \stdClass();
     }
 
     private static function lockedCallerRun(WorkflowServiceCall $call): ?WorkflowRun

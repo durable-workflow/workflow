@@ -32,6 +32,7 @@ use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowInstanceId;
 
 final class Webhooks
@@ -205,7 +206,15 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            return self::workflowTaskCompleteResponse($taskId, self::resolveWorkflowTaskCommands($request->all()));
+            $protocolVersion = $request->header('X-Durable-Workflow-Protocol-Version');
+
+            return self::workflowTaskCompleteResponse(
+                $taskId,
+                self::resolveWorkflowTaskCommands($request->all()),
+                is_string($protocolVersion) && $protocolVersion !== ''
+                    ? $protocolVersion
+                    : WorkerProtocolVersion::VERSION,
+            );
         })->name('workflows.v2.workflow-tasks.complete');
 
         Route::post("{$basePath}/workflow-tasks/{taskId}/fail", static function (
@@ -1117,9 +1126,12 @@ final class Webhooks
     /**
      * @param list<array{type: string, ...}> $commands
      */
-    private static function workflowTaskCompleteResponse(string $taskId, array $commands)
-    {
-        $payload = self::workflowTaskBridge()->complete($taskId, $commands);
+    private static function workflowTaskCompleteResponse(
+        string $taskId,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ) {
+        $payload = self::workflowTaskBridge()->complete($taskId, $commands, $protocolVersion);
         $status = match ($payload['reason']) {
             null => 200,
             'task_not_found' => 404,

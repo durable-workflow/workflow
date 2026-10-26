@@ -220,6 +220,21 @@ and keep workers below that floor away from histories that require the event.
 The original `start_service_operation` command remains available from its 1.13
 floor; the scheduled execution semantics require 1.21.
 
+`WorkflowTaskBridge::complete()` accepts the authenticated worker protocol as
+its optional third argument. Protocols below 1.21 retain the pre-1.21 inline
+service-operation path and therefore cannot create `ServiceOperationScheduled`.
+Omitting the argument is the embedded-host path and selects the package's
+current protocol. Hosts must pass the worker's negotiated protocol rather than
+relying on that default. The built-in `WorkflowExecutor` likewise runs at the
+package's current protocol and supplies scheduler authority explicitly.
+
+Caller workflow identity on a direct `ServiceControlPlane::execute()` request
+does not activate the workflow-task scheduler. In particular, an idempotency
+transaction plus `caller_workflow_run_id` must continue to honor the requested
+HTTP wait surface: `wait_for=completed` returns the terminal result or typed
+failure. Scheduling requires private evidence supplied by the version-gated
+workflow-task completion path.
+
 `WorkflowServiceCallDispatch` is a documented persisted model. Its table and
 state/attempt/claim/revision/repair fields are additive schema and observability
 surface. `ServiceCallScheduler`, `ServiceCallAttemptClaim`, and the

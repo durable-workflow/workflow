@@ -201,9 +201,12 @@ final class WorkflowTaskBridge
      *     reason: string|null,
      * }
      */
-    public static function complete(string $taskId, array $commands): array
-    {
-        return self::resolve()->complete($taskId, $commands);
+    public static function complete(
+        string $taskId,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return self::resolve()->complete($taskId, $commands, $protocolVersion);
     }
 
     /**

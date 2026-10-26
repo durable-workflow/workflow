@@ -24,6 +24,17 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }
 
+    public function testDurableServiceSchedulerIsAvailableOnlyFromProtocol121(): void
+    {
+        $this->assertTrue(WorkerProtocolVersion::isWellFormed('1.20'));
+        $this->assertTrue(WorkerProtocolVersion::isWellFormed('1.21'));
+        $this->assertFalse(WorkerProtocolVersion::isWellFormed('1.21.0'));
+        $this->assertFalse(WorkerProtocolVersion::supportsDurableServiceOperationScheduler('1.20'));
+        $this->assertTrue(WorkerProtocolVersion::supportsDurableServiceOperationScheduler('1.21'));
+        $this->assertTrue(WorkerProtocolVersion::supportsDurableServiceOperationScheduler('1.22'));
+        $this->assertFalse(WorkerProtocolVersion::supportsDurableServiceOperationScheduler('2.0'));
+    }
+
     public function testVersionIncludesSignalWaitCommandShape(): void
     {
         $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, '1.9', '>='));

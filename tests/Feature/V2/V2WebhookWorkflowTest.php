@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Mockery;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -17,6 +18,7 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -3232,6 +3234,33 @@ final class V2WebhookWorkflowTest extends TestCase
         $response
             ->assertStatus(422)
             ->assertJsonValidationErrors(['commands']);
+    }
+
+    public function testWorkflowTaskCompleteWebhookForwardsTheWorkerProtocolHeader(): void
+    {
+        $commands = [[
+            'type' => 'complete_workflow',
+        ]];
+        $bridge = Mockery::mock(WorkflowTaskBridgeContract::class);
+        $bridge->shouldReceive('complete')
+            ->once()
+            ->with('protocol-task', $commands, '1.20')
+            ->andReturn([
+                'completed' => true,
+                'task_id' => 'protocol-task',
+                'workflow_run_id' => 'protocol-run',
+                'run_status' => 'completed',
+                'created_task_ids' => [],
+                'reason' => null,
+            ]);
+        $this->app->instance(WorkflowTaskBridgeContract::class, $bridge);
+
+        $this->withHeader('X-Durable-Workflow-Protocol-Version', '1.20')
+            ->postJson('/webhooks/workflow-tasks/protocol-task/complete', [
+                'commands' => $commands,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', true);
     }
 
     public function testWorkflowTaskCompleteWebhookReturns422ForInvalidOpenWaitTimeouts(): void

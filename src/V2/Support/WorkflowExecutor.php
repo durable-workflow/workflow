@@ -6026,7 +6026,7 @@ final class WorkflowExecutor
             'workflow_sequence' => $sequence,
         ] + $metadata;
 
-        return WorkflowServiceOperationAuthority::options($run, $options + [
+        $options = WorkflowServiceOperationAuthority::options($run, $options + [
             'endpoint_name' => $call->endpointName,
             'service_name' => $call->serviceName,
             'operation_name' => $call->operationName,
@@ -6057,6 +6057,10 @@ final class WorkflowExecutor
             'metadata' => $metadata,
             'request_payload_reference' => self::nonEmptyString($options['request_payload_reference'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
+
+        return WorkerProtocolVersion::supportsDurableServiceOperationScheduler(WorkerProtocolVersion::VERSION)
+            ? ServiceCallScheduler::withAfterCommitAuthority($options)
+            : $options;
     }
 
     private function defaultServiceOperationIdempotencyKey(WorkflowRun $run, int $sequence): string

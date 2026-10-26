@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-service-operation-protocol-120-inline",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusWaitingCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "ServiceCallCompleted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "protocol-120-inline-call",
+        "endpoint_name": "php-service",
+        "service_name": "greeter",
+        "operation_name": "greet",
+        "operation_mode": "sync",
+        "wait_for": "completed",
+        "status": "completed",
+        "outcome": "completed",
+        "response_payload": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4CEGdyZWV0aW5nChZoZWxsbyB3b3JsZAA="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "greeting": "hello world"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  },
+  "terminal_result": {
+    "greeting": "hello world"
+  }
+}

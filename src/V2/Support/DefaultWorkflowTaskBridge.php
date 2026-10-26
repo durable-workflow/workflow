@@ -1227,8 +1227,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         );
     }
 
-    public function complete(string $taskId, array $commands): array
-    {
+    public function complete(
+        string $taskId,
+        array $commands,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        if (! WorkerProtocolVersion::isWellFormed($protocolVersion)) {
+            return [
+                'completed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'created_task_ids' => [],
+                'reason' => 'invalid_protocol_version',
+            ];
+        }
+
         $parsed = self::parseCommands($commands);
 
         if ($parsed === null && $commands !== []) {
@@ -1247,7 +1261,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         // charged as it is written, and a refusal rolls everything back,
         // leaving the task's lease as it was.
         try {
-            return self::meteredTransaction(function () use ($taskId, $parsed, $commands): array {
+            return self::meteredTransaction(function () use ($taskId, $parsed, $commands, $protocolVersion): array {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -1432,7 +1446,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 );
 
                 foreach ($parsed['non_terminal'] as $command) {
-                    $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+                    $sequence = $this->applyNonTerminalCommand(
+                        $run,
+                        $task,
+                        $command,
+                        $sequence,
+                        $createdTaskIds,
+                        $protocolVersion,
+                    );
                 }
 
                 $terminal = $parsed['terminal'];
@@ -1649,6 +1670,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $group,
                 $scopePrefix,
                 $checkpointName,
+                $protocolVersion,
             ): array {
                 /** @var WorkflowRun|null $run */
                 $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
@@ -1803,7 +1825,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         ++$sequence;
                         continue;
                     }
-                    $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
+                    $sequence = $this->applyNonTerminalCommand(
+                        $run,
+                        $task,
+                        $command,
+                        $sequence,
+                        $createdTaskIds,
+                        $protocolVersion,
+                    );
                 }
                 // Command application can update task payload (for example signal
                 // consumption). Preserve that state rather than the old snapshot.
@@ -2529,6 +2558,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         int $sequence,
         array &$createdTaskIds,
+        string $protocolVersion,
     ): int {
         return match ($command['type']) {
             'cancel_selection_operation' => $this->applyCancelSelectionOperation($run, $task, $command, $sequence),
@@ -2541,6 +2571,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $command,
                 $sequence,
                 $createdTaskIds,
+                $protocolVersion,
             ),
             'complete_update' => $this->applyCompleteUpdate($run, $task, $command, $sequence),
             'fail_update' => $this->applyFailUpdate($run, $task, $command, $sequence),
@@ -3633,11 +3664,18 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         int $sequence,
         array &$createdTaskIds,
+        string $protocolVersion,
     ): int {
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
-        $options = $this->serviceOperationControlPlaneOptions($run, $command, $sequence, $payloadCodec);
+        $options = $this->serviceOperationControlPlaneOptions(
+            $run,
+            $command,
+            $sequence,
+            $payloadCodec,
+            $protocolVersion,
+        );
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $requestPayload = isset($command['request_payload']) && is_string($command['request_payload'])
             ? ExternalPayloads::externalizeForNamespace($command['request_payload'], $payloadCodec, $namespace)
@@ -3691,6 +3729,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         int $sequence,
         string $payloadCodec,
+        string $protocolVersion,
     ): array {
         if (! isset($command['service_call_id'])) {
             $command['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
@@ -3703,7 +3742,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_sequence' => $sequence,
         ] + $metadata;
 
-        return WorkflowServiceOperationAuthority::options($run, $command) + array_filter([
+        $options = WorkflowServiceOperationAuthority::options($run, $command) + array_filter([
             'arguments' => $this->serviceOperationRequestArguments($command, $payloadCodec),
             'payload_blob' => self::nonEmptyString($command['request_payload'] ?? null),
             'payload_codec' => $payloadCodec,
@@ -3730,6 +3769,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'metadata' => $metadata,
             'request_payload_reference' => self::nonEmptyString($command['request_payload_reference'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
+
+        if (WorkerProtocolVersion::supportsDurableServiceOperationScheduler($protocolVersion)) {
+            $options = ServiceCallScheduler::withAfterCommitAuthority($options);
+        }
+
+        return $options;
     }
 
     /**

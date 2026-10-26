@@ -338,6 +338,19 @@ final class WorkerProtocolVersion
         );
     }
 
+    public static function supportsDurableServiceOperationScheduler(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion(
+            $protocolVersion,
+            self::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION,
+        );
+    }
+
+    public static function isWellFormed(string $protocolVersion): bool
+    {
+        return preg_match('/\A(\d+)\.(\d+)\z/D', $protocolVersion) === 1;
+    }
+
     /**
      * Version-gated workflow-task completion fields a worker may submit.
      *
