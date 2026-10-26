@@ -31,6 +31,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Workflow;
@@ -227,9 +228,13 @@ trait NexusCallerDeliveryScenario
             $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
             $this->assertNull($workflow->refresh()->output());
             $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
-            $this->assertSame('accepted', $call->status);
-            $this->app->call([new RunServiceCall($call->id), 'handle']);
-            $this->assertSame('started', $call->refresh()->status);
+            if (version_compare(WorkerProtocolVersion::VERSION, '1.21', '<')) {
+                $this->assertSame('started', $call->status);
+            } else {
+                $this->assertSame('accepted', $call->status);
+                $this->app->call([new RunServiceCall($call->id), 'handle']);
+                $this->assertSame('started', $call->refresh()->status);
+            }
 
             if ($deadlinePolicy !== null) {
                 $this->assertSame('2026-10-11T00:00:01.123456Z', $call->call_deadline_at?->toJSON());
