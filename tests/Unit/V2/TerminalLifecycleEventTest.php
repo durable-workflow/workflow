@@ -92,9 +92,10 @@ final class TerminalLifecycleEventTest extends TestCase
         $this->assertTrue($result->accepted());
         if ($command === 'cooperative') {
             $this->runReadyWorkflowTask($workflow->runId());
+            $workflow->refresh();
             $this->assertSame([
                 'cleanup' => true,
-            ], $workflow->refresh() ->memo());
+            ], $workflow->memo());
         }
         $run = $workflow->refresh()
             ->run();
@@ -211,9 +212,10 @@ final class TerminalLifecycleEventTest extends TestCase
         try {
             $connection->transaction(function () use ($workflow, $commit): void {
                 $this->runReadyWorkflowTask($workflow->runId());
+                $workflow->refresh();
                 $this->assertSame([
                     'cleanup' => true,
-                ], $workflow->refresh() ->memo());
+                ], $workflow->memo());
                 $this->assertTrue($workflow->cancelled());
                 Event::assertNotDispatched(WorkflowCancelled::class);
                 if (! $commit) {
@@ -238,9 +240,10 @@ final class TerminalLifecycleEventTest extends TestCase
                 ->run()
                 ->closed_at->toISOString()
         );
+        $workflow->refresh();
         $this->assertSame([
             'cleanup' => true,
-        ], $workflow->refresh() ->memo());
+        ], $workflow->memo());
         $this->assertFalse($workflow->attemptCancel('rejected duplicate')->accepted());
         $this->assertFalse($workflow->attemptTerminate('rejected terminal command')->accepted());
         Event::assertDispatched(WorkflowCancelled::class, 1);
