@@ -509,19 +509,27 @@ class WorkflowCommand extends Model
             || $commandType === CommandType::Redrive->value;
         $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
         $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
+            $context = $serviceCallIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+        }
 
         if ($isUpdate) {
-            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
-            $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
-            $attributes['context'] = $context;
-            $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
-        } elseif ($serviceCallIdentity !== null && in_array($commandType, [
+            if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
+                $attributes['request_id'] = $serviceCallIdentity->storageToken();
+            } else {
+                $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
+                $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
+                $attributes['context'] = $context;
+                $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
+            }
+        } elseif ($serviceCallIdentity instanceof ServiceCallEffectIdentity && in_array($commandType, [
             CommandType::Start,
             CommandType::Start->value,
             CommandType::Signal,
             CommandType::Signal->value,
         ], true)) {
-            $attributes['request_id'] = ServiceCallEffectIdentity::storageToken($serviceCallIdentity);
+            $attributes['request_id'] = $serviceCallIdentity->storageToken();
         } elseif ($usesRequestId) {
             $request = is_array($attributes['context']['request'] ?? null)
                 ? $attributes['context']['request']

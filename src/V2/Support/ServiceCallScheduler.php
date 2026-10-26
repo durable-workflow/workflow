@@ -32,6 +32,8 @@ final class ServiceCallScheduler
 
     private const MIN_ORPHAN_GRACE_SECONDS = 3_600;
 
+    private const ORPHAN_CLEANUP_BATCH_CAP = 100;
+
     /**
      * @param array<string, mixed> $options
      */
@@ -303,6 +305,7 @@ final class ServiceCallScheduler
         ServiceCallAttemptClaim $claim,
     ): bool {
         return $dispatch->state === self::STATE_CLAIMED
+            && $dispatch->attempt === $claim->attempt
             && $dispatch->claim_generation === $claim->generation
             && hash_equals((string) $dispatch->claim_token, $claim->token);
     }
@@ -436,7 +439,7 @@ final class ServiceCallScheduler
             ->whereDoesntHave('call')
             ->where('created_at', '<=', $cutoff)
             ->orderBy('service_call_id')
-            ->limit(max(1, $limit))
+            ->limit(max(1, min($limit, self::ORPHAN_CLEANUP_BATCH_CAP)))
             ->pluck('service_call_id')
             ->all();
 

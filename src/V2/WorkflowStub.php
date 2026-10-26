@@ -2704,7 +2704,15 @@ final class WorkflowStub
     {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'] ?? [];
-        $command = UpdateRequestIdentity::find($instance, $context);
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        $command = $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->where('workflow_instance_id', $instance->id)
+                ->where('command_type', CommandType::Update->value)
+                ->where('request_id', $serviceCallIdentity->storageToken())
+                ->lockForUpdate()
+                ->first()
+            : UpdateRequestIdentity::find($instance, $context);
 
         if (! $command instanceof WorkflowCommand) {
             return [null, null];
@@ -2887,10 +2895,10 @@ final class WorkflowStub
             );
             if ($serviceCallIdentity !== null) {
                 /** @var WorkflowCommand|null $existing */
-                $existing = WorkflowCommand::query()
+                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                     ->where('workflow_instance_id', $instance->id)
                     ->where('command_type', CommandType::Signal->value)
-                    ->where('request_id', ServiceCallEffectIdentity::storageToken($serviceCallIdentity))
+                    ->where('request_id', $serviceCallIdentity->storageToken())
                     ->lockForUpdate()
                     ->first();
                 if ($existing instanceof WorkflowCommand) {

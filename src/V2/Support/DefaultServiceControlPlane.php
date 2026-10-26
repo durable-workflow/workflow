@@ -314,18 +314,21 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
     {
-        if (! ServiceCallScheduler::ownsClaim($claim)) {
+        $effectIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
+        if (! $effectIdentity instanceof ServiceCallEffectIdentity) {
             return;
         }
 
         $this->scheduledClaim = $claim;
         try {
             $startedAt = now();
+            $options = $claim->options;
+            $options[ServiceCallEffectIdentity::OPTION] = $effectIdentity;
             $result = $this->dispatchHandlerAttempt(
                 $claim->call,
                 $claim->operation,
                 $claim->request,
-                $claim->options,
+                $options,
                 $claim->attempt,
                 $claim->maxAttempts,
             );
@@ -2185,11 +2188,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $startOptions['payload_codec'] = $call->payload_codec;
         }
 
-        foreach (['service_call_id', 'service_call_attempt', 'service_call_max_attempts',
-            'service_call_idempotency_key'] as $key) {
+        foreach (['service_call_id', 'service_call_attempt', 'service_call_max_attempts'] as $key) {
             if (array_key_exists($key, $options)) {
                 $startOptions[$key] = $options[$key];
             }
+        }
+        $effectIdentity = ServiceCallEffectIdentity::fromOptions($options);
+        if ($effectIdentity instanceof ServiceCallEffectIdentity) {
+            $startOptions[ServiceCallEffectIdentity::OPTION] = $effectIdentity;
         }
 
         return $startOptions;
@@ -2212,13 +2218,16 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         foreach (['payload_codec', 'payload_blob', 'wait_for', 'wait_timeout_seconds',
-            'service_call_id', 'service_call_attempt', 'service_call_max_attempts',
-            'service_call_idempotency_key'] as $key) {
+            'service_call_id', 'service_call_attempt', 'service_call_max_attempts'] as $key) {
             $value = $options[$key] ?? $binding[$key] ?? null;
 
             if ($value !== null) {
                 $commandOptions[$key] = $value;
             }
+        }
+        $effectIdentity = ServiceCallEffectIdentity::fromOptions($options);
+        if ($effectIdentity instanceof ServiceCallEffectIdentity) {
+            $commandOptions[ServiceCallEffectIdentity::OPTION] = $effectIdentity;
         }
 
         return $commandOptions;

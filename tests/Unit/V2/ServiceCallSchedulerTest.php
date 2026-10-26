@@ -33,6 +33,7 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Workflow;
@@ -187,10 +188,12 @@ final class ServiceCallSchedulerTest extends TestCase
                     && $options['service_call_id'] === $claim->call->id
                     && $options['service_call_attempt'] === 1
                     && $options['service_call_max_attempts'] === 1
-                    && $options['service_call_idempotency_key'] === ServiceCallScheduler::attemptIdentity(
-                        $claim->call->id,
-                        1,
-                    );
+                    && ! array_key_exists('service_call_idempotency_key', $options)
+                    && ServiceCallEffectIdentity::fromOptions($options)?->storageToken()
+                        === 'service-call-v1:' . hash('sha256', ServiceCallScheduler::attemptIdentity(
+                            $claim->call->id,
+                            1,
+                        ));
             })
             ->andReturn([
                 'accepted' => true,
@@ -321,6 +324,11 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame(
             $first->options['service_call_idempotency_key'],
             $second->options['service_call_idempotency_key'],
+        );
+        $this->assertNull(ServiceCallEffectIdentity::forCurrentClaim($first));
+        $this->assertInstanceOf(
+            ServiceCallEffectIdentity::class,
+            ServiceCallEffectIdentity::forCurrentClaim($second),
         );
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
@@ -657,26 +665,40 @@ final class ServiceCallSchedulerTest extends TestCase
             'created_at' => now()
                 ->subHours(2),
         ])->save();
-        foreach ([
-            '01JAZZZZZZZZZZZZZZZZZZZZZ1' => now()
-                ->subHours(2),
-            '01JAZZZZZZZZZZZZZZZZZZZZZ2' => now()
-                ->subHours(2),
-            '01JAZZZZZZZZZZZZZZZZZZZZZ3' => now()
-                ->subMinutes(30),
-        ] as $id => $createdAt) {
-            WorkflowServiceCallDispatch::query()->create([
+        $orphanIds = [];
+        $rows = [];
+        $old = now()
+            ->subHours(2);
+        foreach (range(1, 101) as $sequence) {
+            $id = '01JB' . str_pad((string) $sequence, 22, '0', STR_PAD_LEFT);
+            $orphanIds[] = $id;
+            $rows[] = [
                 'service_call_id' => $id,
                 'state' => ServiceCallScheduler::STATE_SCHEDULED,
-                'dispatch_options' => [],
+                'dispatch_options' => '[]',
                 'attempt' => 1,
                 'max_attempts' => 1,
                 'available_at' => now(),
                 'claim_generation' => 0,
-                'created_at' => $createdAt,
-                'updated_at' => $createdAt,
-            ]);
+                'created_at' => $old,
+                'updated_at' => $old,
+            ];
         }
+        $recentId = '01JC' . str_repeat('0', 22);
+        $recent = now()
+            ->subMinutes(30);
+        $rows[] = [
+            'service_call_id' => $recentId,
+            'state' => ServiceCallScheduler::STATE_SCHEDULED,
+            'dispatch_options' => '[]',
+            'attempt' => 1,
+            'max_attempts' => 1,
+            'available_at' => now(),
+            'claim_generation' => 0,
+            'created_at' => $recent,
+            'updated_at' => $recent,
+        ];
+        WorkflowServiceCallDispatch::query()->insert($rows);
         Schema::create('scheduler_configured_service_calls', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
@@ -688,14 +710,14 @@ final class ServiceCallSchedulerTest extends TestCase
         config()
             ->set('workflows.v2.service_call_model', SchedulerConfiguredServiceCall::class);
 
-        $this->assertSame(1, ServiceCallScheduler::cleanupOrphans(1));
-        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ1')->exists());
-        $this->assertSame(1, ServiceCallScheduler::cleanupOrphans(1));
-        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ2')->exists());
-        $this->assertSame(0, ServiceCallScheduler::cleanupOrphans(1));
-        $this->assertSame(0, ServiceCallScheduler::cleanupOrphans(1));
+        $this->assertSame(100, ServiceCallScheduler::cleanupOrphans(PHP_INT_MAX));
+        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey($orphanIds[0])->exists());
+        $this->assertTrue(WorkflowServiceCallDispatch::query()->whereKey($orphanIds[100])->exists());
+        $this->assertSame(1, ServiceCallScheduler::cleanupOrphans(PHP_INT_MAX));
+        $this->assertFalse(WorkflowServiceCallDispatch::query()->whereKey($orphanIds[100])->exists());
+        $this->assertSame(0, ServiceCallScheduler::cleanupOrphans(PHP_INT_MAX));
         $this->assertTrue($live->fresh()->exists);
-        $this->assertTrue(WorkflowServiceCallDispatch::query()->whereKey('01JAZZZZZZZZZZZZZZZZZZZZZ3')->exists());
+        $this->assertTrue(WorkflowServiceCallDispatch::query()->whereKey($recentId)->exists());
     }
 
     private function schedule(?DefaultServiceBoundaryPolicy $policy = null): array

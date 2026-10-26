@@ -393,9 +393,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $fairnessKey = TaskFairnessKey::normalize($options['fairness_key'] ?? null);
         $fairnessWeight = TaskFairnessKey::normalizeWeight($options['fairness_weight'] ?? null);
         $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
-        $serviceCallToken = $serviceCallIdentity === null
+        $serviceCallToken = ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
             ? null
-            : ServiceCallEffectIdentity::storageToken($serviceCallIdentity);
+            : $serviceCallIdentity->storageToken();
 
         $workflowClass = $resolvedClass ?? $workflowType;
         $externalFingerprint = is_string($options['external_workflow_definition_fingerprint'] ?? null)
@@ -444,7 +444,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             if ($serviceCallToken !== null) {
                 /** @var WorkflowCommand|null $existing */
-                $existing = WorkflowCommand::query()
+                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                     ->where('workflow_instance_id', $instance->id)
                     ->where('command_type', CommandType::Start->value)
                     ->where('request_id', $serviceCallToken)
@@ -1347,24 +1347,15 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
      */
     private function commandContext(array $options): CommandContext
     {
-        $commandContext = $options['command_context'] ?? null;
-
-        if ($commandContext instanceof CommandContext) {
-            return $commandContext;
-        }
-
-        $commandContext = CommandContext::controlPlane();
+        $commandContext = ($options['command_context'] ?? null) instanceof CommandContext
+            ? $options['command_context']
+            : CommandContext::controlPlane();
         $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
 
-        return $serviceCallIdentity === null
+        return ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
             ? $commandContext
             : $commandContext->with([
-                'request' => [
-                    'request_id' => $serviceCallIdentity,
-                ],
-                'service_call' => [
-                    'idempotency_key' => $serviceCallIdentity,
-                ],
+                'service_call' => $serviceCallIdentity->commandContext(),
             ]);
     }
 

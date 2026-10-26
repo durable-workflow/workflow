@@ -233,9 +233,9 @@ violates the liveness contract. The dispatch table intentionally has no fixed
 foreign key because the service-call model and table are configurable. The same
 repair pass removes only dispatches whose configured call is missing and whose
 age exceeds `orphan_grace_seconds` (one hour by default and as an enforced
-minimum), in deterministic, bounded primary-key batches. It rechecks absence
-and age in the delete query so a concurrently restored or custom-model call is
-not removed.
+minimum), in deterministic primary-key batches capped at 100 rows. It rechecks
+absence and age in the delete query so a concurrently restored or custom-model
+call is not removed.
 
 A runnable attempt claims in one database transaction and in a fixed lock order:
 service-call row, dispatch row, current caller-run row, endpoint, service, then
@@ -261,12 +261,15 @@ receives the stable identity
 `workflow-service-call:<service-call-id>:attempt:<attempt>`. Handler adapters
 MUST propagate or otherwise enforce that identity because a lease may expire
 after an effect began and at-least-once recovery may invoke the attempt again.
-The built-in workflow start, update, and signal adapters consume it as their
-durable command request identity, so a repeated attempt returns the original
-command/effect receipt rather than creating another effect. Activity and carrier
-bindings currently resolve and persist a stable target reference without
-launching an external effect in this control plane; a future execution lane must
-consume the same attempt identity.
+The built-in workflow start, update, and signal adapters receive a reserved,
+in-memory capability issued only after the current attempt claim passes its
+generation/token fence. They derive the durable command identity from that
+capability; raw public options or command context cannot reserve the scheduler
+identity. A repeated attempt returns the original command/effect receipt rather
+than creating another effect. Activity and carrier bindings currently resolve
+and persist a stable target reference without launching an external effect in
+this control plane; a future execution lane must consume the same attempt
+identity.
 Only the worker holding the current generation and token may persist handler
 progress or complete the attempt. Retry backoff is stored in `available_at`; no
 worker thread sleeps while holding a call, caller, catalog, or workflow-task
