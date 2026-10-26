@@ -175,12 +175,23 @@ final class ServiceCallSchedulerTest extends TestCase
         $claimedDispatch = WorkflowServiceCallDispatch::query()->sole();
         $this->assertSame($claim->catalogRevision, $claimedDispatch->authorized_catalog_revision);
         $this->assertSame($claim->policyRevision, $claimedDispatch->authorized_policy_revision);
+        $effectIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $effectIdentity);
+        $effectToken = $effectIdentity->storageToken();
+        $this->assertStringStartsWith('service-call-v1:', $effectToken);
+        $this->assertNotSame(
+            'service-call-v1:' . hash('sha256', ServiceCallScheduler::attemptIdentity($claim->call->id, 1)),
+            $effectToken,
+        );
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
         $workflows = Mockery::mock(WorkflowControlPlane::class);
         $workflows->shouldReceive('update')
             ->once()
-            ->withArgs(static function (string $instanceId, string $name, array $options) use ($claim): bool {
+            ->withArgs(static function (string $instanceId, string $name, array $options) use (
+                $claim,
+                $effectToken,
+            ): bool {
                 return DB::connection()->transactionLevel() === 0
                     && $instanceId === 'accepted-target'
                     && $name === 'approve'
@@ -189,11 +200,7 @@ final class ServiceCallSchedulerTest extends TestCase
                     && $options['service_call_attempt'] === 1
                     && $options['service_call_max_attempts'] === 1
                     && ! array_key_exists('service_call_idempotency_key', $options)
-                    && ServiceCallEffectIdentity::fromOptions($options)?->storageToken()
-                        === 'service-call-v1:' . hash('sha256', ServiceCallScheduler::attemptIdentity(
-                            $claim->call->id,
-                            1,
-                        ));
+                    && ServiceCallEffectIdentity::fromOptions($options)?->storageToken() === $effectToken;
             })
             ->andReturn([
                 'accepted' => true,
@@ -225,6 +232,8 @@ final class ServiceCallSchedulerTest extends TestCase
         $call = WorkflowServiceCall::query()->sole();
         $claim = ServiceCallScheduler::claim($call->id);
         $this->assertNotNull($claim);
+        $firstIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $firstIdentity);
         Queue::fake();
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
@@ -251,12 +260,20 @@ final class ServiceCallSchedulerTest extends TestCase
         Carbon::setTestNow(now()->addHour());
         $finalClaim = ServiceCallScheduler::claim($call->id);
         $this->assertNotNull($finalClaim);
+        $finalIdentity = ServiceCallEffectIdentity::forCurrentClaim($finalClaim);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $finalIdentity);
+        $this->assertNotSame($firstIdentity->storageToken(), $finalIdentity->storageToken());
         $workflows->shouldReceive('update')
             ->once()
             ->andThrow(new RuntimeException('final update failure'));
         (new DefaultServiceControlPlane($workflows))->executeScheduledAttempt($finalClaim);
 
-        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, $dispatch->fresh()->state);
+        $dispatch->refresh();
+        $this->assertSame(ServiceCallScheduler::STATE_COMPLETED, $dispatch->state);
+        $this->assertStringNotContainsString(
+            $finalIdentity->storageToken(),
+            json_encode($dispatch->dispatch_options, JSON_THROW_ON_ERROR),
+        );
         $call->refresh();
         $this->assertSame(ServiceCallStatus::Failed->value, $call->status);
         $this->assertCount(2, $call->metadata['service_call_attempts']);
@@ -313,6 +330,8 @@ final class ServiceCallSchedulerTest extends TestCase
         $call = WorkflowServiceCall::query()->sole();
         $first = ServiceCallScheduler::claim($call->id);
         $this->assertNotNull($first);
+        $firstIdentity = ServiceCallEffectIdentity::forCurrentClaim($first);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $firstIdentity);
         WorkflowServiceCallDispatch::query()->whereKey($call->id)->update([
             'claim_expires_at' => now()
                 ->subSecond(),
@@ -326,10 +345,9 @@ final class ServiceCallSchedulerTest extends TestCase
             $second->options['service_call_idempotency_key'],
         );
         $this->assertNull(ServiceCallEffectIdentity::forCurrentClaim($first));
-        $this->assertInstanceOf(
-            ServiceCallEffectIdentity::class,
-            ServiceCallEffectIdentity::forCurrentClaim($second),
-        );
+        $secondIdentity = ServiceCallEffectIdentity::forCurrentClaim($second);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $secondIdentity);
+        $this->assertSame($firstIdentity->storageToken(), $secondIdentity->storageToken());
 
         /** @var WorkflowControlPlane&MockInterface $workflows */
         $workflows = Mockery::mock(WorkflowControlPlane::class);

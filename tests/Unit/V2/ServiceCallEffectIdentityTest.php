@@ -6,18 +6,22 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use LogicException;
 use Tests\TestCase;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowSignal;
@@ -27,6 +31,7 @@ use function Workflow\V2\signal;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\ServiceCallAttemptClaim;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
@@ -124,6 +129,7 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $rawIdentity = 'workflow-service-call:predictable:attempt:1';
         $rawOptions = [
             'service_call_idempotency_key' => $rawIdentity,
+            'request_id' => 'service-call-v1:' . hash('sha256', $rawIdentity),
             ServiceCallEffectIdentity::OPTION => [
                 'idempotency_key' => $rawIdentity,
             ],
@@ -234,7 +240,127 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $this->assertSame($identity->storageToken(), $tokens[1]);
     }
 
+    public function testLowLevelCommandRequestIdCannotReserveTheOldCanonicalIdentity(): void
+    {
+        $workflow = $this->waitingWorkflow('low-level-effect-injection');
+        $instance = WorkflowInstance::query()->findOrFail($workflow->id());
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $rawIdentity = ServiceCallScheduler::attemptIdentity('01JATTACKERCONTROLLED00000', 1);
+        $guessedReservedToken = 'service-call-v1:' . hash('sha256', $rawIdentity);
+        $context = [
+            'request' => [
+                'request_id' => $rawIdentity,
+            ],
+            'service_call' => [
+                'idempotency_key' => $rawIdentity,
+            ],
+        ];
+
+        $start = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Start->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $guessedReservedToken,
+        ]);
+        $update = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Update->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $guessedReservedToken,
+        ]);
+        $signal = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'status' => CommandStatus::Accepted->value,
+            'context' => $context,
+            'request_id' => $guessedReservedToken,
+        ]);
+
+        $this->assertNull($start->request_id);
+        $this->assertStringStartsWith('update-v1:', $update->request_id);
+        $this->assertNotSame($guessedReservedToken, $update->request_id);
+        $this->assertNull($signal->request_id);
+    }
+
+    public function testEffectCommittedBeforeClaimReacquisitionKeepsOneOpaqueReceipt(): void
+    {
+        $workflow = $this->waitingWorkflow('reacquired-effect-update');
+        [$firstClaim, $firstIdentity] = $this->currentClaim($workflow);
+        $control = new DefaultWorkflowControlPlane();
+        $auditIdentity = $firstIdentity->commandContext()['idempotency_key'];
+        $predictableToken = 'service-call-v1:' . hash('sha256', $auditIdentity);
+        $first = $control->update($workflow->id(), 'change', [
+            'arguments' => ['committed before crash'],
+            'wait_for' => 'accepted',
+            ServiceCallEffectIdentity::OPTION => $firstIdentity,
+        ]);
+
+        $this->assertNotSame($predictableToken, $firstIdentity->storageToken());
+        $identityDebug = print_r($firstIdentity, true);
+        $this->assertStringNotContainsString($auditIdentity, $identityDebug);
+        $this->assertStringNotContainsString($firstIdentity->storageToken(), $identityDebug);
+        $this->assertStringNotContainsString($firstClaim->token, $identityDebug);
+        try {
+            json_encode($firstIdentity, JSON_THROW_ON_ERROR);
+            $this->fail('The effect identity capability must not be JSON serializable.');
+        } catch (LogicException $failure) {
+            $this->assertSame('Service-call effect identities cannot be JSON serialized.', $failure->getMessage());
+        }
+        try {
+            serialize($firstIdentity);
+            $this->fail('The effect identity capability must not be serializable.');
+        } catch (LogicException $failure) {
+            $this->assertSame('Service-call effect identities cannot be serialized.', $failure->getMessage());
+        }
+        $claimDebug = print_r($firstClaim, true);
+        $this->assertStringNotContainsString($firstClaim->token, $claimDebug);
+        $this->assertStringNotContainsString($firstIdentity->storageToken(), $claimDebug);
+        $this->assertStringNotContainsString($firstClaim->token, json_encode($firstClaim, JSON_THROW_ON_ERROR));
+        try {
+            serialize($firstClaim);
+            $this->fail('The service-call attempt claim must not be serializable.');
+        } catch (LogicException $failure) {
+            $this->assertSame('Service-call attempt claims cannot be serialized.', $failure->getMessage());
+        }
+
+        // The target effect committed, but the service-call result did not.
+        WorkflowServiceCallDispatch::query()->whereKey($firstClaim->call->id)->update([
+            'claim_expires_at' => now()
+                ->subSecond(),
+        ]);
+        $replacement = ServiceCallScheduler::claim($firstClaim->call->id);
+        $this->assertNotNull($replacement);
+        $this->assertNotSame($firstClaim->token, $replacement->token);
+        $replacementIdentity = ServiceCallEffectIdentity::forCurrentClaim($replacement);
+        $this->assertInstanceOf(ServiceCallEffectIdentity::class, $replacementIdentity);
+        $this->assertSame($firstIdentity->storageToken(), $replacementIdentity->storageToken());
+
+        $retry = $control->update($workflow->id(), 'change', [
+            'arguments' => ['must not replace committed arguments'],
+            'wait_for' => 'accepted',
+            ServiceCallEffectIdentity::OPTION => $replacementIdentity,
+        ]);
+
+        $this->assertSame($first['update_id'], $retry['update_id']);
+        $this->assertSame(1, WorkflowUpdate::query()->count());
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', $workflow->id())
+            ->where('command_type', CommandType::Update->value)
+            ->sole();
+        $this->assertSame($replacementIdentity->storageToken(), $command->request_id);
+        $this->assertSame($auditIdentity, $command->context['service_call']['idempotency_key']);
+        $this->assertStringNotContainsString($firstClaim->token, json_encode($command->toArray(), JSON_THROW_ON_ERROR));
+        $this->assertFalse(ServiceCallScheduler::completeAttempt($firstClaim, [], false, null));
+    }
+
     private function currentClaimIdentity(WorkflowStub $caller): ServiceCallEffectIdentity
+    {
+        return $this->currentClaim($caller)[1];
+    }
+
+    /**
+     * @return array{ServiceCallAttemptClaim, ServiceCallEffectIdentity}
+     */
+    private function currentClaim(WorkflowStub $caller): array
     {
         $run = WorkflowRun::query()->findOrFail($caller->runId());
         $endpoint = WorkflowServiceEndpoint::query()->create([
@@ -275,7 +401,7 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $identity = ServiceCallEffectIdentity::forCurrentClaim($claim);
         $this->assertInstanceOf(ServiceCallEffectIdentity::class, $identity);
 
-        return $identity;
+        return [$claim, $identity];
     }
 
     private function waitingWorkflow(string $instanceId): WorkflowStub

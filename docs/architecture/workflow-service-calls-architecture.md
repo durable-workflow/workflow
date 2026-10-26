@@ -263,13 +263,16 @@ MUST propagate or otherwise enforce that identity because a lease may expire
 after an effect began and at-least-once recovery may invoke the attempt again.
 The built-in workflow start, update, and signal adapters receive a reserved,
 in-memory capability issued only after the current attempt claim passes its
-generation/token fence. They derive the durable command identity from that
-capability; raw public options or command context cannot reserve the scheduler
-identity. A repeated attempt returns the original command/effect receipt rather
-than creating another effect. Activity and carrier bindings currently resolve
-and persist a stable target reference without launching an external effect in
-this control plane; a future execution lane must consume the same attempt
-identity.
+generation/token fence. Its opaque, scheduler-generated command token is stable
+across claim generations for one attempt and changes for the next retry attempt.
+The capability cannot be serialized or meaningfully debugged, and only its
+non-secret audit identity is retained in command context. Raw public options,
+command context, and low-level request ids cannot reserve the scheduler token.
+A repeated or crash-reacquired attempt therefore returns the original
+command/effect receipt rather than creating another effect. Activity and carrier
+bindings currently resolve and persist a stable target reference without
+launching an external effect in this control plane; a future execution lane must
+consume the same attempt identity.
 Only the worker holding the current generation and token may persist handler
 progress or complete the attempt. Retry backoff is stored in `available_at`; no
 worker thread sleeps while holding a call, caller, catalog, or workflow-task

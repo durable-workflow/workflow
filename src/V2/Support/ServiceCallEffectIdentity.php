@@ -4,22 +4,52 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-final class ServiceCallEffectIdentity
+use JsonSerializable;
+use LogicException;
+
+final class ServiceCallEffectIdentity implements JsonSerializable
 {
     public const OPTION = '__service_call_effect_identity';
 
     private const CONTEXT_KEY = '__effect_identity';
 
     private function __construct(
-        private readonly string $identity,
+        private readonly string $auditIdentity,
+        #[\SensitiveParameter]
+        private readonly string $storageToken,
     ) {
+    }
+
+    /**
+     * @return array{capability: string}
+     */
+    public function __debugInfo(): array
+    {
+        return [
+            'capability' => '[opaque]',
+        ];
+    }
+
+    /**
+     * @return array<never, never>
+     */
+    public function __serialize(): array
+    {
+        throw new LogicException('Service-call effect identities cannot be serialized.');
     }
 
     public static function forCurrentClaim(ServiceCallAttemptClaim $claim): ?self
     {
-        return ServiceCallScheduler::ownsClaim($claim)
-            ? new self(ServiceCallScheduler::attemptIdentity($claim->call->id, $claim->attempt))
-            : null;
+        if (! ServiceCallScheduler::ownsClaim($claim)) {
+            return null;
+        }
+
+        $token = $claim->effectToken();
+        if (preg_match('/^service-call-v1:[a-f0-9]{64}$/D', $token) !== 1) {
+            return null;
+        }
+
+        return new self(ServiceCallScheduler::attemptIdentity($claim->call->id, $claim->attempt), $token);
     }
 
     /**
@@ -49,7 +79,7 @@ final class ServiceCallEffectIdentity
     public function commandContext(): array
     {
         return [
-            'idempotency_key' => $this->identity,
+            'idempotency_key' => $this->auditIdentity,
             self::CONTEXT_KEY => $this,
         ];
     }
@@ -62,7 +92,7 @@ final class ServiceCallEffectIdentity
     {
         $serviceCall = is_array($context['service_call'] ?? null) ? $context['service_call'] : [];
         unset($serviceCall[self::CONTEXT_KEY]);
-        $serviceCall['idempotency_key'] = $this->identity;
+        $serviceCall['idempotency_key'] = $this->auditIdentity;
         $context['service_call'] = $serviceCall;
 
         return $context;
@@ -70,6 +100,11 @@ final class ServiceCallEffectIdentity
 
     public function storageToken(): string
     {
-        return 'service-call-v1:' . hash('sha256', $this->identity);
+        return $this->storageToken;
+    }
+
+    public function jsonSerialize(): never
+    {
+        throw new LogicException('Service-call effect identities cannot be JSON serialized.');
     }
 }

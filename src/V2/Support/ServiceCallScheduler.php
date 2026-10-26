@@ -34,6 +34,8 @@ final class ServiceCallScheduler
 
     private const ORPHAN_CLEANUP_BATCH_CAP = 100;
 
+    private const EFFECT_TOKEN_OPTION = '__service_call_effect_token';
+
     /**
      * @param array<string, mixed> $options
      */
@@ -193,7 +195,7 @@ final class ServiceCallScheduler
             $token = hash('sha256', (string) Str::uuid());
             $now = now();
             $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
-            $options = self::withClaimTargetIdentifiers($options);
+            $options = self::withEffectToken(self::withClaimTargetIdentifiers($options));
             $dispatch->forceFill([
                 'state' => self::STATE_CLAIMED,
                 'dispatch_options' => $options,
@@ -208,6 +210,8 @@ final class ServiceCallScheduler
                 'last_error' => null,
             ])->save();
 
+            $effectToken = $options[self::EFFECT_TOKEN_OPTION];
+            unset($options[self::EFFECT_TOKEN_OPTION]);
             $options['service_call_id'] = $call->id;
             $options['service_call_attempt'] = $dispatch->attempt;
             $options['service_call_max_attempts'] = $dispatch->max_attempts;
@@ -232,6 +236,7 @@ final class ServiceCallScheduler
                 token: $token,
                 catalogRevision: $catalogRevision,
                 policyRevision: $policyRevision,
+                effectToken: $effectToken,
             );
         });
     }
@@ -272,8 +277,11 @@ final class ServiceCallScheduler
             if ($retry && ! self::terminal($call) && $dispatch->attempt < $dispatch->max_attempts) {
                 $availableAt = now()
                     ->addMilliseconds((int) ceil(max(0.0, $backoffSeconds ?? 0.0) * 1000));
+                $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
+                $options[self::EFFECT_TOKEN_OPTION] = self::newEffectToken();
                 $dispatch->forceFill([
                     'state' => self::STATE_SCHEDULED,
+                    'dispatch_options' => $options,
                     'attempt' => $dispatch->attempt + 1,
                     'available_at' => $availableAt,
                     'claim_token' => null,
@@ -619,8 +627,11 @@ final class ServiceCallScheduler
 
     private static function completeDispatch(WorkflowServiceCallDispatch $dispatch): void
     {
+        $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
+        unset($options[self::EFFECT_TOKEN_OPTION]);
         $dispatch->forceFill([
             'state' => self::STATE_COMPLETED,
+            'dispatch_options' => $options,
             'claim_token' => null,
             'claimed_at' => null,
             'claim_expires_at' => null,
@@ -700,6 +711,7 @@ final class ServiceCallScheduler
         $persisted['accepted_handler_binding'] = $binding;
         $persisted['accepted_handler_target_reference'] = $operation->handler_target_reference;
         $persisted['accepted_operation_mode'] = $operation->operation_mode;
+        $persisted[self::EFFECT_TOKEN_OPTION] = self::newEffectToken();
 
         $kind = ServiceCallBindingKind::tryFromHandlerBindingKind((string) $operation->handler_binding_kind);
         if ($kind === ServiceCallBindingKind::WorkflowRun
@@ -709,6 +721,25 @@ final class ServiceCallScheduler
         }
 
         return $persisted;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private static function withEffectToken(array $options): array
+    {
+        $token = $options[self::EFFECT_TOKEN_OPTION] ?? null;
+        if (! is_string($token) || preg_match('/^service-call-v1:[a-f0-9]{64}$/D', $token) !== 1) {
+            $options[self::EFFECT_TOKEN_OPTION] = self::newEffectToken();
+        }
+
+        return $options;
+    }
+
+    private static function newEffectToken(): string
+    {
+        return 'service-call-v1:' . bin2hex(random_bytes(32));
     }
 
     /**
