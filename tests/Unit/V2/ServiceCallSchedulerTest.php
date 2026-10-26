@@ -95,9 +95,85 @@ final class ServiceCallSchedulerTest extends TestCase
         $this->assertSame(ServiceCallScheduler::STATE_SCHEDULED, $dispatch->state);
         $this->assertSame(1, $dispatch->attempt);
         $this->assertSame(3, $dispatch->max_attempts);
+        $this->assertFalse(ServiceCallScheduler::hasAfterCommitAuthority($dispatch->dispatch_options));
         $this->assertLessThan(1_000, $elapsedMilliseconds);
         Queue::assertPushed(RunServiceCall::class, static fn (RunServiceCall $job): bool =>
             $job->serviceCallId === $call->id);
+    }
+
+    public function testCallerContextAndIdempotencyTransactionDoNotScheduleAnHttpExecution(): void
+    {
+        $this->catalog();
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('update')
+            ->once()
+            ->withArgs(static function (string $instanceId, string $name, array $options): bool {
+                return $instanceId === 'accepted-target'
+                    && $name === 'approve'
+                    && WorkflowServiceCall::query()->getModel()->getConnection()->transactionLevel() === 1
+                    && $options['wait_for'] === 'completed'
+                    && $options['wait_timeout_seconds'] === 60;
+            })
+            ->andReturn([
+                'accepted' => true,
+                'update_status' => 'completed',
+                'workflow_instance_id' => 'accepted-target',
+                'run_id' => 'target-run',
+                'update_id' => 'target-update',
+                'result' => [
+                    'approved' => true,
+                ],
+            ]);
+        $options = $this->callOptions(false);
+        $control = new DefaultServiceControlPlane($workflows);
+        $admitted = $control->execute('billing', 'invoices', 'approve', $options + [
+            'dispatch_handler' => false,
+        ]);
+        $options['service_call_id'] = $admitted['service_call_id'];
+        $options['boundary_policy_outcome'] = ServiceCallOutcome::Accepted->value;
+
+        $result = $control->execute('billing', 'invoices', 'approve', $options);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Completed->value, $result['outcome']);
+        $this->assertArrayNotHasKey('retry_scheduled', $result);
+        $this->assertSame(0, WorkflowServiceCallDispatch::query()->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function testCallerContextHttpExecutionPreservesInlineTypedFailure(): void
+    {
+        $this->catalog();
+        /** @var WorkflowControlPlane&MockInterface $workflows */
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('update')
+            ->once()
+            ->andReturn([
+                'accepted' => false,
+                'reason' => 'approval_denied',
+                'message' => 'The invoice approval was denied.',
+                'service_error_type' => 'invoice_declined',
+            ]);
+        $options = $this->callOptions(false);
+        $control = new DefaultServiceControlPlane($workflows);
+        $admitted = $control->execute('billing', 'invoices', 'approve', $options + [
+            'dispatch_handler' => false,
+        ]);
+        $options['service_call_id'] = $admitted['service_call_id'];
+        $options['boundary_policy_outcome'] = ServiceCallOutcome::Accepted->value;
+
+        $result = $control->execute('billing', 'invoices', 'approve', $options);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['status']);
+        $this->assertSame('approval_denied', $result['reason']);
+        $this->assertSame('invoice_declined', $result['service_error_type']);
+        $this->assertSame('The invoice approval was denied.', $result['message']);
+        $this->assertArrayNotHasKey('retry_scheduled', $result);
+        $this->assertSame(0, WorkflowServiceCallDispatch::query()->count());
+        Queue::assertNothingPushed();
     }
 
     public function testRollbackLeavesNoCallScheduleOrRunnableJob(): void
@@ -806,9 +882,9 @@ final class ServiceCallSchedulerTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function callOptions(): array
+    private function callOptions(bool $scheduleAfterCommit = true): array
     {
-        return [
+        $options = [
             'namespace' => 'billing',
             'caller_namespace' => 'caller',
             'caller_workflow_instance_id' => $this->run->workflow_instance_id,
@@ -818,6 +894,10 @@ final class ServiceCallSchedulerTest extends TestCase
             'wait_for' => 'completed',
             'wait_timeout_seconds' => 60,
         ];
+
+        return $scheduleAfterCommit
+            ? ServiceCallScheduler::withAfterCommitAuthority($options)
+            : $options;
     }
 }
 

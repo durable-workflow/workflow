@@ -8,10 +8,13 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
+use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionMethod;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -26,13 +29,14 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunServiceOperationAuthorizer;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
 final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
 {
-    private WorkflowTaskBridge $bridge;
+    private ProtocolAwareWorkflowTaskBridge $bridge;
 
     private WorkflowRun $run;
 
@@ -57,7 +61,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertTrue($workflow->attemptStart()->accepted());
         $this->run = WorkflowRun::query()->findOrFail($workflow->runId());
         $this->task = WorkflowTask::query()->where('workflow_run_id', $this->run->id)->sole();
-        $this->bridge = $this->app->make(WorkflowTaskBridge::class);
+        $this->bridge = $this->app->make(ProtocolAwareWorkflowTaskBridge::class);
         $claim = $this->bridge->claimStatus($this->task->id, 'service-command-worker');
         $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
         $this->assertSame(TaskStatus::Leased, $this->task->fresh()->status);
@@ -70,6 +74,115 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         WorkerCompatibilityFleet::clear();
         BridgeServiceOperationProbeWorkflow::$calls = 0;
         parent::tearDown();
+    }
+
+    #[DataProvider('serviceSchedulerProtocols')]
+    public function testServiceSchedulerOptionIsVersionGated(string $protocolVersion, bool $scheduled): void
+    {
+        $service = new BridgeServiceControlPlaneProbe([
+            'service_call_id' => 'version-gated-call',
+            'accepted' => true,
+            'status' => 'completed',
+            'result' => 'done',
+        ]);
+        $this->app->instance(ServiceControlPlane::class, $service);
+        $command = [
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+            'request_payload' => Serializer::serialize([
+                'invoice_id' => 42,
+            ]),
+            'payload_codec' => 'avro',
+        ];
+
+        $result = $this->bridge->completeForProtocol($this->task->id, [$command], $protocolVersion);
+
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $this->assertCount(1, $service->executions);
+        $options = $service->executions[0][3];
+        $this->assertSame($scheduled, ServiceCallScheduler::hasAfterCommitAuthority($options));
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function serviceSchedulerProtocols(): iterable
+    {
+        yield 'protocol 1.20 preserves inline execution' => ['1.20', false];
+        yield 'protocol 1.21 enables durable scheduling' => ['1.21', true];
+    }
+
+    #[DataProvider('unsupportedCompletionProtocols')]
+    public function testInvalidCompletionProtocolIsRejectedBeforeAnyWrite(
+        string $protocolVersion,
+        string $reason,
+    ): void {
+        $service = new BridgeServiceControlPlaneProbe([
+            'service_call_id' => 'must-not-execute',
+            'accepted' => true,
+            'status' => 'completed',
+        ]);
+        $this->app->instance(ServiceControlPlane::class, $service);
+        $before = $this->records();
+
+        $result = $this->bridge->completeForProtocol($this->task->id, [[
+            'type' => 'start_service_operation',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+            'request_payload' => Serializer::serialize([
+                'invoice_id' => 42,
+            ]),
+            'payload_codec' => 'avro',
+        ]], $protocolVersion);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame([], $result['created_task_ids']);
+        $this->assertSame($before, $this->records());
+        $this->assertSame([], $service->executions);
+        $this->assertSame(TaskStatus::Leased, $this->task->fresh()->status);
+        Queue::assertNothingPushed();
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function unsupportedCompletionProtocols(): iterable
+    {
+        yield 'malformed patch version' => ['1.21.0', 'invalid_protocol_version'];
+        yield 'future minor' => ['1.22', 'unsupported_protocol_version'];
+        yield 'different major' => ['2.0', 'unsupported_protocol_version'];
+        yield 'leading zero major' => ['01.21', 'invalid_protocol_version'];
+        yield 'leading zero minor' => ['1.020', 'invalid_protocol_version'];
+    }
+
+    public function testProtocolAwareCompletionIsAdditiveToTheStableBridgeContract(): void
+    {
+        $stableComplete = new ReflectionMethod(WorkflowTaskBridge::class, 'complete');
+        $protocolComplete = new ReflectionMethod(ProtocolAwareWorkflowTaskBridge::class, 'completeForProtocol');
+
+        $this->assertCount(2, $stableComplete->getParameters());
+        $this->assertCount(3, $protocolComplete->getParameters());
+    }
+
+    public function testUnchangedLegacyCompletionImplementationLoadsAndWorksThroughTheFacade(): void
+    {
+        // This class declares the original two-argument implementation. PHP
+        // rejects loading it if the base interface gains a third parameter.
+        $legacy = Mockery::mock(LegacyWorkflowTaskCompletionBridge::class)->makePartial();
+        $this->app->instance(WorkflowTaskBridge::class, $legacy);
+        $this->assertNotInstanceOf(ProtocolAwareWorkflowTaskBridge::class, $legacy);
+        $result = \Workflow\V2\WorkflowTaskBridge::complete('legacy-task', [[
+            'type' => 'complete_workflow',
+        ]]);
+        $this->assertTrue($result['completed']);
+        $this->assertSame('legacy-task', $result['task_id']);
+
+        $this->expectException(LogicException::class);
+        \Workflow\V2\WorkflowTaskBridge::completeForProtocol('legacy-task', [], '1.21');
     }
 
     /**
@@ -381,7 +494,7 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
         $this->assertCount(1, $service->executions);
         $forwarded = $service->executions[0][3];
-        $expected = $options;
+        $expected = ServiceCallScheduler::withAfterCommitAuthority($options);
         $expected['mode_override'] = 'sync';
         $expected['wait_for'] = 'completed';
         $expected['metadata'] = [
@@ -579,6 +692,21 @@ final class DefaultWorkflowTaskBridgeServiceOperationTest extends TestCase
         }
 
         return $records;
+    }
+}
+
+abstract class LegacyWorkflowTaskCompletionBridge implements WorkflowTaskBridge
+{
+    public function complete(string $taskId, array $commands): array
+    {
+        return [
+            'completed' => $commands !== [],
+            'task_id' => $taskId,
+            'workflow_run_id' => null,
+            'run_status' => null,
+            'created_task_ids' => [],
+            'reason' => null,
+        ];
     }
 }
 

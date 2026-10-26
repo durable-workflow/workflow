@@ -215,6 +215,17 @@ immutable accepted handler-binding snapshot, a
 `workflow_service_call_dispatches` row, and a `ServiceOperationScheduled`
 history event. It MUST NOT invoke a workflow/activity/carrier handler, enqueue
 work before commit, wait for an update result, or sleep for retry backoff.
+This rule applies to protocol 1.21 and later completions. A host passes the
+authenticated protocol through the optional
+`ProtocolAwareWorkflowTaskBridge::completeForProtocol()` role; the stable
+two-argument `WorkflowTaskBridge::complete()` contract remains unchanged.
+Missing, malformed, different-major, and future-minor versions fail closed.
+Supported older protocols retain the original inline behavior and do not write
+the scheduled event.
+The built-in `WorkflowExecutor` explicitly selects the package's current
+protocol for the same decision.
+Direct service-control-plane calls never infer scheduler authority from caller
+workflow identity or from an unrelated idempotency transaction.
 
 `workflow_service_call_dispatches` is the durable scheduler record. Its state is
 `scheduled`, `claimed`, or `completed`; `attempt`, `max_attempts`, and
