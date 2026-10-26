@@ -217,8 +217,7 @@ class WorkflowRun extends Model
             ConfiguredV2Models::resolve('run_wait_model', WorkflowRunWait::class),
             'workflow_run_id',
         )
-            ->orderBy('position')
-            ->orderBy('wait_id');
+            ->inDisplayOrder();
     }
 
     public function timelineEntries(): HasMany

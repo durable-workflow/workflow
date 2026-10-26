@@ -144,6 +144,7 @@ final class RunWaitProjector
         $seen = [];
         $projected = [];
         $existing = $waitModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
+        $positions = self::chronologicalPositions($waits);
 
         foreach (array_values($waits) as $position => $wait) {
             $waitId = self::waitId($wait, $position);
@@ -161,7 +162,7 @@ final class RunWaitProjector
                     'workflow_run_id' => $run->id,
                     'workflow_instance_id' => $run->workflow_instance_id,
                     'wait_id' => $waitId,
-                    'position' => $position,
+                    'position' => $positions[$waitId],
                     'kind' => self::stringValue($wait['kind'] ?? null) ?? 'unknown',
                     'sequence' => self::intValue($wait['sequence'] ?? null),
                     'status' => self::stringValue($wait['status'] ?? null) ?? 'unknown',
@@ -296,11 +297,39 @@ final class RunWaitProjector
         /** @var EloquentCollection<int, WorkflowRunWait> $waits */
         $waits = $waitModel::query()
             ->where('workflow_run_id', $run->id)
-            ->orderBy('position')
-            ->orderBy('wait_id')
+            ->inDisplayOrder()
             ->get();
 
         return $waits;
+    }
+
+    /**
+     * Keep stored order independent of status. Otherwise closing one open
+     * wait and opening the next rewrites every retained row twice.
+     *
+     * @param list<array<string, mixed>> $waits
+     * @return array<string, int>
+     */
+    private static function chronologicalPositions(array $waits): array
+    {
+        $ordered = [];
+
+        foreach (array_values($waits) as $position => $wait) {
+            $ordered[] = [
+                'id' => self::waitId($wait, $position),
+                'opened_at' => self::timestamp($wait['opened_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX,
+            ];
+        }
+
+        usort($ordered, static fn (array $left, array $right): int =>
+            ($left['opened_at'] <=> $right['opened_at']) ?: ($left['id'] <=> $right['id']));
+        $positions = [];
+
+        foreach ($ordered as $position => $wait) {
+            $positions[$wait['id']] = $position;
+        }
+
+        return $positions;
     }
 
     /**
