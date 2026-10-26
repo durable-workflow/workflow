@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Closure;
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
+use LogicException;
 use Throwable;
+use WeakMap;
 use Workflow\Events\ActivityCompleted as LegacyActivityCompleted;
 use Workflow\Events\ActivityFailed as LegacyActivityFailed;
 use Workflow\Events\ActivityStarted as LegacyActivityStarted;
@@ -21,9 +24,11 @@ use Workflow\V2\Events\ActivityCompleted;
 use Workflow\V2\Events\ActivityFailed;
 use Workflow\V2\Events\ActivityStarted;
 use Workflow\V2\Events\FailureRecorded;
+use Workflow\V2\Events\WorkflowCancelled;
 use Workflow\V2\Events\WorkflowCompleted;
 use Workflow\V2\Events\WorkflowFailed;
 use Workflow\V2\Events\WorkflowStarted;
+use Workflow\V2\Events\WorkflowTerminated;
 use Workflow\V2\Models\WorkflowRun;
 
 /**
@@ -50,6 +55,11 @@ final class LifecycleEventDispatcher
      * @var list<list<Closure(): void>>
      */
     private static array $collectors = [];
+
+    /**
+     * @var WeakMap<Closure, Connection>|null
+     */
+    private static ?WeakMap $eventConnections = null;
 
     /**
      * Run one transaction attempt's body and hold back the lifecycle events it
@@ -104,19 +114,26 @@ final class LifecycleEventDispatcher
             return;
         }
 
-        $dispatch = static function () use ($events): void {
-            foreach ($events as $event) {
+        foreach ($events as $event) {
+            $connection = self::$eventConnections !== null && isset(self::$eventConnections[$event])
+                ? self::$eventConnections[$event]
+                : DB::connection();
+            if ($connection->transactionLevel() > 0) {
+                $connection->afterCommit($event);
+            } else {
                 $event();
             }
-        };
-
-        if (DB::transactionLevel() > 0) {
-            DB::afterCommit($dispatch);
-
-            return;
         }
+    }
 
-        $dispatch();
+    public static function workflowCancelled(WorkflowRun $run, ?string $reason): void
+    {
+        self::workflowTerminal($run, $reason, WorkflowCancelled::class);
+    }
+
+    public static function workflowTerminated(WorkflowRun $run, ?string $reason): void
+    {
+        self::workflowTerminal($run, $reason, WorkflowTerminated::class);
     }
 
     public static function workflowStarted(WorkflowRun $run): void
@@ -385,14 +402,54 @@ final class LifecycleEventDispatcher
     }
 
     /**
+     * @param class-string<WorkflowCancelled|WorkflowTerminated> $eventClass
+     */
+    private static function workflowTerminal(WorkflowRun $run, ?string $reason, string $eventClass): void
+    {
+        $instanceId = (string) $run->workflow_instance_id;
+        $runId = (string) $run->id;
+        $workflowType = (string) ($run->workflow_type ?? $run->workflow_class);
+        $workflowClass = (string) $run->workflow_class;
+        $closedAt = $run->closed_at?->toISOString();
+        if ($closedAt === null) {
+            throw new LogicException('A terminal lifecycle notification requires the persisted close time.');
+        }
+        $committedAt = now()
+            ->toIso8601String();
+
+        self::emit(static function () use (
+            $instanceId,
+            $runId,
+            $workflowType,
+            $workflowClass,
+            $committedAt,
+            $reason,
+            $closedAt,
+            $eventClass
+        ): void {
+            $eventClass::dispatch($instanceId, $runId, $workflowType, $workflowClass, $committedAt, $reason, $closedAt);
+        }, $run->getConnection());
+    }
+
+    /**
      * Dispatch now, or hold back for the collecting transaction attempt.
      *
      * @param Closure(): void $dispatch
      */
-    private static function emit(Closure $dispatch): void
+    private static function emit(Closure $dispatch, ?Connection $connection = null): void
     {
+        if ($connection !== null) {
+            self::$eventConnections ??= new WeakMap();
+            self::$eventConnections[$dispatch] = $connection;
+        }
         if (self::$collectors !== []) {
             self::$collectors[count(self::$collectors) - 1][] = $dispatch;
+
+            return;
+        }
+
+        if ($connection !== null) {
+            self::release([$dispatch]);
 
             return;
         }

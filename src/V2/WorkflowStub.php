@@ -3737,10 +3737,12 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
         $parentTasks = [];
+        $closedRun = null;
 
         DB::transaction(function () use (
             &$command,
             &$parentTasks,
+            &$closedRun,
             $commandType,
             $terminalStatus,
             $requestedEventType,
@@ -3750,6 +3752,7 @@ final class WorkflowStub
         ): void {
             $command = null;
             $parentTasks = [];
+            $closedRun = null;
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -3971,7 +3974,16 @@ final class WorkflowStub
             $parentTasks = $this->createParentResumeTasks($run);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+            $closedRun = $run;
         }, self::mysqlCommandTransactionAttempts() ?? 1);
+
+        if ($closedRun instanceof WorkflowRun) {
+            if ($commandType === CommandType::Cancel) {
+                LifecycleEventDispatcher::workflowCancelled($closedRun, $reason === '' ? null : $reason);
+            } else {
+                LifecycleEventDispatcher::workflowTerminated($closedRun, $reason === '' ? null : $reason);
+            }
+        }
 
         $this->refresh();
 

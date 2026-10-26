@@ -9,6 +9,7 @@ use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
 use Mockery;
@@ -104,6 +105,101 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testTerminalNotificationCorpusWaitsForCleanupAndTheStorageCommit(): void
+    {
+        $path = self::FIXTURE_DIR . '/cooperative-cleanup-terminal-notification.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained terminal lifecycle notification evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $events = [];
+        foreach (['WorkflowCancelled', 'WorkflowTerminated'] as $name) {
+            Event::listen('Workflow\\V2\\Events\\' . $name, static function ($event) use (&$events): void {
+                $events[] = $event;
+            });
+        }
+        $this->executeColdReplayFixture($fixture);
+        $this->assertCount(0, $events, 'Cold replay with pending cleanup cannot announce a terminal close.');
+        $scenario = $fixture['terminal_notification'];
+
+        foreach ($scenario['commands'] as $command) {
+            $this->clearWorkflowState();
+            $events = [];
+            $stub = WorkflowStub::make($fixture['workflow']['type']);
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $this->runReadyWorkflowTask($run);
+
+            try {
+                if ($command === 'cooperative') {
+                    $this->assertTrue($stub->requestCancellation(
+                        $scenario['reason'],
+                        $scenario['cleanup_timeout_seconds']
+                    )->accepted());
+                    $this->assertCount(0, $events, 'Admission is not terminal cancellation.');
+                    $this->runReadyWorkflowTask($run);
+                    $runActivity = function () use ($run): void {
+                        $task = $run->tasks()
+                            ->where('task_type', TaskType::Activity)
+                            ->where('status', TaskStatus::Ready)->sole();
+                        $this->app->call([new RunActivityTask($task->id), 'handle']);
+                    };
+                    $runActivity();
+                    $this->assertSame(1, $run->historyEvents()
+                        ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count());
+                    $this->assertCount(0, $events, 'Cleanup retry is not terminal cancellation.');
+                    Carbon::setTestNow(now()->addSeconds($scenario['cleanup_retry_delay_seconds']));
+                    $runActivity();
+                    $this->assertCount(0, $events);
+                }
+
+                DB::connection()->transaction(function () use ($command, $scenario, $stub, $run, &$events): void {
+                    if ($command === 'cooperative') {
+                        $this->runReadyWorkflowTask($run);
+                        $this->assertSame($scenario['cleanup_memo'], $stub->refresh()->memo());
+                    } else {
+                        $result = $command === 'cancel' ? $stub->cancel($scenario['reason']) : $stub->terminate(
+                            $scenario['reason']
+                        );
+                        $this->assertTrue($result->accepted());
+                    }
+                    $this->assertTrue($stub->refresh()->run()->status->isTerminal());
+                    $this->assertCount(0, $events, 'The storage transaction has not committed yet.');
+                });
+
+                $run->refresh();
+                $terminal = $command === 'terminate' ? 'WorkflowTerminated' : 'WorkflowCancelled';
+                $this->assertCount(1, $events, 'The committed close must notify the embedded application.');
+                $this->assertSame('Workflow\\V2\\Events\\' . $terminal, $events[0]::class);
+                $this->assertSame($stub->id(), $events[0]->instanceId);
+                $this->assertSame($run->id, $events[0]->runId);
+                $this->assertSame($scenario['reason'], $events[0]->reason);
+                $this->assertSame($run->closed_at->toISOString(), $events[0]->closedAt);
+                $this->assertSame(1, $run->historyEvents()->where('event_type', $terminal)->count());
+                $history = $run->historyEvents()
+                    ->get()
+                    ->toArray();
+                $lastWorkflowTask = $run->tasks()
+                    ->where('task_type', TaskType::Workflow)
+                    ->latest('created_at')
+                    ->firstOrFail()
+                    ->id;
+                $this->app->call([new RunWorkflowTask($lastWorkflowTask), 'handle']);
+                $this->assertCount(1, $events, 'A redelivered workflow job cannot announce another close.');
+                $this->assertSame($history, $run->historyEvents()->get()->toArray());
+            } finally {
+                Carbon::setTestNow();
+            }
+        }
+    }
 
     public function testRetriedActivityCancellationCorpusKeepsTheCompletedTaskAndAcknowledgesTheLiveTask(): void
     {
@@ -328,6 +424,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'cooperative-cleanup-terminal-notification') {
+                // Its live cleanup, commit and notification proof runs in the dedicated corpus test.
+                continue;
+            }
 
             if ($fixture['id'] === 'retried-activity-cancellation-live-task') {
                 // Its live retry/delivery proof is exercised by the dedicated corpus test.
