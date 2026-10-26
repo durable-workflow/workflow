@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Models;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
@@ -37,6 +38,53 @@ class WorkflowRunWait extends Model
         'deadline_at' => UtcScheduleTimestamp::class,
         'resolved_at' => UtcScheduleTimestamp::class,
     ];
+
+    /**
+     * @param string $key
+     */
+    public function originalIsEquivalent($key): bool
+    {
+        if (parent::originalIsEquivalent($key)) {
+            return true;
+        }
+
+        if (! array_key_exists($key, $this->original)) {
+            return false;
+        }
+
+        if ($key === 'payload' && ($this->getCasts()[$key] ?? null) === 'array') {
+            // MySQL normalizes JSON object key order. Lists and scalar types
+            // still carry meaning, so compare those without coercion.
+            return self::canonicalPayload($this->getAttribute($key))
+                === self::canonicalPayload($this->getOriginal($key));
+        }
+
+        if (in_array($key, ['opened_at', 'deadline_at', 'resolved_at'], true)
+            && ($this->getCasts()[$key] ?? null) === UtcScheduleTimestamp::class) {
+            $current = $this->getAttribute($key);
+            $original = $this->getOriginal($key);
+
+            // PostgreSQL can return a zero-fraction timestamp without its
+            // trailing digits. Its instant has not changed.
+            return $current instanceof CarbonInterface
+                && $original instanceof CarbonInterface
+                && $current->equalTo($original);
+        }
+
+        return false;
+    }
+
+    public function scopeInDisplayOrder(Builder $query): Builder
+    {
+        $status = $query->getQuery()
+            ->getGrammar()
+            ->wrap($this->qualifyColumn('status'));
+
+        return $query->orderByRaw(
+            "CASE {$status} WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 WHEN 'cancelled' THEN 2 ELSE 99 END",
+        )->orderBy($this->qualifyColumn('position'))
+            ->orderBy($this->qualifyColumn('wait_id'));
+    }
 
     public function run(): BelongsTo
     {
@@ -92,5 +140,18 @@ class WorkflowRunWait extends Model
         return is_string($value) && $value !== ''
             ? Carbon::parse($value)
             : null;
+    }
+
+    private static function canonicalPayload(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return array_map(self::canonicalPayload(...), $value);
     }
 }
