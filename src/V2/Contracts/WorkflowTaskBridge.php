@@ -357,8 +357,6 @@ interface WorkflowTaskBridge
      * At least one command must be present. At most one terminal command is allowed.
      * When only non-terminal commands are present, the run transitions to Waiting
      * and the workflow task is marked Completed.
-     * protocolVersion is the authenticated worker protocol used for this completion;
-     * omitting it selects the package's current embedded-worker protocol.
      *
      * @param list<array{type: string, ...}> $commands
      * @return array{
@@ -370,11 +368,7 @@ interface WorkflowTaskBridge
      *     reason: string|null,
      * }
      */
-    public function complete(
-        string $taskId,
-        array $commands,
-        string $protocolVersion = WorkerProtocolVersion::VERSION,
-    ): array;
+    public function complete(string $taskId, array $commands): array;
 
     /**
      * Get the current status of a workflow task.

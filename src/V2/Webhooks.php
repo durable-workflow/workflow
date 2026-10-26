@@ -14,6 +14,7 @@ use Workflow\Auth\NullAuthenticator;
 use Workflow\Auth\SignatureAuthenticator;
 use Workflow\Auth\TokenAuthenticator;
 use Workflow\Auth\WebhookAuthenticator;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Enums\CommandOutcome;
@@ -206,15 +207,7 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $protocolVersion = $request->header('X-Durable-Workflow-Protocol-Version');
-
-            return self::workflowTaskCompleteResponse(
-                $taskId,
-                self::resolveWorkflowTaskCommands($request->all()),
-                is_string($protocolVersion) && $protocolVersion !== ''
-                    ? $protocolVersion
-                    : WorkerProtocolVersion::VERSION,
-            );
+            return self::workflowTaskCompleteResponse($taskId, $request);
         })->name('workflows.v2.workflow-tasks.complete');
 
         Route::post("{$basePath}/workflow-tasks/{taskId}/fail", static function (
@@ -1123,23 +1116,58 @@ final class Webhooks
         return response()->json($payload, $status);
     }
 
-    /**
-     * @param list<array{type: string, ...}> $commands
-     */
-    private static function workflowTaskCompleteResponse(
-        string $taskId,
-        array $commands,
-        string $protocolVersion = WorkerProtocolVersion::VERSION,
-    ) {
-        $payload = self::workflowTaskBridge()->complete($taskId, $commands, $protocolVersion);
+    private static function workflowTaskCompleteResponse(string $taskId, Request $request)
+    {
+        $header = $request->header('X-Durable-Workflow-Protocol-Version');
+        $protocolVersion = is_string($header) ? $header : '';
+        if (! WorkerProtocolVersion::isWellFormed($protocolVersion)) {
+            return response()->json(self::protocolCompletionRefusal($taskId, 'invalid_protocol_version'), 400);
+        }
+        if (! WorkerProtocolVersion::isSupportedRequestVersion($protocolVersion)) {
+            return response()->json(self::protocolCompletionRefusal($taskId, 'unsupported_protocol_version'), 400);
+        }
+
+        $bridge = self::workflowTaskBridge();
+        if (! $bridge instanceof ProtocolAwareWorkflowTaskBridge) {
+            return response()->json(
+                self::protocolCompletionRefusal($taskId, 'protocol_aware_completion_unavailable'),
+                501,
+            );
+        }
+
+        $commands = self::resolveWorkflowTaskCommands($request->all());
+        $payload = $bridge->completeForProtocol($taskId, $commands, $protocolVersion);
         $status = match ($payload['reason']) {
             null => 200,
             'task_not_found' => 404,
+            'invalid_protocol_version', 'unsupported_protocol_version' => 400,
             'invalid_commands' => 422,
             default => 409,
         };
 
         return response()->json($payload, $status);
+    }
+
+    /**
+     * @return array{
+     *     completed: false,
+     *     task_id: string,
+     *     workflow_run_id: null,
+     *     run_status: null,
+     *     created_task_ids: list<string>,
+     *     reason: string,
+     * }
+     */
+    private static function protocolCompletionRefusal(string $taskId, string $reason): array
+    {
+        return [
+            'completed' => false,
+            'task_id' => $taskId,
+            'workflow_run_id' => null,
+            'run_status' => null,
+            'created_task_ids' => [],
+            'reason' => $reason,
+        ];
     }
 
     /**

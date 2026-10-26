@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
+use Mockery;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
@@ -29,7 +30,9 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\CancellationPolicy;
@@ -43,6 +46,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
@@ -57,6 +61,11 @@ use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -68,6 +77,7 @@ use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ConditionWaits;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
@@ -75,6 +85,7 @@ use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -350,8 +361,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
-            if ($fixture['id'] === 'workflow-service-operation-protocol-120-inline') {
-                $this->assertProtocol120ServiceOperationRemainsInline($fixture);
+            if (str_starts_with($fixture['id'], 'workflow-service-operation-protocol-')) {
+                $this->assertServiceOperationProtocolPersistence($fixture);
+                if ($fixture['protocol_version'] === '1.21') {
+                    $this->assertServiceOperationProtocolPersistence($fixture, embedded: true);
+                }
                 continue;
             }
 
@@ -641,25 +655,85 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
-    private function assertProtocol120ServiceOperationRemainsInline(array $fixture): void
+    private function assertServiceOperationProtocolPersistence(array $fixture, bool $embedded = false): void
     {
         $this->clearWorkflowState();
         Queue::fake();
         $previousControlPlane = $this->app->make(ServiceControlPlane::class);
         $previousAuthorizer = $this->installNexusServiceAuthority();
-        $probe = new ReplayCorpusServiceControlPlaneProbe([
-            'service_call_id' => 'protocol-120-inline-call',
-            'accepted' => true,
-            'status' => 'completed',
-            'result' => $fixture['terminal_result'],
+        $scheduled = $fixture['protocol_version'] === '1.21';
+        $failed = str_ends_with($fixture['id'], '-failure');
+        $targetInstance = WorkflowInstance::query()->create([
+            'id' => 'protocol-target',
+            'namespace' => 'service',
+            'workflow_class' => 'protocol-service',
+            'workflow_type' => 'protocol-service',
+            'run_count' => 1,
         ]);
-        $this->app->instance(ServiceControlPlane::class, $probe);
+        $targetRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $targetInstance->id,
+            'namespace' => 'service',
+            'run_number' => 1,
+            'workflow_class' => 'protocol-service',
+            'workflow_type' => 'protocol-service',
+            'status' => $failed ? RunStatus::Failed->value : RunStatus::Completed->value,
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'started_at' => now(),
+            'closed_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record(
+            $targetRun,
+            $failed ? HistoryEventType::WorkflowFailed : HistoryEventType::WorkflowCompleted,
+            $failed ? [
+                'exception_type' => 'invoice_declined',
+                'message' => 'The invoice approval was denied.',
+            ] : [
+                'output' => Serializer::serializeWithCodec('avro', $fixture['terminal_result']),
+                'payload_codec' => 'avro',
+            ],
+        );
+        $handlerCalls = 0;
+        $handler = Mockery::mock(WorkflowControlPlane::class);
+        $handler->shouldReceive('start')
+            ->once()
+            ->withArgs(
+                function (string $workflowType, ?string $instanceId, array $options) use (&$handlerCalls): bool {
+                    ++$handlerCalls;
+                    $this->assertGreaterThan(0, DB::transactionLevel());
+                    return $workflowType === 'protocol-service';
+                },
+            )->andReturn([
+                'started' => true,
+                'workflow_instance_id' => $targetInstance->id,
+                'workflow_run_id' => $targetRun->id,
+            ]);
+        $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($handler));
 
         try {
+            $endpoint = WorkflowServiceEndpoint::query()->create([
+                'namespace' => 'service',
+                'endpoint_name' => 'php-service',
+            ]);
+            $service = WorkflowService::query()->create([
+                'namespace' => 'service',
+                'workflow_service_endpoint_id' => $endpoint->id,
+                'service_name' => 'greeter',
+            ]);
+            WorkflowServiceOperation::query()->create([
+                'namespace' => 'service',
+                'workflow_service_endpoint_id' => $endpoint->id,
+                'workflow_service_id' => $service->id,
+                'operation_name' => 'greet',
+                'operation_mode' => 'sync',
+                'handler_binding_kind' => 'workflow_run',
+                'handler_target_reference' => 'protocol-service',
+            ]);
             $workflow = $fixture['workflow'];
             $stub = WorkflowStub::make(
                 $workflow['type'],
-                sprintf('regression-corpus-protocol-120-%d', ++$this->workflowNumber),
+                sprintf('regression-corpus-protocol-%d', ++$this->workflowNumber),
                 'caller',
             );
             $stub->start(...$workflow['arguments']);
@@ -669,7 +743,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->where('status', TaskStatus::Ready->value)
                 ->sole();
             $bridge = $this->app->make(WorkflowTaskBridge::class);
-            $claim = $bridge->claimStatus($task->id, 'regression-corpus-protocol-120-worker');
+            $claim = $bridge->claimStatus($task->id, 'regression-corpus-protocol-worker');
             $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
             $history = $bridge->historyPayload($task->id);
             $this->assertNotNull($history);
@@ -684,13 +758,103 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $this->assertSame(['start_service_operation'], array_column($authored->commands, 'type'));
             Queue::fake();
 
-            $result = $bridge->complete($task->id, $authored->commands, $fixture['protocol_version']);
+            DB::transaction(function () use ($bridge, $task, $authored, $fixture, $embedded, $scheduled): void {
+                $result = $embedded
+                    ? $bridge->execute($task->id)
+                    : ($bridge instanceof ProtocolAwareWorkflowTaskBridge
+                        ? $bridge->completeForProtocol($task->id, $authored->commands, $fixture['protocol_version'])
+                        : $bridge->complete($task->id, $authored->commands));
+                $this->assertTrue(
+                    $result[$embedded ? 'executed' : 'completed'],
+                    json_encode($result, JSON_THROW_ON_ERROR)
+                );
+                $this->assertSame($scheduled ? 1 : 0, WorkflowServiceCallDispatch::query()->count());
+                Queue::assertNothingPushed();
+            });
 
-            $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
-            $this->assertCount(1, $probe->executions);
-            $this->assertFalse(ServiceCallScheduler::hasAfterCommitAuthority($probe->executions[0][3]));
+            $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+            $this->assertSame($scheduled ? 'accepted' : ($failed ? 'failed' : 'completed'), $call->status);
+            $event = $run->historyEvents()
+                ->whereIn(
+                    'event_type',
+                    ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceOperationScheduled']
+                )->sole();
+            $this->assertSame($fixture['history'][1]['event_type'], $event->event_type->value);
+            $this->assertSame(
+                $scheduled ? 1 : 0,
+                $run->historyEvents()
+                    ->where('event_type', 'ServiceOperationScheduled')
+                    ->count()
+            );
+            if ($scheduled) {
+                $this->assertFalse($event->payload['workflow_resume_on_admission']);
+                $dispatch = WorkflowServiceCallDispatch::query()->sole();
+                $this->assertSame($call->id, $dispatch->service_call_id);
+                $this->assertSame('scheduled', $dispatch->state);
+                $this->assertFalse(ServiceCallScheduler::hasAfterCommitAuthority($dispatch->dispatch_options));
+                Queue::assertPushed(RunServiceCall::class, 1);
+                Queue::assertPushed(
+                    RunServiceCall::class,
+                    static fn (RunServiceCall $job): bool => $job->serviceCallId === $call->id
+                );
+            } else {
+                Queue::assertNothingPushed();
+                if ($failed) {
+                    $this->assertSame('invoice_declined', $event->payload['exception_type']);
+                    $this->assertSame('The invoice approval was denied.', $event->payload['message']);
+                }
+            }
+            $cold = WorkflowFiberRunner::forClass(
+                $workflow['type'],
+                $run->workflow_instance_id,
+                $run->id,
+                $workflow['arguments'],
+                $workflow['payload_codec'],
+                HistoryExport::forRun($run->fresh())['history_events'],
+            )->step();
+            $this->assertStepMatches($fixture['expected'], $cold, $fixture['id'] . ' persisted history');
             $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
-            Queue::assertNothingPushed();
+            $this->assertSame($scheduled ? 0 : 1, $handlerCalls);
+            if ($scheduled) {
+                if ($embedded) {
+                    // Cold embedded replay of the retained scheduled history
+                    // must wait without dispatching its handler a second time.
+                    $replayRun = $this->createRunFromFixture($fixture);
+                    Queue::fake();
+                    $this->runReadyWorkflowTask($replayRun);
+                    $this->assertSame(RunStatus::Waiting, $replayRun->fresh()->status);
+                    $this->assertSame(
+                        1,
+                        $replayRun->historyEvents()
+                            ->where('event_type', 'ServiceOperationScheduled')
+                            ->count()
+                    );
+                    $this->assertSame(1, WorkflowServiceCallDispatch::query()->count());
+                    $this->assertSame(0, $handlerCalls);
+                    Queue::assertNothingPushed();
+                }
+
+                // The same 1.21 host must still execute a direct HTTP-style
+                // idempotent call inline, despite carrying the caller identity.
+                Queue::fake();
+                $direct = $this->app->make(ServiceControlPlane::class)->execute('php-service', 'greeter', 'greet', [
+                    'namespace' => 'service',
+                    'caller_namespace' => 'caller',
+                    'caller_workflow_instance_id' => $run->workflow_instance_id,
+                    'caller_workflow_run_id' => $run->id,
+                    'principal' => new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow'),
+                    'idempotency_key' => 'direct-protocol-call',
+                    'wait_for' => 'completed',
+                ]);
+                $this->assertSame('completed', $direct['status']);
+                $this->assertSame($fixture['terminal_result'], Serializer::unserializeWithCodec(
+                    $direct['result_envelope']['codec'],
+                    $direct['result_envelope']['blob'],
+                ));
+                $this->assertSame(1, $handlerCalls);
+                $this->assertSame(1, WorkflowServiceCallDispatch::query()->count());
+                Queue::assertNothingPushed();
+            }
         } finally {
             $this->app->instance(ServiceControlPlane::class, $previousControlPlane);
             if ($previousAuthorizer !== null) {
@@ -1966,6 +2130,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private function clearWorkflowState(): void
     {
         foreach ([
+            'workflow_service_call_dispatches',
             'workflow_service_calls',
             'workflow_service_operations',
             'workflow_services',
@@ -2649,42 +2814,5 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 return $this->projectRun($run);
             }
         });
-    }
-}
-
-final class ReplayCorpusServiceControlPlaneProbe implements ServiceControlPlane
-{
-    /**
-     * @var list<array{string, string, string, array<string, mixed>}>
-     */
-    public array $executions = [];
-
-    /**
-     * @param array<string, mixed> $surface
-     */
-    public function __construct(
-        private readonly array $surface,
-    ) {
-    }
-
-    public function execute(
-        string $endpointName,
-        string $serviceName,
-        string $operationName,
-        array $options = [],
-    ): array {
-        $this->executions[] = [$endpointName, $serviceName, $operationName, $options];
-
-        return $this->surface;
-    }
-
-    public function describeCall(string $serviceCallId, array $options = []): array
-    {
-        throw new \LogicException('Unexpected service-call inspection.');
-    }
-
-    public function cancelCall(string $serviceCallId, array $options = []): array
-    {
-        throw new \LogicException('Unexpected service-call cancellation.');
     }
 }

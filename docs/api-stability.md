@@ -220,13 +220,19 @@ and keep workers below that floor away from histories that require the event.
 The original `start_service_operation` command remains available from its 1.13
 floor; the scheduled execution semantics require 1.21.
 
-`WorkflowTaskBridge::complete()` accepts the authenticated worker protocol as
-its optional third argument. Protocols below 1.21 retain the pre-1.21 inline
+The stable two-argument `WorkflowTaskBridge::complete()` method remains
+unchanged. External hosts that offer workflow-task completion must require an
+authenticated, supported worker protocol and use the optional
+`ProtocolAwareWorkflowTaskBridge::completeForProtocol()` role. They must check
+that the configured bridge implements that role before advertising completion
+support. Missing, malformed, noncanonical, different-major, and future-minor versions fail
+closed. Supported protocols below 1.21 retain the pre-1.21 inline
 service-operation path and therefore cannot create `ServiceOperationScheduled`.
-Omitting the argument is the embedded-host path and selects the package's
-current protocol. Hosts must pass the worker's negotiated protocol rather than
-relying on that default. The built-in `WorkflowExecutor` likewise runs at the
-package's current protocol and supplies scheduler authority explicitly.
+The built-in `WorkflowExecutor` runs at the package's current protocol and
+supplies scheduler authority explicitly.
+
+Terminal service-call result envelopes remain intact in workflow history so
+inline results replay through the same Avro payload contract as scheduled results.
 
 Caller workflow identity on a direct `ServiceControlPlane::execute()` request
 does not activate the workflow-task scheduler. In particular, an idempotency

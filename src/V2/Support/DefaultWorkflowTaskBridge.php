@@ -21,6 +21,7 @@ use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -57,7 +58,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
-final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, PreparedCancellationScopeTaskBridge
+final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, PreparedLocalActivityGroupTaskBridge, CancellationScopeAdmission, PreparedCancellationScopeTaskBridge, ProtocolAwareWorkflowTaskBridge
 {
     public const POLL_BATCH_CAP = 100;
 
@@ -1227,11 +1228,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         );
     }
 
-    public function complete(
-        string $taskId,
-        array $commands,
-        string $protocolVersion = WorkerProtocolVersion::VERSION,
-    ): array {
+    public function complete(string $taskId, array $commands): array
+    {
+        return $this->completeForProtocol($taskId, $commands, WorkerProtocolVersion::VERSION);
+    }
+
+    public function completeForProtocol(string $taskId, array $commands, string $protocolVersion): array
+    {
         if (! WorkerProtocolVersion::isWellFormed($protocolVersion)) {
             return [
                 'completed' => false,
@@ -1240,6 +1243,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'run_status' => null,
                 'created_task_ids' => [],
                 'reason' => 'invalid_protocol_version',
+            ];
+        }
+        if (! WorkerProtocolVersion::isSupportedRequestVersion($protocolVersion)) {
+            return [
+                'completed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'created_task_ids' => [],
+                'reason' => 'unsupported_protocol_version',
             ];
         }
 
@@ -3887,7 +3900,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         ?string $requestPayload,
         string $payloadCodec,
     ): array {
-        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $responsePayload = $surface['response_payload'] ?? $surface['result_envelope'] ?? $surface['result'] ?? null;
         $payload = [
             'sequence' => $sequence,
             'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)

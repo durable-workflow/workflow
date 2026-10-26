@@ -348,7 +348,18 @@ final class WorkerProtocolVersion
 
     public static function isWellFormed(string $protocolVersion): bool
     {
-        return preg_match('/\A(\d+)\.(\d+)\z/D', $protocolVersion) === 1;
+        return preg_match('/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\z/D', $protocolVersion) === 1;
+    }
+
+    public static function isSupportedRequestVersion(string $protocolVersion): bool
+    {
+        if (! self::isWellFormed($protocolVersion)) {
+            return false;
+        }
+        [$requestedMajor, $requestedMinor] = explode('.', $protocolVersion);
+        [$currentMajor, $currentMinor] = explode('.', self::VERSION);
+
+        return $requestedMajor === $currentMajor && (int) $requestedMinor <= (int) $currentMinor;
     }
 
     /**

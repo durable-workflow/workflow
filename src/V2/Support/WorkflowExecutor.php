@@ -6142,7 +6142,7 @@ final class WorkflowExecutor
         string $payloadCodec,
     ): array {
         $metadata = $call->options?->metadata ?? [];
-        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $responsePayload = $surface['response_payload'] ?? $surface['result_envelope'] ?? $surface['result'] ?? null;
         $payload = [
             'sequence' => $sequence,
             'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)

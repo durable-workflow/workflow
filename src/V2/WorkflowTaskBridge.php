@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use LogicException;
 use Throwable;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -201,12 +203,27 @@ final class WorkflowTaskBridge
      *     reason: string|null,
      * }
      */
-    public static function complete(
-        string $taskId,
-        array $commands,
-        string $protocolVersion = WorkerProtocolVersion::VERSION,
-    ): array {
-        return self::resolve()->complete($taskId, $commands, $protocolVersion);
+    public static function complete(string $taskId, array $commands): array
+    {
+        return self::resolve()->complete($taskId, $commands);
+    }
+
+    /**
+     * Complete a workflow task under the authenticated external-worker protocol.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array{
+     *     completed: bool,
+     *     task_id: string,
+     *     workflow_run_id: string|null,
+     *     run_status: string|null,
+     *     created_task_ids: list<string>,
+     *     reason: string|null,
+     * }
+     */
+    public static function completeForProtocol(string $taskId, array $commands, string $protocolVersion): array
+    {
+        return self::resolveProtocolAware()->completeForProtocol($taskId, $commands, $protocolVersion);
     }
 
     /**
@@ -259,5 +276,15 @@ final class WorkflowTaskBridge
     private static function resolve(): WorkflowTaskBridgeContract
     {
         return app(WorkflowTaskBridgeContract::class);
+    }
+
+    private static function resolveProtocolAware(): ProtocolAwareWorkflowTaskBridge
+    {
+        $bridge = self::resolve();
+        if (! $bridge instanceof ProtocolAwareWorkflowTaskBridge) {
+            throw new LogicException('The configured workflow task bridge does not support protocol-aware completion.');
+        }
+
+        return $bridge;
     }
 }

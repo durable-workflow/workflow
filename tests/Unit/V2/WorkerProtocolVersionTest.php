@@ -35,6 +35,17 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertFalse(WorkerProtocolVersion::supportsDurableServiceOperationScheduler('2.0'));
     }
 
+    public function testRequestVersionNegotiationFailsClosed(): void
+    {
+        $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.20'));
+        $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.21'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.22'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('2.0'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.21.0'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('01.21'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.021'));
+    }
+
     public function testVersionIncludesSignalWaitCommandShape(): void
     {
         $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, '1.9', '>='));
