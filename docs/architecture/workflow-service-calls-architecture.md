@@ -227,6 +227,23 @@ protocol for the same decision.
 Direct service-control-plane calls never infer scheduler authority from caller
 workflow identity or from an unrelated idempotency transaction.
 
+An authenticated HTTP host may explicitly schedule an already admitted query
+with `ServiceCallScheduler::withHostQueryAuthority()`. This capability requires
+an explicit durable `service_call_id` and a workflow-query binding. Request JSON
+cannot create it. It persists an immutable query intent in the same dispatch
+table, then commits before a queue job contacts the query worker. An HTTP host
+waits for completion outside SQL and can return the durable id when its bounded
+wait ends. Hosts set the capability's lease to cover their complete query-worker
+wait, including route discovery. This does not change ordinary direct calls.
+
+Host queries reauthorize the accepted principal and caller scope against current
+catalog policy without requiring a caller workflow to exist. Workflow-authored
+dispatches still require their live caller run. Each claim must be current and
+unexpired before dispatch and result publication. Short claim/result transaction
+retries never invoke the query worker; a configured business retry creates the
+next distinct worker attempt. A crash may repeat a read-only query after its
+claim expires, while an older generation cannot publish over its replacement.
+
 `workflow_service_call_dispatches` is the durable scheduler record. Its state is
 `scheduled`, `claimed`, or `completed`; `attempt`, `max_attempts`, and
 `available_at` carry the retry schedule. `claim_generation` plus `claim_token`

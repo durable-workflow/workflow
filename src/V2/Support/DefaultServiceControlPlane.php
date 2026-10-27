@@ -6,8 +6,6 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
-use Illuminate\Database\Connection;
-use Illuminate\Database\DeadlockException;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -22,7 +20,6 @@ use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
-use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -72,26 +69,20 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
         $key = $this->stringOption($options, 'idempotency_key');
+        $hostQuery = ServiceCallScheduler::hasHostQueryAuthority($options);
+        if ($hostQuery && $explicitCallId === null) {
+            throw new \LogicException('Host query dispatch requires an admitted service_call_id.');
+        }
         $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
             ->getModel()
             ->getConnection();
         if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
-            if ($explicitCallId !== null
-                && ($options['boundary_policy_outcome'] ?? null) === ServiceCallOutcome::Accepted->value) {
-                return $this->executeAdmittedTransaction(
-                    $connection,
-                    $endpointName,
-                    $serviceName,
-                    $operationName,
-                    $options
-                );
-            }
             return $connection->transaction(fn (): array => $this->execute(
                 $endpointName,
                 $serviceName,
                 $operationName,
                 $options,
-            ));
+            ), attempts: $hostQuery ? 3 : 1);
         }
 
         $idempotent = $explicitCallId === null
@@ -152,10 +143,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 ->value
             && (string) $call->status === ServiceCallStatus::Accepted->value;
 
-        if (! $preAdmitted) {
-            unset($options[ServiceCallQueryObservation::OPTION]);
-        }
-
         if ($call instanceof WorkflowServiceCall && $this->isTerminal($call)) {
             return $this->serialize($call) + [
                 'accepted' => $this->acceptedShape($call),
@@ -168,7 +155,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $call instanceof WorkflowServiceCall
             && $explicitCallId !== null
             && ((string) $call->status === ServiceCallStatus::Started->value
-                || $this->hasIssuedHandler($call))
+                || $this->hasIssuedHandler($call)
+                || ServiceCallScheduler::hasDispatch((string) $call->id))
         ) {
             return $this->serialize($call) + [
                 'accepted' => true,
@@ -254,10 +242,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         $resolvedBindingKind = $this->resolvedBindingKind($operation);
-        $observation = $options[ServiceCallQueryObservation::OPTION] ?? null;
-        if ($observation instanceof ServiceCallQueryObservation && $observation->hasResult()
-            && $resolvedBindingKind !== ServiceCallBindingKind::WorkflowQuery->value) {
-            throw new ServiceOperationAuthorizationException('service_query_scope_changed');
+        if ($hostQuery && $resolvedBindingKind !== ServiceCallBindingKind::WorkflowQuery->value) {
+            throw new \LogicException('Host query dispatch requires a workflow query binding.');
         }
         $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options, $resolvedBindingKind);
 
@@ -557,36 +543,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         return $serialized;
-    }
-
-    /**
-     * @param array<string, mixed> $options
-     * @return array<string, mixed>
-     */
-    private function executeAdmittedTransaction(
-        Connection $connection,
-        string $endpointName,
-        string $serviceName,
-        string $operationName,
-        array $options,
-    ): array {
-        $observation = new ServiceCallQueryObservation();
-        $options[ServiceCallQueryObservation::OPTION] = $observation;
-        $execute = fn (): array => $this->execute($endpointName, $serviceName, $operationName, $options);
-        try {
-            return $connection->transaction($execute);
-        } catch (DeadlockException $failure) {
-            if (! $observation->hasResult() || $connection->transactionLevel() !== 0
-                || $connection->getPdo()
-                    ->inTransaction()) {
-                throw $failure;
-            }
-
-            // A worker already answered this query. Retry its rolled-back
-            // database writes with that same observation, without another
-            // worker invocation or an admission commit before dispatch.
-            return $connection->transaction($execute, attempts: 2);
-        }
     }
 
     /**
@@ -1122,11 +1078,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function shouldScheduleHandler(WorkflowServiceCall $call, array $options): bool
     {
-        return ServiceCallScheduler::hasAfterCommitAuthority($options)
-            && is_string($call->caller_workflow_run_id)
-            && $call->caller_workflow_run_id !== ''
-            && $call->getConnection()
-                ->transactionLevel() > 0;
+        $workflowCaller = ServiceCallScheduler::hasAfterCommitAuthority($options)
+            && is_string($call->caller_workflow_run_id) && $call->caller_workflow_run_id !== '';
+        $hostQuery = ServiceCallScheduler::hasHostQueryAuthority($options)
+            && $call->resolved_binding_kind === ServiceCallBindingKind::WorkflowQuery->value;
+
+        return ($workflowCaller || $hostQuery) && $call->getConnection()
+            ->transactionLevel() > 0;
     }
 
     /**
@@ -1686,38 +1644,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $queryOptions['caller_workflow_instance_id'] = $call->caller_workflow_instance_id;
         $queryOptions['caller_workflow_run_id'] = $call->caller_workflow_run_id;
 
-        $observation = $options[ServiceCallQueryObservation::OPTION] ?? null;
-        $scope = '';
-        if ($observation instanceof ServiceCallQueryObservation) {
-            $runId = ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
-                ->where('namespace', $call->target_namespace)
-                ->whereKey($instanceId)
-                ->value('current_run_id');
-            $scope = ServiceCallQueryObservation::scope([
-                $call->id, $call->namespace, $call->target_namespace, $call->caller_namespace,
-                $call->endpoint_name, $call->service_name, $call->operation_name,
-                $call->resolved_binding_kind, $call->resolved_target_reference,
-                $call->caller_workflow_instance_id, $call->caller_workflow_run_id,
-                $call->caller_principal_subject, $call->caller_principal_method,
-                $call->caller_principal_roles, $call->caller_principal_tenant,
-                $call->caller_principal_claims,
-                $instanceId, $runId, $queryName, $queryOptions['payload_codec'] ?? null,
-                $queryOptions['arguments'] ?? [], $queryOptions['payload_blob'] ?? null,
-            ]);
-            $observation->assertScope($scope);
-        }
-
         try {
-            $read = fn (): array => $this->workflowQueryHandlerResult(
-                $instanceId,
-                $queryName,
-                $queryOptions,
-                $call,
-                $operation
-            );
-            $result = $observation instanceof ServiceCallQueryObservation
-                ? $observation->read($scope, $read)
-                : $read();
+            $result = $this->workflowQueryHandlerResult($instanceId, $queryName, $queryOptions, $call, $operation);
         } catch (Throwable $exception) {
             return $this->markHandlerFailure(
                 $call,
@@ -2157,7 +2085,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->save();
                 ServiceCallWorkflowDelivery::enqueue($call);
                 $recorded = true;
-            });
+            }, attempts: $claim instanceof ServiceCallAttemptClaim ? 3 : 1);
         $call->refresh();
 
         return $recorded;
@@ -2220,7 +2148,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $attempt,
                     $maxAttempts,
                 );
-            });
+            }, attempts: $claim instanceof ServiceCallAttemptClaim ? 3 : 1);
         $call->refresh();
 
         return $result;
