@@ -56,6 +56,194 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         string $operationName,
         array $options = []
     ): array {
+        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()
+            ->getConnection();
+        /** @var null|\Closure(): array<string, mixed> $query */
+        $query = null;
+        $deferQuery = $connection->transactionLevel() === 0
+            ? static function (\Closure $dispatch) use (&$query): void {
+                $query = $dispatch;
+            }
+            : null;
+        $result = $this->executeCall($endpointName, $serviceName, $operationName, $options, $deferQuery);
+
+        // A query waits for an independent worker. Finish this call's own
+        // admission transaction before waiting, so unrelated SQLite writers
+        // cannot invalidate the snapshot used to persist its result.
+        return $query === null ? $result : $query();
+    }
+
+    public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
+    {
+        $effectIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
+        if (! $effectIdentity instanceof ServiceCallEffectIdentity) {
+            return;
+        }
+
+        $startedAt = now();
+        $options = $claim->options;
+        $options[ServiceCallEffectIdentity::OPTION] = $effectIdentity;
+        $result = $this->dispatchHandlerAttempt(
+            $claim->call,
+            $claim->operation,
+            $claim->request,
+            $options,
+            $claim->attempt,
+            $claim->maxAttempts,
+            $claim,
+        );
+        $claim->call->refresh();
+        $retry = $this->shouldRetryServiceCall($result, $claim->attempt, $claim->maxAttempts);
+        $backoff = $retry
+            ? $this->serviceCallBackoffSeconds($claim->call->retry_policy, $claim->attempt)
+            : null;
+        $recorded = ServiceCallScheduler::completeAttempt(
+            $claim,
+            $this->serviceCallAttemptEntry($claim->call, $result, $claim->attempt, $startedAt, $retry, $backoff),
+            $retry,
+            $backoff,
+        );
+        $claim->call->refresh();
+        if ($recorded && ! $retry && $this->isFailed($claim->call)) {
+            $this->releaseBoundaryAdmission($claim->request);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function describeCall(string $serviceCallId, array $options = []): array
+    {
+        $call = $this->call($serviceCallId, $options);
+
+        if (! $call) {
+            return [
+                'found' => false,
+                'service_call_id' => $serviceCallId,
+            ] + $this->emptyCallShape();
+        }
+
+        return [
+            'found' => true,
+        ] + $this->serialize($call);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function cancelCall(string $serviceCallId, array $options = []): array
+    {
+        $call = $this->call($serviceCallId, $options);
+
+        if (! $call) {
+            return [
+                'accepted' => false,
+                'service_call_id' => $serviceCallId,
+                'namespace' => $options['namespace'] ?? null,
+                'status' => null,
+                'linked_workflow_instance_id' => null,
+                'linked_workflow_run_id' => null,
+                'linked_workflow_update_id' => null,
+                'reason' => 'service_call_not_found',
+            ];
+        }
+
+        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'reason' => 'service_call_terminal',
+            ];
+        }
+
+        if (! $this->cancellationAllowed($call->cancellation_policy)) {
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'reason' => 'cancellation_not_allowed',
+            ];
+        }
+
+        $linkedCancel = null;
+
+        if (
+            ($this->arrayValue($call->cancellation_policy)['propagate_to_linked_workflow'] ?? false) === true
+            && is_string($call->linked_workflow_instance_id)
+            && $call->linked_workflow_instance_id !== ''
+        ) {
+            try {
+                $result = $this->workflows()
+                    ->cancel($call->linked_workflow_instance_id, [
+                        'namespace' => $call->target_namespace,
+                        'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
+                    ]);
+                $linkedCancel = $this->publicResult($result);
+            } catch (Throwable $exception) {
+                $linkedCancel = [
+                    'accepted' => false,
+                    'reason' => 'workflow_cancel_exception',
+                    'exception_type' => get_class($exception),
+                ];
+            }
+        }
+
+        $cancelled = $call->getConnection()
+            ->transaction(function () use ($call, $linkedCancel, $options): bool {
+                /** @var WorkflowServiceCall $locked */
+                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+                    ->lockForUpdate()
+                    ->findOrFail($call->id);
+                if ($linkedCancel !== null) {
+                    $metadata = $this->arrayValue($locked->metadata);
+                    $metadata['linked_cancel'] = $linkedCancel;
+                    $locked->metadata = $metadata;
+                }
+                if (ServiceCallDeadline::expireLocked($locked, now())) {
+                    return false;
+                }
+                if ($this->isTerminal($locked)) {
+                    if ($locked->isDirty('metadata')) {
+                        $locked->save();
+                    }
+                    return $locked->status === ServiceCallStatus::Cancelled->value;
+                }
+                $call = $locked;
+                $now = now();
+                $call->status = ServiceCallStatus::Cancelled->value;
+                $call->outcome = ServiceCallOutcome::Cancelled->value;
+                $call->outcome_category = ServiceCallOutcome::Cancelled->category();
+                $call->outcome_reason = 'cancelled_by_request';
+                $call->outcome_message = $this->stringOption($options, 'reason');
+                $call->outcome_metadata = [
+                    'failure_reason' => ServiceCallFailureReason::Cancellation->value,
+                ];
+                $call->cancelled_at ??= $now;
+                $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
+                $call->save();
+                ServiceCallWorkflowDelivery::enqueue($call);
+
+                return true;
+            });
+        $call->refresh();
+
+        return $this->serialize($call) + [
+            'accepted' => $cancelled,
+            'reason' => $cancelled ? null : 'service_call_terminal',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @param null|\Closure(\Closure(): array<string, mixed>): void $deferQuery
+     * @return array<string, mixed>
+     */
+    private function executeCall(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $options,
+        ?\Closure $deferQuery,
+    ): array {
         if (array_key_exists('wait_timeout_seconds', $options)) {
             $options['wait_timeout_seconds'] = UpdateWaitPolicy::serviceOperationTimeoutSeconds(
                 $options['wait_timeout_seconds'],
@@ -73,11 +261,12 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ->getModel()
             ->getConnection();
         if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
-            return $connection->transaction(fn (): array => $this->execute(
+            return $connection->transaction(fn (): array => $this->executeCall(
                 $endpointName,
                 $serviceName,
                 $operationName,
                 $options,
+                $deferQuery,
             ));
         }
 
@@ -296,6 +485,28 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
+        if ($deferQuery !== null
+            && $resolvedBindingKind === ServiceCallBindingKind::WorkflowQuery->value
+            && ! $this->shouldScheduleHandler($call, $options)) {
+            $deferQuery(fn (): array => $this->dispatchAcceptedCall($call, $operation, $boundaryRequest, $options));
+
+            return $this->serialize($call);
+        }
+
+        return $this->dispatchAcceptedCall($call, $operation, $boundaryRequest, $options);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function dispatchAcceptedCall(
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+        ServiceBoundaryRequest $boundaryRequest,
+        array $options,
+    ): array {
+        $call->refresh();
         $scheduled = $this->shouldScheduleHandler($call, $options);
         $handler = $scheduled
             ? $this->scheduleHandler($call, $operation, $options)
@@ -310,165 +521,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'idempotent_replay' => false,
             'handler' => $handler,
             'reason' => $this->isFailed($call) ? ($call->outcome_reason ?? 'handler_failed') : null,
-        ];
-    }
-
-    public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
-    {
-        $effectIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
-        if (! $effectIdentity instanceof ServiceCallEffectIdentity) {
-            return;
-        }
-
-        $startedAt = now();
-        $options = $claim->options;
-        $options[ServiceCallEffectIdentity::OPTION] = $effectIdentity;
-        $result = $this->dispatchHandlerAttempt(
-            $claim->call,
-            $claim->operation,
-            $claim->request,
-            $options,
-            $claim->attempt,
-            $claim->maxAttempts,
-            $claim,
-        );
-        $claim->call->refresh();
-        $retry = $this->shouldRetryServiceCall($result, $claim->attempt, $claim->maxAttempts);
-        $backoff = $retry
-            ? $this->serviceCallBackoffSeconds($claim->call->retry_policy, $claim->attempt)
-            : null;
-        $recorded = ServiceCallScheduler::completeAttempt(
-            $claim,
-            $this->serviceCallAttemptEntry($claim->call, $result, $claim->attempt, $startedAt, $retry, $backoff),
-            $retry,
-            $backoff,
-        );
-        $claim->call->refresh();
-        if ($recorded && ! $retry && $this->isFailed($claim->call)) {
-            $this->releaseBoundaryAdmission($claim->request);
-        }
-    }
-
-    /**
-     * @param array<string, mixed> $options
-     * @return array<string, mixed>
-     */
-    public function describeCall(string $serviceCallId, array $options = []): array
-    {
-        $call = $this->call($serviceCallId, $options);
-
-        if (! $call) {
-            return [
-                'found' => false,
-                'service_call_id' => $serviceCallId,
-            ] + $this->emptyCallShape();
-        }
-
-        return [
-            'found' => true,
-        ] + $this->serialize($call);
-    }
-
-    /**
-     * @param array<string, mixed> $options
-     * @return array<string, mixed>
-     */
-    public function cancelCall(string $serviceCallId, array $options = []): array
-    {
-        $call = $this->call($serviceCallId, $options);
-
-        if (! $call) {
-            return [
-                'accepted' => false,
-                'service_call_id' => $serviceCallId,
-                'namespace' => $options['namespace'] ?? null,
-                'status' => null,
-                'linked_workflow_instance_id' => null,
-                'linked_workflow_run_id' => null,
-                'linked_workflow_update_id' => null,
-                'reason' => 'service_call_not_found',
-            ];
-        }
-
-        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'reason' => 'service_call_terminal',
-            ];
-        }
-
-        if (! $this->cancellationAllowed($call->cancellation_policy)) {
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'reason' => 'cancellation_not_allowed',
-            ];
-        }
-
-        $linkedCancel = null;
-
-        if (
-            ($this->arrayValue($call->cancellation_policy)['propagate_to_linked_workflow'] ?? false) === true
-            && is_string($call->linked_workflow_instance_id)
-            && $call->linked_workflow_instance_id !== ''
-        ) {
-            try {
-                $result = $this->workflows()
-                    ->cancel($call->linked_workflow_instance_id, [
-                        'namespace' => $call->target_namespace,
-                        'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
-                    ]);
-                $linkedCancel = $this->publicResult($result);
-            } catch (Throwable $exception) {
-                $linkedCancel = [
-                    'accepted' => false,
-                    'reason' => 'workflow_cancel_exception',
-                    'exception_type' => get_class($exception),
-                ];
-            }
-        }
-
-        $cancelled = $call->getConnection()
-            ->transaction(function () use ($call, $linkedCancel, $options): bool {
-                /** @var WorkflowServiceCall $locked */
-                $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
-                    ->lockForUpdate()
-                    ->findOrFail($call->id);
-                if ($linkedCancel !== null) {
-                    $metadata = $this->arrayValue($locked->metadata);
-                    $metadata['linked_cancel'] = $linkedCancel;
-                    $locked->metadata = $metadata;
-                }
-                if (ServiceCallDeadline::expireLocked($locked, now())) {
-                    return false;
-                }
-                if ($this->isTerminal($locked)) {
-                    if ($locked->isDirty('metadata')) {
-                        $locked->save();
-                    }
-                    return $locked->status === ServiceCallStatus::Cancelled->value;
-                }
-                $call = $locked;
-                $now = now();
-                $call->status = ServiceCallStatus::Cancelled->value;
-                $call->outcome = ServiceCallOutcome::Cancelled->value;
-                $call->outcome_category = ServiceCallOutcome::Cancelled->category();
-                $call->outcome_reason = 'cancelled_by_request';
-                $call->outcome_message = $this->stringOption($options, 'reason');
-                $call->outcome_metadata = [
-                    'failure_reason' => ServiceCallFailureReason::Cancellation->value,
-                ];
-                $call->cancelled_at ??= $now;
-                $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
-                $call->save();
-                ServiceCallWorkflowDelivery::enqueue($call);
-
-                return true;
-            });
-        $call->refresh();
-
-        return $this->serialize($call) + [
-            'accepted' => $cancelled,
-            'reason' => $cancelled ? null : 'service_call_terminal',
         ];
     }
 
