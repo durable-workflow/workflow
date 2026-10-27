@@ -35,7 +35,7 @@ final class ServiceCallQueryTransactionBoundaryTest extends TestCase
         parent::tearDown();
     }
 
-    public function testAnAdmittedQueryCommitsBeforeWaitingForAnIndependentWorker(): void
+    public function testAnAdmittedQueryRetainsItsObservationAcrossAnIndependentCommit(): void
     {
         $connection = DB::connection();
         if ($connection->getDriverName() !== 'sqlite' || $connection->getDatabaseName() === ':memory:') {

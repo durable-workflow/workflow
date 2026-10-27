@@ -121,12 +121,12 @@ final class ServiceCallQueryConcurrentReplayTest extends TestCase
             fwrite($sockets['first'], "release\n");
             $first = $this->message($sockets['first']);
             $second = $this->message($sockets['second']);
-            $this->assertTrue($blocked, 'The second request must wait on the first request\'s real database lock.');
-            $this->assertFalse($secondStarted, 'A concurrent replay must not issue another worker query.');
             foreach ([$first, $second] as $result) {
                 $this->assertSame('completed', $result['status'] ?? null, json_encode($result));
                 $this->assertSame($accepted['service_call_id'], $result['service_call_id']);
             }
+            $this->assertTrue($blocked, 'The second request must wait on the first request\'s real database lock.');
+            $this->assertFalse($secondStarted, 'A concurrent replay must not issue another worker query.');
             $this->assertSame(1, WorkflowServiceEndpoint::query()->where('namespace', 'query-observations')->count());
             $this->assertSame(1, WorkflowServiceCall::query()->count());
         } finally {
