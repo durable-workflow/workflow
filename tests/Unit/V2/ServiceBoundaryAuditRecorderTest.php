@@ -121,7 +121,9 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->expectException(LogicException::class);
         try {
             if ($reload) {
-                DB::transaction(static fn () => $recorder->record($request, ServiceBoundaryDecision::allow(), $call->fresh()));
+                DB::transaction(
+                    static fn () => $recorder->record($request, ServiceBoundaryDecision::allow(), $call->fresh())
+                );
             } else {
                 $recorder->record($request, ServiceBoundaryDecision::allow(), $call);
             }
