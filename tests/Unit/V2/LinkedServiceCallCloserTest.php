@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -35,6 +36,7 @@ use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
@@ -1020,6 +1022,71 @@ final class LinkedServiceCallCloserTest extends TestCase
             'codec' => 'avro',
             'external_storage' => $reference,
         ], $view['result_envelope']);
+    }
+
+    #[DataProvider('nestedUpdateHistoryResults')]
+    public function testNestedAvroUpdateHistoryResultIsRetainedOnImmediateAndLateLinks(bool $external, bool $late): void
+    {
+        $run = $this->createRun();
+        $blob = Serializer::serializeWithCodec('avro', [
+            'answer' => false,
+            'source' => 'Ω',
+        ]);
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => (string) Str::ulid(),
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'answer',
+            'status' => 'completed',
+            'payload_codec' => 'avro',
+        ]);
+        $reference = [
+            'uri' => 'fixture://nested-result',
+            'codec' => 'avro',
+            'sha256' => hash('sha256', $blob),
+            'size_bytes' => strlen($blob),
+        ];
+        $envelope = [
+            'codec' => 'avro',
+        ] + ($external ? [
+            'external_storage' => $reference,
+        ] : [
+            'blob' => $blob,
+        ]);
+        $overrides = [
+            'resolved_binding_kind' => ServiceCallBindingKind::WorkflowUpdate->value,
+            'linked_workflow_update_id' => $update->id,
+            'output_payload_reference' => 'fixture://stale',
+            'metadata' => [
+                'trace' => 'keep-me',
+                'nexus_result' => [
+                    'codec' => 'avro',
+                    'blob' => 'stale',
+                ],
+            ],
+        ];
+        $call = $late ? null : $this->createCall($run, $overrides);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'update_id' => $update->id,
+            'result' => $envelope,
+        ]);
+        $call ??= $this->createCall($run, $overrides);
+        LinkedServiceCallCloser::reconcile($call);
+        $call->refresh();
+        $this->assertSame('completed', $call->status);
+        $this->assertSame('keep-me', $call->metadata['trace']);
+        $this->assertSame($external ? $reference['uri'] : null, $call->output_payload_reference);
+        $this->assertSameJsonObject($envelope, \Workflow\V2\Support\ServiceCallResultEnvelope::fromCall($call));
+        $this->assertArrayNotHasKey($external ? 'blob' : 'external_reference', $call->metadata['nexus_result']);
+    }
+
+    public static function nestedUpdateHistoryResults(): iterable
+    {
+        foreach ([false, true] as $external) {
+            foreach ([false, true] as $late) {
+                yield (int) $external . '-' . (int) $late => [$external, $late];
+            }
+        }
     }
 
     #[DataProvider('externalCallerNamespaces')]
