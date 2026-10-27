@@ -14,6 +14,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
@@ -512,6 +513,19 @@ class WorkflowCommand extends Model
         if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
             $context = $serviceCallIdentity->persistentContext($context);
             $attributes['context'] = $context;
+        }
+
+        $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+        if ($bridgeIdentity instanceof BridgeCommandIdentity) {
+            $context = $bridgeIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+            if ($serviceCallIdentity === null && in_array($commandType, [
+                CommandType::Signal, CommandType::Signal->value, CommandType::Update, CommandType::Update->value,
+            ], true)) {
+                $attributes['request_id'] = $bridgeIdentity->storageToken();
+
+                return $attributes;
+            }
         }
 
         if ($isUpdate) {
