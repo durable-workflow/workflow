@@ -413,6 +413,13 @@ jobs:
           tests/Unit/V2/HostServiceQueryLifecycleTest.php \
           tests/Unit/V2/HostServiceQueryConcurrentReplayTest.php --testdox --fail-on-warning
 
+        php -d zend.enable_gc=0 vendor/bin/phpunit \
+          tests/Unit/V2/HostServiceQueryConcurrentReplayTest.php \
+          tests/Unit/V2/HostServiceQueryDispatchTest.php \
+          tests/Unit/V2/HostServiceQueryLifecycleTest.php \
+          tests/Unit/V2/LocalActivityRetryDispatchTest.php \
+          tests/Unit/V2/MemoTest.php --testdox --fail-on-warning
+
     - name: Run retained execution authority and process-loss controls
       run: >-
         vendor/bin/phpunit tests/Unit/V2/EmbeddedContinuationTest.php
