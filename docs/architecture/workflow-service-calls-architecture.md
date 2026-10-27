@@ -413,6 +413,15 @@ or Waterline surface inspecting the call row can render the snapped
 deadline, cancellation, retry, and idempotency policy without
 consulting the live operation registry.
 
+Hosts that claim the canonical idempotency key during admission may use
+`ServiceBoundaryAuditRecorder::make()` to prepare an unsaved row. Claim the key
+inside the writer transaction, then finalize that same newly inserted pending
+row with `record($request, $decision, $call)`. Finalization refuses a committed,
+reloaded, already admitted, or differently scoped row. It keeps the canonical
+identity and clears provisional decision timestamps before recording the final
+allow or denial. Authorize an existing canonical winner as a replay before
+reserving fresh rate or concurrency capacity; do not overwrite or re-admit it.
+
 For the built-in `propagate_to_linked_workflow` cancellation option, propagation
 is best-effort and its public receipt is retained in `metadata.linked_cancel`.
 A propagation exception records `workflow_cancel_exception` and its exception

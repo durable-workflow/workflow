@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Model;
+use LogicException;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -21,12 +22,64 @@ final class ServiceBoundaryAuditRecorder
     public function record(
         ServiceBoundaryRequest $request,
         ServiceBoundaryDecision $decision,
+        ?WorkflowServiceCall $call = null,
+    ): WorkflowServiceCall {
+        if ($call !== null && $call->exists
+            && (! $call->wasRecentlyCreated || $call->getConnection()->transactionLevel() === 0
+                || $call->status !== ServiceCallStatus::Pending->value)) {
+            throw new LogicException('Only a newly inserted, uncommitted pending admission can be finalized.');
+        }
+        if ($call !== null && $call->exists) {
+            foreach ([
+                'namespace' => $request->targetNamespace,
+                'target_namespace' => $request->targetNamespace,
+                'endpoint_name' => $request->endpointName,
+                'service_name' => $request->serviceName,
+                'operation_name' => $request->operationName,
+                'idempotency_key' => $request->idempotencyKey,
+                'caller_namespace' => $request->callerNamespace,
+                'caller_workflow_instance_id' => $request->callerWorkflowInstanceId,
+                'caller_workflow_run_id' => $request->callerWorkflowRunId,
+                'caller_principal_subject' => $request->principal->subject,
+                'caller_principal_method' => $request->principal->method,
+                'caller_principal_tenant' => $request->principal->tenant,
+            ] as $field => $expected) {
+                if ($call->getAttribute($field) !== $expected) {
+                    throw new LogicException('The prepared admission does not belong to this request.');
+                }
+            }
+            if ($call->idempotency_scope_hash !== null && ($request->idempotencyKey === null
+                || $call->idempotency_scope_hash !== ServiceCallIdempotency::digest([
+                    $request->targetNamespace, $request->endpointName, $request->serviceName,
+                    $request->operationName, $request->idempotencyKey,
+                ]))) {
+                throw new LogicException('The prepared admission has a different canonical key.');
+            }
+        }
+        $call = $this->populate($request, $decision, $call);
+        $call->save();
+
+        return $call;
+    }
+
+    /**
+     * Build an unsaved admission for a host's canonical-key transaction.
+     */
+    public function make(ServiceBoundaryRequest $request, ServiceBoundaryDecision $decision): WorkflowServiceCall
+    {
+        return $this->populate($request, $decision);
+    }
+
+    private function populate(
+        ServiceBoundaryRequest $request,
+        ServiceBoundaryDecision $decision,
+        ?WorkflowServiceCall $call = null,
     ): WorkflowServiceCall {
         /** @var class-string<WorkflowServiceCall> $modelClass */
         $modelClass = ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class);
 
         /** @var WorkflowServiceCall $call */
-        $call = new $modelClass();
+        $call ??= new $modelClass();
 
         $endpointId = $this->endpointId($request);
         $serviceId = $endpointId !== null ? $this->serviceId($request, $endpointId) : null;
@@ -78,6 +131,10 @@ final class ServiceBoundaryAuditRecorder
             : $request->principal->claims;
 
         $now = now();
+        $call->accepted_at = null;
+        $call->call_deadline_at = null;
+        $call->failed_at = null;
+        $call->failure_message = null;
         if ($decision->isAllowed()) {
             $call->accepted_at = $now;
             $call->call_deadline_at = ServiceCallDeadlinePolicy::resolve($request->deadlinePolicy, $now);
@@ -85,8 +142,6 @@ final class ServiceBoundaryAuditRecorder
             $call->failed_at = $now;
             $call->failure_message = $decision->message;
         }
-
-        $call->save();
 
         return $call;
     }
