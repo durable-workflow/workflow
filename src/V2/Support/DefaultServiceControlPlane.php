@@ -150,7 +150,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         if (
             $call instanceof WorkflowServiceCall
             && $explicitCallId !== null
-            && (string) $call->status === ServiceCallStatus::Started->value
+            && ((string) $call->status === ServiceCallStatus::Started->value
+                || $this->hasIssuedHandler($call))
         ) {
             return $this->serialize($call) + [
                 'accepted' => true,
@@ -719,7 +720,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     ): void {
         $run = $this->stringOption($options, 'caller_workflow_run_id');
         $instance = $this->stringOption($options, 'caller_workflow_instance_id');
-        if ($run === null && $instance === null) {
+        if ($run === null && $instance === null
+            && ! ($options['principal'] ?? null) instanceof ServiceCallPrincipal) {
             return;
         }
         WorkflowServiceOperationAuthority::authorizeExistingCall($call, $this->principal($options), [
@@ -732,6 +734,20 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'service_name' => $service,
             'operation_name' => $operation,
         ], $this->boundaryPolicy());
+    }
+
+    private function hasIssuedHandler(WorkflowServiceCall $call): bool
+    {
+        // Accepted also represents an issued activity/carrier that its lane
+        // has not started yet. A catalog target alone is only a template.
+        $field = match ((string) $call->resolved_binding_kind) {
+            ServiceCallBindingKind::ActivityExecution->value => 'activity_execution_id',
+            ServiceCallBindingKind::InvocableCarrierRequest->value => 'carrier_request_id',
+            default => null,
+        };
+        $metadata = $this->arrayValue($call->metadata);
+
+        return $field !== null && $this->stringFrom($metadata[$field] ?? null) !== null;
     }
 
     /**
