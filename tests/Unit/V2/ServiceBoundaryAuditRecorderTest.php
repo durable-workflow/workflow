@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use LogicException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -17,11 +20,124 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
+use Workflow\V2\Support\ServiceCallIdempotency;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\TaskWatchdog;
 
 final class ServiceBoundaryAuditRecorderTest extends TestCase
 {
+    public function testPreparedAdmissionDoesNotPersistBeforeItsHostClaimsTheCanonicalKey(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $call = (new ServiceBoundaryAuditRecorder())->make(
+            $this->request($operation),
+            ServiceBoundaryDecision::allow()
+        );
+        $this->assertFalse($call->exists);
+        $this->assertSame(0, WorkflowServiceCall::query()->count());
+        $this->assertSame($operation->id, $call->workflow_service_operation_id);
+        $this->assertSame('analytics', $call->caller_namespace);
+    }
+
+    #[DataProvider('finalAdmissionDecisions')]
+    public function testTheCanonicalPendingRowIsFinalizedWithoutAnotherAuditIdentity(bool $allowed): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $request = $this->request($operation);
+        $recorder = new ServiceBoundaryAuditRecorder();
+        $deny = ServiceBoundaryDecision::denyNamespacePolicy(reason: 'caller_namespace_denied', message: 'Denied.');
+        DB::transaction(function () use ($request, $recorder, $deny, $allowed): void {
+            $call = $recorder->make($request, $allowed ? $deny : ServiceBoundaryDecision::allow());
+            $call->status = 'pending';
+            $call = ServiceCallIdempotency::save($call, ['finance', 'billing', 'invoicing', 'create', 'invoice-1']);
+            $id = $call->id;
+            $digest = $call->idempotency_scope_hash;
+            $result = $recorder->record($request, $allowed ? ServiceBoundaryDecision::allow() : $deny, $call);
+            $this->assertSame($id, $result->id);
+            $this->assertSame($digest, $result->idempotency_scope_hash);
+            $this->assertSame('invoice-1', $result->idempotency_key);
+            $this->assertSame($allowed ? 'accepted' : 'failed', $result->status);
+            $this->assertSame($allowed, $result->accepted_at !== null);
+            $this->assertSame(! $allowed, $result->failed_at !== null);
+            $this->assertSame($allowed ? null : 'Denied.', $result->failure_message);
+            $this->assertSame(1, WorkflowServiceCall::query()->count());
+        });
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+    }
+
+    public static function finalAdmissionDecisions(): iterable
+    {
+        yield 'allow' => [true];
+        yield 'deny' => [false];
+    }
+
+    public function testACommittedAdmissionCannotBeRewrittenThroughThePreparedRowApi(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $request = $this->request($operation);
+        $recorder = new ServiceBoundaryAuditRecorder();
+        $call = $recorder->record($request, ServiceBoundaryDecision::allow())->refresh();
+        $before = $call->getRawOriginal();
+        $this->expectException(LogicException::class);
+        try {
+            $recorder->record($request, ServiceBoundaryDecision::denyAuthorization(reason: 'denied'), $call);
+        } finally {
+            $this->assertSame($before, $call->fresh()->getRawOriginal());
+        }
+    }
+
+    public function testAnotherCallerCannotFinalizeThePreparedCanonicalRow(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $recorder = new ServiceBoundaryAuditRecorder();
+        $this->expectException(LogicException::class);
+        try {
+            DB::transaction(function () use ($recorder, $operation): void {
+                $call = $recorder->make($this->request($operation), ServiceBoundaryDecision::allow());
+                $call->status = 'pending';
+                $call = ServiceCallIdempotency::save($call, ['finance', 'billing', 'invoicing', 'create', 'invoice-1']);
+                $recorder->record(
+                    $this->request($operation, callerNamespace: 'foreign'),
+                    ServiceBoundaryDecision::allow(),
+                    $call
+                );
+            });
+        } finally {
+            $this->assertSame(0, WorkflowServiceCall::query()->count());
+        }
+    }
+
+    #[DataProvider('committedPendingRows')]
+    public function testACommittedPendingRowCannotBeAdoptedAsANewAdmission(bool $reload): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $recorder = new ServiceBoundaryAuditRecorder();
+        $request = $this->request($operation);
+        $call = $recorder->make($request, ServiceBoundaryDecision::allow());
+        $call->status = 'pending';
+        $call->save();
+        $call->refresh();
+        $before = $call->getRawOriginal();
+        $this->expectException(LogicException::class);
+        try {
+            if ($reload) {
+                DB::transaction(
+                    static fn () => $recorder->record($request, ServiceBoundaryDecision::allow(), $call->fresh())
+                );
+            } else {
+                $recorder->record($request, ServiceBoundaryDecision::allow(), $call);
+            }
+        } finally {
+            $this->assertSame($before, $call->fresh()->getRawOriginal());
+        }
+    }
+
+    public static function committedPendingRows(): iterable
+    {
+        yield 'retained model after commit' => [false];
+        yield 'reloaded in a later transaction' => [true];
+    }
+
     public function testAdmissionPersistsTheOriginalDeadlineBeforeHandlerDispatchAndRepairExpiresIt(): void
     {
         Carbon::setTestNow('2026-10-11T00:00:00.123456Z');

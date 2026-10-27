@@ -336,6 +336,41 @@ reference. A second handler binding for the same call (for example
 when the caller retries with a different idempotency key) is a new
 service-call row with its own durable id.
 
+A WorkflowRun binding follows the logical execution through canonical
+`WorkflowContinuedAsNew` history. Its current linked run and resolved target
+reference advance only to the declared next run, in the same namespace,
+instance and workflow type, with the next run number. Selecting an instance's
+current run or an unrelated redrive is insufficient. The call id, acceptance
+time and original call deadline remain unchanged. The first run and latest
+continuation event remain inspectable in call metadata. Continuation keeps the
+call open; the final run's completion, cancellation or typed failure closes it.
+A linked workflow timeout is a typed handler failure; expiry of the call's own
+deadline remains the `timed_out` outcome and takes precedence once reached.
+
+One reconciliation read follows at most 32 continuation hops. The existing
+repair pass resumes longer chains, within its normal candidate and queue/run
+scope limits. No polling client is required to finish that reconciliation.
+
+### Workflow binding completion
+
+| Binding | Successful completion | While awaiting completion |
+|---------|-----------------------|---------------------------|
+| WorkflowRun | The final run in its canonical continuation chain completes, preserving its result. | The call remains Started; run failure, timeout, cancellation and the original call deadline retain their typed outcomes. |
+| WorkflowUpdate | The accepted update records its actual `UpdateCompleted` result. | Accepted-only admission remains Started; later completion/failure is delivered by history, including a completion committed before the call records its update link. |
+| WorkflowSignal | The signal's durable command receipt is accepted; the result is Avro null. | Completion confirms receipt. The target may still be waiting and the signal may still be Received rather than Applied. |
+| WorkflowQuery | The host returns the query result. | Host query admission and worker-wait budgets apply; typed query failure closes the call without waiting for workflow completion. |
+
+Update failure/rejection closes only the linked operation; it does not require
+the target workflow itself to finish. The immutable update id follows an
+instance-scoped update handed to a continued run. Results preserve null, false,
+zero, empty and nested values, and use the same inline/external storage
+contract for all completing bindings. The reserved `nexus_result` representation
+is replaced atomically rather than recursively merged with old result metadata.
+JSON argument lists and Avro-encoded argument lists deliver the same values to
+the target and its durable command receipt. Opaque serialized argument
+references resolve in the target service request's namespace; caller namespace
+policy metadata grants no storage authority.
+
 ## Deadline, cancellation, retry, and idempotency
 
 Every operation declares the policies it accepts at the contract
@@ -377,6 +412,26 @@ Every one of these policies is visible at the contract layer: a CLI
 or Waterline surface inspecting the call row can render the snapped
 deadline, cancellation, retry, and idempotency policy without
 consulting the live operation registry.
+
+Hosts that claim the canonical idempotency key during admission may use
+`ServiceBoundaryAuditRecorder::make()` to prepare an unsaved row. Claim the key
+inside the writer transaction, then finalize that same newly inserted pending
+row with `record($request, $decision, $call)`. Finalization refuses a committed,
+reloaded, already admitted, or differently scoped row. It keeps the canonical
+identity and clears provisional decision timestamps before recording the final
+allow or denial. Authorize an existing canonical winner as a replay before
+reserving fresh rate or concurrency capacity; do not overwrite or re-admit it.
+An existing-call authorization exception carries `boundaryDecision` only when
+the owned, scoped catalog's current replay policy returned a denial. Hosts may
+preserve that typed rejection; ownership/catalog failures have no decision.
+
+For the built-in `propagate_to_linked_workflow` cancellation option, propagation
+is best-effort and its public receipt is retained in `metadata.linked_cancel`.
+A propagation exception records `workflow_cancel_exception` and its exception
+type while still applying the local cancellation. A linked terminal event or
+the original call deadline that wins during propagation is preserved, together
+with its result/failure and the propagation receipt. A later duplicate cannot
+replace that terminal outcome or send another propagation request.
 
 ## Reference-based payload storage
 

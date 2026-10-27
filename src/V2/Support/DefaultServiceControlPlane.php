@@ -7,8 +7,10 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -148,7 +150,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         if (
             $call instanceof WorkflowServiceCall
             && $explicitCallId !== null
-            && (string) $call->status === ServiceCallStatus::Started->value
+            && ((string) $call->status === ServiceCallStatus::Started->value
+                || $this->hasIssuedHandler($call))
         ) {
             return $this->serialize($call) + [
                 'accepted' => true,
@@ -401,32 +404,47 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $metadata = $this->arrayValue($call->metadata);
+        $linkedCancel = null;
 
         if (
             ($this->arrayValue($call->cancellation_policy)['propagate_to_linked_workflow'] ?? false) === true
             && is_string($call->linked_workflow_instance_id)
             && $call->linked_workflow_instance_id !== ''
         ) {
-            $result = $this->workflows()
-                ->cancel($call->linked_workflow_instance_id, [
-                    'namespace' => $call->target_namespace,
-                    'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
-                ]);
-
-            $metadata['linked_cancel'] = $this->publicResult($result);
+            try {
+                $result = $this->workflows()
+                    ->cancel($call->linked_workflow_instance_id, [
+                        'namespace' => $call->target_namespace,
+                        'reason' => $this->stringOption($options, 'reason') ?? 'service_call_cancelled',
+                    ]);
+                $linkedCancel = $this->publicResult($result);
+            } catch (Throwable $exception) {
+                $linkedCancel = [
+                    'accepted' => false,
+                    'reason' => 'workflow_cancel_exception',
+                    'exception_type' => get_class($exception),
+                ];
+            }
         }
 
         $cancelled = $call->getConnection()
-            ->transaction(function () use ($call, $metadata, $options): bool {
+            ->transaction(function () use ($call, $linkedCancel, $options): bool {
                 /** @var WorkflowServiceCall $locked */
                 $locked = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                     ->lockForUpdate()
                     ->findOrFail($call->id);
+                if ($linkedCancel !== null) {
+                    $metadata = $this->arrayValue($locked->metadata);
+                    $metadata['linked_cancel'] = $linkedCancel;
+                    $locked->metadata = $metadata;
+                }
                 if (ServiceCallDeadline::expireLocked($locked, now())) {
                     return false;
                 }
                 if ($this->isTerminal($locked)) {
+                    if ($locked->isDirty('metadata')) {
+                        $locked->save();
+                    }
                     return $locked->status === ServiceCallStatus::Cancelled->value;
                 }
                 $call = $locked;
@@ -439,7 +457,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->outcome_metadata = [
                     'failure_reason' => ServiceCallFailureReason::Cancellation->value,
                 ];
-                $call->metadata = $metadata === [] ? null : $metadata;
                 $call->cancelled_at ??= $now;
                 $call->failure_message = $this->stringOption($options, 'reason') ?? $call->failure_message;
                 $call->save();
@@ -703,7 +720,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     ): void {
         $run = $this->stringOption($options, 'caller_workflow_run_id');
         $instance = $this->stringOption($options, 'caller_workflow_instance_id');
-        if ($run === null && $instance === null) {
+        if ($run === null && $instance === null
+            && ! ($options['principal'] ?? null) instanceof ServiceCallPrincipal) {
             return;
         }
         WorkflowServiceOperationAuthority::authorizeExistingCall($call, $this->principal($options), [
@@ -716,6 +734,20 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'service_name' => $service,
             'operation_name' => $operation,
         ], $this->boundaryPolicy());
+    }
+
+    private function hasIssuedHandler(WorkflowServiceCall $call): bool
+    {
+        // Accepted also represents an issued activity/carrier that its lane
+        // has not started yet. A catalog target alone is only a template.
+        $field = match ((string) $call->resolved_binding_kind) {
+            ServiceCallBindingKind::ActivityExecution->value => 'activity_execution_id',
+            ServiceCallBindingKind::InvocableCarrierRequest->value => 'carrier_request_id',
+            default => null,
+        };
+        $metadata = $this->arrayValue($call->metadata);
+
+        return $field !== null && $this->stringFrom($metadata[$field] ?? null) !== null;
     }
 
     /**
@@ -1428,6 +1460,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $updateId,
                     $metadata,
                     $claim,
+                    $this->workflowResultEnvelope($result, $call),
                 );
                 if ($completed) {
                     $this->releaseBoundaryAdmission($request);
@@ -1519,7 +1552,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         if (($result['accepted'] ?? false) === true) {
             $commandId = $this->stringFrom($result['workflow_command_id'] ?? null);
 
-            $this->markStarted(
+            $completed = $this->markCompleted(
                 $call,
                 ServiceCallBindingKind::WorkflowSignal->value,
                 $commandId ?? $signalName,
@@ -1531,7 +1564,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     'control_plane' => $this->publicResult($result),
                 ],
                 $claim,
+                [
+                    'codec' => $call->payload_codec,
+                    'blob' => Serializer::serializeWithCodec($call->payload_codec, null),
+                ],
             );
+            if ($completed) {
+                $this->releaseBoundaryAdmission($request);
+            }
 
             return [
                 'accepted' => true,
@@ -1626,6 +1666,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     'control_plane' => $this->publicResult($result),
                 ],
                 $claim,
+                $this->workflowResultEnvelope($result, $call),
             );
             if ($completed) {
                 $this->releaseBoundaryAdmission($request);
@@ -1971,6 +2012,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ?string $updateId,
         array $metadata,
         ?ServiceCallAttemptClaim $claim,
+        ?array $resultEnvelope = null,
     ): bool {
         $recorded = false;
         $call->getConnection()
@@ -1983,6 +2025,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $updateId,
                 $metadata,
                 $claim,
+                $resultEnvelope,
                 &$recorded,
             ): void {
                 /** @var WorkflowServiceCall $locked */
@@ -2005,6 +2048,25 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->linked_workflow_instance_id = $instanceId;
                 $call->linked_workflow_run_id = $runId;
                 $call->linked_workflow_update_id = $updateId;
+                if ($resultEnvelope !== null) {
+                    $codec = $resultEnvelope['codec'];
+                    if (is_string($resultEnvelope['blob'] ?? null)) {
+                        $metadata['nexus_result'] = [
+                            'codec' => $codec,
+                            'blob' => $resultEnvelope['blob'],
+                        ];
+                        $call->output_payload_reference = null;
+                    } elseif (is_array($resultEnvelope['external_storage'] ?? null)) {
+                        $reference = $resultEnvelope['external_storage'];
+                        $call->output_payload_reference = $reference['uri'];
+                        unset($reference['uri']);
+                        $metadata['nexus_result'] = [
+                            'codec' => $codec,
+                            'external_reference' => $reference,
+                        ];
+                    }
+                    $call->payload_codec = $codec;
+                }
                 $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
                 $call->started_at ??= now();
                 $call->completed_at ??= now();
@@ -2209,11 +2271,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             }
         }
 
-        $arguments = $this->stringOption($options, 'arguments')
-            ?? $this->stringOption($options, 'payload_blob')
-            ?? $this->bindingString($binding, ['arguments', 'payload_blob']);
+        $arguments = $options['arguments'] ?? $options['payload_blob']
+            ?? $binding['arguments'] ?? $binding['payload_blob'] ?? null;
 
-        if ($arguments !== null) {
+        if (is_array($arguments)) {
+            $arguments = Serializer::serializeWithCodec($call->payload_codec, $arguments);
+        }
+
+        if (is_string($arguments)) {
             $startOptions['arguments'] = $arguments;
         }
 
@@ -2245,18 +2310,39 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'namespace' => $call->target_namespace,
         ];
 
-        $arguments = $this->arrayOption($options, 'arguments') ?: $this->arrayAt($binding, 'arguments');
-        if ($arguments !== []) {
-            $commandOptions['arguments'] = $arguments;
-        }
-
-        foreach (['payload_codec', 'payload_blob', 'wait_for', 'wait_timeout_seconds',
+        foreach (['payload_codec', 'wait_for', 'wait_timeout_seconds',
             'service_call_id', 'service_call_attempt', 'service_call_max_attempts'] as $key) {
             $value = $options[$key] ?? $binding[$key] ?? null;
 
             if ($value !== null) {
                 $commandOptions[$key] = $value;
             }
+        }
+        $callerArguments = $options['arguments'] ?? $options['payload_blob'] ?? null;
+        $arguments = $callerArguments ?? $binding['arguments'] ?? $binding['payload_blob'] ?? [];
+        $codec = CodecRegistry::canonicalize($commandOptions['payload_codec'] ?? $call->payload_codec);
+        if (is_string($arguments)) {
+            // Serialized input belongs to the service request's namespace.
+            // caller_namespace is a policy identity, not a storage authority.
+            $blob = ExternalPayloads::resolveStoredPayload($arguments, $codec, $call->target_namespace);
+            $commandOptions['payload_blob'] = $arguments;
+            $arguments = Serializer::unserializeWithCodec($codec, $blob);
+            if (! is_array($arguments)) {
+                throw ValidationException::withMessages([
+                    'arguments' => ['Workflow arguments must decode to an array.'],
+                ]);
+            }
+        } elseif (is_array($arguments)
+            && (($options['payload_blob'] ?? $binding['payload_blob'] ?? null) !== null)) {
+            // An explicit argument list overrides catalog defaults. Keep the
+            // receipt and stored signal payload derived from that same value.
+            $commandOptions['payload_blob'] = Serializer::serializeWithCodec($codec, $arguments);
+        }
+        if (is_array($arguments) && ($arguments !== [] || $callerArguments !== null || array_key_exists(
+            'arguments',
+            $binding
+        ))) {
+            $commandOptions['arguments'] = $arguments;
         }
         $effectIdentity = ServiceCallEffectIdentity::fromOptions($options);
         if ($effectIdentity instanceof ServiceCallEffectIdentity) {
@@ -2286,6 +2372,38 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         return $dispatch instanceof \Workflow\V2\Models\WorkflowServiceCallDispatch
             && ServiceCallScheduler::ownsLockedClaim($dispatch, $claim);
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @return array{codec: string, blob?: string, external_storage?: array<string, mixed>}|null
+     */
+    private function workflowResultEnvelope(array $result, WorkflowServiceCall $call): ?array
+    {
+        $envelope = $result['result_envelope'] ?? null;
+        if (is_array($envelope)) {
+            $codec = CodecRegistry::canonicalize($envelope['codec'] ?? $call->payload_codec);
+            if (is_string($envelope['blob'] ?? null)) {
+                return [
+                    'codec' => $codec,
+                    'blob' => $envelope['blob'],
+                ];
+            }
+            if (is_string($envelope['external_storage']['uri'] ?? null)) {
+                return [
+                    'codec' => $codec,
+                    'external_storage' => $envelope['external_storage'],
+                ];
+            }
+        }
+        if (array_key_exists('result', $result)) {
+            $codec = CodecRegistry::canonicalize($call->payload_codec);
+            return [
+                'codec' => $codec,
+                'blob' => Serializer::serializeWithCodec($codec, $result['result']),
+            ];
+        }
+        return null;
     }
 
     /**
@@ -2617,6 +2735,12 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     {
         $base = $this->arrayValue($metadata);
         $extra ??= [];
+
+        // A result has one representation; merging can retain a stale inline
+        // blob beside a new external reference (or the reverse).
+        if (array_key_exists('nexus_result', $extra)) {
+            unset($base['nexus_result']);
+        }
 
         if ($base === [] && $extra === []) {
             return null;

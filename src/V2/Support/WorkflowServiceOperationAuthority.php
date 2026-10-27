@@ -217,6 +217,7 @@ final class WorkflowServiceOperationAuthority
                 $decision instanceof ServiceBoundaryDecision
                     ? ($decision->reason ?? 'service_operation_authority_invalid')
                     : 'service_operation_replay_authority_unavailable',
+                boundaryDecision: $decision instanceof ServiceBoundaryDecision ? $decision : null,
             );
         }
     }
