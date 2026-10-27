@@ -210,16 +210,26 @@ abstract class TestCase extends BaseTestCase
             // Testbench may truncate this file after the next in-memory test.
             // Close WAL connections before restoring its original journal so
             // that reset never depends on collection of an earlier app.
-            foreach ($database->getConnections() as $connectionName => $open) {
-                self::assertSame(0, $open->transactionLevel(), 'The WAL fixture must finish its transactions.');
-                $database->purge($connectionName);
+            $unfinished = [];
+            try {
+                foreach ($database->getConnections() as $connectionName => $open) {
+                    $level = $open->transactionLevel();
+                    if ($level !== 0) {
+                        $unfinished[$connectionName] = $level;
+                    }
+                    $database->purge($connectionName);
+                }
+            } finally {
+                try {
+                    $restoredJournal = $database->connection($name)
+                        ->scalar('PRAGMA journal_mode=' . $journal);
+                } finally {
+                    $database->purge($name);
+                }
             }
 
-            try {
-                self::assertSame($journal, $database->connection($name)->scalar('PRAGMA journal_mode=' . $journal));
-            } finally {
-                $database->purge($name);
-            }
+            self::assertSame($journal, $restoredJournal);
+            self::assertSame([], $unfinished, 'The WAL fixture must finish its transactions.');
         });
 
         $connection->statement('PRAGMA journal_mode=WAL');
