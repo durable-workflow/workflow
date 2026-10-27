@@ -303,7 +303,7 @@ final class HostServiceQueryLifecycleTest extends TestCase
         if ($connection->getDriverName() !== 'sqlite' || $connection->getDatabaseName() === ':memory:') {
             $this->markTestSkipped('The stale completion snapshot requires file-backed SQLite.');
         }
-        $connection->statement('PRAGMA journal_mode=WAL');
+        $this->useSqliteWalJournal();
         config([
             'database.connections.query_result_writer' => config('database.connections.' . $connection->getName()),
         ]);

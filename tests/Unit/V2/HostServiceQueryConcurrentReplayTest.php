@@ -39,7 +39,7 @@ final class HostServiceQueryConcurrentReplayTest extends TestCase
         Queue::fake();
         Carbon::setTestNow('2026-10-27T09:00:00Z');
         if ($connection->getDriverName() === 'sqlite') {
-            $connection->statement('PRAGMA journal_mode=WAL');
+            $this->useSqliteWalJournal();
             $connection->statement('PRAGMA busy_timeout=1000');
         }
         $endpoint = WorkflowServiceEndpoint::query()->create([

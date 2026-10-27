@@ -199,6 +199,42 @@ abstract class TestCase extends BaseTestCase
         $this->app->offsetUnset(OutputStyle::class);
     }
 
+    protected function useSqliteWalJournal(): void
+    {
+        $database = $this->app->make('db');
+        $connection = $database->connection();
+        $name = $connection->getName();
+        $journal = (string) $connection->scalar('PRAGMA journal_mode');
+
+        $this->beforeApplicationDestroyed(static function () use ($database, $name, $journal): void {
+            // Testbench may truncate this file after the next in-memory test.
+            // Close WAL connections before restoring its original journal so
+            // that reset never depends on collection of an earlier app.
+            $unfinished = [];
+            try {
+                foreach ($database->getConnections() as $connectionName => $open) {
+                    $level = $open->transactionLevel();
+                    if ($level !== 0) {
+                        $unfinished[$connectionName] = $level;
+                    }
+                    $database->purge($connectionName);
+                }
+            } finally {
+                try {
+                    $restoredJournal = $database->connection($name)
+                        ->scalar('PRAGMA journal_mode=' . $journal);
+                } finally {
+                    $database->purge($name);
+                }
+            }
+
+            self::assertSame($journal, $restoredJournal);
+            self::assertSame([], $unfinished, 'The WAL fixture must finish its transactions.');
+        });
+
+        $connection->statement('PRAGMA journal_mode=WAL');
+    }
+
     protected function setUpWithLaravelMigrations(): void
     {
         if (! static::USE_DATABASE_TRUNCATION) {

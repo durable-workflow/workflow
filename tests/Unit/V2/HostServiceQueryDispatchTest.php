@@ -29,7 +29,7 @@ final class HostServiceQueryDispatchTest extends TestCase
         }
         Queue::fake();
         Carbon::setTestNow('2026-10-27T09:00:00Z');
-        $connection->statement('PRAGMA journal_mode=WAL');
+        $this->useSqliteWalJournal();
         config([
             'database.connections.host_query_writer' => config('database.connections.' . $connection->getName()),
         ]);
