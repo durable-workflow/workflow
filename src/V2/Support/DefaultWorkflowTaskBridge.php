@@ -1725,6 +1725,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     }
                     // This receipt proves prefix commit, not permission to start
                     // application code. Preparation still checks cancellation.
+                    if (! $group && ($receipt['next_sequence'] ?? null) === $startSequence + count(
+                        $parsed['non_terminal']
+                    )) {
+                        // Repair an older update-tail cursor from its original
+                        // commands, without replaying them or using later history.
+                        $receipt['next_sequence'] = self::retainedPrefixNextSequence(
+                            $parsed['non_terminal'],
+                            $receipt['next_sequence'],
+                        );
+                    }
                     return [
                         ...$receipt,
                         'checkpointed' => true,
@@ -1858,7 +1868,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'lease_owner' => $leaseOwner,
                     'lease_expires_at' => $task->lease_expires_at->toISOString(),
                     'start_sequence' => $startSequence,
-                    'next_sequence' => $sequence,
+                    'next_sequence' => $group ? $sequence : self::retainedPrefixNextSequence(
+                        $parsed['non_terminal'],
+                        $sequence
+                    ),
                     'fingerprint' => $fingerprint,
                     'created_task_ids' => $createdTaskIds,
                     'recorded_at' => now()
@@ -1886,6 +1899,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return $refused(self::meterRefusalReason($refusal));
         }
+    }
+
+    /**
+     * Update outcomes do not consume yielded-workflow identities. Keep the
+     * existing positions within a mixed batch, but omit its trailing update
+     * outcomes from the cursor a retained prefix returns to its next caller.
+     *
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function retainedPrefixNextSequence(array $commands, int $sequence): int
+    {
+        for ($offset = count($commands) - 1; $offset >= 0; --$offset) {
+            if (! in_array($commands[$offset]['type'], ['complete_update', 'fail_update'], true)) {
+                break;
+            }
+            --$sequence;
+        }
+
+        return $sequence;
     }
 
     /**
