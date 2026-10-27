@@ -6,6 +6,8 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
+use Illuminate\Database\Connection;
+use Illuminate\Database\DeadlockException;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -20,6 +22,7 @@ use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -56,21 +59,280 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         string $operationName,
         array $options = []
     ): array {
-        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()
-            ->getConnection();
-        /** @var null|\Closure(): array<string, mixed> $query */
-        $query = null;
-        $deferQuery = $connection->transactionLevel() === 0
-            ? static function (\Closure $dispatch) use (&$query): void {
-                $query = $dispatch;
-            }
-            : null;
-        $result = $this->executeCall($endpointName, $serviceName, $operationName, $options, $deferQuery);
+        if (array_key_exists('wait_timeout_seconds', $options)) {
+            $options['wait_timeout_seconds'] = UpdateWaitPolicy::serviceOperationTimeoutSeconds(
+                $options['wait_timeout_seconds'],
+            );
+        }
+        $namespace = $this->targetNamespace($options);
+        $endpointKey = $this->contractName($endpointName);
+        $serviceKey = $this->contractName($serviceName);
+        $operationKey = $this->contractName($operationName);
+        CodecRegistry::canonicalize($this->stringOption($options, 'payload_codec'));
 
-        // A query waits for an independent worker. Finish this call's own
-        // admission transaction before waiting, so unrelated SQLite writers
-        // cannot invalidate the snapshot used to persist its result.
-        return $query === null ? $result : $query();
+        $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
+        $key = $this->stringOption($options, 'idempotency_key');
+        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+            ->getModel()
+            ->getConnection();
+        if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
+            if ($explicitCallId !== null
+                && ($options['boundary_policy_outcome'] ?? null) === ServiceCallOutcome::Accepted->value) {
+                return $this->executeAdmittedTransaction(
+                    $connection,
+                    $endpointName,
+                    $serviceName,
+                    $operationName,
+                    $options
+                );
+            }
+            return $connection->transaction(fn (): array => $this->execute(
+                $endpointName,
+                $serviceName,
+                $operationName,
+                $options,
+            ));
+        }
+
+        $idempotent = $explicitCallId === null
+            ? $this->idempotentCall($namespace, $endpointKey, $serviceKey, $operationKey, $options)
+            : null;
+
+        if ($idempotent !== null) {
+            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+            $idempotent = ServiceCallIdempotency::save(
+                $idempotent,
+                [$namespace, $endpointKey, $serviceKey, $operationKey, $key]
+            );
+            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+            return $this->serialize($idempotent) + [
+                'accepted' => $this->acceptedShape($idempotent),
+                'idempotent_replay' => true,
+                'reason' => null,
+            ];
+        }
+
+        $call = $this->existingCall($explicitCallId, $namespace);
+        if ($call instanceof WorkflowServiceCall) {
+            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+        }
+        if ($call instanceof WorkflowServiceCall && $namespace === null) {
+            $namespace = $this->stringFrom($call->target_namespace)
+                ?? $this->stringFrom($call->namespace);
+        }
+        if ($call instanceof WorkflowServiceCall && is_string($call->idempotency_key)
+            && $call->idempotency_key !== '') {
+            if ($key !== null && $key !== $call->idempotency_key) {
+                throw new ServiceOperationAuthorizationException('service_call_idempotency_scope_conflict');
+            }
+            $scope = [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key];
+            $canonical = ServiceCallIdempotency::find($scope) ?? $call;
+            $this->authorizeWorkflowCall($canonical, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+            $call = ServiceCallIdempotency::save($canonical, $scope);
+            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+        }
+
+        if ($explicitCallId !== null && ! $call instanceof WorkflowServiceCall) {
+            return [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'service_call_id' => $explicitCallId,
+                'namespace' => $namespace,
+                'endpoint_name' => $endpointKey,
+                'service_name' => $serviceKey,
+                'operation_name' => $operationKey,
+                'reason' => 'service_call_not_found',
+            ] + $this->emptyCallShape();
+        }
+
+        $preAdmitted = $call instanceof WorkflowServiceCall
+            && $this->stringOption($options, 'boundary_policy_outcome') === ServiceCallOutcome::Accepted
+                ->value
+                            && $this->outcomeValue($call) === ServiceCallOutcome::Accepted
+->value
+            && (string) $call->status === ServiceCallStatus::Accepted->value;
+
+        if (! $preAdmitted) {
+            unset($options[ServiceCallQueryObservation::OPTION]);
+        }
+
+        if ($call instanceof WorkflowServiceCall && $this->isTerminal($call)) {
+            return $this->serialize($call) + [
+                'accepted' => $this->acceptedShape($call),
+                'idempotent_replay' => false,
+                'reason' => null,
+            ];
+        }
+
+        if (
+            $call instanceof WorkflowServiceCall
+            && $explicitCallId !== null
+            && ((string) $call->status === ServiceCallStatus::Started->value
+                || $this->hasIssuedHandler($call))
+        ) {
+            return $this->serialize($call) + [
+                'accepted' => true,
+                'idempotent_replay' => false,
+                'reason' => null,
+            ];
+        }
+
+        $call ??= $this->newCall();
+        $principal = $this->principal($options);
+        $callerNamespace = array_key_exists('caller_namespace', $options)
+            ? $this->namespaceOption($options, 'caller_namespace')
+            : (($call instanceof WorkflowServiceCall ? $this->stringFrom($call->caller_namespace) : null)
+                ?? $this->configuredNamespace());
+
+        if ($call->accepted_at === null) {
+            $this->stampPending(
+                $call,
+                $namespace,
+                $callerNamespace,
+                $endpointKey,
+                $serviceKey,
+                $operationKey,
+                $principal,
+                $options,
+            );
+            if (is_string($call->idempotency_key) && $call->idempotency_key !== '') {
+                $candidate = $call;
+                $call = ServiceCallIdempotency::save(
+                    $call,
+                    [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key]
+                );
+                if (! $call->is($candidate)) {
+                    $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
+                    return $this->serialize($call) + [
+                        'accepted' => $this->acceptedShape($call),
+                        'idempotent_replay' => true,
+                        'reason' => null,
+                    ];
+                }
+            } else {
+                $call->save();
+            }
+        }
+
+        $endpoint = $this->endpoint($namespace, $endpointKey);
+
+        if (! $endpoint instanceof WorkflowServiceEndpoint) {
+            $this->markResolutionFailure($call, 'endpoint');
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => 'endpoint_not_found',
+            ];
+        }
+
+        $service = $this->service($namespace, $endpoint, $serviceKey);
+
+        if (! $service instanceof WorkflowService) {
+            $call->workflow_service_endpoint_id = $endpoint->id;
+            $this->markResolutionFailure($call, 'service');
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => 'service_not_found',
+            ];
+        }
+
+        $operation = $this->operation($namespace, $service, $operationKey);
+
+        if (! $operation instanceof WorkflowServiceOperation) {
+            $call->workflow_service_endpoint_id = $endpoint->id;
+            $call->workflow_service_id = $service->id;
+            $this->markResolutionFailure($call, 'operation');
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => 'operation_not_found',
+            ];
+        }
+
+        $resolvedBindingKind = $this->resolvedBindingKind($operation);
+        $observation = $options[ServiceCallQueryObservation::OPTION] ?? null;
+        if ($observation instanceof ServiceCallQueryObservation && $observation->hasResult()
+            && $resolvedBindingKind !== ServiceCallBindingKind::WorkflowQuery->value) {
+            throw new ServiceOperationAuthorizationException('service_query_scope_changed');
+        }
+        $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options, $resolvedBindingKind);
+
+        if ($resolvedBindingKind === null) {
+            $this->markUnknownBindingKind($call, $operation);
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => 'unknown_binding_kind',
+            ];
+        }
+
+        $boundaryRequest = $this->boundaryRequest(
+            $principal,
+            $callerNamespace,
+            $namespace,
+            $endpoint,
+            $service,
+            $operation,
+            $call,
+            $resolvedBindingKind,
+        );
+
+        $decision = $preAdmitted
+            ? ServiceBoundaryDecision::allow(
+                policyName: $call->policy_name ?? 'pre_admitted',
+                metadata: $this->arrayValue($call->outcome_metadata),
+            )
+            : $this->boundaryPolicy()
+                ->evaluate($boundaryRequest);
+
+        if ($decision->isDenied()) {
+            $this->markBoundaryRejection($call, $boundaryRequest, $decision);
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => $decision->reason,
+            ];
+        }
+
+        $this->markAccepted($call, $boundaryRequest, $decision);
+
+        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
+            return $this->serialize($call) + [
+                'accepted' => true,
+                'idempotent_replay' => false,
+                'reason' => $call->outcome_reason,
+            ];
+        }
+
+        if (($options['dispatch_handler'] ?? true) === false) {
+            return $this->serialize($call) + [
+                'accepted' => true,
+                'idempotent_replay' => false,
+                'reason' => null,
+            ];
+        }
+
+        $scheduled = $this->shouldScheduleHandler($call, $options);
+        $handler = $scheduled
+            ? $this->scheduleHandler($call, $operation, $options)
+            : $this->dispatchHandler($call, $operation, $boundaryRequest, $options);
+        $call->refresh();
+
+        return $this->serialize($call) + ($scheduled ? [
+            'wait_for' => UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
+            'retry_scheduled' => true,
+        ] : []) + [
+            'accepted' => $this->acceptedShape($call),
+            'idempotent_replay' => false,
+            'handler' => $handler,
+            'reason' => $this->isFailed($call) ? ($call->outcome_reason ?? 'handler_failed') : null,
+        ];
     }
 
     public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
@@ -233,298 +495,6 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     }
 
     /**
-     * @param array<string, mixed> $options
-     * @param null|\Closure(\Closure(): array<string, mixed>): void $deferQuery
-     * @return array<string, mixed>
-     */
-    private function executeCall(
-        string $endpointName,
-        string $serviceName,
-        string $operationName,
-        array $options,
-        ?\Closure $deferQuery,
-    ): array {
-        if (array_key_exists('wait_timeout_seconds', $options)) {
-            $options['wait_timeout_seconds'] = UpdateWaitPolicy::serviceOperationTimeoutSeconds(
-                $options['wait_timeout_seconds'],
-            );
-        }
-        $namespace = $this->targetNamespace($options);
-        $endpointKey = $this->contractName($endpointName);
-        $serviceKey = $this->contractName($serviceName);
-        $operationKey = $this->contractName($operationName);
-        CodecRegistry::canonicalize($this->stringOption($options, 'payload_codec'));
-
-        $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
-        $key = $this->stringOption($options, 'idempotency_key');
-        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
-            ->getModel()
-            ->getConnection();
-        if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
-            return $connection->transaction(fn (): array => $this->executeCall(
-                $endpointName,
-                $serviceName,
-                $operationName,
-                $options,
-                $deferQuery,
-            ));
-        }
-
-        $idempotent = $explicitCallId === null
-            ? $this->idempotentCall($namespace, $endpointKey, $serviceKey, $operationKey, $options)
-            : null;
-
-        if ($idempotent !== null) {
-            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-            $idempotent = ServiceCallIdempotency::save(
-                $idempotent,
-                [$namespace, $endpointKey, $serviceKey, $operationKey, $key]
-            );
-            $this->authorizeWorkflowCall($idempotent, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-            return $this->serialize($idempotent) + [
-                'accepted' => $this->acceptedShape($idempotent),
-                'idempotent_replay' => true,
-                'reason' => null,
-            ];
-        }
-
-        $call = $this->existingCall($explicitCallId, $namespace);
-        if ($call instanceof WorkflowServiceCall) {
-            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-        }
-        if ($call instanceof WorkflowServiceCall && $namespace === null) {
-            $namespace = $this->stringFrom($call->target_namespace)
-                ?? $this->stringFrom($call->namespace);
-        }
-        if ($call instanceof WorkflowServiceCall && is_string($call->idempotency_key)
-            && $call->idempotency_key !== '') {
-            if ($key !== null && $key !== $call->idempotency_key) {
-                throw new ServiceOperationAuthorizationException('service_call_idempotency_scope_conflict');
-            }
-            $scope = [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key];
-            $canonical = ServiceCallIdempotency::find($scope) ?? $call;
-            $this->authorizeWorkflowCall($canonical, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-            $call = ServiceCallIdempotency::save($canonical, $scope);
-            $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-        }
-
-        if ($explicitCallId !== null && ! $call instanceof WorkflowServiceCall) {
-            return [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'service_call_id' => $explicitCallId,
-                'namespace' => $namespace,
-                'endpoint_name' => $endpointKey,
-                'service_name' => $serviceKey,
-                'operation_name' => $operationKey,
-                'reason' => 'service_call_not_found',
-            ] + $this->emptyCallShape();
-        }
-
-        $preAdmitted = $call instanceof WorkflowServiceCall
-            && $this->stringOption($options, 'boundary_policy_outcome') === ServiceCallOutcome::Accepted
-                ->value
-                            && $this->outcomeValue($call) === ServiceCallOutcome::Accepted
-->value
-            && (string) $call->status === ServiceCallStatus::Accepted->value;
-
-        if ($call instanceof WorkflowServiceCall && $this->isTerminal($call)) {
-            return $this->serialize($call) + [
-                'accepted' => $this->acceptedShape($call),
-                'idempotent_replay' => false,
-                'reason' => null,
-            ];
-        }
-
-        if (
-            $call instanceof WorkflowServiceCall
-            && $explicitCallId !== null
-            && ((string) $call->status === ServiceCallStatus::Started->value
-                || $this->hasIssuedHandler($call))
-        ) {
-            return $this->serialize($call) + [
-                'accepted' => true,
-                'idempotent_replay' => false,
-                'reason' => null,
-            ];
-        }
-
-        $call ??= $this->newCall();
-        $principal = $this->principal($options);
-        $callerNamespace = array_key_exists('caller_namespace', $options)
-            ? $this->namespaceOption($options, 'caller_namespace')
-            : (($call instanceof WorkflowServiceCall ? $this->stringFrom($call->caller_namespace) : null)
-                ?? $this->configuredNamespace());
-
-        if ($call->accepted_at === null) {
-            $this->stampPending(
-                $call,
-                $namespace,
-                $callerNamespace,
-                $endpointKey,
-                $serviceKey,
-                $operationKey,
-                $principal,
-                $options,
-            );
-            if (is_string($call->idempotency_key) && $call->idempotency_key !== '') {
-                $candidate = $call;
-                $call = ServiceCallIdempotency::save(
-                    $call,
-                    [$namespace, $endpointKey, $serviceKey, $operationKey, $call->idempotency_key]
-                );
-                if (! $call->is($candidate)) {
-                    $this->authorizeWorkflowCall($call, $namespace, $endpointKey, $serviceKey, $operationKey, $options);
-                    return $this->serialize($call) + [
-                        'accepted' => $this->acceptedShape($call),
-                        'idempotent_replay' => true,
-                        'reason' => null,
-                    ];
-                }
-            } else {
-                $call->save();
-            }
-        }
-
-        $endpoint = $this->endpoint($namespace, $endpointKey);
-
-        if (! $endpoint instanceof WorkflowServiceEndpoint) {
-            $this->markResolutionFailure($call, 'endpoint');
-
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'reason' => 'endpoint_not_found',
-            ];
-        }
-
-        $service = $this->service($namespace, $endpoint, $serviceKey);
-
-        if (! $service instanceof WorkflowService) {
-            $call->workflow_service_endpoint_id = $endpoint->id;
-            $this->markResolutionFailure($call, 'service');
-
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'reason' => 'service_not_found',
-            ];
-        }
-
-        $operation = $this->operation($namespace, $service, $operationKey);
-
-        if (! $operation instanceof WorkflowServiceOperation) {
-            $call->workflow_service_endpoint_id = $endpoint->id;
-            $call->workflow_service_id = $service->id;
-            $this->markResolutionFailure($call, 'operation');
-
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'reason' => 'operation_not_found',
-            ];
-        }
-
-        $resolvedBindingKind = $this->resolvedBindingKind($operation);
-        $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options, $resolvedBindingKind);
-
-        if ($resolvedBindingKind === null) {
-            $this->markUnknownBindingKind($call, $operation);
-
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'reason' => 'unknown_binding_kind',
-            ];
-        }
-
-        $boundaryRequest = $this->boundaryRequest(
-            $principal,
-            $callerNamespace,
-            $namespace,
-            $endpoint,
-            $service,
-            $operation,
-            $call,
-            $resolvedBindingKind,
-        );
-
-        $decision = $preAdmitted
-            ? ServiceBoundaryDecision::allow(
-                policyName: $call->policy_name ?? 'pre_admitted',
-                metadata: $this->arrayValue($call->outcome_metadata),
-            )
-            : $this->boundaryPolicy()
-                ->evaluate($boundaryRequest);
-
-        if ($decision->isDenied()) {
-            $this->markBoundaryRejection($call, $boundaryRequest, $decision);
-
-            return $this->serialize($call) + [
-                'accepted' => false,
-                'idempotent_replay' => false,
-                'reason' => $decision->reason,
-            ];
-        }
-
-        $this->markAccepted($call, $boundaryRequest, $decision);
-
-        if (ServiceCallDeadline::expire($call) || $this->isTerminal($call)) {
-            return $this->serialize($call) + [
-                'accepted' => true,
-                'idempotent_replay' => false,
-                'reason' => $call->outcome_reason,
-            ];
-        }
-
-        if (($options['dispatch_handler'] ?? true) === false) {
-            return $this->serialize($call) + [
-                'accepted' => true,
-                'idempotent_replay' => false,
-                'reason' => null,
-            ];
-        }
-
-        if ($deferQuery !== null
-            && $resolvedBindingKind === ServiceCallBindingKind::WorkflowQuery->value
-            && ! $this->shouldScheduleHandler($call, $options)) {
-            $deferQuery(fn (): array => $this->dispatchAcceptedCall($call, $operation, $boundaryRequest, $options));
-
-            return $this->serialize($call);
-        }
-
-        return $this->dispatchAcceptedCall($call, $operation, $boundaryRequest, $options);
-    }
-
-    /**
-     * @param array<string, mixed> $options
-     * @return array<string, mixed>
-     */
-    private function dispatchAcceptedCall(
-        WorkflowServiceCall $call,
-        WorkflowServiceOperation $operation,
-        ServiceBoundaryRequest $boundaryRequest,
-        array $options,
-    ): array {
-        $call->refresh();
-        $scheduled = $this->shouldScheduleHandler($call, $options);
-        $handler = $scheduled
-            ? $this->scheduleHandler($call, $operation, $options)
-            : $this->dispatchHandler($call, $operation, $boundaryRequest, $options);
-        $call->refresh();
-
-        return $this->serialize($call) + ($scheduled ? [
-            'wait_for' => UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
-            'retry_scheduled' => true,
-        ] : []) + [
-            'accepted' => $this->acceptedShape($call),
-            'idempotent_replay' => false,
-            'handler' => $handler,
-            'reason' => $this->isFailed($call) ? ($call->outcome_reason ?? 'handler_failed') : null,
-        ];
-    }
-
-    /**
      * @return array<string, mixed>
      */
     private function serialize(WorkflowServiceCall $call): array
@@ -587,6 +557,36 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         return $serialized;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function executeAdmittedTransaction(
+        Connection $connection,
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $options,
+    ): array {
+        $observation = new ServiceCallQueryObservation();
+        $options[ServiceCallQueryObservation::OPTION] = $observation;
+        $execute = fn (): array => $this->execute($endpointName, $serviceName, $operationName, $options);
+        try {
+            return $connection->transaction($execute);
+        } catch (DeadlockException $failure) {
+            if (! $observation->hasResult() || $connection->transactionLevel() !== 0
+                || $connection->getPdo()
+                    ->inTransaction()) {
+                throw $failure;
+            }
+
+            // A worker already answered this query. Retry its rolled-back
+            // database writes with that same observation, without another
+            // worker invocation or an admission commit before dispatch.
+            return $connection->transaction($execute, attempts: 2);
+        }
     }
 
     /**
@@ -1686,8 +1686,38 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $queryOptions['caller_workflow_instance_id'] = $call->caller_workflow_instance_id;
         $queryOptions['caller_workflow_run_id'] = $call->caller_workflow_run_id;
 
+        $observation = $options[ServiceCallQueryObservation::OPTION] ?? null;
+        $scope = '';
+        if ($observation instanceof ServiceCallQueryObservation) {
+            $runId = ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
+                ->where('namespace', $call->target_namespace)
+                ->whereKey($instanceId)
+                ->value('current_run_id');
+            $scope = ServiceCallQueryObservation::scope([
+                $call->id, $call->namespace, $call->target_namespace, $call->caller_namespace,
+                $call->endpoint_name, $call->service_name, $call->operation_name,
+                $call->resolved_binding_kind, $call->resolved_target_reference,
+                $call->caller_workflow_instance_id, $call->caller_workflow_run_id,
+                $call->caller_principal_subject, $call->caller_principal_method,
+                $call->caller_principal_roles, $call->caller_principal_tenant,
+                $call->caller_principal_claims,
+                $instanceId, $runId, $queryName, $queryOptions['payload_codec'] ?? null,
+                $queryOptions['arguments'] ?? [], $queryOptions['payload_blob'] ?? null,
+            ]);
+            $observation->assertScope($scope);
+        }
+
         try {
-            $result = $this->workflowQueryHandlerResult($instanceId, $queryName, $queryOptions, $call, $operation);
+            $read = fn (): array => $this->workflowQueryHandlerResult(
+                $instanceId,
+                $queryName,
+                $queryOptions,
+                $call,
+                $operation
+            );
+            $result = $observation instanceof ServiceCallQueryObservation
+                ? $observation->read($scope, $read)
+                : $read();
         } catch (Throwable $exception) {
             return $this->markHandlerFailure(
                 $call,
