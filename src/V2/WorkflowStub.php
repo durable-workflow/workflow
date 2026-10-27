@@ -52,6 +52,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CancellationScopeDescendants;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -2705,14 +2706,18 @@ final class WorkflowStub
         $context = $this->resolvedCommandContext()
             ->attributes()['context'] ?? [];
         $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
-        $command = $serviceCallIdentity instanceof ServiceCallEffectIdentity
+        $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+        $command = $serviceCallIdentity !== null
             ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                 ->where('workflow_instance_id', $instance->id)
                 ->where('command_type', CommandType::Update->value)
                 ->where('request_id', $serviceCallIdentity->storageToken())
                 ->lockForUpdate()
                 ->first()
-            : UpdateRequestIdentity::find($instance, $context);
+            : ($bridgeIdentity !== null ? $bridgeIdentity->find(
+                $instance,
+                CommandType::Update
+            ) : UpdateRequestIdentity::find($instance, $context));
 
         if (! $command instanceof WorkflowCommand) {
             return [null, null];
@@ -2889,18 +2894,18 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            $serviceCallIdentity = ServiceCallEffectIdentity::fromContext(
-                $this->resolvedCommandContext()
-                    ->attributes()['context'],
-            );
-            if ($serviceCallIdentity !== null) {
+            $context = $this->resolvedCommandContext()
+                ->attributes()['context'];
+            $identity = ServiceCallEffectIdentity::fromContext($context);
+            $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+            if ($identity !== null || $bridgeIdentity !== null) {
                 /** @var WorkflowCommand|null $existing */
-                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                $existing = $identity !== null ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                     ->where('workflow_instance_id', $instance->id)
                     ->where('command_type', CommandType::Signal->value)
-                    ->where('request_id', $serviceCallIdentity->storageToken())
+                    ->where('request_id', $identity->storageToken())
                     ->lockForUpdate()
-                    ->first();
+                    ->first() : $bridgeIdentity->find($instance, CommandType::Signal);
                 if ($existing instanceof WorkflowCommand) {
                     $command = $existing;
 
