@@ -325,6 +325,15 @@ inline control-plane path, but they receive the same bound. Inside a completion
 transaction the handler-facing wait is always `accepted`, and any longer wait
 is represented by durable history and a later workflow task.
 
+A new direct workflow-update call that can wait for completion requires a
+positive `wait_timeout_seconds` when supplied. Zero is refused with a validation
+error before creating the service call or evaluating admission. This includes
+the synchronous default and a normalized `wait_for=completed`. Accepted-only
+calls can still use zero. Calls made inside an existing transaction, including
+keyed calls, submit the update as accepted-only and retain that behavior. A
+replay returns the original call without resubmitting its update. Query waits
+retain their separate zero-timeout contract.
+
 ## Linked target references
 
 Every accepted call carries a `resolved_binding_kind` (matching the

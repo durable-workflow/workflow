@@ -22,13 +22,10 @@ use Workflow\V2\Support\UpdateWaitPolicy;
 final class ServiceCallUpdateWaitValidationTest extends TestCase
 {
     #[DataProvider('completionWaits')]
-    public function testZeroCompletionWaitIsRefusedBeforeCreatingACall(
-        string $mode,
-        ?string $waitFor,
-        bool $keyed
-    ): void {
+    public function testZeroCompletionWaitIsRefusedBeforeCreatingACall(string $mode, ?string $waitFor): void
+    {
         $this->catalog($mode);
-        $options = $this->executionOptions($waitFor, $keyed);
+        $options = $this->executionOptions($waitFor, false);
         $boundary = Mockery::mock(ServiceBoundaryPolicy::class);
         $boundary->shouldNotReceive('evaluate');
         $observed = 0;
@@ -71,20 +68,27 @@ final class ServiceCallUpdateWaitValidationTest extends TestCase
 
     public static function completionWaits(): iterable
     {
-        foreach ([false, true] as $keyed) {
-            yield 'sync default ' . ($keyed ? 'keyed' : 'unkeyed') => ['sync', null, $keyed];
-            yield 'sync explicit ' . ($keyed ? 'keyed' : 'unkeyed') => ['sync', 'completed', $keyed];
-            yield 'async explicit ' . ($keyed ? 'keyed' : 'unkeyed') => ['async', 'completed', $keyed];
-        }
+        yield 'sync default' => ['sync', null];
+        yield 'sync explicit' => ['sync', 'completed'];
+        yield 'async explicit' => ['async', 'completed'];
+        yield 'sync padded' => ['sync', ' completed '];
+        yield 'sync blank' => ['sync', ''];
     }
 
     #[DataProvider('acceptedWaits')]
-    public function testZeroAcceptedWaitRemainsBoundedAndAnExistingKeyKeepsItsCall(string $mode, bool $keyed): void
-    {
+    public function testZeroAcceptedWaitRemainsBoundedAndAnExistingKeyKeepsItsCall(
+        string $mode,
+        bool $keyed,
+        ?string $waitFor,
+    ): void {
         $this->catalog($mode);
         $workflows = Mockery::mock(WorkflowControlPlane::class);
         $workflows->shouldReceive('update')
             ->once()
+            ->withArgs(static fn (string $instance, string $name, array $options): bool =>
+                $options['wait_for'] === 'accepted' && ($keyed
+                    ? ! array_key_exists('wait_timeout_seconds', $options)
+                    : $options['wait_timeout_seconds'] === 0))
             ->andReturn([
                 'accepted' => true,
                 'workflow_instance_id' => 'target',
@@ -93,7 +97,7 @@ final class ServiceCallUpdateWaitValidationTest extends TestCase
                 'update_status' => 'accepted',
             ]);
         $control = new DefaultServiceControlPlane($workflows);
-        $result = $control->execute('billing', 'invoices', 'approve', $this->executionOptions('accepted', $keyed));
+        $result = $control->execute('billing', 'invoices', 'approve', $this->executionOptions($waitFor, $keyed));
         $this->assertTrue($result['accepted']);
         $this->assertSame(1, WorkflowServiceCall::query()->count());
         if ($keyed) {
@@ -107,9 +111,36 @@ final class ServiceCallUpdateWaitValidationTest extends TestCase
     public static function acceptedWaits(): iterable
     {
         foreach (['sync', 'async'] as $mode) {
-            yield $mode . ' unkeyed' => [$mode, false];
-            yield $mode . ' keyed' => [$mode, true];
+            yield $mode . ' unkeyed' => [$mode, false, 'accepted'];
+            foreach (['accepted', 'completed', ' completed ', '', null] as $waitFor) {
+                yield $mode . ' keyed ' . var_export($waitFor, true) => [$mode, true, $waitFor];
+            }
         }
+    }
+
+    public function testAnExistingTransactionKeepsZeroWaitAcceptedOnly(): void
+    {
+        $this->catalog('sync');
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('update')
+            ->once()
+            ->withArgs(static fn (string $instance, string $name, array $options): bool =>
+                $options['wait_for'] === 'accepted' && ! array_key_exists('wait_timeout_seconds', $options))
+            ->andReturn([
+                'accepted' => true,
+                'workflow_instance_id' => 'target',
+                'run_id' => 'run',
+                'update_id' => 'update',
+                'update_status' => 'accepted',
+            ]);
+        $result = DB::transaction(fn (): array => (new DefaultServiceControlPlane($workflows))->execute(
+            'billing',
+            'invoices',
+            'approve',
+            $this->executionOptions('completed', false)
+        ));
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
     }
 
     public function testAnAsyncDefaultZeroWaitStillAdmitsItsUpdate(): void

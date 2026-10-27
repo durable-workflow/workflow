@@ -786,6 +786,7 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
             'wait_for' => 'accepted',
             'wait_timeout_seconds' => 60,
         ], $reference);
+        $waitTimeout = $expectedWait === 'completed' ? 5 : 0;
         $policy = new WorkflowBindingBoundaryObserver();
         /** @var WorkflowControlPlane&MockInterface $workflows */
         $workflows = Mockery::mock(WorkflowControlPlane::class);
@@ -811,7 +812,7 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
             $options + [
                 'namespace' => 'billing',
                 'arguments' => $arguments,
-                'wait_timeout_seconds' => 0,
+                'wait_timeout_seconds' => $waitTimeout,
             ]
         );
         $this->assertTrue($result['accepted']);
@@ -822,7 +823,7 @@ final class DefaultServiceControlPlaneWorkflowBindingTest extends TestCase
             'payload_codec' => 'avro',
             'payload_blob' => $payload,
             'wait_for' => $expectedWait,
-            'wait_timeout_seconds' => 0,
+            'wait_timeout_seconds' => $waitTimeout,
         ], $forwarded[2]);
         $call = WorkflowServiceCall::query()->sole();
         $this->assertSame(ServiceCallStatus::Started->value, $call->status);

@@ -165,7 +165,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $catalog = $call === null && ($options['wait_timeout_seconds'] ?? null) === 0
+        $catalog = $call === null && $connection->transactionLevel() === 0
+            && ($options['wait_timeout_seconds'] ?? null) === 0
             ? $this->catalogForZeroWait($namespace, $endpointKey, $serviceKey, $operationKey, $options)
             : null;
         $call ??= $this->newCall();
@@ -647,7 +648,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $operation,
                     $options
                 ) === ServiceCallOperationMode::Sync ? 'completed' : 'accepted');
-            if ($waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED) {
+            if (UpdateWaitPolicy::requestedWaitFor($waitFor) === UpdateWaitPolicy::WAIT_FOR_COMPLETED) {
                 UpdateWaitPolicy::requestedTimeoutSeconds(0);
             }
         }
