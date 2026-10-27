@@ -165,6 +165,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
+        $catalog = $call === null && $connection->transactionLevel() === 0
+            && ($options['wait_timeout_seconds'] ?? null) === 0
+            ? $this->catalogForZeroWait($namespace, $endpointKey, $serviceKey, $operationKey, $options)
+            : null;
         $call ??= $this->newCall();
         $principal = $this->principal($options);
         $callerNamespace = array_key_exists('caller_namespace', $options)
@@ -202,7 +206,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             }
         }
 
-        $endpoint = $this->endpoint($namespace, $endpointKey);
+        $endpoint = $catalog[0] ?? $this->endpoint($namespace, $endpointKey);
 
         if (! $endpoint instanceof WorkflowServiceEndpoint) {
             $this->markResolutionFailure($call, 'endpoint');
@@ -214,7 +218,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $service = $this->service($namespace, $endpoint, $serviceKey);
+        $service = $catalog[1] ?? $this->service($namespace, $endpoint, $serviceKey);
 
         if (! $service instanceof WorkflowService) {
             $call->workflow_service_endpoint_id = $endpoint->id;
@@ -227,7 +231,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $operation = $this->operation($namespace, $service, $operationKey);
+        $operation = $catalog[2] ?? $this->operation($namespace, $service, $operationKey);
 
         if (! $operation instanceof WorkflowServiceOperation) {
             $call->workflow_service_endpoint_id = $endpoint->id;
@@ -615,6 +619,41 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         return is_string($namespace) && trim($namespace) !== ''
             ? trim($namespace)
             : null;
+    }
+
+    /**
+     * Validate a zero update completion wait before admission. Reuse this
+     * resolution so a later catalog read cannot change the validated kind.
+     *
+     * @param array<string, mixed> $options
+     * @return array{WorkflowServiceEndpoint, WorkflowService, WorkflowServiceOperation}|null
+     */
+    private function catalogForZeroWait(
+        ?string $namespace,
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $options,
+    ): ?array {
+        $endpoint = $this->endpoint($namespace, $endpointName);
+        $service = $endpoint !== null ? $this->service($namespace, $endpoint, $serviceName) : null;
+        $operation = $service !== null ? $this->operation($namespace, $service, $operationName) : null;
+        if ($endpoint === null || $service === null || $operation === null) {
+            return null;
+        }
+        if ($this->resolvedBindingKind($operation) === ServiceCallBindingKind::WorkflowUpdate->value) {
+            $binding = $this->handlerBinding($operation);
+            $waitFor = $options['wait_for'] ?? $binding['wait_for']
+                ?? ($this->operationMode(
+                    $operation,
+                    $options
+                ) === ServiceCallOperationMode::Sync ? 'completed' : 'accepted');
+            if (UpdateWaitPolicy::requestedWaitFor($waitFor) === UpdateWaitPolicy::WAIT_FOR_COMPLETED) {
+                UpdateWaitPolicy::requestedTimeoutSeconds(0);
+            }
+        }
+
+        return [$endpoint, $service, $operation];
     }
 
     private function endpoint(?string $namespace, string $endpointName): ?WorkflowServiceEndpoint
