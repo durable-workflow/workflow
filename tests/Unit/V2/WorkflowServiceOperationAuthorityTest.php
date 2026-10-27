@@ -570,6 +570,68 @@ final class WorkflowServiceOperationAuthorityTest extends TestCase
         $this->assertSame($before, $this->records());
     }
 
+    #[DataProvider('typedReplayRefusals')]
+    public function testReplayPolicyRefusalRetainsItsTypedDecisionAfterOwnershipChecks(string $kind): void
+    {
+        $call = $this->serviceCall('completed');
+        $decision = $kind === 'circuit'
+            ? ServiceBoundaryDecision::denyCircuitOpen(retryAfterSeconds: 17)
+            : ServiceBoundaryDecision::denyAuthorization('fixture_current_policy_denied');
+        $policy = new class($decision) implements ServiceBoundaryPolicy {
+            public function __construct(
+                private readonly ServiceBoundaryDecision $decision
+            ) {
+            }
+
+            public function evaluate(ServiceBoundaryRequest $request): ServiceBoundaryDecision
+            {
+                throw new RuntimeException('Replay must not reserve quota.');
+            }
+
+            public function authorizeReplay(ServiceBoundaryRequest $request): ServiceBoundaryDecision
+            {
+                return $this->decision;
+            }
+        };
+        $scope = [
+            'namespace' => 'caller',
+            'caller_namespace' => 'caller',
+            'caller_workflow_instance_id' => $this->run->workflow_instance_id,
+            'caller_workflow_run_id' => $this->run->id,
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoices',
+            'operation_name' => 'create',
+        ];
+        if ($kind === 'foreign') {
+            $scope['caller_workflow_run_id'] = 'foreign-run';
+        }
+        $before = $this->records();
+        try {
+            WorkflowServiceOperationAuthority::authorizeExistingCall(
+                $call,
+                new ServiceCallPrincipal('fixture', 'token'),
+                $scope,
+                $policy
+            );
+            $this->fail('A denied replay must still throw an authorization exception.');
+        } catch (ServiceOperationAuthorizationException $exception) {
+            $this->assertTrue(property_exists($exception, 'boundaryDecision'));
+            $this->assertSame($kind === 'foreign' ? null : $decision, $exception->boundaryDecision);
+            $this->assertSame(
+                $kind === 'foreign' ? 'service_call_not_owned' : $decision->reason,
+                $exception->getMessage()
+            );
+        }
+        $this->assertSame($before, $this->records());
+    }
+
+    public static function typedReplayRefusals(): iterable
+    {
+        yield 'circuit policy' => ['circuit'];
+        yield 'authorization policy' => ['authorization'];
+        yield 'foreign caller never receives policy decision' => ['foreign'];
+    }
+
     #[DataProvider('concurrentInsertions')]
     public function testConcurrentKeyInsertionIsReauthorizedAtTheEffectingLookup(
         string $pauseAt,

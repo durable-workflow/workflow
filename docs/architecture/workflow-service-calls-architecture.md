@@ -421,6 +421,9 @@ reloaded, already admitted, or differently scoped row. It keeps the canonical
 identity and clears provisional decision timestamps before recording the final
 allow or denial. Authorize an existing canonical winner as a replay before
 reserving fresh rate or concurrency capacity; do not overwrite or re-admit it.
+An existing-call authorization exception carries `boundaryDecision` only when
+the owned, scoped catalog's current replay policy returned a denial. Hosts may
+preserve that typed rejection; ownership/catalog failures have no decision.
 
 For the built-in `propagate_to_linked_workflow` cancellation option, propagation
 is best-effort and its public receipt is retained in `metadata.linked_cancel`.
