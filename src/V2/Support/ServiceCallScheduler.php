@@ -32,6 +32,14 @@ final class ServiceCallScheduler
 
     private const AFTER_COMMIT_OPTION = '__schedule_service_call_after_commit';
 
+    private const HOST_QUERY_OPTION = '__schedule_host_query_after_commit';
+
+    private const HOST_QUERY_ORIGIN = 'authenticated_host_query';
+
+    private const HOST_QUERY_LEASE_OPTION = 'host_query_lease_seconds';
+
+    private const ORIGIN_OPTION = 'dispatch_origin';
+
     private const MIN_ORPHAN_GRACE_SECONDS = 3_600;
 
     private const ORPHAN_CLEANUP_BATCH_CAP = 100;
@@ -39,6 +47,36 @@ final class ServiceCallScheduler
     private const EFFECT_TOKEN_OPTION = '__service_call_effect_token';
 
     private static ?object $afterCommitAuthority = null;
+
+    private static ?object $hostQueryAuthority = null;
+
+    /**
+     * Opt a trusted HTTP host into durable query dispatch. Arrays from a
+     * request cannot create this capability or select a persisted origin.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public static function withHostQueryAuthority(array $options, int $leaseSeconds = 60): array
+    {
+        $options[self::HOST_QUERY_OPTION] = self::hostQueryAuthority();
+        $options[self::HOST_QUERY_LEASE_OPTION] = max(1, $leaseSeconds);
+
+        return $options;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    public static function hasHostQueryAuthority(array $options): bool
+    {
+        return ($options[self::HOST_QUERY_OPTION] ?? null) === self::hostQueryAuthority();
+    }
+
+    public static function hasDispatch(string $serviceCallId): bool
+    {
+        return self::dispatchQuery()->whereKey($serviceCallId)->exists();
+    }
 
     /**
      * @param array<string, mixed> $options
@@ -68,7 +106,14 @@ final class ServiceCallScheduler
         array $options,
         int $maxAttempts,
     ): void {
-        unset($options[self::AFTER_COMMIT_OPTION]);
+        $hostQuery = self::hasHostQueryAuthority($options);
+        if ($hostQuery && ServiceCallBindingKind::tryFromHandlerBindingKind(
+            (string) $operation->handler_binding_kind
+        ) !== ServiceCallBindingKind::WorkflowQuery) {
+            throw new \LogicException('Host query dispatch requires a workflow query binding.');
+        }
+        unset($options[self::AFTER_COMMIT_OPTION], $options[self::HOST_QUERY_OPTION]);
+        $options[self::ORIGIN_OPTION] = $hostQuery ? self::HOST_QUERY_ORIGIN : null;
         self::assertSharedConnection($call);
         $dispatch = self::dispatchQuery()
             ->lockForUpdate()
@@ -177,10 +222,11 @@ final class ServiceCallScheduler
                 return null;
             }
 
-            $run = self::lockedCallerRun($call);
-            if (! $run instanceof WorkflowRun
+            $hostQuery = self::isHostQueryDispatch($call, $dispatch);
+            $run = $hostQuery ? null : self::lockedCallerRun($call);
+            if (! $hostQuery && (! $run instanceof WorkflowRun
                 || $run->status->isTerminal()
-                || is_string($run->cancellation_request_command_id)) {
+                || is_string($run->cancellation_request_command_id))) {
                 self::cancelForTerminalCaller($call, $dispatch, $run);
 
                 return null;
@@ -191,9 +237,9 @@ final class ServiceCallScheduler
                 $principal = self::acceptedPrincipal($call);
                 $scope = [
                     'namespace' => $call->target_namespace,
-                    'caller_namespace' => $run->namespace,
-                    'caller_workflow_instance_id' => $run->workflow_instance_id,
-                    'caller_workflow_run_id' => $run->id,
+                    'caller_namespace' => $hostQuery ? $call->caller_namespace : $run->namespace,
+                    'caller_workflow_instance_id' => $hostQuery ? $call->caller_workflow_instance_id : $run->workflow_instance_id,
+                    'caller_workflow_run_id' => $hostQuery ? $call->caller_workflow_run_id : $run->id,
                     'endpoint_name' => $call->endpoint_name,
                     'service_name' => $call->service_name,
                     'operation_name' => $call->operation_name,
@@ -227,7 +273,9 @@ final class ServiceCallScheduler
                 'claim_token' => $token,
                 'claimed_at' => $now,
                 'claim_expires_at' => $now->copy()
-                    ->addSeconds(self::claimLeaseSeconds()),
+                    ->addSeconds($hostQuery
+                        ? max(self::claimLeaseSeconds(), (int) ($options[self::HOST_QUERY_LEASE_OPTION] ?? 60))
+                        : self::claimLeaseSeconds()),
                 'authorized_catalog_revision' => $catalogRevision,
                 'authorized_policy_revision' => $policyRevision,
                 'repair_available_at' => null,
@@ -262,7 +310,7 @@ final class ServiceCallScheduler
                 policyRevision: $policyRevision,
                 effectToken: $effectToken,
             );
-        });
+        }, attempts: 3);
     }
 
     /**
@@ -340,6 +388,8 @@ final class ServiceCallScheduler
         $effectToken = $options[self::EFFECT_TOKEN_OPTION] ?? null;
 
         return $dispatch->state === self::STATE_CLAIMED
+            && $dispatch->claim_expires_at !== null
+            && $dispatch->claim_expires_at->isFuture()
             && $dispatch->attempt === $claim->attempt
             && $dispatch->claim_generation === $claim->generation
             && hash_equals((string) $dispatch->claim_token, $claim->token)
@@ -362,10 +412,11 @@ final class ServiceCallScheduler
                 return false;
             }
 
-            $run = self::lockedCallerRun($call);
-            if (! $run instanceof WorkflowRun
+            $hostQuery = self::isHostQueryDispatch($call, $dispatch);
+            $run = $hostQuery ? null : self::lockedCallerRun($call);
+            if (! $hostQuery && (! $run instanceof WorkflowRun
                 || $run->status->isTerminal()
-                || is_string($run->cancellation_request_command_id)) {
+                || is_string($run->cancellation_request_command_id))) {
                 self::cancelForTerminalCaller($call, $dispatch, $run);
 
                 return false;
@@ -497,6 +548,22 @@ final class ServiceCallScheduler
     private static function afterCommitAuthority(): object
     {
         return self::$afterCommitAuthority ??= new \stdClass();
+    }
+
+    private static function hostQueryAuthority(): object
+    {
+        return self::$hostQueryAuthority ??= new \stdClass();
+    }
+
+    private static function isHostQueryDispatch(WorkflowServiceCall $call, WorkflowServiceCallDispatch $dispatch): bool
+    {
+        $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
+
+        return ($options[self::ORIGIN_OPTION] ?? null) === self::HOST_QUERY_ORIGIN
+            && $call->resolved_binding_kind === ServiceCallBindingKind::WorkflowQuery->value
+            && ServiceCallBindingKind::tryFromHandlerBindingKind(
+                (string) ($options['accepted_handler_binding_kind'] ?? '')
+            ) === ServiceCallBindingKind::WorkflowQuery;
     }
 
     private static function lockedCallerRun(WorkflowServiceCall $call): ?WorkflowRun
@@ -717,7 +784,7 @@ final class ServiceCallScheduler
                 }
 
                 return $callback($call, $dispatch);
-            });
+            }, attempts: 3);
     }
 
     /**
@@ -745,6 +812,10 @@ final class ServiceCallScheduler
         $persisted['accepted_handler_binding'] = $binding;
         $persisted['accepted_handler_target_reference'] = $operation->handler_target_reference;
         $persisted['accepted_operation_mode'] = $operation->operation_mode;
+        if (($options[self::ORIGIN_OPTION] ?? null) === self::HOST_QUERY_ORIGIN) {
+            $persisted[self::ORIGIN_OPTION] = self::HOST_QUERY_ORIGIN;
+            $persisted[self::HOST_QUERY_LEASE_OPTION] = max(1, (int) ($options[self::HOST_QUERY_LEASE_OPTION] ?? 60));
+        }
         $persisted[self::EFFECT_TOKEN_OPTION] = self::newEffectToken();
 
         $kind = ServiceCallBindingKind::tryFromHandlerBindingKind((string) $operation->handler_binding_kind);

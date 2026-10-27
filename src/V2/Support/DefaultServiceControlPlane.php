@@ -69,6 +69,10 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
         $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
         $key = $this->stringOption($options, 'idempotency_key');
+        $hostQuery = ServiceCallScheduler::hasHostQueryAuthority($options);
+        if ($hostQuery && $explicitCallId === null) {
+            throw new \LogicException('Host query dispatch requires an admitted service_call_id.');
+        }
         $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
             ->getModel()
             ->getConnection();
@@ -78,7 +82,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $serviceName,
                 $operationName,
                 $options,
-            ));
+            ), attempts: $hostQuery ? 3 : 1);
         }
 
         $idempotent = $explicitCallId === null
@@ -151,7 +155,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $call instanceof WorkflowServiceCall
             && $explicitCallId !== null
             && ((string) $call->status === ServiceCallStatus::Started->value
-                || $this->hasIssuedHandler($call))
+                || $this->hasIssuedHandler($call)
+                || ServiceCallScheduler::hasDispatch((string) $call->id))
         ) {
             return $this->serialize($call) + [
                 'accepted' => true,
@@ -237,6 +242,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         }
 
         $resolvedBindingKind = $this->resolvedBindingKind($operation);
+        if ($hostQuery && $resolvedBindingKind !== ServiceCallBindingKind::WorkflowQuery->value) {
+            throw new \LogicException('Host query dispatch requires a workflow query binding.');
+        }
         $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options, $resolvedBindingKind);
 
         if ($resolvedBindingKind === null) {
@@ -1070,11 +1078,13 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     private function shouldScheduleHandler(WorkflowServiceCall $call, array $options): bool
     {
-        return ServiceCallScheduler::hasAfterCommitAuthority($options)
-            && is_string($call->caller_workflow_run_id)
-            && $call->caller_workflow_run_id !== ''
-            && $call->getConnection()
-                ->transactionLevel() > 0;
+        $workflowCaller = ServiceCallScheduler::hasAfterCommitAuthority($options)
+            && is_string($call->caller_workflow_run_id) && $call->caller_workflow_run_id !== '';
+        $hostQuery = ServiceCallScheduler::hasHostQueryAuthority($options)
+            && $call->resolved_binding_kind === ServiceCallBindingKind::WorkflowQuery->value;
+
+        return ($workflowCaller || $hostQuery) && $call->getConnection()
+            ->transactionLevel() > 0;
     }
 
     /**
@@ -2075,7 +2085,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $call->save();
                 ServiceCallWorkflowDelivery::enqueue($call);
                 $recorded = true;
-            });
+            }, attempts: $claim instanceof ServiceCallAttemptClaim ? 3 : 1);
         $call->refresh();
 
         return $recorded;
@@ -2138,7 +2148,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     $attempt,
                     $maxAttempts,
                 );
-            });
+            }, attempts: $claim instanceof ServiceCallAttemptClaim ? 3 : 1);
         $call->refresh();
 
         return $result;
