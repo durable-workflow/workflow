@@ -2198,11 +2198,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'lease_expires_at' => null,
         ])->save();
 
-        $nextMessageTask = PendingMessageTask::createForRun(
-            $run,
-            self::workflowSignalIdForTask($task),
-            includeReceivedProjectedSignalWait: false,
-        );
+        // A received wait can resolve after this worker read its history.
+        // Offer that signal a turn while fencing the one this task attempted.
+        $nextMessageTask = PendingMessageTask::createForRun($run, self::workflowSignalIdForTask($task));
 
         if ($nextMessageTask instanceof WorkflowTask) {
             $createdTaskIds[] = $nextMessageTask->id;
