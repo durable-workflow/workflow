@@ -175,6 +175,36 @@ final class TerminalCancellationScalingTest extends TestCase
         ], ChildRunHistory::parentReferenceForRun($run));
     }
 
+    public function testParentMetadataUsesOneRetrievedApplicationViewOfTheStartedEvent(): void
+    {
+        [, $run] = $this->admit(2, 0);
+        $started = $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowStarted)->sole();
+        $started->payload = [
+            ...$started->payload,
+            'parent_workflow_instance_id' => 'observer-parent-instance',
+            'parent_workflow_run_id' => 'observer-parent-run',
+            'parent_sequence' => 7,
+            'child_call_id' => 'stored-child-call',
+        ];
+        $started->save();
+        $retrieved = 0;
+        WorkflowHistoryEvent::retrieved(static function (WorkflowHistoryEvent $event) use (&$retrieved): void {
+            ++$retrieved;
+            $event->payload = [
+                ...$event->payload,
+                'child_call_id' => 'observer-child-' . $retrieved,
+            ];
+        });
+        $this->assertSame([
+            'parent_workflow_instance_id' => 'observer-parent-instance',
+            'parent_workflow_run_id' => 'observer-parent-run',
+            'parent_sequence' => 7,
+            'child_call_id' => 'observer-child-1',
+        ], ChildRunHistory::parentReferenceForRun($run->fresh()));
+        $this->assertSame(1, $retrieved);
+    }
+
     public function testClosePreservesPriorCancellationsAndLatestScheduledTimerMetadata(): void
     {
         [$workflow, $run] = $this->admit(3, 3);
