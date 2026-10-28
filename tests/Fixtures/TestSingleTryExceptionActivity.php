@@ -9,7 +9,8 @@ use Workflow\Activity;
 
 final class TestSingleTryExceptionActivity extends Activity
 {
-    public $tries = 1;
+    // Overlap releases consume reservations without executing this exception.
+    public $maxExceptions = 1;
 
     public function execute($shouldThrow)
     {
