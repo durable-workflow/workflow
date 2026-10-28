@@ -172,6 +172,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",
         "tests/Fixtures/V2/TestCancellationContextWorkflow.php",
         "tests/Fixtures/V2/TestVersionPendingRangeRepairWorkflow.php",
+        "tests/Fixtures/V2/TestUpdateTailCheckpointWorkflow.php",
         "tests/Fixtures/V2/TestNexusWaitingCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusCancellationCleanupCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusDeadlineCallerWorkflow.php",

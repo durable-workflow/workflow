@@ -71,6 +71,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\CancellationScopeDelivery;
@@ -445,6 +446,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'update-tail-checkpoint-cursor') {
+                $this->assertUpdateTailCheckpointRetainsItsCursor($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'embedded-local-activity-retry-queue-delivery') {
                 $this->assertEmbeddedLocalRetryQueuesItsOriginalTask($fixture);
                 continue;
@@ -695,6 +701,90 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertUpdateTailCheckpointRetainsItsCursor(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $initial = $fixture;
+        $initial['history'] = array_slice($fixture['history'], 0, 1);
+        $run = $this->createRunFromFixture($initial);
+        $case = $fixture['checkpoint_prefix'];
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'attempt_count' => 1,
+            'lease_owner' => 'regression-corpus-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ])->save();
+        $command = WorkflowCommand::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'update',
+            'status' => 'accepted',
+            'command_sequence' => 1,
+        ]);
+        $update = WorkflowUpdate::query()->create([
+            'id' => $case['update_id'],
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $case['update_name'],
+            'status' => 'accepted',
+            'command_sequence' => 1,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $command->id,
+            'update_id' => $update->id,
+            'update_name' => $update->update_name,
+            'arguments' => $update->arguments,
+        ], $task, $command);
+        $commands = $case['commands'];
+        $commands[1]['result'] = Serializer::serializeWithCodec('avro', $commands[1]['result']);
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+        $reply = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'regression-corpus-worker',
+            1,
+            'before',
+            $case['sequence'],
+            $commands,
+            $fixture['protocol_version'],
+        );
+        $this->assertTrue($reply['checkpointed'], json_encode($reply));
+        $this->assertSame($case['next_sequence'], $reply['next_sequence']);
+        $next = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'regression-corpus-worker',
+            1,
+            'after',
+            $reply['next_sequence'],
+            $case['followup_commands'],
+            $fixture['protocol_version'],
+        );
+        $this->assertTrue($next['checkpointed'], json_encode($next));
+        $this->assertSame($case['followup_next_sequence'], $next['next_sequence']);
+        $replayed = WorkflowFiberRunner::forClass(
+            $fixture['workflow']['type'],
+            $run->workflow_instance_id,
+            $run->id,
+            $fixture['workflow']['arguments'],
+            $fixture['workflow']['payload_codec'],
+            $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->toArray(),
+        )->step();
+        $this->assertTrue($replayed->completed);
+        $this->assertSame($case['replay_result'], $replayed->result);
     }
 
     /**

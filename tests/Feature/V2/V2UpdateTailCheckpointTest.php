@@ -6,11 +6,10 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestUpdateTailCheckpointWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
-use Workflow\UpdateMethod;
 use Workflow\V2\Enums\HistoryEventType;
-use function Workflow\V2\getVersion;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -21,7 +20,6 @@ use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStepHistory;
-use Workflow\V2\Workflow;
 
 final class V2UpdateTailCheckpointTest extends TestCase
 {
@@ -142,7 +140,7 @@ final class V2UpdateTailCheckpointTest extends TestCase
 
         for ($copy = 0; $copy < 2; ++$copy) {
             $replayed = WorkflowFiberRunner::forClass(
-                UpdateCheckpointReplayWorkflow::class,
+                TestUpdateTailCheckpointWorkflow::class,
                 $run->workflow_instance_id,
                 $run->id,
                 [],
@@ -185,7 +183,7 @@ final class V2UpdateTailCheckpointTest extends TestCase
     {
         Queue::fake();
         $instance = WorkflowInstance::query()->create([
-            'workflow_class' => UpdateCheckpointReplayWorkflow::class,
+            'workflow_class' => TestUpdateTailCheckpointWorkflow::class,
             'workflow_type' => 'update-checkpoint',
             'run_count' => 1,
             'started_at' => now(),
@@ -193,7 +191,7 @@ final class V2UpdateTailCheckpointTest extends TestCase
         $run = WorkflowRun::query()->create([
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
-            'workflow_class' => UpdateCheckpointReplayWorkflow::class,
+            'workflow_class' => TestUpdateTailCheckpointWorkflow::class,
             'workflow_type' => 'update-checkpoint',
             'status' => 'waiting',
             'arguments' => Serializer::serializeWithCodec('avro', []),
@@ -260,25 +258,5 @@ final class V2UpdateTailCheckpointTest extends TestCase
             $completion['message'] = 'expected update failure';
         }
         return [$run, $task, $update, [$completion]];
-    }
-}
-
-final class UpdateCheckpointReplayWorkflow extends Workflow
-{
-    private int $updates = 0;
-
-    public function handle(): array
-    {
-        getVersion('before', 1, 1);
-        return [
-            'version' => getVersion('after', 1, 1),
-            'updates' => $this->updates,
-        ];
-    }
-
-    #[UpdateMethod]
-    public function set(): int
-    {
-        return ++$this->updates;
     }
 }
