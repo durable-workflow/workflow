@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use WeakMap;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -34,6 +35,8 @@ class WorkflowHistoryEvent extends Model
 
     private const MAX_CACHED_PAYLOAD_VALUES = 128;
 
+    private const MAX_CACHED_PAYLOAD_MODELS = 256;
+
     public $incrementing = false;
 
     protected $table = 'workflow_history_events';
@@ -50,12 +53,10 @@ class WorkflowHistoryEvent extends Model
         'recorded_at' => HistoryRecordedAt::class,
     ];
 
-    private ?string $cachedPayloadJson = null;
-
     /**
-     * @var array<array-key, mixed>|null
+     * @var WeakMap<self, array{json: string, value: array<array-key, mixed>}>|null
      */
-    private ?array $cachedPayloadValue = null;
+    private static ?WeakMap $payloadCache = null;
 
     public function run(): BelongsTo
     {
@@ -127,27 +128,44 @@ class WorkflowHistoryEvent extends Model
             || ! is_string($value)
             || strlen($value) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
             || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
-            $this->cachedPayloadJson = null;
-            $this->cachedPayloadValue = null;
+            if (self::$payloadCache !== null) {
+                unset(self::$payloadCache[$this]);
+            }
 
             return parent::castAttribute($key, $value);
         }
 
-        if ($this->cachedPayloadJson !== $value) {
+        $cached = self::$payloadCache[$this] ?? null;
+        if (($cached['json'] ?? null) !== $value) {
             // Let Laravel decode before publishing any reusable value. Keep
             // raw attributes unchanged for mutation, dirty checks and storage.
             $decoded = parent::castAttribute($key, $value);
             if (! is_array($decoded) || count($decoded, COUNT_RECURSIVE) > self::MAX_CACHED_PAYLOAD_VALUES) {
-                $this->cachedPayloadJson = null;
-                $this->cachedPayloadValue = null;
+                if (self::$payloadCache !== null) {
+                    unset(self::$payloadCache[$this]);
+                }
 
                 return $decoded;
             }
-            $this->cachedPayloadJson = $value;
-            $this->cachedPayloadValue = $decoded;
+            self::$payloadCache ??= new WeakMap();
+            if (! isset(self::$payloadCache[$this]) && count(self::$payloadCache) >= self::MAX_CACHED_PAYLOAD_MODELS) {
+                // A per-model bound alone still retains thousands of decoded
+                // small payloads in long histories. Weak keys keep the cache
+                // from extending model lifetimes; eviction preserves raw data.
+                foreach (self::$payloadCache as $oldModel => $unused) {
+                    unset(self::$payloadCache[$oldModel]);
+                    break;
+                }
+            }
+            self::$payloadCache[$this] = [
+                'json' => $value,
+                'value' => $decoded,
+            ];
+
+            return $decoded;
         }
 
-        return $this->cachedPayloadValue;
+        return $cached['value'];
     }
 
     /**
