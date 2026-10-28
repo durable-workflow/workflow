@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-/** The bridge's nonEmptyStrings body serves task discovery, not replay. */
-function withoutDiscoveryHelperBody(string $source): ?string
+/** Task discovery and post-completion scheduling do not reconstruct workflow commands. */
+function withoutNonReplayBridgeBodies(string $source): ?array
 {
     $tokens = token_get_all($source, TOKEN_PARSE);
     $normalized = '';
-    $helpers = 0;
+    $helpers = [];
 
     for ($index = 0; $index < count($tokens); ++$index) {
         $token = $tokens[$index];
@@ -23,9 +23,11 @@ function withoutDiscoveryHelperBody(string $source): ?string
         }
 
         if (! isset($tokens[$nameIndex]) || ! is_array($tokens[$nameIndex])
-            || $tokens[$nameIndex][0] !== T_STRING || $tokens[$nameIndex][1] !== 'nonEmptyStrings') {
+            || $tokens[$nameIndex][0] !== T_STRING
+            || ! in_array($tokens[$nameIndex][1], ['nonEmptyStrings', 'markRunWaiting'], true)) {
             continue;
         }
+        $name = $tokens[$nameIndex][1];
 
         while (isset($tokens[++$index]) && $tokens[$index] !== '{') {
             $normalized .= is_array($tokens[$index]) ? $tokens[$index][1] : $tokens[$index];
@@ -48,16 +50,18 @@ function withoutDiscoveryHelperBody(string $source): ?string
 
         // The loop has advanced past the closing brace.
         --$index;
-        ++$helpers;
+        $helpers[$name] = ($helpers[$name] ?? 0) + 1;
     }
 
-    return $helpers === 1 ? $normalized : null;
+    return $helpers !== [] && max($helpers) === 1
+        ? ['source' => $normalized, 'helpers' => $helpers]
+        : null;
 }
 
 try {
     $input = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
-    $base = withoutDiscoveryHelperBody($input['base']);
-    $current = withoutDiscoveryHelperBody($input['current']);
+    $base = withoutNonReplayBridgeBodies($input['base']);
+    $current = withoutNonReplayBridgeBodies($input['current']);
     echo json_encode($base !== null && $current !== null && $base === $current, JSON_THROW_ON_ERROR);
 } catch (Throwable) {
     echo 'false';
