@@ -226,6 +226,84 @@ final class TerminalCancellationScalingTest extends TestCase
         }
     }
 
+    public static function requestedEvents(): iterable
+    {
+        yield 'cancel' => ['cancel', HistoryEventType::CancelRequested];
+        yield 'terminate' => ['terminate', HistoryEventType::TerminateRequested];
+    }
+
+    #[DataProvider('requestedEvents')]
+    public function testRequestedEventPayloadMutationCannotReplaceTheCommandSnapshot(
+        string $operation,
+        HistoryEventType $requestedType,
+    ): void {
+        [$workflow, $run] = $this->admit(2, 2);
+        WorkflowHistoryEvent::created(static function (WorkflowHistoryEvent $event) use ($requestedType): void {
+            if ($event->event_type === $requestedType) {
+                $payload = $event->payload;
+                $payload['command']['caller_label'] = 'event-only observer mutation';
+                $event->forceFill([
+                    'payload' => $payload,
+                ]);
+            }
+        });
+        $result = $operation === 'cancel' ? $workflow->attemptCancel('observer payload')
+            : $workflow->attemptTerminate('observer payload');
+        $this->assertTrue($result->accepted());
+        $requested = $run->historyEvents()
+            ->where('event_type', $requestedType)
+            ->sole();
+        $expected = $requested->payload['command'];
+        $this->assertNotSame('event-only observer mutation', $expected['caller_label']);
+        $cancelled = $run->historyEvents()
+            ->whereIn('event_type', [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled])->get();
+        $this->assertCount(4, $cancelled);
+        foreach ($cancelled as $event) {
+            $this->assertSame($expected, $event->payload['command']);
+        }
+    }
+
+    #[DataProvider('requestedEvents')]
+    public function testRequestedEventObserverChangesAreIncludedInEveryCancellationSnapshot(
+        string $operation,
+        HistoryEventType $requestedType,
+    ): void {
+        [$workflow, $run] = $this->admit(2, 2);
+        $command = null;
+        WorkflowCommand::created(static function (WorkflowCommand $created) use (&$command, $operation): void {
+            if ($created->command_type->value === $operation) {
+                $command = $created;
+            }
+        });
+        WorkflowHistoryEvent::created(static function (WorkflowHistoryEvent $event) use (
+            &$command,
+            $requestedType
+        ): void {
+            if ($event->event_type === $requestedType && $command instanceof WorkflowCommand) {
+                $command->forceFill([
+                    'context' => [
+                        'caller' => [
+                            'label' => 'changed by requested event observer',
+                        ],
+                    ],
+                ]);
+            }
+        });
+        $result = $operation === 'cancel' ? $workflow->attemptCancel('observer context')
+            : $workflow->attemptTerminate('observer context');
+        $this->assertTrue($result->accepted());
+        $requested = $run->historyEvents()
+            ->where('event_type', $requestedType)
+            ->sole();
+        $this->assertNotSame('changed by requested event observer', $requested->payload['command']['caller_label']);
+        $cancelled = $run->historyEvents()
+            ->whereIn('event_type', [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled])->get();
+        $this->assertCount(4, $cancelled);
+        foreach ($cancelled as $event) {
+            $this->assertSame('changed by requested event observer', $event->payload['command']['caller_label']);
+        }
+    }
+
     public function testCommandSubclassSnapshotHooksStillRunForEachCancellation(): void
     {
         [, $run] = $this->admit(3, 3);

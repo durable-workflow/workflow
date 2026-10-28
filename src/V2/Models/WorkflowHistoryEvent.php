@@ -103,6 +103,15 @@ class WorkflowHistoryEvent extends Model
     }
 
     /**
+     * @internal Validate one terminal operation's reusable command snapshot.
+     * @param array<string, mixed> $snapshot
+     */
+    public static function matchesCommandSnapshot(WorkflowCommand $command, array $snapshot): bool
+    {
+        return $snapshot === self::commandSnapshot($command);
+    }
+
+    /**
      * @param string $key
      * @param mixed $value
      * @return mixed

@@ -62,6 +62,9 @@ final class TerminalCancellationHistory
             $command::class === WorkflowCommand::class && $requested::class === WorkflowHistoryEvent::class
                 && (! class_exists(Json::class) || HistoryPayloadJson::usesDefaultDecoder())
                 && is_array($snapshot) && ($snapshot['id'] ?? null) === $command->id
+                // Requested-event observers may mutate the command or the
+                // returned event payload. Validate once against the live command.
+                && WorkflowHistoryEvent::matchesCommandSnapshot($command, $snapshot)
                 ? $snapshot : null,
         );
         $events = $run->relationLoaded('historyEvents')

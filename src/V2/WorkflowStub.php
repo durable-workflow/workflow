@@ -3746,7 +3746,7 @@ final class WorkflowStub
         $parentTasks = [];
         $closedRun = null;
 
-        SqliteSavepointRelease::transaction(DB::connection(), function () use (
+        SqliteSavepointRelease::transaction($this->instance->getConnection(), function () use (
             &$command,
             &$parentTasks,
             &$closedRun,
@@ -3999,7 +3999,16 @@ final class WorkflowStub
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             $closedRun = $run;
-        }, self::mysqlCommandTransactionAttempts() ?? 1);
+        }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
+            $instances = self::instanceQuery();
+            $key = $instances->getModel()
+                ->getKeyName();
+            $instances->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
+        });
 
         if ($closedRun instanceof WorkflowRun) {
             if ($commandType === CommandType::Cancel) {

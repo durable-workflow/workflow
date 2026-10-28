@@ -20,12 +20,17 @@ final class SqliteSavepointRelease
     /**
      * @template T
      * @param Closure(Connection): T $operation
+     * @param Closure(Connection): void|null $admission
      * @return T
      */
-    public static function transaction(Connection $connection, Closure $operation, int $attempts = 1): mixed
-    {
+    public static function transaction(
+        Connection $connection,
+        Closure $operation,
+        ?int $attempts = null,
+        ?Closure $admission = null,
+    ): mixed {
         if ($connection->getDriverName() !== 'sqlite') {
-            return $connection->transaction($operation, $attempts);
+            return $connection->transaction($operation, $attempts ?? 1);
         }
 
         self::$scopes ??= new WeakMap();
@@ -37,7 +42,7 @@ final class SqliteSavepointRelease
         ];
 
         try {
-            return $connection->transaction(static function (Connection $database) use (
+            return SqliteTransaction::run(static function (Connection $database) use (
                 $operation,
                 $scope,
                 $initialLevel,
@@ -53,7 +58,7 @@ final class SqliteSavepointRelease
                         self::restore($database, $previous);
                     }
                 }
-            }, $attempts);
+            }, $attempts, $admission, connection: $connection);
         } finally {
             self::restore($connection, $previous);
         }
