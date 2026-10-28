@@ -74,6 +74,9 @@ final class V2UpdateTailCheckpointTest extends TestCase
         $duplicate = $this->checkpoint($kind, $task, $commands);
         $this->assertTrue($duplicate['duplicate']);
         unset($reply['duplicate'], $duplicate['duplicate']);
+        // JSON object key order can change when the receipt is persisted.
+        ksort($reply);
+        ksort($duplicate);
         $this->assertSame($reply, $duplicate);
         $this->assertSame($count, $run->historyEvents()->count());
         $this->assertSame($stored, $task->fresh()->getAttributes());
