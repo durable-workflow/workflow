@@ -21,6 +21,44 @@ use Workflow\V2\Support\RunWaitProjector;
 
 final class ProjectionPrefetchTest extends TestCase
 {
+    public function testNewTimelinePagesCreateEveryRowWithHooksWithoutPerRowLookup(): void
+    {
+        $run = $this->seedRun('new-timeline-page');
+        $template = $this->entries()[0];
+        $entries = [];
+        for ($offset = 0; $offset < 198; ++$offset) {
+            $entries[] = array_replace($template, [
+                'id' => 'new-event-' . $offset,
+                'sequence' => $offset,
+            ]);
+        }
+        $creating = 0;
+        WorkflowTimelineEntry::creating(static function (WorkflowTimelineEntry $row) use (&$creating): void {
+            ++$creating;
+            $row->summary = 'creation hook';
+        });
+        $connection = $run->getConnection();
+        $connection->flushQueryLog();
+        $connection->enableQueryLog();
+        try {
+            $rows = RunTimelineProjector::project($run, $entries);
+            $queries = $connection->getQueryLog();
+        } finally {
+            $connection->disableQueryLog();
+            WorkflowTimelineEntry::flushEventListeners();
+        }
+
+        $reads = array_filter($queries, static fn (array $query): bool =>
+            str_starts_with(strtolower($query['query']), 'select')
+            && str_contains($query['query'], 'workflow_run_timeline_entries'));
+        $this->assertCount(198, $rows);
+        $this->assertSame(198, $creating);
+        $this->assertLessThanOrEqual(2, count($reads));
+        $this->assertSame(198, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame('creation hook', $rows[197]->fresh()->summary);
+        $this->assertSame(197, $rows[197]->sequence);
+    }
+
     /**
      * @return iterable<string, array{class-string, string}>
      */

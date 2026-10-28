@@ -60,7 +60,8 @@ final class RunTimelineProjector
                     $projectionId,
                     $historyEventId,
                     $entry,
-                    $existing->get($projectionId)
+                    $existing->get($projectionId),
+                    knownMissing: $entryModel === WorkflowTimelineEntry::class && ! $existing->has($projectionId),
                 );
 
                 if ($collectRows) {
@@ -241,6 +242,7 @@ final class RunTimelineProjector
         string $historyEventId,
         array $entry,
         ?WorkflowTimelineEntry $existing = null,
+        bool $knownMissing = false,
     ): WorkflowTimelineEntry {
         $values = [
             'workflow_run_id' => $run->id,
@@ -287,7 +289,7 @@ final class RunTimelineProjector
         $key = [
             'id' => $projectionId,
         ];
-        $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing);
+        $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing, $knownMissing);
 
         return $row;
     }

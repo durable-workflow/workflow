@@ -15,6 +15,41 @@ use Workflow\V2\Support\IdempotentProjectionUpsert;
 
 final class IdempotentProjectionUpsertTest extends TestCase
 {
+    public function testObservedMissingRowStillRecoversAConcurrentInsertInsideTheOuterTransaction(): void
+    {
+        $run = $this->seedRun();
+        $id = hash('sha256', $run->id . '|observed-missing-race');
+        IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => $id,
+            ],
+            $this->timelineAttributes($run, 'observed-missing-race', 'concurrent winner'),
+        );
+
+        $run->getConnection()
+            ->transaction(function () use ($run, $id): void {
+                $row = IdempotentProjectionUpsert::upsert(
+                    WorkflowTimelineEntry::class,
+                    [
+                        'id' => $id,
+                    ],
+                    $this->timelineAttributes($run, 'observed-missing-race', 'after recovery'),
+                    knownMissing: true,
+                );
+                $this->assertSame('after recovery', $row->summary);
+                $this->assertSame(1, WorkflowTimelineEntry::query()->where('id', $id)->count());
+                $this->assertTrue($row->forceFill([
+                    'summary' => 'outer transaction remains writable',
+                ])->save());
+            });
+
+        $this->assertSame(
+            'outer transaction remains writable',
+            WorkflowTimelineEntry::query()->findOrFail($id)->summary,
+        );
+    }
+
     public function testPrefetchedRowRetainsModelHooksWithoutAnotherSelect(): void
     {
         $run = $this->seedRun();
