@@ -22,6 +22,7 @@ use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\PendingSignalCloser;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
+use Workflow\V2\Support\TerminalCancellationHistory;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -79,85 +80,26 @@ class WorkflowHistoryEvent extends Model
         WorkflowTask|string|null $task = null,
         WorkflowCommand|string|null $command = null,
     ): self {
-        if ($eventType === HistoryEventType::MemoUpserted) {
-            foreach (['entries', 'merged'] as $field) {
-                if (! is_array($payload[$field] ?? null)) {
-                    throw new \InvalidArgumentException(sprintf(
-                        'MemoUpserted history field [%s] must be an Avro payload envelope.',
-                        $field,
-                    ));
-                }
+        return self::recordEvent($run, $eventType, $payload, $task, $command, null);
+    }
 
-                $payload[$field] = MemoPayload::isInlineEnvelope($payload[$field])
-                    ? MemoPayload::canonicalMapEnvelope($payload[$field])
-                    : MemoPayload::mapEnvelope($payload[$field]);
-            }
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public static function recordCancellation(
+        WorkflowRun $run,
+        HistoryEventType $eventType,
+        array $payload,
+        WorkflowTask|string|null $task = null,
+        WorkflowCommand|string|null $command = null,
+        ?TerminalCancellationHistory $terminalHistory = null,
+    ): self {
+        if (! in_array($eventType, [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled], true)) {
+            throw new \LogicException('Terminal cancellation recording requires a cancellation event.');
         }
+        $terminalHistory?->assertRun($run);
 
-        $taskModel = $task instanceof WorkflowTask ? $task : null;
-        $commandModel = $command instanceof WorkflowCommand ? $command : null;
-        $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
-        $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
-        HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
-
-        /** @var self $event */
-        $event = ConfiguredV2Models::query('history_event_model', self::class)
-            ->getModel()
-            ->getConnection()
-            ->transaction(static function () use (
-                $run,
-                $eventType,
-                $payload,
-                $taskModel,
-                $commandModel,
-                $taskId,
-                $commandId,
-            ): self {
-                /** @var WorkflowRun $lockedRun */
-                $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                    ->lockForUpdate()
-                    ->findOrFail($run->id);
-                $now = now();
-                $sequence = self::nextSequenceForRun($lockedRun);
-                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel);
-                // A metered completion (#930) charges the event as stored,
-                // and the run row whose history position it advances.
-                $meter = HistoryTransactionMeter::current();
-                $meter?->chargeEvent($eventType->value, $storedPayload);
-                $meter?->chargeRows(1);
-
-                /** @var self $event */
-                $event = ConfiguredV2Models::query('history_event_model', self::class)->create([
-                    'workflow_run_id' => $lockedRun->id,
-                    'sequence' => $sequence,
-                    'event_type' => $eventType->value,
-                    'payload' => $storedPayload,
-                    'workflow_task_id' => $taskId,
-                    'workflow_command_id' => $commandId,
-                    'recorded_at' => $now,
-                ]);
-                ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
-
-                $lockedRun->forceFill([
-                    'last_history_sequence' => $sequence,
-                    'last_progress_at' => $now,
-                ])->save();
-
-                PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
-
-                $run->forceFill([
-                    'last_history_sequence' => $lockedRun->last_history_sequence,
-                    'last_progress_at' => $lockedRun->last_progress_at,
-                ]);
-                $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
-
-                LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
-                ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);
-
-                return $event;
-            });
-
-        return $event;
+        return self::recordEvent($run, $eventType, $payload, $task, $command, $terminalHistory);
     }
 
     /**
@@ -199,6 +141,99 @@ class WorkflowHistoryEvent extends Model
         return $this->cachedPayloadValue;
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function recordEvent(
+        WorkflowRun $run,
+        HistoryEventType $eventType,
+        array $payload,
+        WorkflowTask|string|null $task,
+        WorkflowCommand|string|null $command,
+        ?TerminalCancellationHistory $terminalHistory,
+    ): self {
+        if ($eventType === HistoryEventType::MemoUpserted) {
+            foreach (['entries', 'merged'] as $field) {
+                if (! is_array($payload[$field] ?? null)) {
+                    throw new \InvalidArgumentException(sprintf(
+                        'MemoUpserted history field [%s] must be an Avro payload envelope.',
+                        $field,
+                    ));
+                }
+
+                $payload[$field] = MemoPayload::isInlineEnvelope($payload[$field])
+                    ? MemoPayload::canonicalMapEnvelope($payload[$field])
+                    : MemoPayload::mapEnvelope($payload[$field]);
+            }
+        }
+
+        $taskModel = $task instanceof WorkflowTask ? $task : null;
+        $commandModel = $command instanceof WorkflowCommand ? $command : null;
+        $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
+        $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
+        HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
+
+        /** @var self $event */
+        $event = ConfiguredV2Models::query('history_event_model', self::class)
+            ->getModel()
+            ->getConnection()
+            ->transaction(static function () use (
+                $run,
+                $eventType,
+                $payload,
+                $taskModel,
+                $commandModel,
+                $taskId,
+                $commandId,
+                $terminalHistory,
+            ): self {
+                /** @var WorkflowRun $lockedRun */
+                $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->findOrFail($run->id);
+                $now = now();
+                $sequence = self::nextSequenceForRun($lockedRun);
+                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
+                // A metered completion (#930) charges the event as stored,
+                // and the run row whose history position it advances.
+                $meter = HistoryTransactionMeter::current();
+                $meter?->chargeEvent($eventType->value, $storedPayload);
+                $meter?->chargeRows(1);
+
+                /** @var self $event */
+                $event = ConfiguredV2Models::query('history_event_model', self::class)->create([
+                    'workflow_run_id' => $lockedRun->id,
+                    'sequence' => $sequence,
+                    'event_type' => $eventType->value,
+                    'payload' => $storedPayload,
+                    'workflow_task_id' => $taskId,
+                    'workflow_command_id' => $commandId,
+                    'recorded_at' => $now,
+                ]);
+                ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
+
+                $lockedRun->forceFill([
+                    'last_history_sequence' => $sequence,
+                    'last_progress_at' => $now,
+                ])->save();
+
+                PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
+
+                $run->forceFill([
+                    'last_history_sequence' => $lockedRun->last_history_sequence,
+                    'last_progress_at' => $lockedRun->last_progress_at,
+                ]);
+                $run->syncOriginalAttributes(['last_history_sequence', 'last_progress_at']);
+
+                LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
+                ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);
+
+                return $event;
+            });
+
+        return $event;
+    }
+
     private static function nextSequenceForRun(WorkflowRun $run): int
     {
         $storedMax = (int) (ConfiguredV2Models::query('history_event_model', self::class)
@@ -217,13 +252,15 @@ class WorkflowHistoryEvent extends Model
         array $payload,
         ?WorkflowTask $task,
         ?WorkflowCommand $command,
+        ?TerminalCancellationHistory $terminalHistory,
     ): array {
         if ($task !== null && ! array_key_exists('task', $payload)) {
             $payload['task'] = self::taskSnapshot($task);
         }
 
         if ($command !== null && ! array_key_exists('command', $payload)) {
-            $payload['command'] = self::commandSnapshot($command);
+            $commandPayload = $terminalHistory?->commandPayload($command) ?? [];
+            $payload['command'] = $commandPayload['command'] ?? self::commandSnapshot($command);
         }
 
         return $payload;

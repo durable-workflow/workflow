@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -35,17 +36,38 @@ final class TerminalCancellationHistory
      */
     private array $cancelledActivities = [];
 
+    /**
+     * @param array<string, mixed> $commandAttributes
+     * @param array<string, mixed> $commandCasts
+     * @param array<string, mixed>|null $commandSnapshot
+     */
     private function __construct(
-        private readonly string $workflowRunId
+        private readonly string $workflowRunId,
+        private readonly WorkflowCommand $command,
+        private readonly array $commandAttributes,
+        private readonly array $commandCasts,
+        private readonly ?array $commandSnapshot,
     ) {
     }
 
-    public static function forRun(WorkflowRun $run): self
+    public static function forRun(WorkflowRun $run, WorkflowCommand $command, WorkflowHistoryEvent $requested): self
     {
-        $history = new self($run->id);
-        $run->loadMissing('historyEvents');
+        $snapshot = $requested->payload['command'] ?? null;
+        $history = new self(
+            $run->id,
+            $command,
+            $command->getAttributes(),
+            $command->getCasts(),
+            $command::class === WorkflowCommand::class && $requested::class === WorkflowHistoryEvent::class
+                && is_array($snapshot) && ($snapshot['id'] ?? null) === $command->id
+                ? $snapshot : null,
+        );
+        $events = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents
+            : $run->historyEvents()
+                ->get();
 
-        foreach ($run->historyEvents as $event) {
+        foreach ($events as $event) {
             $type = $event->event_type;
             if (! in_array($type, [
                 HistoryEventType::TimerScheduled,
@@ -91,6 +113,23 @@ final class TerminalCancellationHistory
         if ($run->id !== $this->workflowRunId) {
             throw new LogicException('terminal_cancellation_history_run_mismatch');
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function commandPayload(WorkflowCommand|string|null $command): array
+    {
+        // Reuse only the already recorded snapshot of this unchanged ordinary
+        // command. Configured models and changed attributes/casts keep their
+        // normal snapshot hooks on every event.
+        return $this->commandSnapshot !== null && $command instanceof WorkflowCommand && $command === $this->command
+            && $command->getAttributes() === $this->commandAttributes
+            && $command->getCasts() === $this->commandCasts
+            ? [
+                'command' => $this->commandSnapshot,
+            ]
+            : [];
     }
 
     public function cancelledTimer(string $timerId): ?WorkflowHistoryEvent

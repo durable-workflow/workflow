@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\QueueManager;
@@ -71,6 +72,7 @@ use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
@@ -217,6 +219,10 @@ final class WorkflowServiceProvider extends ServiceProvider
         Event::listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
             ExecutionTracing::discardTaskOutcomes($event->connectionName);
         });
+        Event::listen(
+            [TransactionCommitted::class, TransactionRolledBack::class],
+            SqliteSavepointRelease::release(...)
+        );
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();

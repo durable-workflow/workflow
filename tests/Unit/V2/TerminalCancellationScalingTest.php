@@ -14,12 +14,14 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -46,6 +48,16 @@ final class TerminalCancellationCountingHistory extends WorkflowHistoryEvent
         }
 
         return parent::castAttribute($key, $value);
+    }
+}
+
+final class TerminalCancellationCustomCommand extends WorkflowCommand
+{
+    private static int $labels = 0;
+
+    public function callerLabel(): ?string
+    {
+        return 'configured-command-' . ++self::$labels;
     }
 }
 
@@ -166,6 +178,89 @@ final class TerminalCancellationScalingTest extends TestCase
         $this->assertSame($metadata, array_intersect_key($cancelled->payload, $metadata));
     }
 
+    public function testEveryCancellationRetainsTheAcceptedTerminalCommandSnapshot(): void
+    {
+        [$workflow, $run] = $this->admit(3, 3);
+        $this->assertTrue($workflow->attemptTerminate('snapshot authority')->accepted());
+        $requested = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TerminateRequested)->sole();
+        $cancelled = $run->historyEvents()
+            ->whereIn('event_type', [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled])->get();
+        $this->assertCount(6, $cancelled);
+        foreach ($cancelled as $event) {
+            $this->assertSame($requested->payload['command'], $event->payload['command']);
+        }
+    }
+
+    public function testChangedCommandAttributesAreSnapshottedAgainAfterAModelHook(): void
+    {
+        [$workflow, $run] = $this->admit(3, 3);
+        $command = null;
+        WorkflowCommand::created(static function (WorkflowCommand $created) use (&$command): void {
+            if ($created->command_type->value === 'terminate') {
+                $command = $created;
+            }
+        });
+        WorkflowHistoryEvent::created(static function (WorkflowHistoryEvent $event) use (&$command): void {
+            if ($event->event_type === HistoryEventType::ActivityCancelled && $command instanceof WorkflowCommand) {
+                $command->forceFill([
+                    'context' => [
+                        'caller' => [
+                            'label' => 'changed during close',
+                        ],
+                    ],
+                ]);
+            }
+        });
+        $this->assertTrue($workflow->attemptTerminate('model hook')->accepted());
+        $cancelled = $run->historyEvents()
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled,
+            ])->orderBy('sequence')
+            ->get();
+        $this->assertCount(6, $cancelled);
+        $this->assertNotSame('changed during close', $cancelled[0]->payload['command']['caller_label'] ?? null);
+        foreach ($cancelled->slice(1) as $event) {
+            $this->assertSame('changed during close', $event->payload['command']['caller_label'] ?? null);
+        }
+    }
+
+    public function testCommandSubclassSnapshotHooksStillRunForEachCancellation(): void
+    {
+        [, $run] = $this->admit(3, 3);
+        $command = TerminalCancellationCustomCommand::record($run->instance, $run, [
+            'command_type' => 'terminate',
+            'status' => 'accepted',
+            'outcome' => 'terminated',
+            'target_scope' => 'instance',
+            'source' => 'php_api',
+            'accepted_at' => now(),
+        ]);
+        $requested = WorkflowHistoryEvent::record($run, HistoryEventType::TerminateRequested, [
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'terminate',
+        ], null, $command);
+        $history = TerminalCancellationHistory::forRun($run, $command, $requested);
+        foreach ($run->activityExecutions as $execution) {
+            ActivityCancellation::record($run, $execution, command: $command, terminalHistory: $history);
+        }
+        foreach ($run->timers as $timer) {
+            TimerCancellation::record($run, $timer, command: $command, terminalHistory: $history);
+        }
+        $cancelled = $run->historyEvents()
+            ->whereIn('event_type', [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled])->get();
+        $this->assertCount(6, $cancelled);
+        $labels = $cancelled->map(
+            static fn (WorkflowHistoryEvent $event): string => $event->payload['command']['caller_label']
+        )->all();
+        $this->assertCount(6, array_unique($labels));
+        foreach ($labels as $label) {
+            $this->assertStringStartsWith('configured-command-', $label);
+        }
+    }
+
     protected function getPackageProviders($app): array
     {
         return [WorkflowServiceProvider::class];
@@ -246,11 +341,13 @@ final class TerminalCancellationScalingTest extends TestCase
             ->count());
         $this->assertSame(
             $timers,
-            $run->historyEvents()->where('event_type', HistoryEventType::TimerCancelled)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::TimerCancelled)->count()
         );
         $this->assertSame(
             $activities,
-            $run->historyEvents()->where('event_type', HistoryEventType::ActivityCancelled)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancelled)->count()
         );
     }
 }

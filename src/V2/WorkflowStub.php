@@ -77,6 +77,7 @@ use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
@@ -3745,7 +3746,7 @@ final class WorkflowStub
         $parentTasks = [];
         $closedRun = null;
 
-        DB::transaction(function () use (
+        SqliteSavepointRelease::transaction(DB::connection(), function () use (
             &$command,
             &$parentTasks,
             &$closedRun,
@@ -3872,7 +3873,13 @@ final class WorkflowStub
                 $requestedHistoryPayload['reason'] = $reason;
             }
 
-            WorkflowHistoryEvent::record($run, $requestedEventType, $requestedHistoryPayload, null, $command);
+            $requestedHistoryEvent = WorkflowHistoryEvent::record(
+                $run,
+                $requestedEventType,
+                $requestedHistoryPayload,
+                null,
+                $command
+            );
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -3889,7 +3896,7 @@ final class WorkflowStub
                 ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
 
             $terminalHistory = $openActivityExecutions->isNotEmpty() || $openTimers->isNotEmpty()
-                ? TerminalCancellationHistory::forRun($run)
+                ? TerminalCancellationHistory::forRun($run, $command, $requestedHistoryEvent)
                 : null;
 
             foreach ($openActivityExecutions as $execution) {
@@ -3917,6 +3924,7 @@ final class WorkflowStub
 
                 TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
+            unset($terminalHistory);
 
             $run->forceFill([
                 'status' => $terminalStatus,

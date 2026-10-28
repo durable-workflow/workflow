@@ -266,11 +266,12 @@ final class RunTimelineProjector
         // MySQL normalizes JSON object key order on write. Filling the same
         // payload again can therefore make Eloquent issue an UPDATE for every
         // old timeline row even though its decoded value has not changed.
-        if (
-            $existing instanceof WorkflowTimelineEntry
-            && self::canonicalizeValue($existing->payload) === self::canonicalizeValue($values['payload'])
-        ) {
-            unset($values['payload']);
+        if ($existing instanceof WorkflowTimelineEntry) {
+            $storedPayload = $existing->payload;
+            if ($storedPayload === $values['payload']
+                || self::canonicalizeValue($storedPayload) === self::canonicalizeValue($values['payload'])) {
+                unset($values['payload']);
+            }
         }
 
         // PostgreSQL can omit trailing fractional zeroes when returning a

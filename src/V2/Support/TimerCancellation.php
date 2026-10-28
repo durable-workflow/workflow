@@ -27,7 +27,9 @@ final class TimerCancellation
         ?TerminalCancellationHistory $terminalHistory = null,
     ): WorkflowHistoryEvent {
         $terminalHistory?->assertRun($run);
-        $run->loadMissing('historyEvents');
+        if ($terminalHistory === null) {
+            $run->loadMissing('historyEvents');
+        }
 
         $existing = $terminalHistory !== null ? $terminalHistory->cancelledTimer($timer->id) : $run->historyEvents
             ->first(
@@ -44,7 +46,7 @@ final class TimerCancellation
             : self::scheduledPayload($run, $timer->id);
         $cancelledAt ??= now();
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::TimerCancelled, array_filter([
+        $event = WorkflowHistoryEvent::recordCancellation($run, HistoryEventType::TimerCancelled, array_filter([
             'timer_id' => $timer->id,
             'sequence' => self::intValue($scheduledPayload['sequence'] ?? null) ?? $timer->sequence,
             'delay_seconds' => self::intValue($scheduledPayload['delay_seconds'] ?? null) ?? $timer->delay_seconds,
@@ -63,7 +65,7 @@ final class TimerCancellation
             'cancelled_at' => $cancelledAt->toJSON(),
             'cancellation_scope' => $cancellationScope,
             ...ParallelChildGroup::payloadForPath(ParallelChildGroup::metadataPathFromPayload($scheduledPayload)),
-        ], static fn (mixed $value): bool => $value !== null), $task, $command);
+        ], static fn (mixed $value): bool => $value !== null), $task, $command, $terminalHistory);
 
         if ($run->relationLoaded('historyEvents')) {
             $run->historyEvents->push($event);

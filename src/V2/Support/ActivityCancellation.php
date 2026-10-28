@@ -124,7 +124,14 @@ final class ActivityCancellation
             $payload['workflow_task_id'] = $task?->id;
         }
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancelled, $payload, $task, $command);
+        $event = WorkflowHistoryEvent::recordCancellation(
+            $run,
+            HistoryEventType::ActivityCancelled,
+            $payload,
+            $task,
+            $command,
+            $terminalHistory
+        );
         $terminalHistory?->rememberActivity($execution->id);
 
         return $event;
