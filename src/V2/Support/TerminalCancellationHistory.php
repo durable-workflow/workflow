@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Casts\Json;
 use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
@@ -59,6 +60,7 @@ final class TerminalCancellationHistory
             $command->getAttributes(),
             $command->getCasts(),
             $command::class === WorkflowCommand::class && $requested::class === WorkflowHistoryEvent::class
+                && (! class_exists(Json::class) || HistoryPayloadJson::usesDefaultDecoder())
                 && is_array($snapshot) && ($snapshot['id'] ?? null) === $command->id
                 ? $snapshot : null,
         );
@@ -124,6 +126,7 @@ final class TerminalCancellationHistory
         // command. Configured models and changed attributes/casts keep their
         // normal snapshot hooks on every event.
         return $this->commandSnapshot !== null && $command instanceof WorkflowCommand && $command === $this->command
+            && (! class_exists(Json::class) || HistoryPayloadJson::usesDefaultDecoder())
             && $command->getAttributes() === $this->commandAttributes
             && $command->getCasts() === $this->commandCasts
             ? [

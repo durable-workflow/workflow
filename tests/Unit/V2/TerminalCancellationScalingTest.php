@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -259,6 +260,59 @@ final class TerminalCancellationScalingTest extends TestCase
         foreach ($labels as $label) {
             $this->assertStringStartsWith('configured-command-', $label);
         }
+    }
+
+    public static function decoderActivation(): iterable
+    {
+        yield 'before snapshot preparation' => [false];
+        yield 'after the first cancellation' => [true];
+    }
+
+    #[DataProvider('decoderActivation')]
+    public function testApplicationJsonDecoderChangesKeepTheirSnapshotHooks(bool $duringClose): void
+    {
+        if (! class_exists(Json::class)) {
+            $this->markTestSkipped('Laravel 9 has no configurable JSON decoder API.');
+        }
+        [$workflow, $run] = $this->admit(3, 3);
+        $calls = 0;
+        $install = static function () use (&$calls): void {
+            Json::decodeUsing(static function (string $json, bool $asArray = true) use (&$calls): mixed {
+                $value = json_decode($json, $asArray, 512, JSON_THROW_ON_ERROR);
+                if (is_array($value) && is_array($value['caller'] ?? null)) {
+                    $value['caller']['label'] = 'json-hook-' . ++$calls;
+                }
+
+                return $value;
+            });
+        };
+        try {
+            if ($duringClose) {
+                WorkflowHistoryEvent::created(static function (WorkflowHistoryEvent $event) use ($install): void {
+                    if ($event->event_type === HistoryEventType::ActivityCancelled) {
+                        $install();
+                    }
+                });
+            } else {
+                $install();
+            }
+            $this->assertTrue($workflow->attemptTerminate('decoder hooks')->accepted());
+        } finally {
+            Json::decodeUsing(null);
+        }
+        $labels = $run->historyEvents()
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled,
+            ])->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): string => $event->payload['command']['caller_label'])->all();
+        $this->assertCount(6, $labels);
+        $hooked = $duringClose ? array_slice($labels, 1) : $labels;
+        $this->assertCount(count($hooked), array_unique($hooked));
+        foreach ($hooked as $label) {
+            $this->assertStringStartsWith('json-hook-', $label);
+        }
+        $this->assertGreaterThan(6, $calls);
     }
 
     protected function getPackageProviders($app): array
