@@ -3924,7 +3924,18 @@ final class WorkflowStub
 
                 TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
-            unset($terminalHistory);
+            // The final projection hydrates the current run graph again.
+            unset(
+                $terminalHistory,
+                $openTasks,
+                $openActivityExecutions,
+                $openTimers,
+                $tasksByActivityExecutionId,
+                $task,
+                $execution,
+                $timer,
+                $activityTask
+            );
 
             $run->forceFill([
                 'status' => $terminalStatus,

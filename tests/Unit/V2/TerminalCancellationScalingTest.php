@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
@@ -136,6 +137,42 @@ final class TerminalCancellationScalingTest extends TestCase
         $this->assertFalse($run->fresh()->status->isTerminal());
         $this->assertTrue($workflow->refresh()->attemptCancel('committed retry')->accepted());
         $this->assertClosedInventory($run, 3, 3);
+    }
+
+    public function testParentMetadataLookupDoesNotHydrateTheWholeHistory(): void
+    {
+        [, $run] = $this->admit(198, 0);
+        $run->unsetRelation('historyEvents');
+        $hydrated = 0;
+        Event::listen('eloquent.retrieved: ' . WorkflowHistoryEvent::class, static function () use (&$hydrated): void {
+            ++$hydrated;
+        });
+        $this->assertNull(ChildRunHistory::parentReferenceForRun($run));
+        $this->assertSame(1, $hydrated);
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+        $this->assertNull(ChildRunHistory::continuedFromRunId($run));
+        $this->assertSame(2, $hydrated);
+    }
+
+    public function testParentMetadataLookupPreservesAnAlreadyLoadedApplicationView(): void
+    {
+        [, $run] = $this->admit(3, 0);
+        $run->load('historyEvents');
+        $started = $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $started);
+        $started->payload = [
+            ...$started->payload,
+            'parent_workflow_instance_id' => 'application-parent-instance',
+            'parent_workflow_run_id' => 'application-parent-run',
+            'parent_sequence' => 7,
+            'child_call_id' => 'application-child-call',
+        ];
+        $this->assertSame([
+            'parent_workflow_instance_id' => 'application-parent-instance',
+            'parent_workflow_run_id' => 'application-parent-run',
+            'parent_sequence' => 7,
+            'child_call_id' => 'application-child-call',
+        ], ChildRunHistory::parentReferenceForRun($run));
     }
 
     public function testClosePreservesPriorCancellationsAndLatestScheduledTimerMetadata(): void

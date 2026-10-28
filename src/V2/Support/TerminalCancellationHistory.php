@@ -106,7 +106,13 @@ final class TerminalCancellationHistory
             } elseif (! isset($history->scheduledSequences[$timerId])
                 || $event->sequence > $history->scheduledSequences[$timerId]) {
                 $history->scheduledSequences[$timerId] = $event->sequence;
-                $history->scheduledTimers[$timerId] = $payload;
+                // Cancellation derives timer metadata from this event, while
+                // recording its own command/task snapshots. Retaining every
+                // original snapshot keeps a second large object graph alive.
+                $history->scheduledTimers[$timerId] = array_diff_key($payload, [
+                    'task' => true,
+                    'command' => true,
+                ]);
             }
         }
 

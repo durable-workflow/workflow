@@ -744,6 +744,17 @@ final class ChildRunHistory
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
     {
+        if (! $run->relationLoaded('historyEvents')
+            && $run->historyEvents()
+                ->getRelated()::class === WorkflowHistoryEvent::class) {
+            // Parent lookup needs the start event, not another hydrated copy of
+            // an entire completed history. Loaded/custom models keep their hooks.
+            /** @var WorkflowHistoryEvent|null $event */
+            $event = $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted)->first();
+
+            return $event;
+        }
         $run->loadMissing('historyEvents');
 
         /** @var WorkflowHistoryEvent|null $event */
