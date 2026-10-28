@@ -24,10 +24,12 @@ final class TimerCancellation
         WorkflowCommand|string|null $command = null,
         ?CarbonInterface $cancelledAt = null,
         ?array $cancellationScope = null,
+        ?TerminalCancellationHistory $terminalHistory = null,
     ): WorkflowHistoryEvent {
+        $terminalHistory?->assertRun($run);
         $run->loadMissing('historyEvents');
 
-        $existing = $run->historyEvents
+        $existing = $terminalHistory !== null ? $terminalHistory->cancelledTimer($timer->id) : $run->historyEvents
             ->first(
                 static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerCancelled
                 && ($event->payload['timer_id'] ?? null) === $timer->id
@@ -37,7 +39,9 @@ final class TimerCancellation
             return $existing;
         }
 
-        $scheduledPayload = self::scheduledPayload($run, $timer->id);
+        $scheduledPayload = $terminalHistory !== null
+            ? $terminalHistory->scheduledTimer($timer->id)
+            : self::scheduledPayload($run, $timer->id);
         $cancelledAt ??= now();
 
         $event = WorkflowHistoryEvent::record($run, HistoryEventType::TimerCancelled, array_filter([
@@ -64,6 +68,7 @@ final class TimerCancellation
         if ($run->relationLoaded('historyEvents')) {
             $run->historyEvents->push($event);
         }
+        $terminalHistory?->rememberTimer($timer->id, $event);
 
         return $event;
     }

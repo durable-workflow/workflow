@@ -81,6 +81,7 @@ use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -3887,6 +3888,10 @@ final class WorkflowStub
                 )
                 ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
 
+            $terminalHistory = $openActivityExecutions->isNotEmpty() || $openTimers->isNotEmpty()
+                ? TerminalCancellationHistory::forRun($run)
+                : null;
+
             foreach ($openActivityExecutions as $execution) {
                 $execution->forceFill([
                     'status' => ActivityStatus::Cancelled,
@@ -3896,7 +3901,13 @@ final class WorkflowStub
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $tasksByActivityExecutionId->get($execution->id);
 
-                ActivityCancellation::record($run, $execution, $activityTask, $command);
+                ActivityCancellation::record(
+                    $run,
+                    $execution,
+                    $activityTask,
+                    $command,
+                    terminalHistory: $terminalHistory
+                );
             }
 
             foreach ($openTimers as $timer) {
@@ -3904,7 +3915,7 @@ final class WorkflowStub
                     'status' => TimerStatus::Cancelled,
                 ])->save();
 
-                TimerCancellation::record($run, $timer, null, $command);
+                TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
 
             $run->forceFill([

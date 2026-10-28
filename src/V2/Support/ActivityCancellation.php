@@ -28,7 +28,9 @@ final class ActivityCancellation
         WorkflowCommand|string|null $command = null,
         ?array $scopeCancellation = null,
         ?ScopedCancellationPreparation $scopePreparation = null,
+        ?TerminalCancellationHistory $terminalHistory = null,
     ): ?WorkflowHistoryEvent {
+        $terminalHistory?->assertRun($run);
         if ($scopeCancellation !== null) {
             $context = ActivityCancellationContext::forScopeSnapshot(
                 $run,
@@ -92,7 +94,9 @@ final class ActivityCancellation
             ])->save();
         }
 
-        if (self::alreadyRecorded($run, $execution->id)) {
+        if ($terminalHistory !== null
+            ? $terminalHistory->activityCancelled($execution->id)
+            : self::alreadyRecorded($run, $execution->id)) {
             return null;
         }
 
@@ -120,7 +124,10 @@ final class ActivityCancellation
             $payload['workflow_task_id'] = $task?->id;
         }
 
-        return WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancelled, $payload, $task, $command);
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancelled, $payload, $task, $command);
+        $terminalHistory?->rememberActivity($execution->id);
+
+        return $event;
     }
 
     private static function currentAttempt(ActivityExecution $execution): ?ActivityAttempt
