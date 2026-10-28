@@ -5565,14 +5565,19 @@ final class WorkflowStub
      */
     private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
-        if ($with !== []) {
-            // These relations are about to be replaced with current storage
-            // state. Invalidate their old cache before hydrating the fresh
-            // graph, so both complete inventories are not retained at once.
-            // The configured role still receives its own fully refreshed run.
-            foreach ($with as $relation) {
-                $run->unsetRelation(explode('.', $relation, 2)[0]);
+        if ($with !== [] && $run::class === WorkflowRun::class) {
+            // Fetch the root before discarding its old relation cache. A missing
+            // row keeps the complete fallback graph; an existing row loads its
+            // fresh relations only after the previous inventory is released.
+            $fresh = $run->fresh();
+            if ($fresh !== null) {
+                foreach ($with as $relation) {
+                    $run->unsetRelation(explode('.', $relation, 2)[0]);
+                }
+                $run = $fresh->load($with);
             }
+        } elseif ($with !== []) {
+            // Configured models keep their fresh() override and hydration hooks.
             $run = $run->fresh($with) ?? $run;
         }
 

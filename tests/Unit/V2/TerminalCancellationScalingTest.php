@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
 use Illuminate\Database\Eloquent\Casts\Json;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -19,6 +21,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivityCancellation;
@@ -61,6 +64,37 @@ final class TerminalCancellationCustomCommand extends WorkflowCommand
     public function callerLabel(): ?string
     {
         return 'configured-command-' . ++self::$labels;
+    }
+}
+
+final class TerminalCancellationMissingFreshRun extends WorkflowRun
+{
+    public mixed $requestedRelations = null;
+
+    public function fresh($with = []): ?static
+    {
+        $this->requestedRelations = $with;
+
+        return null;
+    }
+}
+
+final class TerminalCancellationContextCast implements CastsAttributes
+{
+    public static string $label = 'before';
+
+    public function get($model, string $key, $value, array $attributes): array
+    {
+        $context = is_string($value) ? json_decode($value, true, flags: JSON_THROW_ON_ERROR) : [];
+        $context = is_array($context) ? $context : [];
+        $context['caller']['label'] = self::$label;
+
+        return $context;
+    }
+
+    public function set($model, string $key, $value, array $attributes): string
+    {
+        return json_encode($value, JSON_THROW_ON_ERROR);
     }
 }
 
@@ -210,6 +244,91 @@ final class TerminalCancellationScalingTest extends TestCase
     {
         yield 'signal' => [false];
         yield 'workflow task completion' => [true];
+    }
+
+    public static function terminalCommands(): iterable
+    {
+        yield 'cancel' => ['cancel'];
+        yield 'terminate' => ['terminate'];
+    }
+
+    #[DataProvider('terminalCommands')]
+    public function testStatefulCommandContextCastIsReadForEveryCancellationSnapshot(string $command): void
+    {
+        [$workflow, $run] = $this->admit(2, 0);
+        TerminalCancellationContextCast::$label = 'before';
+        WorkflowCommand::created(static function (WorkflowCommand $created) use ($command): void {
+            if ($created->command_type->value === $command) {
+                $created->mergeCasts([
+                    'context' => TerminalCancellationContextCast::class,
+                ]);
+            }
+        });
+        WorkflowHistoryEvent::created(static function (WorkflowHistoryEvent $event): void {
+            if ($event->event_type === HistoryEventType::TimerCancelled) {
+                TerminalCancellationContextCast::$label = 'after';
+            }
+        });
+
+        $result = $command === 'cancel' ? $workflow->attemptCancel('context cast')
+            : $workflow->attemptTerminate('context cast');
+        $this->assertTrue($result->accepted());
+        $events = $run->historyEvents()
+            ->where('event_type', HistoryEventType::TimerCancelled)
+            ->orderBy('sequence')
+            ->get();
+        $this->assertCount(2, $events);
+        $this->assertSame('before', $events[0]->payload['command']['caller_label']);
+        $this->assertSame('after', $events[1]->payload['command']['caller_label']);
+    }
+
+    public static function missingProjectionRoots(): iterable
+    {
+        foreach ([WorkflowStub::class, DefaultWorkflowTaskBridge::class] as $owner) {
+            yield $owner . ' default model' => [$owner, false];
+            yield $owner . ' configured model' => [$owner, true];
+        }
+    }
+
+    #[DataProvider('missingProjectionRoots')]
+    public function testMissingFreshRootPreservesTheCompleteFallbackForTheConfiguredRole(
+        string $owner,
+        bool $configuredModel,
+    ): void {
+        $run = $configuredModel ? new TerminalCancellationMissingFreshRun() : new WorkflowRun();
+        $run->id = 'missing-projection-root';
+        $run->exists = true;
+        $tasks = new Collection([
+            new WorkflowTask([
+                'id' => 'fallback-task',
+            ])]);
+        $run->setRelation('tasks', $tasks);
+        $seen = null;
+        $seenRelations = [];
+        $role = \Mockery::mock(HistoryProjectionRole::class);
+        $role->shouldReceive('projectRun')
+            ->once()
+            ->andReturnUsing(static function (WorkflowRun $projected) use (
+                &$seen,
+                &$seenRelations
+            ): WorkflowRunSummary {
+                $seen = $projected;
+                $seenRelations = $projected->getRelations();
+
+                return new WorkflowRunSummary();
+            });
+        app()
+            ->instance(HistoryProjectionRole::class, $role);
+
+        $method = new \ReflectionMethod($owner, 'projectRun');
+        $method->invoke(null, $run, ['tasks']);
+
+        $this->assertSame($run, $seen);
+        $this->assertArrayHasKey('tasks', $seenRelations);
+        $this->assertSame($tasks, $seenRelations['tasks']);
+        if ($run instanceof TerminalCancellationMissingFreshRun) {
+            $this->assertSame(['tasks'], $run->requestedRelations);
+        }
     }
 
     #[DataProvider('projectionRefreshPaths')]

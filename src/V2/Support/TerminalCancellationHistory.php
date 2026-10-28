@@ -53,19 +53,12 @@ final class TerminalCancellationHistory
 
     public static function forRun(WorkflowRun $run, WorkflowCommand $command, WorkflowHistoryEvent $requested): self
     {
-        $snapshot = $requested->payload['command'] ?? null;
         $history = new self(
             $run->id,
             $command,
             $command->getAttributes(),
             $command->getCasts(),
-            $command::class === WorkflowCommand::class && $requested::class === WorkflowHistoryEvent::class
-                && (! class_exists(Json::class) || HistoryPayloadJson::usesDefaultDecoder())
-                && is_array($snapshot) && ($snapshot['id'] ?? null) === $command->id
-                // Requested-event observers may mutate the command or the
-                // returned event payload. Validate once against the live command.
-                && WorkflowHistoryEvent::matchesCommandSnapshot($command, $snapshot)
-                ? $snapshot : null,
+            self::reusableCommandSnapshot($command, $requested),
         );
         $events = $run->relationLoaded('historyEvents')
             ? $run->historyEvents
@@ -170,5 +163,29 @@ final class TerminalCancellationHistory
     public function rememberActivity(string $activityId): void
     {
         $this->cancelledActivities[$activityId] = true;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function reusableCommandSnapshot(
+        WorkflowCommand $command,
+        WorkflowHistoryEvent $requested,
+    ): ?array {
+        $snapshot = $requested->payload['command'] ?? null;
+        // Identical raw attributes cannot establish an unchanged value for a
+        // stateful custom cast. Keep its normal per-event snapshot hooks.
+        if ($command::class !== WorkflowCommand::class
+            || $requested::class !== WorkflowHistoryEvent::class
+            || $command->getCasts() !== (new WorkflowCommand())->getCasts()
+            || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
+            return null;
+        }
+
+        // Requested-event observers may mutate the command or the returned
+        // event payload. Validate once against the live ordinary command.
+        return is_array($snapshot) && ($snapshot['id'] ?? null) === $command->id
+            && WorkflowHistoryEvent::matchesCommandSnapshot($command, $snapshot)
+            ? $snapshot : null;
     }
 }
