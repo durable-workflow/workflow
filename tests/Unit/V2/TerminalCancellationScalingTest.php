@@ -13,6 +13,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -203,6 +204,109 @@ final class TerminalCancellationScalingTest extends TestCase
             'child_call_id' => 'observer-child-1',
         ], ChildRunHistory::parentReferenceForRun($run->fresh()));
         $this->assertSame(1, $retrieved);
+    }
+
+    public static function projectionRefreshPaths(): iterable
+    {
+        yield 'signal' => [false];
+        yield 'workflow task completion' => [true];
+    }
+
+    #[DataProvider('projectionRefreshPaths')]
+    public function testCommandProjectionKeepsOneTaskGraphAndStillCallsTheConfiguredRoleWithFreshRelations(
+        bool $completeWorkflowTask,
+    ): void {
+        [$workflow, $run] = $this->admit(198, 198);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $task = null;
+        if ($completeWorkflowTask) {
+            $this->assertTrue($workflow->signal('advance')->accepted());
+            $task = WorkflowTask::query()->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->sole();
+            $this->assertNotNull($bridge->claim($task->id, 'inventory-worker'));
+        }
+        $before = $run->tasks()
+            ->count();
+        $signals = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalReceived)->count();
+        $waits = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalWaitOpened)->count();
+        $references = [];
+        $peak = 0;
+        $watch = true;
+        Event::listen('eloquent.retrieved: ' . WorkflowTask::class, static function (WorkflowTask $task) use (
+            &$references,
+            &$peak,
+            &$watch
+        ): void {
+            if (! $watch) {
+                return;
+            }
+            $references[] = \WeakReference::create($task);
+            $peak = max($peak, count(array_filter($references, static fn (\WeakReference $reference): bool =>
+                $reference->get() !== null)));
+        });
+        $original = app(HistoryProjectionRole::class);
+        $observed = false;
+        $configured = \Mockery::mock(HistoryProjectionRole::class);
+        $configured->shouldReceive('projectRun')
+            ->andReturnUsing(function (WorkflowRun $projected) use (
+                $original,
+                $signals,
+                $waits,
+                $completeWorkflowTask,
+                &$observed,
+                &$watch
+            ) {
+                // WorkflowStub refreshes these relations for the command projection.
+                // TaskDispatcher subsequently projects an initially unloaded model.
+                if (! $observed) {
+                    foreach ([
+                        'instance',
+                        'tasks',
+                        'activityExecutions',
+                        'timers',
+                        'failures',
+                        'historyEvents',
+                    ] as $relation) {
+                        $this->assertTrue($projected->relationLoaded($relation), $relation);
+                    }
+                    $this->assertCount(198, $projected->activityExecutions);
+                    $this->assertCount(198, $projected->timers);
+                    $this->assertCount(
+                        $signals + (int) ! $completeWorkflowTask,
+                        $projected->historyEvents->where('event_type', HistoryEventType::SignalReceived)
+                    );
+                    $this->assertCount(
+                        $waits + (int) $completeWorkflowTask,
+                        $projected->historyEvents->where('event_type', HistoryEventType::SignalWaitOpened)
+                    );
+                    $observed = true;
+                }
+
+                $result = $original->projectRun($projected);
+                // The mock records this argument after returning. Stop measuring
+                // before that artificial reference overlaps dispatch's projection.
+                $watch = false;
+                return $result;
+            });
+        app()
+            ->instance(HistoryProjectionRole::class, $configured);
+
+        if ($task instanceof WorkflowTask) {
+            $result = $bridge->completeForProtocol($task->id, [[
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+            ]], '1.20');
+            $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        } else {
+            $this->assertTrue($workflow->signal('advance')->accepted());
+        }
+        $this->assertTrue($observed);
+        $this->assertGreaterThan(0, $peak);
+        $this->assertLessThanOrEqual($before + 32, $peak, 'Projection must not retain both old and fresh task graphs.');
     }
 
     public function testClosePreservesPriorCancellationsAndLatestScheduledTimerMetadata(): void

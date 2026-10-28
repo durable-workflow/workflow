@@ -7517,6 +7517,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     private static function projectRun(WorkflowRun $run, array $with = []): void
     {
         if ($with !== []) {
+            // Discard relations being refreshed before loading the replacement
+            // graph, so a command does not keep both inventories live at once.
+            foreach ($with as $relation) {
+                $run->unsetRelation(explode('.', $relation, 2)[0]);
+            }
             $run = $run->fresh($with) ?? $run;
         }
 

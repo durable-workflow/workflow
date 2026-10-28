@@ -5566,6 +5566,13 @@ final class WorkflowStub
     private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
         if ($with !== []) {
+            // These relations are about to be replaced with current storage
+            // state. Invalidate their old cache before hydrating the fresh
+            // graph, so both complete inventories are not retained at once.
+            // The configured role still receives its own fully refreshed run.
+            foreach ($with as $relation) {
+                $run->unsetRelation(explode('.', $relation, 2)[0]);
+            }
             $run = $run->fresh($with) ?? $run;
         }
 
