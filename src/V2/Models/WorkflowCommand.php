@@ -574,7 +574,12 @@ class WorkflowCommand extends Model
 
         $namespace = null;
 
-        if ($this->workflow_run_id !== null) {
+        // Inline bytes do not consult namespace storage policy. Timeline
+        // projection can read the same command for thousands of events.
+        // Configured models and payload casts retain their original read path.
+        if ($this->workflow_run_id !== null && (static::class !== self::class
+            || array_key_exists('payload', $this->getCasts())
+            || ExternalPayloads::isStoredReference($this->payload))) {
             $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($this->workflow_run_id)
                 ->value('namespace');
