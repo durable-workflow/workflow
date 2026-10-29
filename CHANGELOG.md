@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Back off between SQLite host-query preparation and dispatch-claim retries
+  after a proven root rollback, so a brief competing writer does not exhaust
+  all attempts immediately. Preserve caller-owned transactions and durable
+  query claim fencing (#947).
+
 ## 2.14.1 - 2026-10-26
 
 - Enforce pending activity, timer and child-workflow limits on external-worker
