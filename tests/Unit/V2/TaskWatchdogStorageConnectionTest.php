@@ -30,6 +30,7 @@ final class TaskWatchdogStorageConnectionTest extends SchemaTestCase
     {
         parent::setUp();
 
+        WorkerCompatibilityFleet::clear();
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
     }
 

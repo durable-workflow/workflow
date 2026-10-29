@@ -31,6 +31,9 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
 
     protected function tearDown(): void
     {
+        // This Testbench app owns a disposable storage database. Its worker's
+        // process-local heartbeat cache must not suppress the next app's write.
+        WorkerCompatibilityFleet::clear();
         Carbon::setTestNow();
         parent::tearDown();
         foreach (['', '-wal', '-shm'] as $suffix) {
