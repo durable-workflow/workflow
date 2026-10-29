@@ -15,7 +15,7 @@
       "disposition": "accepted-risk"
     },
     "10": {
-      "minimum": "10.48.29",
+      "minimum": "10.50.4",
       "disposition": "accepted-risk"
     },
     "11": {
@@ -88,7 +88,7 @@
         "11"
       ],
       "review_by": "2026-10-31",
-      "reason": "The advisory feed includes Laravel 9-11. Laravel 11 now requires 11.56.1 or later, whose upstream TokenGuard source includes the strict string check; the feed still classifies this patched branch as affected. Laravel 9/10 compatibility remains only for embedded upgrade and drain paths and must not expose TokenGuard while migrating. Other declared legacy risks remain. Maintained Laravel 12/13 minimums exceed the upstream patched versions. Alerts and exact per-major auditing remain enabled."
+      "reason": "The advisory feed includes Laravel 9-11. Laravel 10 requires 10.50.4 or later and Laravel 11 requires 11.56.1 or later; both released sources contain TokenGuard's strict string checks, while the feed still classifies these patched branches as affected. Laravel 9 remains unfixed and must not expose TokenGuard while upgrading or draining. Other declared legacy risks remain. Maintained Laravel 12/13 minimums exceed the upstream patched versions. Alerts and exact per-major auditing remain enabled; the October 31 compatibility decision concerns Laravel 9."
     }
   }
 }
