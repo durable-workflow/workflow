@@ -187,7 +187,7 @@ final class ServiceCallScheduler
         $callModel = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel();
         $connection = $callModel->getConnection();
 
-        return $connection->transaction(static function () use ($serviceCallId): ?ServiceCallAttemptClaim {
+        return SqliteTransaction::run(static function () use ($serviceCallId): ?ServiceCallAttemptClaim {
             /** @var WorkflowServiceCall|null $call */
             $call = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
                 ->lockForUpdate()
@@ -310,7 +310,7 @@ final class ServiceCallScheduler
                 policyRevision: $policyRevision,
                 effectToken: $effectToken,
             );
-        }, attempts: 3);
+        }, attempts: 3, connection: $connection);
     }
 
     /**

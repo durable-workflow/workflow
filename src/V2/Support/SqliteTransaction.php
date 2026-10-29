@@ -232,12 +232,16 @@ final class SqliteTransaction
             ];
         } catch (Throwable $exception) {
             $bodyMustNotRepeat = $admission !== null && $entered;
+            $retry = $exception === $mutationError && $failedInRoot && ! $returned && ! $bodyMustNotRepeat
+                && self::isContention($exception) && $connection->transactionLevel() === 0
+                && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction();
+            // Exception argument traces retain the callback's captured references.
+            // Break its self-reference so a handled retry does not pin the PDO.
+            $mutationError = null;
 
             return [
                 'error' => $exception,
-                'retry' => $exception === $mutationError && $failedInRoot && ! $returned && ! $bodyMustNotRepeat
-                    && self::isContention($exception) && $connection->transactionLevel() === 0
-                    && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction(),
+                'retry' => $retry,
             ];
         }
     }

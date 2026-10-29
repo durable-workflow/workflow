@@ -411,11 +411,13 @@ jobs:
           tests/Unit/V2/LegacyOverlapOptionsBoundaryTest.php \
           tests/Unit/V2/HostServiceQueryDispatchTest.php \
           tests/Unit/V2/HostServiceQueryLifecycleTest.php \
-          tests/Unit/V2/HostServiceQueryConcurrentReplayTest.php --testdox --fail-on-warning
+          tests/Unit/V2/HostServiceQueryConcurrentReplayTest.php \
+          tests/Unit/V2/HostServiceQuerySqliteWriteRetryTest.php --testdox --fail-on-warning
 
         php -d zend.enable_gc=0 vendor/bin/phpunit \
           tests/Unit/SqliteWalFixtureCleanupTest.php \
           tests/Unit/V2/HostServiceQueryConcurrentReplayTest.php \
+          tests/Unit/V2/HostServiceQuerySqliteWriteRetryTest.php \
           tests/Unit/V2/HostServiceQueryDispatchTest.php \
           tests/Unit/V2/HostServiceQueryLifecycleTest.php \
           tests/Unit/V2/LocalActivityRetryDispatchTest.php \
