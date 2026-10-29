@@ -6,16 +6,23 @@ namespace Workflow\V2\Models;
 
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use WeakMap;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\HistoryPayloadJson;
 use Workflow\V2\Support\UtcScheduleTimestamp;
 
 class WorkflowRunWait extends Model
 {
     use ResolvesStorageConnection;
+
+    private const MAX_CACHED_PAYLOAD_MODELS = 256;
+
+    private const MAX_CACHED_PAYLOAD_JSON_BYTES = 4096;
 
     public $incrementing = false;
 
@@ -40,10 +47,21 @@ class WorkflowRunWait extends Model
     ];
 
     /**
+     * @var WeakMap<self, array{current: string, original: string, equivalent: bool}>|null
+     */
+    private static ?WeakMap $payloadEquivalenceCache = null;
+
+    /**
      * @param string $key
      */
     public function originalIsEquivalent($key): bool
     {
+        if ($key === 'payload' && static::class === self::class) {
+            $equivalent = $this->cachedPayloadEquivalence();
+            if ($equivalent !== null) {
+                return $equivalent;
+            }
+        }
         if (parent::originalIsEquivalent($key)) {
             return true;
         }
@@ -129,6 +147,52 @@ class WorkflowRunWait extends Model
         $payload['timeout_fired_at'] = self::timestamp($payload['timeout_fired_at'] ?? null);
 
         return $payload;
+    }
+
+    private function cachedPayloadEquivalence(): ?bool
+    {
+        if (! array_key_exists('payload', $this->original)) {
+            return null;
+        }
+        $current = $this->attributes['payload'] ?? null;
+        $original = $this->original['payload'];
+        if ($current === $original) {
+            return true;
+        }
+        if (($this->getCasts()['payload'] ?? null) !== 'array'
+            || ! is_string($current) || ! is_string($original)
+            || strlen($current) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
+            || strlen($original) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
+            || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
+            if (self::$payloadEquivalenceCache !== null) {
+                unset(self::$payloadEquivalenceCache[$this]);
+            }
+            return null;
+        }
+        $cached = self::$payloadEquivalenceCache[$this] ?? null;
+        if (($cached['current'] ?? null) === $current && ($cached['original'] ?? null) === $original) {
+            return $cached['equivalent'];
+        }
+
+        // Eloquent checks dirtiness repeatedly during one save. For the default
+        // decoder/model, compare each immutable raw pair once without cloning
+        // another model through getOriginal(). Keep raw attributes untouched.
+        $equivalent = self::canonicalPayload($this->castAttribute('payload', $current))
+            === self::canonicalPayload($this->castAttribute('payload', $original));
+        self::$payloadEquivalenceCache ??= new WeakMap();
+        if (! isset(self::$payloadEquivalenceCache[$this])
+            && count(self::$payloadEquivalenceCache) >= self::MAX_CACHED_PAYLOAD_MODELS) {
+            foreach (self::$payloadEquivalenceCache as $oldModel => $unused) {
+                unset(self::$payloadEquivalenceCache[$oldModel]);
+                break;
+            }
+        }
+        self::$payloadEquivalenceCache[$this] = [
+            'current' => $current,
+            'original' => $original,
+            'equivalent' => $equivalent,
+        ];
+        return $equivalent;
     }
 
     private static function timestamp(mixed $value): ?CarbonInterface
