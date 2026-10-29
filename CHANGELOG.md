@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require Laravel 10.50.4 or later on the Laravel 10 line so TokenGuard rejects
+  non-string tokens in both user lookup and credential validation. Laravel 9
+  retains the documented upgrade or drain requirement (#922).
+
 ## 2.14.1 - 2026-10-26
 
 - Enforce pending activity, timer and child-workflow limits on external-worker
