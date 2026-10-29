@@ -26,16 +26,52 @@ final class TaskDispatcher
         WorkflowTask $task,
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
+        bool $deferSqliteRepair = false,
     ): void {
         if (DB::transactionLevel() > 0) {
             DB::afterCommit(
-                static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
+                static fn () => self::publishWithAdmission(
+                    $task,
+                    $queueTimerWakeup,
+                    $boundedWorkflowTaskProjection,
+                    $deferSqliteRepair,
+                )
             );
 
             return;
         }
 
-        self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection);
+        self::publishWithAdmission($task, $queueTimerWakeup, $boundedWorkflowTaskProjection, $deferSqliteRepair);
+    }
+
+    private static function publishWithAdmission(
+        WorkflowTask $task,
+        bool $queueTimerWakeup,
+        bool $boundedWorkflowTaskProjection,
+        bool $deferSqliteRepair,
+    ): void {
+        $taskId = $task->id;
+        // Poll-mode repair only updates durable dispatch metadata. Admit its
+        // writer before model hooks and projection; physical queue delivery and
+        // faked inline execution keep their original after-commit path.
+        if (! $deferSqliteRepair || ! self::isPollMode() || $queueTimerWakeup || WorkflowStub::faked()) {
+            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
+
+            return;
+        }
+        $connection = $task->getConnection();
+        if ($connection->getDriverName() !== 'sqlite') {
+            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
+
+            return;
+        }
+        SqliteTransaction::forTaskOnce($task, static function () use (
+            $taskId,
+            $queueTimerWakeup,
+            $boundedWorkflowTaskProjection,
+        ): void {
+            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
+        });
     }
 
     private static function publish(

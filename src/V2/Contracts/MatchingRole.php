@@ -31,6 +31,7 @@ interface MatchingRole
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     deferred_existing_tasks?: list<array{candidate_id: string, phase: string, reason: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,

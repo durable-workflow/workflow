@@ -169,6 +169,7 @@ class V2RepairPassCommand extends Command
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     deferred_existing_tasks?: list<array{candidate_id: string, phase: string, reason: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
      *     activity_timeout_failures: list<array{execution_id: string, message: string}>,
@@ -200,6 +201,14 @@ class V2RepairPassCommand extends Command
             $report['repaired_missing_tasks'],
             $report['dispatched_tasks'],
         ));
+        foreach ($report['deferred_existing_tasks'] ?? [] as $deferred) {
+            $this->line(sprintf(
+                'Existing task [%s] deferred during %s (%s); a later pass will retry.',
+                $deferred['candidate_id'],
+                $deferred['phase'],
+                $deferred['reason'],
+            ));
+        }
         foreach ($report['existing_task_failures'] as $failure) {
             $this->error(sprintf(
                 'Existing task candidate [%s] failed repair: %s',
