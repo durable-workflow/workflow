@@ -481,7 +481,7 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers));
+        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
         RunTimelineProjector::project(
             $run,
             $scopeActivityTimeline
@@ -489,7 +489,7 @@ final class RunSummaryProjector
                 : null,
             collectRows: false,
         );
-        RunTimerProjector::project($run, $timers);
+        RunTimerProjector::project($run, $timers, collectRows: false);
         RunLineageProjector::project($run);
 
         return $summary;

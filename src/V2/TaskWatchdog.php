@@ -16,6 +16,7 @@ use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\SqliteWriteAdmissionUnavailableException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowRun;
@@ -29,6 +30,8 @@ use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\SqliteMaintenanceYield;
+use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -156,6 +159,14 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            if (isset($result['deferred'])) {
+                $report['deferred_existing_tasks'][] = [
+                    'candidate_id' => $candidateId,
+                    'phase' => $result['deferred'],
+                    'reason' => 'sqlite_writer_busy',
+                ];
+            }
+            SqliteMaintenanceYield::pause((new WorkflowTask())->getConnection());
         }
 
         foreach ($missingRunIds as $runId) {
@@ -172,6 +183,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
@@ -195,6 +207,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $serviceCallIds = ServiceCallDeadline::expiredCallIds(
@@ -221,6 +234,9 @@ final class TaskWatchdog
                     'message' => $failure->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause(
+                ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection()
+            );
         }
 
         $serviceCallDispatch = ServiceCallScheduler::repairDue(
@@ -279,17 +295,19 @@ final class TaskWatchdog
                     'message' => $throwable->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause((new ActivityExecution())->getConnection());
         }
 
         return $report;
     }
 
     /**
-     * @return array{task: WorkflowTask|null, error: string|null}
+     * @return array{task: WorkflowTask|null, error: string|null, deferred?: string}
      */
     private static function recoverExistingTask(string $candidateId): array
     {
         $acquiringTask = false;
+        $pollDispatchHandled = false;
         try {
             $snapshot = WorkflowTask::query()->useWritePdo()->find($candidateId);
             if (! $snapshot instanceof WorkflowTask || DatabaseTaskDelivery::hasUnreservedDelivery($snapshot)) {
@@ -299,7 +317,16 @@ final class TaskWatchdog
                 ];
             }
             $runId = $snapshot->workflow_run_id;
-            $task = DB::transaction(static function () use ($candidateId, $runId, &$acquiringTask): ?WorkflowTask {
+            $storage = $snapshot->getConnection();
+            $atomicPollRepair = $storage->getDriverName() === 'sqlite'
+                && config('workflows.v2.task_dispatch_mode') === 'poll' && ! WorkflowStub::faked();
+            $repair = static function () use (
+                $candidateId,
+                $runId,
+                $atomicPollRepair,
+                &$acquiringTask,
+                &$pollDispatchHandled,
+            ): ?WorkflowTask {
                 // Repair and Server mutations acquire the run before its tasks.
                 // Recheck the association after waiting for that run lock.
                 /** @var WorkflowRun $run */
@@ -345,15 +372,32 @@ final class TaskWatchdog
                     );
                 }
 
-                return $task;
-            });
+                if ($task instanceof WorkflowTask && $atomicPollRepair) {
+                    TaskDispatcher::dispatchRepairedPollTask(
+                        $task,
+                        boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
+                    );
+                    $pollDispatchHandled = true;
+                }
 
-            if ($task instanceof WorkflowTask) {
+                return $task;
+            };
+            $task = $atomicPollRepair
+                ? SqliteTransaction::forTaskOnce($snapshot, $repair)
+                : DB::transaction($repair);
+
+            if ($task instanceof WorkflowTask && ! $pollDispatchHandled) {
                 TaskDispatcher::dispatch(
                     $task,
                     boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
                 );
             }
+        } catch (SqliteWriteAdmissionUnavailableException) {
+            return [
+                'task' => null,
+                'error' => null,
+                'deferred' => 'repair',
+            ];
         } catch (Throwable $throwable) {
             return self::failedExistingTask($candidateId, $throwable, $acquiringTask);
         }
@@ -450,6 +494,7 @@ final class TaskWatchdog
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     deferred_existing_tasks?: list<array{candidate_id: string, phase: string, reason: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,

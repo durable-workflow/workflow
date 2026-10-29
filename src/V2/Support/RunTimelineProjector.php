@@ -44,6 +44,7 @@ final class RunTimelineProjector
                 ->whereIn('id', $projectionIds)
                 ->get()
                 ->keyBy('id');
+            $written = [];
 
             foreach ($page as $entry) {
                 $historyEventId = self::stringValue($entry['id'] ?? null);
@@ -60,8 +61,13 @@ final class RunTimelineProjector
                     $projectionId,
                     $historyEventId,
                     $entry,
-                    $existing->get($projectionId)
+                    $existing->get($projectionId),
+                    knownMissing: $entryModel === WorkflowTimelineEntry::class
+                        && ! $existing->has($projectionId) && ! isset($written[$projectionId]),
                 );
+                // A duplicate input must use a fresh lookup after the first
+                // write, preserving hooks and each returned model's own state.
+                $written[$projectionId] = true;
 
                 if ($collectRows) {
                     $projected[] = $row;
@@ -241,6 +247,7 @@ final class RunTimelineProjector
         string $historyEventId,
         array $entry,
         ?WorkflowTimelineEntry $existing = null,
+        bool $knownMissing = false,
     ): WorkflowTimelineEntry {
         $values = [
             'workflow_run_id' => $run->id,
@@ -266,11 +273,12 @@ final class RunTimelineProjector
         // MySQL normalizes JSON object key order on write. Filling the same
         // payload again can therefore make Eloquent issue an UPDATE for every
         // old timeline row even though its decoded value has not changed.
-        if (
-            $existing instanceof WorkflowTimelineEntry
-            && self::canonicalizeValue($existing->payload) === self::canonicalizeValue($values['payload'])
-        ) {
-            unset($values['payload']);
+        if ($existing instanceof WorkflowTimelineEntry) {
+            $storedPayload = $existing->payload;
+            if ($storedPayload === $values['payload']
+                || self::canonicalizeValue($storedPayload) === self::canonicalizeValue($values['payload'])) {
+                unset($values['payload']);
+            }
         }
 
         // PostgreSQL can omit trailing fractional zeroes when returning a
@@ -286,7 +294,7 @@ final class RunTimelineProjector
         $key = [
             'id' => $projectionId,
         ];
-        $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing);
+        $row = IdempotentProjectionUpsert::upsert($entryModel, $key, $values, $existing, $knownMissing);
 
         return $row;
     }

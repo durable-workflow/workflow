@@ -77,10 +77,12 @@ use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -3744,7 +3746,7 @@ final class WorkflowStub
         $parentTasks = [];
         $closedRun = null;
 
-        DB::transaction(function () use (
+        SqliteSavepointRelease::transaction($this->instance->getConnection(), function () use (
             &$command,
             &$parentTasks,
             &$closedRun,
@@ -3871,7 +3873,13 @@ final class WorkflowStub
                 $requestedHistoryPayload['reason'] = $reason;
             }
 
-            WorkflowHistoryEvent::record($run, $requestedEventType, $requestedHistoryPayload, null, $command);
+            $requestedHistoryEvent = WorkflowHistoryEvent::record(
+                $run,
+                $requestedEventType,
+                $requestedHistoryPayload,
+                null,
+                $command
+            );
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -3887,6 +3895,10 @@ final class WorkflowStub
                 )
                 ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
 
+            $terminalHistory = $openActivityExecutions->isNotEmpty() || $openTimers->isNotEmpty()
+                ? TerminalCancellationHistory::forRun($run, $command, $requestedHistoryEvent)
+                : null;
+
             foreach ($openActivityExecutions as $execution) {
                 $execution->forceFill([
                     'status' => ActivityStatus::Cancelled,
@@ -3896,7 +3908,13 @@ final class WorkflowStub
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $tasksByActivityExecutionId->get($execution->id);
 
-                ActivityCancellation::record($run, $execution, $activityTask, $command);
+                ActivityCancellation::record(
+                    $run,
+                    $execution,
+                    $activityTask,
+                    $command,
+                    terminalHistory: $terminalHistory
+                );
             }
 
             foreach ($openTimers as $timer) {
@@ -3904,8 +3922,20 @@ final class WorkflowStub
                     'status' => TimerStatus::Cancelled,
                 ])->save();
 
-                TimerCancellation::record($run, $timer, null, $command);
+                TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
+            // The final projection hydrates the current run graph again.
+            unset(
+                $terminalHistory,
+                $openTasks,
+                $openActivityExecutions,
+                $openTimers,
+                $tasksByActivityExecutionId,
+                $task,
+                $execution,
+                $timer,
+                $activityTask
+            );
 
             $run->forceFill([
                 'status' => $terminalStatus,
@@ -3980,7 +4010,16 @@ final class WorkflowStub
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             $closedRun = $run;
-        }, self::mysqlCommandTransactionAttempts() ?? 1);
+        }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
+            $instances = self::instanceQuery();
+            $key = $instances->getModel()
+                ->getKeyName();
+            $instances->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
+        });
 
         if ($closedRun instanceof WorkflowRun) {
             if ($commandType === CommandType::Cancel) {
@@ -5526,7 +5565,19 @@ final class WorkflowStub
      */
     private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
-        if ($with !== []) {
+        if ($with !== [] && $run::class === WorkflowRun::class) {
+            // Fetch the root before discarding its old relation cache. A missing
+            // row keeps the complete fallback graph; an existing row loads its
+            // fresh relations only after the previous inventory is released.
+            $fresh = $run->fresh();
+            if ($fresh !== null) {
+                foreach ($with as $relation) {
+                    $run->unsetRelation(explode('.', $relation, 2)[0]);
+                }
+                $run = $fresh->load($with);
+            }
+        } elseif ($with !== []) {
+            // Configured models keep their fresh() override and hydration hooks.
             $run = $run->fresh($with) ?? $run;
         }
 

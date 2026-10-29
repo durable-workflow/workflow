@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "terminal-close-inventory-history-budget",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMultipleTimerWorkflow",
+    "arguments": [
+      3600,
+      7200
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-28T12:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "timer-slow",
+        "sequence": 1,
+        "delay_seconds": 3600,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-10-28T12:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "timer-fast",
+        "sequence": 2,
+        "delay_seconds": 7200,
+        "parallel_group_id": "parallel-timers:1:2",
+        "parallel_group_kind": "timer",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-timers:1:2",
+            "parallel_group_kind": "timer",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-10-28T12:00:02Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  },
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "terminal_close_inventory": {
+    "timers": 198,
+    "activities": 198,
+    "commands": [
+      "cancel",
+      "terminate"
+    ],
+    "reason": "close every admitted pending effect",
+    "maximum_history_reads_per_unit": 128
+  }
+}

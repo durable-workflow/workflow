@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use WeakMap;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -22,6 +23,7 @@ use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\PendingSignalCloser;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
+use Workflow\V2\Support\TerminalCancellationHistory;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -32,6 +34,8 @@ class WorkflowHistoryEvent extends Model
     private const MAX_CACHED_PAYLOAD_JSON_BYTES = 4_096;
 
     private const MAX_CACHED_PAYLOAD_VALUES = 128;
+
+    private const MAX_CACHED_PAYLOAD_MODELS = 256;
 
     public $incrementing = false;
 
@@ -49,12 +53,10 @@ class WorkflowHistoryEvent extends Model
         'recorded_at' => HistoryRecordedAt::class,
     ];
 
-    private ?string $cachedPayloadJson = null;
-
     /**
-     * @var array<array-key, mixed>|null
+     * @var WeakMap<self, array{json: string, value: array<array-key, mixed>}>|null
      */
-    private ?array $cachedPayloadValue = null;
+    private static ?WeakMap $payloadCache = null;
 
     public function run(): BelongsTo
     {
@@ -78,6 +80,104 @@ class WorkflowHistoryEvent extends Model
         array $payload = [],
         WorkflowTask|string|null $task = null,
         WorkflowCommand|string|null $command = null,
+    ): self {
+        return self::recordEvent($run, $eventType, $payload, $task, $command, null);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public static function recordCancellation(
+        WorkflowRun $run,
+        HistoryEventType $eventType,
+        array $payload,
+        WorkflowTask|string|null $task = null,
+        WorkflowCommand|string|null $command = null,
+        ?TerminalCancellationHistory $terminalHistory = null,
+    ): self {
+        if (! in_array($eventType, [HistoryEventType::ActivityCancelled, HistoryEventType::TimerCancelled], true)) {
+            throw new \LogicException('Terminal cancellation recording requires a cancellation event.');
+        }
+        $terminalHistory?->assertRun($run);
+
+        return self::recordEvent($run, $eventType, $payload, $task, $command, $terminalHistory);
+    }
+
+    /**
+     * @internal Validate one terminal operation's reusable command snapshot.
+     * @param array<string, mixed> $snapshot
+     */
+    public static function matchesCommandSnapshot(WorkflowCommand $command, array $snapshot): bool
+    {
+        return $snapshot === self::commandSnapshot($command);
+    }
+
+    /**
+     * @param string $key
+     * @param mixed $value
+     * @return mixed
+     */
+    protected function castAttribute($key, $value)
+    {
+        // Configured models keep their own casting and accessor hooks.
+        if ($key !== 'payload' || static::class !== self::class) {
+            return parent::castAttribute($key, $value);
+        }
+
+        if (($this->getCasts()['payload'] ?? null) !== 'array'
+            || ! is_string($value)
+            || strlen($value) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
+            || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
+            if (self::$payloadCache !== null) {
+                unset(self::$payloadCache[$this]);
+            }
+
+            return parent::castAttribute($key, $value);
+        }
+
+        $cached = self::$payloadCache[$this] ?? null;
+        if (($cached['json'] ?? null) !== $value) {
+            // Let Laravel decode before publishing any reusable value. Keep
+            // raw attributes unchanged for mutation, dirty checks and storage.
+            $decoded = parent::castAttribute($key, $value);
+            if (! is_array($decoded) || count($decoded, COUNT_RECURSIVE) > self::MAX_CACHED_PAYLOAD_VALUES) {
+                if (self::$payloadCache !== null) {
+                    unset(self::$payloadCache[$this]);
+                }
+
+                return $decoded;
+            }
+            self::$payloadCache ??= new WeakMap();
+            if (! isset(self::$payloadCache[$this]) && count(self::$payloadCache) >= self::MAX_CACHED_PAYLOAD_MODELS) {
+                // A per-model bound alone still retains thousands of decoded
+                // small payloads in long histories. Weak keys keep the cache
+                // from extending model lifetimes; eviction preserves raw data.
+                foreach (self::$payloadCache as $oldModel => $unused) {
+                    unset(self::$payloadCache[$oldModel]);
+                    break;
+                }
+            }
+            self::$payloadCache[$this] = [
+                'json' => $value,
+                'value' => $decoded,
+            ];
+
+            return $decoded;
+        }
+
+        return $cached['value'];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function recordEvent(
+        WorkflowRun $run,
+        HistoryEventType $eventType,
+        array $payload,
+        WorkflowTask|string|null $task,
+        WorkflowCommand|string|null $command,
+        ?TerminalCancellationHistory $terminalHistory,
     ): self {
         if ($eventType === HistoryEventType::MemoUpserted) {
             foreach (['entries', 'merged'] as $field) {
@@ -112,6 +212,7 @@ class WorkflowHistoryEvent extends Model
                 $commandModel,
                 $taskId,
                 $commandId,
+                $terminalHistory,
             ): self {
                 /** @var WorkflowRun $lockedRun */
                 $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
@@ -119,7 +220,7 @@ class WorkflowHistoryEvent extends Model
                     ->findOrFail($run->id);
                 $now = now();
                 $sequence = self::nextSequenceForRun($lockedRun);
-                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel);
+                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
                 // A metered completion (#930) charges the event as stored,
                 // and the run row whose history position it advances.
                 $meter = HistoryTransactionMeter::current();
@@ -160,45 +261,6 @@ class WorkflowHistoryEvent extends Model
         return $event;
     }
 
-    /**
-     * @param string $key
-     * @param mixed $value
-     * @return mixed
-     */
-    protected function castAttribute($key, $value)
-    {
-        // Configured models keep their own casting and accessor hooks.
-        if ($key !== 'payload' || static::class !== self::class) {
-            return parent::castAttribute($key, $value);
-        }
-
-        if (($this->getCasts()['payload'] ?? null) !== 'array'
-            || ! is_string($value)
-            || strlen($value) > self::MAX_CACHED_PAYLOAD_JSON_BYTES
-            || (class_exists(Json::class) && ! HistoryPayloadJson::usesDefaultDecoder())) {
-            $this->cachedPayloadJson = null;
-            $this->cachedPayloadValue = null;
-
-            return parent::castAttribute($key, $value);
-        }
-
-        if ($this->cachedPayloadJson !== $value) {
-            // Let Laravel decode before publishing any reusable value. Keep
-            // raw attributes unchanged for mutation, dirty checks and storage.
-            $decoded = parent::castAttribute($key, $value);
-            if (! is_array($decoded) || count($decoded, COUNT_RECURSIVE) > self::MAX_CACHED_PAYLOAD_VALUES) {
-                $this->cachedPayloadJson = null;
-                $this->cachedPayloadValue = null;
-
-                return $decoded;
-            }
-            $this->cachedPayloadJson = $value;
-            $this->cachedPayloadValue = $decoded;
-        }
-
-        return $this->cachedPayloadValue;
-    }
-
     private static function nextSequenceForRun(WorkflowRun $run): int
     {
         $storedMax = (int) (ConfiguredV2Models::query('history_event_model', self::class)
@@ -217,13 +279,15 @@ class WorkflowHistoryEvent extends Model
         array $payload,
         ?WorkflowTask $task,
         ?WorkflowCommand $command,
+        ?TerminalCancellationHistory $terminalHistory,
     ): array {
         if ($task !== null && ! array_key_exists('task', $payload)) {
             $payload['task'] = self::taskSnapshot($task);
         }
 
         if ($command !== null && ! array_key_exists('command', $payload)) {
-            $payload['command'] = self::commandSnapshot($command);
+            $commandPayload = $terminalHistory?->commandPayload($command) ?? [];
+            $payload['command'] = $commandPayload['command'] ?? self::commandSnapshot($command);
         }
 
         return $payload;

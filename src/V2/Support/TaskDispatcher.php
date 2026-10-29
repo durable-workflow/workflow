@@ -38,6 +38,28 @@ final class TaskDispatcher
         self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection);
     }
 
+    /**
+     * @internal Poll repair metadata joins the caller's SQLite writer transaction.
+     */
+    public static function dispatchRepairedPollTask(
+        WorkflowTask $task,
+        bool $boundedWorkflowTaskProjection = false,
+    ): void {
+        if (! self::isPollMode() || WorkflowStub::faked()) {
+            throw new \LogicException('Atomic poll repair cannot publish physical or inline work.');
+        }
+        $connection = $task->getConnection();
+        if ($connection->getDriverName() !== 'sqlite' || $connection->transactionLevel() === 0
+            || ! $connection->getPdo()
+                ->inTransaction()) {
+            throw new \LogicException('Atomic poll repair requires the SQLite writer transaction.');
+        }
+
+        // Poll mode only updates metadata and projections. It publishes no job
+        // and executes no workflow/activity body before this transaction commits.
+        self::publish($task->id, false, $boundedWorkflowTaskProjection);
+    }
+
     private static function publish(
         string $taskId,
         bool $queueTimerWakeup = false,

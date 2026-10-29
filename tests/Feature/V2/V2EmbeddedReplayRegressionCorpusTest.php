@@ -107,6 +107,74 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     private int $workflowNumber = 0;
 
+    public function testTerminalCloseCorpusRetainsEveryCancellationWithinItsHistoryReadBudget(): void
+    {
+        $path = self::FIXTURE_DIR . '/terminal-close-inventory-history-budget.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The terminal close inventory evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['terminal_close_inventory'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.history_event_model' => TerminalCloseCorpusHistory::class,
+        ]);
+
+        foreach ($scenario['commands'] as $command) {
+            $this->clearWorkflowState();
+            $stub = WorkflowStub::make($fixture['workflow']['type']);
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $bridge = app(DefaultWorkflowTaskBridge::class);
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->sole();
+            $this->assertNotNull($bridge->claim($task->id, 'terminal-corpus-worker'));
+            $commands = [
+                ...array_fill(0, $scenario['timers'], [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 3600,
+                ]),
+                ...array_fill(0, $scenario['activities'], [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'terminal-corpus-activity',
+                ]),
+                [
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'terminal-corpus-wait',
+                ],
+            ];
+            $completed = $bridge->completeForProtocol($task->id, $commands, $fixture['protocol_version']);
+            $this->assertTrue($completed['completed'], json_encode($completed, JSON_THROW_ON_ERROR));
+            $before = $run->historyEvents()
+                ->count();
+            TerminalCloseCorpusHistory::$reads = 0;
+            TerminalCloseCorpusHistory::$watch = true;
+            try {
+                $closed = $command === 'cancel' ? $stub->attemptCancel($scenario['reason'])
+                    : $stub->attemptTerminate($scenario['reason']);
+            } finally {
+                TerminalCloseCorpusHistory::$watch = false;
+            }
+            $reads = TerminalCloseCorpusHistory::$reads;
+            $this->assertTrue($closed->accepted());
+            $this->assertSame(
+                $command === 'cancel' ? RunStatus::Cancelled : RunStatus::Terminated,
+                $run->fresh()
+->status
+            );
+            foreach ([
+                HistoryEventType::TimerCancelled->value => $scenario['timers'],
+                HistoryEventType::ActivityCancelled->value => $scenario['activities'],
+            ] as $type => $count) {
+                $this->assertSame($count, $run->historyEvents()->where('event_type', $type)->count());
+            }
+            $units = $before + 2 * ($scenario['timers'] + $scenario['activities']) + 64;
+            $this->assertLessThanOrEqual($scenario['maximum_history_reads_per_unit'] * $units, $reads);
+        }
+    }
+
     public function testTerminalNotificationCorpusWaitsForCleanupAndTheStorageCommit(): void
     {
         $path = self::FIXTURE_DIR . '/cooperative-cleanup-terminal-notification.json';
@@ -3005,5 +3073,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 return $this->projectRun($run);
             }
         });
+    }
+}
+
+final class TerminalCloseCorpusHistory extends WorkflowHistoryEvent
+{
+    public static bool $watch = false;
+
+    public static int $reads = 0;
+
+    protected function castAttribute($key, $value)
+    {
+        if (self::$watch && in_array($key, ['event_type', 'payload'], true)) {
+            ++self::$reads;
+        }
+
+        return parent::castAttribute($key, $value);
     }
 }

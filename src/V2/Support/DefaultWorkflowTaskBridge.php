@@ -7516,7 +7516,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function projectRun(WorkflowRun $run, array $with = []): void
     {
-        if ($with !== []) {
+        if ($with !== [] && $run::class === WorkflowRun::class) {
+            // Preserve the complete fallback when its root has disappeared,
+            // without retaining two inventories when a fresh root exists.
+            $fresh = $run->fresh();
+            if ($fresh !== null) {
+                foreach ($with as $relation) {
+                    $run->unsetRelation(explode('.', $relation, 2)[0]);
+                }
+                $run = $fresh->load($with);
+            }
+        } elseif ($with !== []) {
             $run = $run->fresh($with) ?? $run;
         }
 

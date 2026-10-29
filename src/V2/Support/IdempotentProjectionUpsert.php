@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Throwable;
@@ -31,10 +32,16 @@ final class IdempotentProjectionUpsert
      * @param array<string, mixed> $key
      * @param array<string, mixed> $values
      * @param TModel|null $existing Row loaded by this projection pass, never a cross-task cache.
+     * @param bool $knownMissing A projection page already observed that this key was absent.
      * @return TModel
      */
-    public static function upsert(string $model, array $key, array $values, ?Model $existing = null): Model
-    {
+    public static function upsert(
+        string $model,
+        array $key,
+        array $values,
+        ?Model $existing = null,
+        bool $knownMissing = false,
+    ): Model {
         if ($existing !== null) {
             if (! $existing instanceof $model || ! $existing->exists) {
                 throw new \InvalidArgumentException(
@@ -55,6 +62,33 @@ final class IdempotentProjectionUpsert
                     ->save();
 
                 return $existing;
+            }
+
+            if ($knownMissing) {
+                // Keep native creation hooks without repeating the page's
+                // missing-row lookup. A savepoint keeps a duplicate insert from
+                // poisoning an outer PostgreSQL transaction before fallback.
+                $query = $model::query();
+                if ($query::class !== Builder::class) {
+                    return $query->updateOrCreate($key, $values);
+                }
+                $create = static function () use ($query, $key, $values): Model {
+                    $row = $query->create(array_merge($key, $values));
+                    // Modern updateOrCreate retries a vetoed create through its
+                    // post-firstOrCreate save. Laravel 9 uses one firstOrNew save.
+                    if (method_exists($query, 'createOrFirst') && ! $row->wasRecentlyCreated) {
+                        $row->fill($values)
+                            ->save();
+                    }
+
+                    return $row;
+                };
+                $connection = $query->getModel()
+                    ->getConnection();
+                /** @var TModel $row */
+                $row = $connection->transactionLevel() > 0 ? $connection->transaction($create) : $create();
+
+                return $row;
             }
 
             /** @var TModel $row */
