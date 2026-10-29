@@ -44,6 +44,7 @@ final class RunTimelineProjector
                 ->whereIn('id', $projectionIds)
                 ->get()
                 ->keyBy('id');
+            $written = [];
 
             foreach ($page as $entry) {
                 $historyEventId = self::stringValue($entry['id'] ?? null);
@@ -61,8 +62,12 @@ final class RunTimelineProjector
                     $historyEventId,
                     $entry,
                     $existing->get($projectionId),
-                    knownMissing: $entryModel === WorkflowTimelineEntry::class && ! $existing->has($projectionId),
+                    knownMissing: $entryModel === WorkflowTimelineEntry::class
+                        && ! $existing->has($projectionId) && ! isset($written[$projectionId]),
                 );
+                // A duplicate input must use a fresh lookup after the first
+                // write, preserving hooks and each returned model's own state.
+                $written[$projectionId] = true;
 
                 if ($collectRows) {
                     $projected[] = $row;

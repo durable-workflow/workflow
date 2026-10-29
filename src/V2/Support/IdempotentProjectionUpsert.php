@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Throwable;
@@ -68,7 +69,20 @@ final class IdempotentProjectionUpsert
                 // missing-row lookup. A savepoint keeps a duplicate insert from
                 // poisoning an outer PostgreSQL transaction before fallback.
                 $query = $model::query();
-                $create = static fn (): Model => $query->create(array_merge($key, $values));
+                if ($query::class !== Builder::class) {
+                    return $query->updateOrCreate($key, $values);
+                }
+                $create = static function () use ($query, $key, $values): Model {
+                    $row = $query->create(array_merge($key, $values));
+                    // Modern updateOrCreate retries a vetoed create through its
+                    // post-firstOrCreate save. Laravel 9 uses one firstOrNew save.
+                    if (method_exists($query, 'createOrFirst') && ! $row->wasRecentlyCreated) {
+                        $row->fill($values)
+                            ->save();
+                    }
+
+                    return $row;
+                };
                 $connection = $query->getModel()
                     ->getConnection();
                 /** @var TModel $row */

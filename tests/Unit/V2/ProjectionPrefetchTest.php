@@ -21,6 +21,54 @@ use Workflow\V2\Support\RunWaitProjector;
 
 final class ProjectionPrefetchTest extends TestCase
 {
+    public static function duplicateTimelineEffects(): iterable
+    {
+        yield 'retained first row' => [false];
+        yield 'first row deleted by hook' => [true];
+    }
+
+    #[DataProvider('duplicateTimelineEffects')]
+    public function testDuplicateNewTimelineEntriesPreserveHooksAndSeparateReturnedModels(bool $deleteFirst): void
+    {
+        $run = $this->seedRun('duplicate-new-timeline');
+        $entry = $this->entries()[0];
+        $entry['summary'] = 'first entry';
+        $second = array_replace($entry, [
+            'summary' => 'second entry',
+        ]);
+        $creating = 0;
+        $updating = 0;
+        WorkflowTimelineEntry::creating(static function () use (&$creating): void {
+            ++$creating;
+        });
+        WorkflowTimelineEntry::updating(static function () use (&$updating): void {
+            ++$updating;
+        });
+        WorkflowTimelineEntry::created(static function (WorkflowTimelineEntry $row) use (
+            $deleteFirst,
+            &$creating
+        ): void {
+            if ($deleteFirst && $creating === 1) {
+                $row->delete();
+            }
+        });
+        try {
+            $rows = RunTimelineProjector::project($run, [$entry, $second]);
+        } finally {
+            WorkflowTimelineEntry::flushEventListeners();
+        }
+
+        $this->assertSame($deleteFirst ? 2 : 1, $creating);
+        $this->assertSame($deleteFirst ? 0 : 1, $updating);
+        $this->assertCount(2, $rows);
+        $this->assertNotSame($rows[0], $rows[1]);
+        $this->assertSame('first entry', $rows[0]->summary);
+        $this->assertSame('second entry', $rows[1]->summary);
+        $this->assertSame(! $deleteFirst, $rows[0]->exists);
+        $this->assertSame('second entry', $rows[1]->fresh()->summary);
+        $this->assertSame(1, WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->count());
+    }
+
     public function testNewTimelinePagesCreateEveryRowWithHooksWithoutPerRowLookup(): void
     {
         $run = $this->seedRun('new-timeline-page');
