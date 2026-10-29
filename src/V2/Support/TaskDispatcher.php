@@ -26,52 +26,38 @@ final class TaskDispatcher
         WorkflowTask $task,
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
-        bool $deferSqliteRepair = false,
     ): void {
         if (DB::transactionLevel() > 0) {
             DB::afterCommit(
-                static fn () => self::publishWithAdmission(
-                    $task,
-                    $queueTimerWakeup,
-                    $boundedWorkflowTaskProjection,
-                    $deferSqliteRepair,
-                )
+                static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
             );
 
             return;
         }
 
-        self::publishWithAdmission($task, $queueTimerWakeup, $boundedWorkflowTaskProjection, $deferSqliteRepair);
+        self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection);
     }
 
-    private static function publishWithAdmission(
+    /**
+     * @internal Poll repair metadata joins the caller's SQLite writer transaction.
+     */
+    public static function dispatchRepairedPollTask(
         WorkflowTask $task,
-        bool $queueTimerWakeup,
-        bool $boundedWorkflowTaskProjection,
-        bool $deferSqliteRepair,
+        bool $boundedWorkflowTaskProjection = false,
     ): void {
-        $taskId = $task->id;
-        // Poll-mode repair only updates durable dispatch metadata. Admit its
-        // writer before model hooks and projection; physical queue delivery and
-        // faked inline execution keep their original after-commit path.
-        if (! $deferSqliteRepair || ! self::isPollMode() || $queueTimerWakeup || WorkflowStub::faked()) {
-            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
-
-            return;
+        if (! self::isPollMode() || WorkflowStub::faked()) {
+            throw new \LogicException('Atomic poll repair cannot publish physical or inline work.');
         }
         $connection = $task->getConnection();
-        if ($connection->getDriverName() !== 'sqlite') {
-            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
-
-            return;
+        if ($connection->getDriverName() !== 'sqlite' || $connection->transactionLevel() === 0
+            || ! $connection->getPdo()
+                ->inTransaction()) {
+            throw new \LogicException('Atomic poll repair requires the SQLite writer transaction.');
         }
-        SqliteTransaction::forTaskOnce($task, static function () use (
-            $taskId,
-            $queueTimerWakeup,
-            $boundedWorkflowTaskProjection,
-        ): void {
-            self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
-        });
+
+        // Poll mode only updates metadata and projections. It publishes no job
+        // and executes no workflow/activity body before this transaction commits.
+        self::publish($task->id, false, $boundedWorkflowTaskProjection);
     }
 
     private static function publish(

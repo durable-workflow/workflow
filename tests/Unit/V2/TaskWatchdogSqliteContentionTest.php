@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase;
@@ -22,8 +23,15 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
 {
     private string $database = '';
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Carbon::setTestNow(Carbon::now());
+    }
+
     protected function tearDown(): void
     {
+        Carbon::setTestNow();
         parent::tearDown();
         foreach (['', '-wal', '-shm'] as $suffix) {
             if (is_file($this->database . $suffix)) {
@@ -120,18 +128,27 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
             $report = TaskWatchdog::runPass(runIds: [$workflow->runId()]);
             $this->assertTrue($started);
             $this->assertSame([], $report['existing_task_failures']);
-            $this->assertSame([[
-                'candidate_id' => $task->id,
-                'phase' => $phase,
-                'reason' => 'sqlite_writer_busy',
-            ]], $report['deferred_existing_tasks'] ?? []);
-            $this->assertSame(0, $report['dispatched_tasks']);
-            $this->assertSame($phase === 'repair' ? 0 : 1, $saved);
             if ($phase === 'repair') {
+                $this->assertSame([[
+                    'candidate_id' => $task->id,
+                    'phase' => 'repair',
+                    'reason' => 'sqlite_writer_busy',
+                ]], $report['deferred_existing_tasks'] ?? []);
+                $this->assertSame(0, $report['dispatched_tasks']);
+                $this->assertSame(0, $saved);
                 $this->assertSame($before, $task->fresh()->getRawOriginal());
             } else {
+                // A competing writer starts only after the entire repair and
+                // poll dispatch commit. Nothing from that commit can replay.
+                $this->assertSame([], $report['deferred_existing_tasks'] ?? []);
+                $this->assertSame(1, $report['dispatched_tasks']);
+                $this->assertSame(2, $saved);
                 $this->assertSame((int) $before['repair_count'] + 1, $task->fresh()->repair_count);
-                $this->assertSame($before['last_dispatched_at'], $task->fresh()->getRawOriginal('last_dispatched_at'));
+                $this->assertGreaterThan(
+                    $before['last_dispatched_at'],
+                    $task->fresh()
+                        ->getRawOriginal('last_dispatched_at')
+                );
             }
             Queue::assertNothingPushed();
         } finally {
@@ -142,9 +159,9 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
         $recovered = TaskWatchdog::runPass(runIds: [$workflow->runId()]);
         $this->assertSame([], $recovered['existing_task_failures']);
         $this->assertSame([], $recovered['deferred_existing_tasks'] ?? []);
-        $this->assertSame(1, $recovered['repaired_existing_tasks']);
-        $this->assertSame(1, $recovered['dispatched_tasks']);
-        $this->assertSame($phase === 'repair' ? 2 : 3, $saved);
+        $this->assertSame($phase === 'repair' ? 1 : 0, $recovered['repaired_existing_tasks']);
+        $this->assertSame($phase === 'repair' ? 1 : 0, $recovered['dispatched_tasks']);
+        $this->assertSame(2, $saved);
         $this->assertGreaterThan($before['last_dispatched_at'], $task->fresh()->getRawOriginal('last_dispatched_at'));
         $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
@@ -236,6 +253,32 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
         $this->assertOriginalAdmissionCallbackFailure($task, 'query observer refused');
     }
 
+    public function testQueryObserverDatabaseFailureIsNotWriterDeferral(): void
+    {
+        $task = new WorkflowTask([
+            'id' => 'query-observer-database-task',
+        ]);
+        $storage = DB::connection('watchdog_sqlite');
+        $storage->statement('CREATE TABLE watchdog_observer_probe (id INTEGER PRIMARY KEY)');
+        config([
+            'database.connections.watchdog_observer' => [
+                'driver' => 'sqlite',
+                'database' => $this->database,
+                'prefix' => '',
+            ],
+        ]);
+        $observer = DB::connection('watchdog_observer');
+        $observer->getPdo()
+            ->exec('PRAGMA busy_timeout=20');
+        DB::listen(static function ($query) use ($observer): void {
+            if (str_starts_with($query->sql, 'update')
+                && in_array('query-observer-database-task', $query->bindings, true)) {
+                $observer->insert('INSERT INTO watchdog_observer_probe (id) VALUES (1)');
+            }
+        });
+        $this->assertOriginalAdmissionCallbackFailure($task, 'watchdog_observer_probe');
+    }
+
     protected function getPackageProviders($app): array
     {
         return [WorkflowServiceProvider::class];
@@ -277,7 +320,7 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
             $failure = $error;
         }
         $this->assertInstanceOf(\PDOException::class, $failure);
-        $this->assertSame($message, $failure->getMessage());
+        $this->assertStringContainsString($message, $failure->getMessage());
         $this->assertFalse($entered);
         $this->assertSame(0, $task->getConnection()->transactionLevel());
     }

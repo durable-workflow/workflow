@@ -299,7 +299,7 @@ final class TaskWatchdog
     private static function recoverExistingTask(string $candidateId): array
     {
         $acquiringTask = false;
-        $phase = 'repair';
+        $pollDispatchHandled = false;
         try {
             $snapshot = WorkflowTask::query()->useWritePdo()->find($candidateId);
             if (! $snapshot instanceof WorkflowTask || DatabaseTaskDelivery::hasUnreservedDelivery($snapshot)) {
@@ -309,7 +309,16 @@ final class TaskWatchdog
                 ];
             }
             $runId = $snapshot->workflow_run_id;
-            $repair = static function () use ($candidateId, $runId, &$acquiringTask): ?WorkflowTask {
+            $storage = $snapshot->getConnection();
+            $atomicPollRepair = $storage->getDriverName() === 'sqlite'
+                && config('workflows.v2.task_dispatch_mode') === 'poll' && ! WorkflowStub::faked();
+            $repair = static function () use (
+                $candidateId,
+                $runId,
+                $atomicPollRepair,
+                &$acquiringTask,
+                &$pollDispatchHandled,
+            ): ?WorkflowTask {
                 // Repair and Server mutations acquire the run before its tasks.
                 // Recheck the association after waiting for that run lock.
                 /** @var WorkflowRun $run */
@@ -355,26 +364,31 @@ final class TaskWatchdog
                     );
                 }
 
+                if ($task instanceof WorkflowTask && $atomicPollRepair) {
+                    TaskDispatcher::dispatchRepairedPollTask(
+                        $task,
+                        boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
+                    );
+                    $pollDispatchHandled = true;
+                }
+
                 return $task;
             };
-            $storage = $snapshot->getConnection();
-            $task = $storage->getDriverName() === 'sqlite'
+            $task = $atomicPollRepair
                 ? SqliteTransaction::forTaskOnce($snapshot, $repair)
                 : DB::transaction($repair);
 
-            if ($task instanceof WorkflowTask) {
-                $phase = 'dispatch';
+            if ($task instanceof WorkflowTask && ! $pollDispatchHandled) {
                 TaskDispatcher::dispatch(
                     $task,
                     boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
-                    deferSqliteRepair: true,
                 );
             }
         } catch (SqliteWriteAdmissionUnavailableException) {
             return [
                 'task' => null,
                 'error' => null,
-                'deferred' => $phase,
+                'deferred' => 'repair',
             ];
         } catch (Throwable $throwable) {
             return self::failedExistingTask($candidateId, $throwable, $acquiringTask);

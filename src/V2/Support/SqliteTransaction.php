@@ -108,30 +108,37 @@ final class SqliteTransaction
         $taskId = $task->getKey();
         $query = $connection->table($task->getTable())
             ->where($key, $taskId);
+        $admissionSql = $query->getGrammar()
+            ->compileUpdate($query, [
+                $key => $taskId,
+            ]);
+        $admissionBindings = $connection->prepareBindings([$taskId, $taskId]);
         $pdo = $connection->getPdo();
         $root = $connection->getDriverName() === 'sqlite'
             && $connection->transactionLevel() === 0 && ! $pdo->inTransaction();
         $entered = false;
         $admissionFailure = null;
+        $admit = static function () use ($query, $key, $taskId, &$admissionFailure): void {
+            try {
+                $query->update([
+                    $key => $taskId,
+                ]);
+            } catch (Throwable $error) {
+                $admissionFailure = $error;
+
+                throw $error;
+            }
+        };
         try {
             return self::run(static function (Connection $database) use ($operation, &$entered): mixed {
                 $entered = true;
 
                 return $operation($database);
-            }, attempts: 1, admission: static function () use ($query, $key, $taskId, &$admissionFailure,): void {
-                try {
-                    $query->update([
-                        $key => $taskId,
-                    ]);
-                } catch (Throwable $error) {
-                    $admissionFailure = $error;
-
-                    throw $error;
-                }
-            }, connection: $connection);
+            }, attempts: 1, admission: $admit, connection: $connection);
         } catch (Throwable $error) {
             if ($root && ! $entered && $error instanceof QueryException
-                && $error === $admissionFailure && self::isContention($error)
+                && $error === $admissionFailure && $error->getSql() === $admissionSql
+                && $error->getBindings() === $admissionBindings && self::isContention($error)
                 && $connection->transactionLevel() === 0 && $connection->getRawPdo() === $pdo
                 && ! $pdo->inTransaction()) {
                 throw new SqliteWriteAdmissionUnavailableException('SQLite writer admission is busy.', 0, $error);
